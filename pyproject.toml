@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "dotmac-deployment-control"
+version = "0.1.0a1"
+description = "DotMac Deployment Control — desired deployment intent, immutable plans, approval-gated rollouts, authenticated target acknowledgements and drift reconciliation for licensed deployments (ADR-0033 § 3)"
+authors = ["DotMac"]
+readme = "README.md"
+packages = [{ include = "dotmac_deployment_control", from = "src" }]
+include = [
+    { path = "src/dotmac_deployment_control/py.typed", format = ["sdist", "wheel"] },
+    { path = "src/dotmac_deployment_control/migrations/**/*", format = ["sdist", "wheel"] },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+# The one runtime dependency (ADR-0006 § 2). Notably NOT `dotmac-licensing`,
+# `dotmac-release-catalog`, `dotmac-approvals` or `dotmac-integration`: every one
+# of those couplings is cut at a value in `ports.py`, which is what makes this
+# module independently releasable and what the `Modules are independent of each
+# other` import-linter contract enforces.
+#
+# Notably also NOT any provider client, HTTP library or crypto library. This
+# module emits a provider-neutral intent and never performs I/O; signature
+# verification is `dotmac_kernel.licensing`'s (ADR-0007) and the caller runs it.
+#
+# The floor is the ALLOCATION: a76 carries this module's `mod_deploy` ledger row,
+# and no earlier kernel can register the module at all —
+# `NamespaceRegistry.from_manifests` raises `UnallocatedNamespaceError`. The two
+# declared request-time prerequisites are older (`idempotency_ledger.v1` in a66,
+# `platform_audit_log.v1` in a68), so a lower floor would fail on the allocation
+# rather than on a capability, which is a worse error message for the same defect.
+dotmac-kernel = ">=0.1.0a76"
+sqlalchemy = "^2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

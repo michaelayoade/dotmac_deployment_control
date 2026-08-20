@@ -1,0 +1,731 @@
+"""Intent, plans and rollouts — the guards, not the happy path.
+
+The invariant this file protects: **what gets dispatched is the plan that was
+approved, and nothing else can reach a target.** A suite that only walked
+register → plan → approve → roll out would pass against an implementation that
+read the target's current desired state at dispatch time, which is the single
+most consequential way this module could be wrong: the approval would be for one
+thing and the deployment would be another.
+
+So the tests below are mostly refusals, plus the two properties that are easy to
+implement almost-correctly — digest binding and one-attempt-at-a-time.
+
+In-memory SQLite — logic only. Grants, the append-only triggers, the claim/proof
+CHECKs and migration-from-empty are proven against real Postgres in
+`tests/test_deployment_control_platform_isolation.py`.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Generator
+from datetime import UTC, datetime
+
+import pytest
+from dotmac_deployment_control import (
+    ApprovalEvidence,
+    ApprovalRefusedError,
+    ApprovePlanCommand,
+    AttemptOutcome,
+    DesiredDeployment,
+    EnrolCredentialCommand,
+    ExpectedStateError,
+    PlanRefusedError,
+    PlanStatus,
+    ProposePlanCommand,
+    RegisterTargetCommand,
+    RequestRolloutCommand,
+    RolloutStatus,
+    RolloutTransitionCommand,
+    SetDesiredStateCommand,
+    SettleAttemptCommand,
+    TargetStatus,
+    TargetTransitionCommand,
+    TransitionRefusedError,
+    approve_plan,
+    cancel_plan,
+    cancel_rollout,
+    decommission_target,
+    dispatch_attempt,
+    drift,
+    enrol_credential,
+    get_plan,
+    get_rollout,
+    get_target,
+    module,
+    propose_plan,
+    register_target,
+    request_rollout,
+    require_manual_repair,
+    set_desired_state,
+    settle_attempt,
+    snapshot_digest,
+    suspend_target,
+)
+from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
+from dotmac_kernel.models import Base
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+
+_NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+_POLICY = "deployment.production"
+_POLICY_VERSION = 4
+
+
+@pytest.fixture(autouse=True)
+def _installed_module_audit_actions() -> None:
+    install_audit_actions(AuditActionRegistry.from_manifests([module]))
+
+
+@pytest.fixture
+def db() -> Generator[Session, None, None]:
+    engine = create_engine("sqlite://", future=True)
+
+    @event.listens_for(engine, "connect")
+    def _attach(dbapi_connection, _record):  # type: ignore[no-untyped-def]
+        # pysqlite does not emit BEGIN on its own, which leaves SAVEPOINT
+        # semantics broken — and every command runs inside one.
+        dbapi_connection.isolation_level = None
+        dbapi_connection.execute("ATTACH DATABASE ':memory:' AS mod_deploy")
+
+    @event.listens_for(engine, "begin")
+    def _emit_begin(connection):  # type: ignore[no-untyped-def]
+        connection.exec_driver_sql("BEGIN")
+
+    Base.metadata.create_all(
+        engine,
+        tables=[
+            table
+            for table in Base.metadata.tables.values()
+            if table.schema == "mod_deploy"
+            or table.name
+            in {
+                "platform_idempotency_records",
+                "platform_audit_events",
+                "platform_admins",
+                "platform_outbox_events",
+            }
+        ],
+    )
+    session = sessionmaker(bind=engine, autocommit=False, autoflush=False)()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def _cmd() -> str:
+    return f"cmd-{uuid.uuid4().hex[:12]}"
+
+
+def _target(db: Session, **overrides: object):
+    fields: dict[str, object] = {
+        "command_id": _cmd(),
+        "target_ref": f"tgt-{uuid.uuid4().hex[:8]}",
+        "subject_ref": "acme-operator",
+        "product_code": "dotmac_sub",
+        "environment": "production",
+    }
+    fields.update(overrides)
+    return register_target(db, RegisterTargetCommand(**fields))  # type: ignore[arg-type]
+
+
+def _desired(db: Session, target_id, **overrides: object):  # type: ignore[no-untyped-def]
+    fields: dict[str, object] = {
+        "release_ref": "dotmac_sub@7.187.1",
+        "spec": {"replicas": 2},
+        "licence_ref": "lic-1",
+        "brand_profile_ref": "brand-acme",
+    }
+    fields.update(overrides)
+    return set_desired_state(
+        db,
+        SetDesiredStateCommand(
+            command_id=_cmd(),
+            target_id=target_id,
+            desired=DesiredDeployment(**fields),  # type: ignore[arg-type]
+        ),
+    )
+
+
+def _plan(db: Session, target_id, **overrides: object):  # type: ignore[no-untyped-def]
+    fields: dict[str, object] = {
+        "command_id": _cmd(),
+        "target_id": target_id,
+        "requires_approval": True,
+        "approval_policy_code": _POLICY,
+        "approval_policy_version": _POLICY_VERSION,
+    }
+    fields.update(overrides)
+    return propose_plan(db, ProposePlanCommand(**fields))  # type: ignore[arg-type]
+
+
+def _evidence(digest: str, **overrides: object) -> ApprovalEvidence:
+    fields: dict[str, object] = {
+        "policy_code": _POLICY,
+        "policy_version": _POLICY_VERSION,
+        "decision_ref": f"apr-{uuid.uuid4().hex[:8]}",
+        "content_digest": digest,
+        "decided_at": _NOW,
+    }
+    fields.update(overrides)
+    return ApprovalEvidence(**fields)  # type: ignore[arg-type]
+
+
+def _approved_plan(db: Session, target_id):  # type: ignore[no-untyped-def]
+    plan = _plan(db, target_id)
+    return approve_plan(
+        db,
+        ApprovePlanCommand(
+            command_id=_cmd(),
+            plan_id=plan.id,
+            evidence=_evidence(plan.plan_digest or ""),
+        ),
+    )
+
+
+def _rollout(db: Session, plan_id):  # type: ignore[no-untyped-def]
+    return request_rollout(
+        db,
+        RequestRolloutCommand(
+            command_id=_cmd(),
+            rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
+            plan_id=plan_id,
+        ),
+    )
+
+
+# ── Targets ─────────────────────────────────────────────────────────────────
+
+
+class TestTargetsAndDesiredState:
+    def test_a_new_target_starts_registered_with_no_desired_state(self, db) -> None:
+        view = _target(db)
+        assert view.status == TargetStatus.REGISTERED.value
+        assert view.desired_release_ref is None
+        assert view.desired_revision == 0
+
+    def test_registering_the_same_ref_twice_is_idempotent(self, db) -> None:
+        ref = f"tgt-{uuid.uuid4().hex[:8]}"
+        first = _target(db, target_ref=ref)
+        second = _target(db, target_ref=ref)
+        assert first.id == second.id
+
+    def test_setting_desired_state_bumps_the_revision_and_activates(self, db) -> None:
+        view = _desired(db, _target(db).id)
+        assert view.status == TargetStatus.ACTIVE.value
+        assert view.desired_revision == 1
+        assert view.desired_release_ref == "dotmac_sub@7.187.1"
+
+    def test_re_declaring_the_same_state_still_bumps_the_revision(self, db) -> None:
+        """A revision records that a DECISION was taken. An operator
+        re-declaring the same state after an incident wants a plan they can
+        approve, not a silent no-op that leaves the fleet exactly as it was."""
+        target = _target(db)
+        first = _desired(db, target.id)
+        second = _desired(db, target.id)
+        assert second.desired_revision == first.desired_revision + 1
+
+    def test_a_decommissioned_target_refuses_a_desired_state(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        decommission_target(db, TargetTransitionCommand(_cmd(), target.id))
+        with pytest.raises(TransitionRefusedError, match="decommissioned"):
+            _desired(db, target.id)
+
+    def test_a_stale_record_version_is_refused(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        stale = target.record_version
+        _desired(db, target.id)
+        with pytest.raises(ExpectedStateError):
+            set_desired_state(
+                db,
+                SetDesiredStateCommand(
+                    command_id=_cmd(),
+                    target_id=target.id,
+                    desired=DesiredDeployment(release_ref="x"),
+                    expected_version=stale,
+                ),
+            )
+
+
+# ── Credentials ─────────────────────────────────────────────────────────────
+
+
+class TestCredentials:
+    def test_enrolment_lands_pending_not_active(self, db) -> None:
+        """An enrolled key is a claim that someone registered it. Enrolling
+        straight to active would let anyone who can call the endpoint
+        impersonate a deployment (ADR-0007)."""
+        from dotmac_deployment_control import CredentialStatus, TargetCredential
+
+        target = _target(db)
+        credential_id = enrol_credential(
+            db,
+            EnrolCredentialCommand(
+                command_id=_cmd(),
+                target_id=target.id,
+                key_id="k1",
+                public_key_b64="AAAA",
+                public_key_fingerprint="sha256:aa",
+                enrollment_authority="platform_admin_policy",
+            ),
+        )
+        row = db.get(TargetCredential, credential_id)
+        assert row is not None
+        assert row.status == CredentialStatus.PENDING.value
+
+    def test_a_credential_with_no_fingerprint_is_refused(self, db) -> None:
+        """base64 text is not canonical — padding and alphabet variants would
+        each enrol separately, defeating the uniqueness constraint."""
+        target = _target(db)
+        with pytest.raises(TransitionRefusedError, match="fingerprint"):
+            enrol_credential(
+                db,
+                EnrolCredentialCommand(
+                    command_id=_cmd(),
+                    target_id=target.id,
+                    key_id="k1",
+                    public_key_b64="AAAA",
+                    public_key_fingerprint="",
+                    enrollment_authority="platform_admin_policy",
+                ),
+            )
+
+
+# ── Plans ───────────────────────────────────────────────────────────────────
+
+
+class TestPlansFreezeAndSupersede:
+    def test_proposing_freezes_a_snapshot_and_a_digest(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        assert plan.status == PlanStatus.PROPOSED.value
+        assert plan.plan_digest and len(plan.plan_digest) == 64
+        assert plan.desired_revision == target.desired_revision
+        assert plan.snapshot["release_ref"] == "dotmac_sub@7.187.1"
+
+    def test_the_snapshot_digest_is_deterministic(self, db) -> None:
+        """If it is not, an approval goes stale on its own between two reads of
+        unchanged data."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        assert snapshot_digest(plan.snapshot) == plan.plan_digest
+
+    def test_a_later_plan_supersedes_an_earlier_undecided_one(self, db) -> None:
+        """Two proposed plans for one target would let an operator approve the
+        older one and roll out state that has since been replaced."""
+        target = _desired(db, _target(db).id)
+        first = _plan(db, target.id)
+        _desired(db, target.id, spec={"replicas": 5})
+        second = _plan(db, target.id)
+        stale = get_plan(db, first.id)
+        assert stale is not None
+        assert stale.status == PlanStatus.SUPERSEDED.value
+        assert stale.superseded_by_id == second.id
+
+    def test_a_target_with_no_desired_release_cannot_be_planned(self, db) -> None:
+        target = _target(db)
+        # A registered-but-undeclared target is not active, so this is caught by
+        # the status guard first — which is the correct order: an inactive target
+        # is not planned for at all.
+        with pytest.raises(PlanRefusedError, match="active"):
+            _plan(db, target.id)
+
+    def test_a_suspended_target_cannot_be_planned_for(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        suspend_target(db, TargetTransitionCommand(_cmd(), target.id))
+        with pytest.raises(PlanRefusedError, match="active"):
+            _plan(db, target.id)
+
+    def test_a_plan_requiring_approval_must_name_its_policy(self, db) -> None:
+        """Otherwise the decision stops being explainable the moment the policy
+        changes."""
+        target = _desired(db, _target(db).id)
+        with pytest.raises(PlanRefusedError, match="name the policy"):
+            _plan(db, target.id, approval_policy_code=None)
+
+    def test_a_plan_with_a_rollout_cannot_be_cancelled(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        plan = _approved_plan(db, target.id)
+        _rollout(db, plan.id)
+        with pytest.raises(TransitionRefusedError, match="already has a rollout"):
+            cancel_plan(db, command_id=_cmd(), plan_id=plan.id)
+
+
+# ── Approval binding ────────────────────────────────────────────────────────
+
+
+class TestApprovalBindsToThePlanDigest:
+    def test_matching_evidence_approves(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        plan = _approved_plan(db, target.id)
+        assert plan.status == PlanStatus.APPROVED.value
+        # Naive comparison: SQLite has no tz-aware type and returns the
+        # stored instant naive; Postgres returns it aware. The property under
+        # test is that the DECIDING owner's clock was recorded rather than
+        # this module's, and that survives the normalisation.
+        assert plan.approved_at is not None
+        assert plan.approved_at.replace(tzinfo=None) == _NOW.replace(tzinfo=None)
+
+    def test_a_mismatched_digest_is_refused(self, db) -> None:
+        """The blast radius of a transferable approval here is other people's
+        running systems."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        with pytest.raises(ApprovalRefusedError, match="plan changed"):
+            approve_plan(
+                db,
+                ApprovePlanCommand(
+                    command_id=_cmd(), plan_id=plan.id, evidence=_evidence("f" * 64)
+                ),
+            )
+
+    def test_evidence_naming_a_different_policy_is_refused(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        with pytest.raises(ApprovalRefusedError, match="policy"):
+            approve_plan(
+                db,
+                ApprovePlanCommand(
+                    command_id=_cmd(),
+                    plan_id=plan.id,
+                    evidence=_evidence(
+                        plan.plan_digest or "", policy_code="deployment.pilot"
+                    ),
+                ),
+            )
+
+    def test_evidence_naming_a_different_policy_version_is_refused(self, db) -> None:
+        """Policy revisions differ in quorum and eligibility. An approval under
+        v3 is not an approval under v4."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        with pytest.raises(ApprovalRefusedError, match="policy version"):
+            approve_plan(
+                db,
+                ApprovePlanCommand(
+                    command_id=_cmd(),
+                    plan_id=plan.id,
+                    evidence=_evidence(plan.plan_digest or "", policy_version=3),
+                ),
+            )
+
+    def test_approving_a_plan_that_needs_no_approval_is_refused(self, db) -> None:
+        """Recording a decision nothing asked for would make the approval trail
+        say something untrue about what was reviewed."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(
+            db,
+            target.id,
+            requires_approval=False,
+            approval_policy_code=None,
+            approval_policy_version=None,
+        )
+        with pytest.raises(ApprovalRefusedError, match="does not require approval"):
+            approve_plan(
+                db,
+                ApprovePlanCommand(
+                    command_id=_cmd(),
+                    plan_id=plan.id,
+                    evidence=_evidence(plan.plan_digest or ""),
+                ),
+            )
+
+
+# ── Rollouts ────────────────────────────────────────────────────────────────
+
+
+class TestRolloutsOnlyRunApprovedPlans:
+    def test_an_unapproved_sensitive_plan_cannot_be_rolled_out(self, db) -> None:
+        """The one thing the approval gate exists to prevent."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        with pytest.raises(ApprovalRefusedError, match="requires approval"):
+            _rollout(db, plan.id)
+
+    def test_an_approval_exempt_plan_can_be_rolled_out_directly(self, db) -> None:
+        """Sensitivity is a product policy declared per plan, not inferred from
+        the environment — a pilot's rollout needs no ceremony."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(
+            db,
+            target.id,
+            requires_approval=False,
+            approval_policy_code=None,
+            approval_policy_version=None,
+        )
+        rollout = _rollout(db, plan.id)
+        assert rollout.status == RolloutStatus.REQUESTED.value
+
+    def test_a_suspended_target_cannot_be_rolled_out_to(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        plan = _approved_plan(db, target.id)
+        suspend_target(db, TargetTransitionCommand(_cmd(), target.id))
+        with pytest.raises(TransitionRefusedError, match="excluded from rollouts"):
+            _rollout(db, plan.id)
+
+    def test_requesting_the_same_rollout_ref_twice_is_idempotent(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        plan = _approved_plan(db, target.id)
+        ref = f"rol-{uuid.uuid4().hex[:8]}"
+        first = request_rollout(db, RequestRolloutCommand(_cmd(), ref, plan.id))
+        second = request_rollout(db, RequestRolloutCommand(_cmd(), ref, plan.id))
+        assert first.id == second.id
+
+
+class TestDispatchCarriesThePlanNotTheCurrentState:
+    def test_the_intent_carries_the_frozen_plan_and_its_digest(self, db) -> None:
+        """The single most consequential property in this module: editing the
+        desired state after approval must not change what is dispatched."""
+        target = _desired(db, _target(db).id)
+        plan = _approved_plan(db, target.id)
+        rollout = _rollout(db, plan.id)
+
+        # The desired state moves on AFTER approval.
+        _desired(db, target.id, release_ref="dotmac_sub@9.0.0", spec={"replicas": 99})
+
+        intent = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        assert (
+            intent.release_ref == "dotmac_sub@7.187.1"
+        ), "dispatch must carry the APPROVED plan, not the newest desired state"
+        assert intent.spec == {"replicas": 2}
+        assert intent.plan_digest == plan.plan_digest
+        assert intent.attempt_no == 1
+
+    def test_the_intent_is_provider_neutral(self, db) -> None:
+        """No endpoint, credential reference, transport name or retry policy —
+        those are the Integrator's (ADR-0024)."""
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        intent = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        fields = set(intent.__dataclass_fields__)
+        for forbidden in (
+            "endpoint",
+            "endpoint_url",
+            "credential",
+            "credential_ref",
+            "transport",
+            "retry_policy",
+            "connection_ref",
+        ):
+            assert forbidden not in fields
+
+    def test_two_attempts_cannot_be_in_flight_at_once(self, db) -> None:
+        """Two deliveries racing to converge one target is the failure this
+        prevents."""
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        with pytest.raises(TransitionRefusedError, match="already has attempt"):
+            dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+
+    def test_retry_is_the_same_operation_as_dispatch(self, db) -> None:
+        """There is no separate `retry()` with different rules, because a retry
+        that took a different path from the first attempt is a retry nobody
+        tested."""
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        first = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=first.attempt_no,
+                outcome=AttemptOutcome.FAILED.value,
+                error_code="unreachable",
+            ),
+        )
+        second = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        assert second.attempt_no == 2
+        assert second.plan_digest == first.plan_digest
+
+
+class TestSettlingAnAttempt:
+    def _dispatched(self, db):  # type: ignore[no-untyped-def]
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        return rollout
+
+    def test_a_succeeded_attempt_succeeds_the_rollout(self, db) -> None:
+        rollout = self._dispatched(db)
+        view = settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=1,
+                outcome=AttemptOutcome.SUCCEEDED.value,
+                integrator_ref="ig-1",
+            ),
+        )
+        assert view.status == RolloutStatus.SUCCEEDED.value
+        assert view.completed_at is not None
+
+    def test_a_failed_attempt_leaves_the_rollout_retryable(self, db) -> None:
+        """One transport error is not a deployment decision. Treating it as one
+        turns every transient failure into something an operator has to undo."""
+        rollout = self._dispatched(db)
+        view = settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=1,
+                outcome=AttemptOutcome.FAILED.value,
+                error_code="timeout",
+            ),
+        )
+        assert view.status == RolloutStatus.FAILED.value
+        assert view.completed_at is None, "a failed rollout is not settled"
+        # And it can still be dispatched again.
+        assert dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+
+    def test_timed_out_is_a_distinct_state_from_failed(self, db) -> None:
+        """A failure means something reported an error; a timeout means nothing
+        reported at all, and the second is far more likely a transport problem."""
+        rollout = self._dispatched(db)
+        view = settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=1,
+                outcome=AttemptOutcome.TIMED_OUT.value,
+            ),
+        )
+        assert view.status == RolloutStatus.TIMED_OUT.value
+
+    def test_an_attempt_cannot_be_settled_twice(self, db) -> None:
+        rollout = self._dispatched(db)
+        command = SettleAttemptCommand(
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            attempt_no=1,
+            outcome=AttemptOutcome.SUCCEEDED.value,
+        )
+        settle_attempt(db, command)
+        with pytest.raises(TransitionRefusedError, match="already settled"):
+            settle_attempt(
+                db,
+                SettleAttemptCommand(
+                    command_id=_cmd(),
+                    rollout_id=rollout.id,
+                    attempt_no=1,
+                    outcome=AttemptOutcome.FAILED.value,
+                ),
+            )
+
+    def test_replaying_a_settle_command_is_idempotent(self, db) -> None:
+        rollout = self._dispatched(db)
+        command = SettleAttemptCommand(
+            command_id="cmd-fixed",
+            rollout_id=rollout.id,
+            attempt_no=1,
+            outcome=AttemptOutcome.SUCCEEDED.value,
+        )
+        first = settle_attempt(db, command)
+        second = settle_attempt(db, command)
+        assert first.record_version == second.record_version
+
+    def test_settling_an_attempt_that_does_not_exist_is_refused(self, db) -> None:
+        rollout = self._dispatched(db)
+        with pytest.raises(TransitionRefusedError, match="no attempt"):
+            settle_attempt(
+                db,
+                SettleAttemptCommand(
+                    command_id=_cmd(),
+                    rollout_id=rollout.id,
+                    attempt_no=99,
+                    outcome=AttemptOutcome.SUCCEEDED.value,
+                ),
+            )
+
+
+class TestCancelIsNotManualRepair:
+    def _dispatched(self, db):  # type: ignore[no-untyped-def]
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        return rollout
+
+    def test_cancelling_settles_the_rollout_and_its_in_flight_attempt(self, db) -> None:
+        """Leaving an attempt PENDING would block the next dispatch forever on a
+        rollout nobody is waiting for."""
+        rollout = self._dispatched(db)
+        view = cancel_rollout(
+            db, RolloutTransitionCommand(_cmd(), rollout.id, reason="withdrawn")
+        )
+        assert view.status == RolloutStatus.CANCELLED.value
+        assert view.completed_at is not None
+        assert view.attempts[0].outcome == AttemptOutcome.CANCELLED.value
+
+    def test_manual_repair_keeps_the_rollout_open(self, db) -> None:
+        """A cancelled rollout is not wanted; a repairing one is wanted and
+        stuck. An operator's queue must tell them apart."""
+        rollout = self._dispatched(db)
+        view = require_manual_repair(
+            db, RolloutTransitionCommand(_cmd(), rollout.id, reason="disk full")
+        )
+        assert view.status == RolloutStatus.MANUAL_REPAIR.value
+        assert view.completed_at is None
+        assert view.attempts[0].outcome == AttemptOutcome.PENDING.value
+
+    def test_a_succeeded_rollout_cannot_be_cancelled(self, db) -> None:
+        rollout = self._dispatched(db)
+        settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=1,
+                outcome=AttemptOutcome.SUCCEEDED.value,
+            ),
+        )
+        with pytest.raises(TransitionRefusedError, match="settled"):
+            cancel_rollout(db, RolloutTransitionCommand(_cmd(), rollout.id))
+
+    def test_a_settled_rollout_cannot_be_dispatched_again(self, db) -> None:
+        rollout = self._dispatched(db)
+        cancel_rollout(db, RolloutTransitionCommand(_cmd(), rollout.id))
+        with pytest.raises(TransitionRefusedError, match="not retried"):
+            dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+
+
+# ── Drift, before anything has been observed ────────────────────────────────
+
+
+class TestDriftIsSilentUntilThereIsEvidence:
+    def test_a_never_observed_target_is_unknown_not_drifted(self, db) -> None:
+        """A model that collapsed these would show every freshly registered
+        target as a drift incident."""
+        target = _desired(db, _target(db).id)
+        report = drift(db, target.id)
+        assert report is not None
+        assert report.never_observed is True
+        assert report.drifted is False
+
+    def test_drift_is_computed_not_stored(self, db) -> None:
+        """A cached flag would need invalidating by every desired-state edit,
+        every observation and every rollout — three writers for one derived
+        value."""
+        from dotmac_deployment_control import DeploymentTarget
+
+        columns = set(DeploymentTarget.__table__.columns.keys())
+        for forbidden in ("is_drifted", "drifted", "drift_status", "in_sync"):
+            assert forbidden not in columns
+
+
+# ── Transaction authority ───────────────────────────────────────────────────
+
+
+class TestTheModuleOwnsNoTransaction:
+    def test_nothing_is_committed_so_a_rollback_discards_it(self, db) -> None:
+        """Hard rule 8. If the service committed, the rollback below would not
+        remove the row — which is exactly what this asserts against."""
+        target = _target(db)
+        db.rollback()
+        assert get_target(db, target.id) is None
+        assert get_rollout(db, uuid.uuid4()) is None

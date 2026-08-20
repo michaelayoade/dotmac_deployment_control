@@ -1,0 +1,243 @@
+"""The module's inbound contract: intent in, provider-neutral observations back.
+
+This module sits between two things it must not become. On one side is the
+Integrator, which moves bytes and speaks to providers. On the other is
+`dotmac-licensing`, which decides what a deployment is authorised to run. This
+module decides only what SHOULD be deployed, whether it HAS been, and what to do
+about the difference.
+
+## Two source modes, and the boundary between them is recorded
+
+ADR-0033 § 3 splits this module's provenance, and `EXTRACTION.toml` records it as
+`historical-mixed` rather than claiming one mode it cannot support:
+
+- **The receipt half is a tested reference.** Vendor's V6 slices
+  (`admission.py`, `admission_models.py`, `credentials.py`,
+  `credential_models.py`) are ported with their design, including the two
+  decisions below that are easy to get wrong and expensive to get wrong twice.
+  Those branches were never merged and never deployed, and their migration slots
+  were later reused by different work on Vendor `main` — so they are a *tested
+  reference*, not a production-used implementation.
+- **The plan/rollout half is greenfield**, with the absence of any source
+  evidenced across every branch, stash, dangling object and reflog of the Vendor
+  repository plus seven other repositories.
+
+## Two decisions ported from the reference, because both are counter-intuitive
+
+**1. A claim is not a proof, and they get separate columns.**
+
+An inbound report names a deployment. That name is EVIDENCE and never authority.
+The authoritative identity is the one resolved from the *signed* `key_id` by
+`dotmac_kernel.licensing.verify_applied_state` (ADR-0007 § 4). Storing both in
+one column would make "did we actually verify this?" unanswerable after the
+fact — and would make deployment binding decorative, since anyone reaching the
+endpoint could activate any target's deployment by naming it.
+
+**2. Attempts and reports are two tables, not one.**
+
+A single append-only table keyed uniquely on `(identity, report_id)` cannot work:
+the SECOND arrival under a key is exactly the row worth keeping — the replay, or
+the conflicting bytes — and the unique constraint forbids inserting it. Updating
+the first row instead breaks append-only semantics AND discards the conflicting
+bytes, destroying the evidence the table exists to preserve. It also leaves
+nowhere to record an arrival that never resolved to an identity at all: an
+unknown key, a malformed envelope, a bad signature. Those are the tripwires, and
+a fail-closed system that discards them silently is the worst of both.
+
+So: an append-only log of ATTEMPTS, and one canonical REPORT per idempotency key.
+
+## What this module refuses to hold
+
+- **Provider credentials.** `TargetCredential` holds a deployment's own PUBLIC
+  verification key — the target's identity, not a way to reach a provider. There
+  is no private material and no provider secret anywhere in this package.
+- **A provider client.** No SSH, Kubernetes, cloud or panel client; no webhook
+  verification; no connector retry or checkpoint state. All of it is the
+  Integrator's (ADR-0024, hard rule 28).
+- **A release catalogue, a licence, or a brand definition.** `release_ref`,
+  `licence_ref` and `brand_profile_ref` are opaque strings with no foreign key.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+# ── Errors ──────────────────────────────────────────────────────────────────
+
+
+class DeploymentControlError(ValueError):
+    """Base: this command cannot be applied to this target, plan or rollout."""
+
+
+class TransitionRefusedError(DeploymentControlError):
+    """The subject is not in a state from which this transition is legal."""
+
+
+class ExpectedStateError(DeploymentControlError):
+    """The caller's expected status or record version does not match.
+
+    Distinct from `TransitionRefusedError`: this one means the caller's view is
+    stale, that one means the command is wrong for the subject.
+    """
+
+    def __init__(
+        self,
+        subject_ref: str,
+        *,
+        expected_status: str | None,
+        actual_status: str,
+        expected_version: int | None,
+        actual_version: int,
+    ) -> None:
+        self.subject_ref = subject_ref
+        self.expected_status = expected_status
+        self.actual_status = actual_status
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+        super().__init__(
+            f"{subject_ref} has moved: caller expected "
+            f"status={expected_status!r} version={expected_version} but it is "
+            f"status={actual_status!r} version={actual_version}"
+        )
+
+
+class PlanRefusedError(DeploymentControlError):
+    """A plan cannot be built or approved as asked."""
+
+
+class ApprovalRefusedError(DeploymentControlError):
+    """Approval evidence does not bind to the plan snapshot it claims to cover.
+
+    ADR-0026 § 2's digest binding, applied to a rollout: change the plan and the
+    digest changes, which makes a prior approval **stale rather than
+    transferable**. Without it, "approved" would be a token movable onto a wider
+    blast radius than anyone reviewed — and for a deployment plan the blast
+    radius is other people's running systems.
+    """
+
+
+class ObservationRefusedError(DeploymentControlError):
+    """An observation cannot be admitted.
+
+    Deliberately narrow: almost every bad arrival is RECORDED as an attempt with
+    a disposition rather than raised, because the record is the point. This is
+    raised only when the caller's own inputs are unusable — no bytes at all, or
+    a receipt time that is not timezone-aware.
+    """
+
+
+# ── Inbound values ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class DesiredDeployment:
+    """The specification a target should converge on.
+
+    `spec` is opaque to this module. It carries whatever the product's own
+    deployment shape needs — module set, provider selections, resource sizing —
+    and nothing here interprets it. Interpreting it would make this module a
+    second authority on what a deployment IS, which belongs to the product's
+    deployment profile (`dotmac_kernel.profiles`, ADR-0003).
+
+    What this module DOES own is that the spec is versioned, that a plan freezes
+    one exact version of it, and that an observation is compared against the
+    version that was actually rolled out rather than the newest one.
+    """
+
+    release_ref: str
+    spec: Mapping[str, Any] = field(default_factory=dict)
+    licence_ref: str | None = None
+    brand_profile_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalEvidence:
+    """Proof, supplied by the assembly, that `dotmac-approvals` decided.
+
+    Identical in shape and intent to `dotmac-commercial-agreements`'s, and for
+    the same reason: this module never calls approvals and never implements a
+    second approval lifecycle (ADR-0026 § 6, ADR-0024). `content_digest` is
+    checked against the plan digest this module computed itself.
+    """
+
+    policy_code: str
+    policy_version: int
+    decision_ref: str
+    content_digest: str
+    decided_at: datetime
+    approver_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedState:
+    """What a target reports about itself, already verified by the caller.
+
+    The caller runs `dotmac_kernel.licensing.verify_applied_state` (ADR-0007) and
+    passes the RESULT in. This module does not re-verify a signature — the kernel
+    owns that — but it does insist on the distinction the verification produces:
+
+    - `authenticated_target_ref` is the identity resolved from the SIGNED key. It
+      is `None` when nothing authenticated, and a `None` here can never become an
+      admitted observation.
+    - `claimed_target_ref` is what the report said about itself. Evidence only.
+
+    A caller that puts the claim in both fields has defeated the whole design,
+    which is why they are separate parameters rather than one with a flag.
+    """
+
+    report_id: str
+    observed_release_ref: str | None
+    observed_spec_digest: str | None
+    reported_at: datetime
+    authenticated_target_ref: str | None = None
+    claimed_target_ref: str | None = None
+    key_id: str | None = None
+    #: The exact bytes as received, so the report stays portable evidence a third
+    #: party can verify — the property ADR-0007 § 1 justifies Ed25519 with in the
+    #: first place. Bounded by the caller before it reaches here.
+    raw_body: bytes | None = None
+    raw_body_digest: str | None = None
+    raw_body_truncated: bool = False
+    #: `unresolved` | `invalid` | `valid` — the kernel verifier's outcome.
+    signature_status: str = "unresolved"
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryIntent:
+    """What this module hands the Integrator: WHAT, never HOW.
+
+    Provider-neutral by construction. There is no endpoint, no credential
+    reference, no transport name and no retry policy — those are the
+    Integrator's, and a field for any of them here would make this module a
+    second transport authority (ADR-0024, hard rule 28).
+
+    `plan_digest` is included so the Integrator's own evidence can be tied back
+    to the exact plan that was approved, without this module having to trust a
+    correlation id round-tripping through a system it does not own.
+    """
+
+    rollout_ref: str
+    target_ref: str
+    release_ref: str
+    plan_digest: str
+    attempt_no: int
+    spec: Mapping[str, Any] = field(default_factory=dict)
+    licence_ref: str | None = None
+    brand_profile_ref: str | None = None
+
+
+__all__ = [
+    "ApprovalEvidence",
+    "ApprovalRefusedError",
+    "DeliveryIntent",
+    "DeploymentControlError",
+    "DesiredDeployment",
+    "ExpectedStateError",
+    "ObservationRefusedError",
+    "ObservedState",
+    "PlanRefusedError",
+    "TransitionRefusedError",
+]
