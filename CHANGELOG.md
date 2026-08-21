@@ -7,6 +7,11 @@ changes, each called out here.
 
 ## 0.1.0a2 — 2026-08-21
 
+Published, installed back from the private index, conformance-checked and
+tagged from exact protected-main revision `5c87272a` by release run
+`32471956734`. Publication is supply-chain evidence only; it composes no product
+and moves no authority.
+
 ### Fixed
 
 - A genuinely concurrent first observation now establishes exactly one
