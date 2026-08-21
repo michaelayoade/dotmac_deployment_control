@@ -5,12 +5,15 @@ because the reference assembly deliberately does not compose
 `dotmac-deployment-control`: a module that decides what a FLEET should run cannot
 live inside one of the deployments it decides about (ADR-0033 § 7).
 
-Beyond the usual platform-plane proofs, this file carries the two the V6 source
-design earned and this port must not lose:
+Beyond the usual platform-plane proofs, this file carries three proofs the V6
+source design earned and this port must not lose:
 
 1. **The claim/proof separation holds against RAW SQL**, not only against the
    service. Both CHECK constraints are exercised directly.
-2. **`app_admin` cannot rewrite an attempt or a receipt.** A rewritable tripwire
+2. **Concurrent first arrivals keep one stable verdict.** Both real sessions
+   are gated after observing no receipt, so the rehearsal forces the production
+   unique-key race rather than relying on thread timing.
+3. **`app_admin` cannot rewrite an attempt or a receipt.** A rewritable tripwire
    is decoration, and a rewritable `original_verdict` lets an at-least-once
    transport be made to look like a state change.
 
@@ -20,13 +23,40 @@ Requires real Postgres (`make test-db-up` / `make test-integration`).
 from __future__ import annotations
 
 import os
+import threading
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
+from dotmac_deployment_control import (
+    CredentialTransitionCommand,
+    EnrolCredentialCommand,
+    ObservationAttempt,
+    ObservationDisposition,
+    ObservationReceipt,
+    ObservationVerdict,
+    ObservedState,
+    RecordObservationCommand,
+    RegisterTargetCommand,
+    SignatureStatus,
+    activate_credential,
+    enrol_credential,
+    module,
+    record_observation,
+    register_target,
+)
+from dotmac_kernel.audit_actions import (
+    AuditActionRegistry,
+    AuditActionsNotInstalledError,
+    active_audit_actions,
+    install_audit_actions,
+)
+from sqlalchemy import create_engine, event, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.orm import Session, sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 KERNEL_VERSIONS = (
@@ -68,6 +98,8 @@ ALL_PRIVILEGES = (
     "TRIGGER",
 )
 ROW_DML = ("SELECT", "INSERT", "UPDATE", "DELETE")
+
+_OBSERVED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 
 
 def _superuser_url() -> str:
@@ -443,6 +475,218 @@ class TestTheClaimProofSeparationIsStructural:
                 self._attempt(conn, sig="unresolved", elig="n/a", auth=None)
         finally:
             engine.dispose()
+
+
+# ── Stable verdict under a genuinely contended first arrival ───────────────
+
+
+class _ReceiptLookupGate:
+    """Hold both workers after their first receipt lookup returned.
+
+    A barrier before the service call is not a concurrency proof: one worker can
+    run the entire call and commit before the other reaches the lookup. This
+    hook gates the production query *after* both transactions observed no
+    receipt, making the unique-constraint race deterministic. Later winner
+    lookups are not gated, or the loser would deadlock after its savepoint
+    rolls back.
+    """
+
+    def __init__(self) -> None:
+        self.barrier = threading.Barrier(2)
+        self.lock = threading.Lock()
+        self.thread_ids: set[int] = set()
+
+    def after_cursor_execute(
+        self,
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        normalised = " ".join(statement.lower().split())
+        if "from mod_deploy.observation_receipts" not in normalised:
+            return
+        thread_id = threading.get_ident()
+        with self.lock:
+            if thread_id in self.thread_ids:
+                return
+            self.thread_ids.add(thread_id)
+        self.barrier.wait(timeout=30)
+
+
+@pytest.fixture
+def _module_audit_actions() -> Iterator[None]:
+    """Install this standalone module's vocabulary without leaking process state."""
+    try:
+        previous_audit_actions = active_audit_actions()
+    except AuditActionsNotInstalledError:
+        previous_audit_actions = None
+    install_audit_actions(AuditActionRegistry.from_manifests([module]))
+    try:
+        yield
+    finally:
+        if previous_audit_actions is not None:
+            install_audit_actions(previous_audit_actions)
+
+
+@pytest.fixture
+def observation_race(
+    migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
+) -> Iterator[tuple[Engine, str, str]]:
+    """One target with an active public credential in the migrated schema."""
+    admin_url, _, _ = migrated_scratch
+    engine = create_engine(admin_url, future=True)
+    suffix = uuid.uuid4().hex[:10]
+    target_ref = f"race-target-{suffix}"
+    key_id = f"race-key-{suffix}"
+    with Session(engine) as db:
+        target = register_target(
+            db,
+            RegisterTargetCommand(
+                command_id=f"seed-target-{suffix}",
+                target_ref=target_ref,
+                subject_ref=f"subject-{suffix}",
+                product_code="dotmac_sub",
+                environment="production",
+            ),
+        )
+        credential_id = enrol_credential(
+            db,
+            EnrolCredentialCommand(
+                command_id=f"seed-key-{suffix}",
+                target_id=target.id,
+                key_id=key_id,
+                public_key_b64="AAAA",
+                public_key_fingerprint=f"sha256:{suffix}{'0' * (64 - len(suffix))}",
+                enrollment_authority="platform_admin_policy",
+            ),
+        )
+        activate_credential(
+            db,
+            CredentialTransitionCommand(
+                command_id=f"activate-key-{suffix}",
+                credential_id=credential_id,
+                at=_OBSERVED_AT - timedelta(minutes=1),
+            ),
+        )
+        db.commit()
+    try:
+        yield engine, target_ref, key_id
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("second_digest", "loser_disposition"),
+    [
+        pytest.param(
+            "sha256:first", ObservationDisposition.IDEMPOTENT_REPLAY.value, id="replay"
+        ),
+        pytest.param(
+            "sha256:second", ObservationDisposition.CONFLICT.value, id="conflict"
+        ),
+    ],
+)
+def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
+    observation_race: tuple[Engine, str, str],
+    second_digest: str,
+    loser_disposition: str,
+) -> None:
+    """The Vendor V6 concurrency obligation, driven through the real service.
+
+    Both workers observe the receipt as absent. Exactly one may establish it;
+    the loser must retain its attempt, point at the winner, and return that
+    receipt's original verdict instead of leaking an IntegrityError or deciding
+    the observation again.
+    """
+    engine, target_ref, key_id = observation_race
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    gate = _ReceiptLookupGate()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    report_id = f"report-{uuid.uuid4().hex[:10]}"
+    results: dict[int, ObservationVerdict] = {}
+    errors: dict[int, BaseException] = {}
+
+    def worker(index: int, digest: str) -> None:
+        db = sessions()
+        try:
+            results[index] = record_observation(
+                db,
+                RecordObservationCommand(
+                    command_id=f"arrival-{index}-{uuid.uuid4()}",
+                    received_at=_OBSERVED_AT,
+                    observed=ObservedState(
+                        report_id=report_id,
+                        observed_release_ref="dotmac_sub@1",
+                        observed_spec_digest="sha256:spec",
+                        reported_at=_OBSERVED_AT,
+                        authenticated_target_ref=target_ref,
+                        claimed_target_ref=target_ref,
+                        key_id=key_id,
+                        raw_body=digest.encode(),
+                        raw_body_digest=digest,
+                        signature_status=SignatureStatus.VALID.value,
+                    ),
+                ),
+            )
+            db.commit()
+        except BaseException as exc:
+            errors[index] = exc
+            db.rollback()
+        finally:
+            db.close()
+
+    threads = (
+        threading.Thread(target=worker, args=(0, "sha256:first")),
+        threading.Thread(target=worker, args=(1, second_digest)),
+    )
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+            assert not thread.is_alive(), "the receipt race deadlocked"
+    finally:
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    if errors:
+        raise next(iter(errors.values()))
+    assert len(gate.thread_ids) == 2, "the test never forced two absent lookups"
+    dispositions = {result.disposition for result in results.values()}
+    assert dispositions == {
+        ObservationDisposition.ACCEPTED.value,
+        loser_disposition,
+    }
+    loser = next(
+        result for result in results.values() if result.disposition == loser_disposition
+    )
+    assert loser.changed_state is False
+    assert loser.verdict == ObservationDisposition.ACCEPTED.value
+
+    with Session(engine) as db:
+        receipts = tuple(
+            db.execute(
+                select(ObservationReceipt).where(
+                    ObservationReceipt.authenticated_target_ref == target_ref,
+                    ObservationReceipt.report_id == report_id,
+                )
+            ).scalars()
+        )
+        attempts = tuple(
+            db.execute(
+                select(ObservationAttempt).where(
+                    ObservationAttempt.authenticated_target_ref == target_ref,
+                    ObservationAttempt.report_id == report_id,
+                )
+            ).scalars()
+        )
+    assert len(receipts) == 1
+    assert len(attempts) == 2
+    assert {attempt.receipt_id for attempt in attempts} == {receipts[0].id}
+    assert receipts[0].original_verdict == ObservationDisposition.ACCEPTED.value
 
 
 # ── Append-only evidence ────────────────────────────────────────────────────

@@ -5,12 +5,30 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a2 — 2026-08-21
+
+### Fixed
+
+- A genuinely concurrent first observation now establishes exactly one
+  canonical receipt. The receipt insert runs inside a savepoint; the losing
+  transaction retains its append-only attempt, points it at the winner, and
+  returns the winner's original verdict as a replay or conflict instead of
+  leaking the unique-constraint error.
+- The PostgreSQL rehearsal now gates both workers after their first production
+  receipt lookup has returned empty. This makes the race deterministic and
+  covers identical and divergent arrivals rather than relying on thread-start
+  timing.
+- The README now uses the dossier's authoritative
+  `greenfield-after-inventory` source mode. The receipt half has a historical
+  tested reference, but it was never production-used and therefore does not
+  qualify as product-first extraction under rule 24.
+
 ## 0.1.0a1 — 2026-08-19
 
-First release, under ADR-0033 § 3. **Split provenance**, recorded as
-`source_mode = "historical-mixed"`: the receipt half ports the never-merged
-Vendor V6 admission design, the plan/rollout half is greenfield with the absence
-evidenced.
+First release, under ADR-0033 § 3. **Split historical evidence**, recorded as
+`source_mode = "greenfield-after-inventory"`: the receipt half ports the
+never-merged and never-deployed Vendor V6 admission design as a tested
+reference, while the plan/rollout half is greenfield with the absence evidenced.
 
 ### Added
 

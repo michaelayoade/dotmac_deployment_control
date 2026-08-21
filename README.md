@@ -9,12 +9,14 @@ Ownership record: [`EXTRACTION.toml`](EXTRACTION.toml).
 
 ## Provenance is split, and recorded that way
 
-`source_mode = "historical-mixed"`, not `product-first`:
+`source_mode = "greenfield-after-inventory"`, not `product-first`. The
+historical evidence is mixed, but neither half qualifies as product-first code:
 
 - **The receipt half** ports the Vendor V6 admission design — the attempt/receipt
   pair, the claim/proof separation, the stable-verdict rule. Those branches were
   **never merged and never deployed**, and their migration slots were later reused
-  by different work on Vendor `main`. A *tested reference*, not production code.
+  by different work on Vendor `main`. A *tested reference*, not production-used
+  code, so rule 24 classifies the port as greenfield.
 - **The plan/rollout half is greenfield**, with the absence of any source proven
   across every branch, stash, dangling object and reflog of the Vendor repository
   plus seven other repositories.

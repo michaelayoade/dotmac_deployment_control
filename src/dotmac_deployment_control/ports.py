@@ -6,10 +6,11 @@ Integrator, which moves bytes and speaks to providers. On the other is
 module decides only what SHOULD be deployed, whether it HAS been, and what to do
 about the difference.
 
-## Two source modes, and the boundary between them is recorded
+## Two historical evidence modes, one rule-24 source mode
 
-ADR-0033 § 3 splits this module's provenance, and `EXTRACTION.toml` records it as
-`historical-mixed` rather than claiming one mode it cannot support:
+ADR-0033 § 3 splits this module's historical evidence, while `EXTRACTION.toml`
+records the rule-24 classification as `greenfield-after-inventory`: a source
+must be production-used to qualify as product-first, and neither half has one.
 
 - **The receipt half is a tested reference.** Vendor's V6 slices
   (`admission.py`, `admission_models.py`, `credentials.py`,

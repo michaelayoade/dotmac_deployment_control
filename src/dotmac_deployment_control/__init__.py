@@ -3,12 +3,13 @@
 The owner of **desired deployment intent, rollout planning, acknowledgement and
 reconciliation** for licensed Dotmac application deployments.
 
-Built under ADR-0033 § 3 with a SPLIT provenance, recorded honestly rather than
-smoothed over: the receipt half ports the never-merged Vendor V6 admission design
-(a tested reference, not production code), and the plan/rollout half is greenfield
-with the absence of any source evidenced across every branch, stash, dangling
-object and reflog of the Vendor repository plus seven others. `EXTRACTION.toml`
-carries `source_mode = "historical-mixed"` for exactly that reason.
+Built under ADR-0033 § 3 with split historical evidence, recorded honestly rather
+than smoothed over: the receipt half ports the never-merged Vendor V6 admission
+design (a tested reference, not production-used code), and the plan/rollout half
+has no source, evidenced across every branch, stash, dangling object and reflog
+of the Vendor repository plus seven others. `EXTRACTION.toml` therefore carries
+`source_mode = "greenfield-after-inventory"`: neither half qualifies as a
+product-first extraction under rule 24.
 
 ## Three rules this module exists to hold
 
@@ -168,7 +169,7 @@ from dotmac_deployment_control.service import (
     suspend_target,
 )
 
-__version__ = "0.1.0a1"
+__version__ = "0.1.0a2"
 
 __all__ = [
     "AUDIT_ACTION_CREDENTIAL",

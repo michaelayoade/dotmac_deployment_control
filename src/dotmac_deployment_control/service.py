@@ -60,6 +60,7 @@ from uuid import UUID
 from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.messaging import enqueue_platform_event, process_once_platform
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
@@ -1493,36 +1494,46 @@ def record_observation(
             )
         ).scalar_one_or_none()
         if receipt is not None:
-            same_bytes = receipt.payload_digest == observed.raw_body_digest
-            attempt.disposition = (
-                ObservationDisposition.IDEMPOTENT_REPLAY.value
-                if same_bytes
-                else ObservationDisposition.CONFLICT.value
-            )
-            attempt.receipt_id = receipt.id
-            session.add(attempt)
-            session.flush()
-            return _observation_result(
-                session,
-                attempt,
-                command,
-                changed=False,
-                verdict=receipt.original_verdict,
-            )
+            return _replay_observation(session, attempt, command, receipt)
 
-        receipt = ObservationReceipt(
-            authenticated_target_ref=observed.authenticated_target_ref,
-            report_id=observed.report_id,
-            payload=observed.raw_body,
-            payload_digest=observed.raw_body_digest,
-            key_id=observed.key_id or "",
-            first_received_at=command.received_at,
-            original_verdict=ObservationDisposition.ACCEPTED.value,
-            observed_release_ref=observed.observed_release_ref,
-            observed_spec_digest=observed.observed_spec_digest,
-        )
-        session.add(receipt)
-        session.flush()
+        # The lookup above is an optimisation, never concurrency control. Two
+        # real first arrivals can both observe no receipt. Establish the
+        # canonical row inside its own SAVEPOINT so the unique constraint picks
+        # one winner without aborting the caller's transaction; the loser can
+        # then retain its attempt and return the winner's stable verdict.
+        #
+        # Imported at use-time so importing this independently releasable module
+        # does not construct the kernel's configured database runtime.
+        from dotmac_kernel.db import conflict_savepoint
+
+        try:
+            with conflict_savepoint(session):
+                receipt = ObservationReceipt(
+                    authenticated_target_ref=observed.authenticated_target_ref,
+                    report_id=observed.report_id,
+                    payload=observed.raw_body,
+                    payload_digest=observed.raw_body_digest,
+                    key_id=observed.key_id or "",
+                    first_received_at=command.received_at,
+                    original_verdict=ObservationDisposition.ACCEPTED.value,
+                    observed_release_ref=observed.observed_release_ref,
+                    observed_spec_digest=observed.observed_spec_digest,
+                )
+                session.add(receipt)
+                session.flush()
+        except IntegrityError:
+            receipt = session.execute(
+                select(ObservationReceipt).where(
+                    ObservationReceipt.authenticated_target_ref
+                    == observed.authenticated_target_ref,
+                    ObservationReceipt.report_id == observed.report_id,
+                )
+            ).scalar_one_or_none()
+            if receipt is None:
+                # The flush failed for something other than the canonical-key
+                # race. Do not launder a real persistence defect into a replay.
+                raise
+            return _replay_observation(session, attempt, command, receipt)
 
         attempt.disposition = ObservationDisposition.ACCEPTED.value
         attempt.receipt_id = receipt.id
@@ -1559,6 +1570,31 @@ def record_observation(
             UUID(str(result["receipt_id"])) if result.get("receipt_id") else None
         ),
         verdict=(str(result["verdict"]) if result.get("verdict") else None),
+    )
+
+
+def _replay_observation(
+    session: Session,
+    attempt: ObservationAttempt,
+    command: RecordObservationCommand,
+    receipt: ObservationReceipt,
+) -> Mapping[str, object]:
+    """Retain a losing/repeated arrival and return the first verdict verbatim."""
+    same_bytes = receipt.payload_digest == command.observed.raw_body_digest
+    attempt.disposition = (
+        ObservationDisposition.IDEMPOTENT_REPLAY.value
+        if same_bytes
+        else ObservationDisposition.CONFLICT.value
+    )
+    attempt.receipt_id = receipt.id
+    session.add(attempt)
+    session.flush()
+    return _observation_result(
+        session,
+        attempt,
+        command,
+        changed=False,
+        verdict=receipt.original_verdict,
     )
 
 
