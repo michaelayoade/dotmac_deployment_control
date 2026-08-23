@@ -3,7 +3,7 @@
 Provisions its own scratch database and composes the module's lineage explicitly,
 because the reference assembly deliberately does not compose
 `dotmac-deployment-control`: a module that decides what a FLEET should run cannot
-live inside one of the deployments it decides about (ADR-0033 § 7).
+live inside one of the deployments it decides about (ADR-0057 § 7).
 
 Beyond the usual platform-plane proofs, this file carries three proofs the V6
 source design earned and this port must not lose:

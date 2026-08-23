@@ -1,6 +1,6 @@
 """Desired deployment intent, rollout, acknowledgement and reconciliation.
 
-Two source modes, recorded honestly (ADR-0033 § 3):
+Two source modes, recorded honestly (ADR-0057 § 3):
 
 - The **receipt half** ports the Vendor V6 admission design — the attempt/receipt
   pair, the claim/proof separation, the stable-verdict rule — from branches that

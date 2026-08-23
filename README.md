@@ -3,7 +3,7 @@
 The owner of **desired deployment intent, rollout planning, acknowledgement and
 reconciliation** for licensed Dotmac application deployments.
 
-Built under [ADR-0033](../../docs/adr/0033-the-vendor-control-plane-composes-existing-owners.md) § 3.
+Built under [ADR-0057](../../docs/adr/0057-the-vendor-control-plane-composes-existing-owners.md) § 3.
 Source inventory: [`vendor-cp-gap-sources.md`](../../docs/inventories/vendor-cp-gap-sources.md) § 3.
 Ownership record: [`EXTRACTION.toml`](EXTRACTION.toml).
 
@@ -83,7 +83,7 @@ answers neither "how many times did we try?" nor "what did we decide?".
 ## Composition
 
 - **Platform plane only** — a module that decides what a *fleet* should run cannot
-  live inside one of those deployments (ADR-0023, ADR-0033 § 7).
+  live inside one of those deployments (ADR-0023, ADR-0057 § 7).
 - **No provider anything.** No SSH/Kubernetes/cloud/panel client, no HTTP library,
   no endpoint, credential reference, transport name or retry policy. It emits a
   provider-neutral `DeliveryIntent`; the Integrator owns everything after that

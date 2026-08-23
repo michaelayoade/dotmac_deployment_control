@@ -8,7 +8,7 @@ about the difference.
 
 ## Two historical evidence modes, one rule-24 source mode
 
-ADR-0033 § 3 splits this module's historical evidence, while `EXTRACTION.toml`
+ADR-0057 § 3 splits this module's historical evidence, while `EXTRACTION.toml`
 records the rule-24 classification as `greenfield-after-inventory`: a source
 must be production-used to qualify as product-first, and neither half has one.
 

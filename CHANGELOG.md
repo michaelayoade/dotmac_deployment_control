@@ -30,7 +30,7 @@ and moves no authority.
 
 ## 0.1.0a1 — 2026-08-19
 
-First release, under ADR-0033 § 3. **Split historical evidence**, recorded as
+First release, under ADR-0057 § 3. **Split historical evidence**, recorded as
 `source_mode = "greenfield-after-inventory"`: the receipt half ports the
 never-merged and never-deployed Vendor V6 admission design as a tested
 reference, while the plan/rollout half is greenfield with the absence evidenced.

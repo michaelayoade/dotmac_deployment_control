@@ -3,7 +3,7 @@
 The owner of **desired deployment intent, rollout planning, acknowledgement and
 reconciliation** for licensed Dotmac application deployments.
 
-Built under ADR-0033 § 3 with split historical evidence, recorded honestly rather
+Built under ADR-0057 § 3 with split historical evidence, recorded honestly rather
 than smoothed over: the receipt half ports the never-merged Vendor V6 admission
 design (a tested reference, not production-used code), and the plan/rollout half
 has no source, evidenced across every branch, stash, dangling object and reflog

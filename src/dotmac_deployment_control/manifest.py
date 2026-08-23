@@ -10,7 +10,7 @@ composed gate will accept the migration creating.
 
 A module that decides what a fleet of deployments should run cannot live inside
 one of those deployments. `tables=()` is a DECLARATION (ADR-0023 rejects
-inferring a plane from a missing `tenant_id`), and ADR-0033 § 7 derives it from
+inferring a plane from a missing `tenant_id`), and ADR-0057 § 7 derives it from
 the one consumer that exists today: the vendor control plane.
 
 The deployments themselves are separate applications. They learn what to do
