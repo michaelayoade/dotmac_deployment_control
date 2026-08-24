@@ -21,6 +21,11 @@ source_repositories = [
   "dotmac_sub",
   "dotmac_starter_mt",
 ]
+source_revisions = [
+  "dotmac_sub:457882482cc938bfe70f48ca2fb282dab98beee6",
+  "dotmac_erp:0dc07e4b6dd36260c9510a7115dbdc656e2a19a5",
+  "dotmac_vendor_control_plane:0c77e85c7f54538e69061614c8de42ad0f6d2332",
+]
 source_paths = [
   "dotmac_vendor_control_plane:feat/v6-slice2-applied-state-admission:src/vendor_cp/licensing/admission.py",
   "dotmac_vendor_control_plane:feat/v6-slice2-applied-state-admission:src/vendor_cp/licensing/admission_models.py",
@@ -52,3 +57,22 @@ first_cutover = "Not started, and this module's path to adoption is different fr
 shadow_and_drift = "No shadow phase and no data-bearing migration are owed, and the reason is measurable rather than convenient: the capability has never run anywhere, so there is no second writer to reconcile against, no parallel evaluator to compare, and no rows to preserve. What IS owed at composition is the pair of proofs the source design earned and this port must not lose. (1) The claim/proof separation must hold against RAW SQL, not only against the service: the two CHECK constraints are declared on both the model and the migration, and the Postgres canary proves an insert claiming an authenticated identity without a valid signature is refused. (2) The stable-verdict rule must hold under concurrency: two simultaneous arrivals under one idempotency key must produce one canonical receipt and one loser pointing at it, never two receipts or a re-decided verdict. The V6 source shipped a concurrency rehearsal for exactly this and it is preserved as a named obligation on the Vendor composition, because a single-process test cannot establish it."
 local_copy_retirement = "Nothing to retire in any product: the V6 slices were never merged. The obligation runs the other way - the branches feat/v6-slice1-deployment-credentials and feat/v6-slice2-applied-state-admission must be DELETED from dotmac_vendor_control_plane once this module is composed, so that no future reader mistakes an abandoned line for a second implementation of a capability that now has an owner. Their migration slots are already reused on main, so leaving them is also a live rebase hazard."
 next_action = "dotmac-deployment-control 0.1.0a2 is published, installed back from the private index, conformance-checked and tagged from exact protected-main SHA 5c87272a by release run 32471956734. a2 is the first admissible composition version: a1 published the stable-verdict contract but did not recover the losing first-arrival transaction after the receipt unique constraint selected a winner, so Vendor must exact-pin a2 rather than a1. Publication moved no authority. Still owed, unchanged by the release: compose in the vendor control plane by exact-pinning dotmac-deployment-control 0.1.0a2 and dotmac-kernel 0.1.0a77, install the dc lineage with its prerequisite bindings, write the assembly adapter that runs dotmac_kernel.licensing.verify_applied_state and hands the result in as an ObservedState, wire the DeliveryIntent to the Integrator, register existing targets, re-run the deterministic concurrency rehearsal named in shadow_and_drift against the Vendor composition, and delete the two abandoned V6 branches in the same change. Until then this package is built, validated and published but unadopted, and must not be described as in production."
+
+[[product_writers]]
+product = "dotmac_vendor_control_plane"
+writer_state = "inventory_only"
+retirement_required = false
+revision = "0c77e85c7f54538e69061614c8de42ad0f6d2332"
+evidence_paths = ["src/vendor_cp/deployment/adapter.py", "src/vendor_cp/assembly.py"]
+[[product_writers]]
+product = "dotmac_erp"
+writer_state = "inventory_only"
+retirement_required = false
+revision = "0dc07e4b6dd36260c9510a7115dbdc656e2a19a5"
+evidence_paths = ["README.md", "docs/SOT_RELATIONSHIP_MAP.md"]
+[[product_writers]]
+product = "dotmac_sub"
+writer_state = "inventory_only"
+retirement_required = false
+revision = "457882482cc938bfe70f48ca2fb282dab98beee6"
+evidence_paths = ["docs/SOT_RELATIONSHIP_MAP.md", "pyproject.toml"]
