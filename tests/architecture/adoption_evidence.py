@@ -103,7 +103,9 @@ re-create it.
 
 from __future__ import annotations
 
+import ast
 import re
+import tomllib
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
@@ -121,7 +123,37 @@ ATTESTATION_KINDS: Final = frozenset(
     {"workflow_run", "deploy_run", "image_digest", "live_observation"}
 )
 
-EVIDENCE_KINDS: Final = ASSERTION_KINDS | ATTESTATION_KINDS
+#: A fact about the SHAPE of one Python file in one tree at one immutable
+#: commit, established by parsing it — never by executing or importing it.
+#:
+#: A third family rather than a member of `ASSERTION_KINDS`, and the split is
+#: structural for the same reason the assertion/attestation split is.  A TOML
+#: assertion addresses a `field`: a key path a reader resolves to a value.  A
+#: Python source file has no such thing.  Composition in a real assembly is a
+#: NAME appearing as a member of a registration collection, or a call inside a
+#: named function — a position in a syntax tree, not a key.  Forcing that onto
+#: `field` would produce either a dotted pseudo-key nobody can resolve or a grep
+#: pattern, and `STRUCTURED_SUFFIXES` already refuses `.py` precisely because
+#: "a grep result is not a field".
+#:
+#: The gap this closes is not hypothetical.  Vendor Control Plane composes
+#: `dotmac-deployment-control` in `src/vendor_cp/assembly.py` and registers its
+#: migration lineage in `src/vendor_cp/migrations.py`.  Neither fact is
+#: expressible as a TOML field, so the only row the old vocabulary could carry
+#: was `pinned_at` — which is installation, not adoption.  That is how nine of
+#: the ten dossiers migrated in #496 came out pin-only, and it has now recurred
+#: on `dotmac-auth-oidc`, both `dotmac-ui` slices and this package.
+AST_ASSERTION_KINDS: Final = frozenset({"composed_at"})
+
+EVIDENCE_KINDS: Final = ASSERTION_KINDS | ATTESTATION_KINDS | AST_ASSERTION_KINDS
+
+#: Kinds whose claim is a fact about a FILE IN A TREE, whichever family reads
+#: it.  Two rules key off "is there a tree behind this row" rather than off the
+#: family: the self-assertion refusal, and the pool of commits an attestation
+#: may cohere with.  Spelling those as `ASSERTION_KINDS` was correct while the
+#: assertion family was the only tree-reading one; it silently stops being
+#: correct the moment a second one exists.
+TREE_KINDS: Final = ASSERTION_KINDS | AST_ASSERTION_KINDS
 
 #: The identity coordinate each attestation kind carries INSTEAD of path/field.
 ATTESTATION_IDENTITY: Final = {
@@ -220,6 +252,49 @@ ATTESTATION_FIELDS: Final = frozenset(
         "note",
     }
 )
+AST_ASSERTION_FIELDS: Final = frozenset(
+    {
+        "kind",
+        "repository",
+        "commit",
+        "path",
+        "module",
+        "symbol",
+        "construct",
+        "within",
+        "proves",
+        "expected",
+        "locator",
+        "note",
+    }
+)
+
+#: What a `composed_at` row claims the syntax tree shows.  Closed, and closed
+#: for the same reason `EVIDENCE_KINDS` is: each member is a different tree
+#: walk, so a construct nobody wrote a walk for cannot be checked.
+#:
+#: `collection_member` — the imported name is an element of a list/tuple/set
+#: literal assigned to `within`.  This is a module roster: `STATEFUL_MODULES`,
+#: `COMPOSED_MODULES`, a feature tuple.
+#: `call` — the imported name is INVOKED inside the function `within`.  This is
+#: how a migration lineage is registered: `composed_version_locations()` calls
+#: each module's `versions_dir()`.
+COMPOSITION_CONSTRUCTS: Final = frozenset({"collection_member", "call"})
+
+#: The two halves a composition claim must prove SEPARATELY.  A module whose
+#: manifest is registered but whose lineage is not composed installs tables
+#: nobody migrates; a lineage composed without the manifest migrates tables
+#: nothing registers.  Both are real, both look adopted from one row, and the
+#: dossier gate below refuses a claim that carries only one.
+COMPOSITION_PROOFS: Final = frozenset({"module_registration", "migration_lineage"})
+
+#: A Python module path, and a Python identifier.  Neither is a `field`: they
+#: are resolved by the parser, not by walking a mapping.
+DOTTED_MODULE: Final = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+PY_IDENTIFIER: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 POINTER_FIELDS: Final = frozenset({"subject", "repository", "paths", "field", "note"})
 
 #: A pointer says WHERE the live answer is.  Any of these would make it say WHAT
@@ -263,7 +338,15 @@ UNMONITORED_BY_THIS_GATE: Final = {
         "`field`. Every input is immutable, so a result is cacheable forever on "
         "`(repository, commit, path, field)` — but it needs network access to "
         "four other repositories and is NOT BUILT. The coordinates in each row "
-        "are already a complete fetch instruction; that is the seam."
+        "are already a complete fetch instruction; that is the seam. PARTIAL "
+        "as of the `composed_at` kind: the verification PROCEDURE now exists "
+        "(`composition_claim_problems`, a pure function of source bytes) and is "
+        "exercised against verbatim consumer files captured at the cited "
+        "commit, whose git blob ids this repository re-derives offline. What is "
+        "still NOT BUILT is the FETCH: nothing here reads the consumer's "
+        "repository, so a captured fixture going stale against a NEW commit is "
+        "invisible. The fixture is pinned to one immutable commit, so it cannot "
+        "become wrong about that commit — only incomplete about later ones."
     ),
     "oracle_resolution": (
         "Whether an attestation's `run_id`/`digest` still resolves and still "
@@ -288,7 +371,12 @@ UNMONITORED_BY_THIS_GATE: Final = {
         "means composition while `pyproject.toml`'s version does not needs a "
         "reader, not a matcher. Stated review discipline, NOT enforced — a "
         "regex over field names would be a prose scanner wearing a schema, "
-        "and `dotmac_governance` ADR 0013 already rejected that shape."
+        "and `dotmac_governance` ADR 0013 already rejected that shape. This "
+        "remains true of `adopted`. It is NO LONGER true of `composed_at`, "
+        "whose semantics are not chosen by the author at all: the row names a "
+        "module, a symbol, a construct and an enclosing name, and the walk "
+        "either finds that shape in the syntax tree or does not. There is no "
+        "field for a reader to agree with."
     ),
     "consumer_cross_check": (
         "Whether `contract_consumers` and the set of `adopted` repositories "
@@ -456,6 +544,101 @@ def _assertion_problems(
                     "immutable coordinate, so the binding cannot fail (rule 28)",
                 )
             )
+
+    return problems
+
+
+def _ast_assertion_problems(where: str, row: Mapping[str, Any], kind: str) -> list[str]:
+    """Shape of a `composed_at` row.  The tree walk itself is
+    `python_composition_problems`; this only checks the claim is well formed
+    enough to be walked."""
+    problems: list[str] = []
+
+    for absent in sorted(
+        set(row) & ((ASSERTION_FIELDS | ATTESTATION_FIELDS) - AST_ASSERTION_FIELDS)
+    ):
+        problems.append(
+            _problem(
+                where,
+                f"{kind} is a source-shape assertion and must not carry "
+                f"{absent!r}. A `field` is a key path a reader resolves in a "
+                "mapping; a Python file has none, and offering one would invite "
+                "exactly the grep-dressed-as-a-field claim `STRUCTURED_SUFFIXES` "
+                "exists to refuse",
+            )
+        )
+
+    path = row.get("path")
+    if not isinstance(path, str) or not path.strip():
+        problems.append(
+            _problem(where, f"{kind} must cite the `path` of the source it claims")
+        )
+    else:
+        if path.startswith("/") or ".." in path.split("/"):
+            problems.append(
+                _problem(where, f"path {path!r} must be repository-relative")
+            )
+        if not path.endswith(".py"):
+            problems.append(
+                _problem(
+                    where,
+                    f"{kind}.path {path!r} is not a Python source file. This kind "
+                    "exists because composition is a position in a syntax tree; "
+                    "a structured document carries a `field` and belongs to an "
+                    f"{sorted(ASSERTION_KINDS)} kind instead",
+                )
+            )
+
+    module = row.get("module")
+    if not isinstance(module, str) or not DOTTED_MODULE.fullmatch(module.strip()):
+        problems.append(
+            _problem(
+                where,
+                f"{kind}.module {module!r} must be the importable module the "
+                "consumer imports FROM, as a dotted Python path",
+            )
+        )
+
+    for key in ("symbol", "within"):
+        value = row.get(key)
+        if not isinstance(value, str) or not PY_IDENTIFIER.fullmatch(value.strip()):
+            problems.append(
+                _problem(where, f"{kind}.{key} {value!r} must be a Python identifier")
+            )
+
+    construct = row.get("construct")
+    if construct not in COMPOSITION_CONSTRUCTS:
+        problems.append(
+            _problem(
+                where,
+                f"{kind}.construct {construct!r} is unknown; each construct is a "
+                f"different tree walk, so the vocabulary is closed. Known: "
+                f"{sorted(COMPOSITION_CONSTRUCTS)}",
+            )
+        )
+
+    proves = row.get("proves")
+    if proves not in COMPOSITION_PROOFS:
+        problems.append(
+            _problem(
+                where,
+                f"{kind}.proves {proves!r} is unknown. A composition claim names "
+                "WHICH half it establishes, because a registered manifest with no "
+                "lineage and a composed lineage with no manifest are both real "
+                "and both look adopted from one row. Known: "
+                f"{sorted(COMPOSITION_PROOFS)}",
+            )
+        )
+
+    expected = row.get("expected")
+    if not isinstance(expected, str) or not expected.strip():
+        problems.append(
+            _problem(
+                where,
+                f"{kind} must record in `expected` what the tree was seen to "
+                "hold, in words a reader can compare with the parse result",
+            )
+        )
 
     return problems
 
@@ -631,11 +814,16 @@ def evidence_problems(
             )
             continue
 
-        allowed = ASSERTION_FIELDS if kind in ASSERTION_KINDS else ATTESTATION_FIELDS
+        if kind in ASSERTION_KINDS:
+            allowed = ASSERTION_FIELDS
+        elif kind in AST_ASSERTION_KINDS:
+            allowed = AST_ASSERTION_FIELDS
+        else:
+            allowed = ATTESTATION_FIELDS
         unknown = sorted(set(row) - allowed)
         # Reported by the family checks below where the field belongs to the
         # other family; anything else is simply not part of the contract.
-        cross = (ATTESTATION_FIELDS | ASSERTION_FIELDS) - allowed
+        cross = (ATTESTATION_FIELDS | ASSERTION_FIELDS | AST_ASSERTION_FIELDS) - allowed
         for key in unknown:
             if key not in cross:
                 problems.append(f"{here}: unknown field {key!r}")
@@ -650,7 +838,7 @@ def evidence_problems(
                 "not a repository name. A registry coordinate is an "
                 "`image_digest` whose `repository` names the PRODUCING product"
             )
-        elif kind in ASSERTION_KINDS and repository == SELF_REPOSITORY:
+        elif kind in TREE_KINDS and repository == SELF_REPOSITORY:
             problems.append(
                 f"{here}: {SELF_REPOSITORY!r} cannot assert its own adoption. "
                 "Reference proof is not adoption (ADR-0006 § 5), and this list "
@@ -660,13 +848,15 @@ def evidence_problems(
         revision_problem = _revision_problem("commit", row.get("commit"))
         if revision_problem:
             problems.append(f"{here}: {revision_problem}")
-        elif kind in ASSERTION_KINDS and isinstance(repository, str) and repository:
+        elif kind in TREE_KINDS and isinstance(repository, str) and repository:
             assertion_commits.setdefault(repository, set()).add(str(row["commit"]))
 
         problems.extend(_locator_problem(here, row.get("locator")))
 
         if kind in ASSERTION_KINDS:
             problems.extend(_assertion_problems(here, row, kind, distribution))
+        elif kind in AST_ASSERTION_KINDS:
+            problems.extend(_ast_assertion_problems(here, row, kind))
         else:
             problems.extend(_attestation_problems(here, row, kind))
 
@@ -726,6 +916,38 @@ def evidence_problems(
                     f"{sorted(c[:12] for c in cited)}",
                 )
             )
+
+    # ── composition and installation are read from ONE tree ────────────────
+    # A `composed_at` row says the consumer's assembly names this module. A
+    # `pinned_at` row says the consumer depends on a version of it. Neither is
+    # adoption alone, and they are only adoption TOGETHER when they describe the
+    # same tree: a roster entry at one commit beside a pin read at another is two
+    # true facts arranged to look like one. Same repository AND same commit.
+    pinned_trees: set[tuple[str, str]] = set()
+    for row in rows:
+        if isinstance(row, Mapping) and row.get("kind") == "pinned_at":
+            repo, commit = row.get("repository"), row.get("commit")
+            if isinstance(repo, str) and isinstance(commit, str):
+                pinned_trees.add((repo, commit))
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping) or row.get("kind") != "composed_at":
+            continue
+        repo, commit = row.get("repository"), row.get("commit")
+        if not (isinstance(repo, str) and isinstance(commit, str)):
+            continue
+        if (repo, commit) in pinned_trees:
+            continue
+        problems.append(
+            _problem(
+                where,
+                f"adoption_evidence[{index}]: composed_at cites "
+                f"{repo}@{commit[:12]}… with no `pinned_at` row for that same "
+                "tree. Composition without installation is a roster entry for a "
+                "dependency the consumer does not declare; the two halves must "
+                "be read from ONE commit or they are two facts wearing one claim",
+            )
+        )
 
     # ── the present-tense half is pointed at, never copied ──────────────────
     pointer_rows = pointers if isinstance(pointers, list) else []
@@ -835,7 +1057,15 @@ INSTALLATION_KINDS: Final = frozenset(
 #: statement about composition that a shared image digest cannot make.  It
 #: decays, which is why it is dated and signed, and why it is never rendered as
 #: a statement about today.
-ADOPTION_PROVING_KINDS: Final = frozenset({"adopted", "live_observation"})
+#: `composed_at` — an assertion about a syntax tree.  The STRONGEST kind in
+#: this set, and the only one whose claim a machine can re-derive from source
+#: bytes with no oracle at all: given the file, the answer is a parse away.
+#: `adopted` needs a reader to agree the chosen TOML field means composition;
+#: `live_observation` decays.  A `composed_at` row means the consumer's own
+#: assembly names this module in its registration roster.
+ADOPTION_PROVING_KINDS: Final = frozenset(
+    {"adopted", "live_observation", "composed_at"}
+)
 
 #: States in which an `adopted` ROW is admissible although the dossier no
 #: longer claims a live adoption — a "was adopted, since superseded" state.
@@ -988,3 +1218,267 @@ def iter_rows(dossier: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
 
 def rows_of_kind(dossier: Mapping[str, Any], kind: str) -> Sequence[Mapping[str, Any]]:
     return tuple(row for row in iter_rows(dossier) if row.get("kind") == kind)
+
+
+# ── The verification procedure for `composed_at` ────────────────────────────
+#
+# Everything above is shape: is the claim well formed.  This is the walk that
+# decides whether the claim is TRUE of a given source text.
+#
+# It is a pure function of bytes.  It does not import the module under
+# examination, does not execute it, does not resolve its dependencies and does
+# not need them installed — `ast.parse` builds a tree from text and nothing
+# else.  That matters for a reason beyond hygiene: the file being examined
+# belongs to ANOTHER repository, whose dependencies this repository does not
+# have and must not acquire.  An importing checker would be a checker that only
+# runs inside the consumer, which is the one place a cross-repository evidence
+# claim cannot be checked from.
+#
+# Why a parse rather than a grep, stated concretely because the difference is
+# the whole value:
+#
+#   * A name inside a comment or a docstring is TEXT to grep and is not a
+#     `Name` node.  Vendor's `assembly.py` mentions `deployment_control_module`
+#     in a nine-line comment above the tuple; a grep-based checker cannot tell
+#     that comment from the registration two lines below it, and would keep
+#     passing after the registration was deleted.
+#   * An `import` is structurally a different node from a registration.  The
+#     import-only mutant — keep the import, delete the roster entry — is the
+#     mutation that catches a checker which is really matching a module name.
+#   * An alias is followed.  `from dotmac_deployment_control import module as
+#     deployment_control_module` binds a local name the roster then uses; the
+#     walk resolves that binding instead of hard-coding either spelling.
+
+
+def _local_binding(tree: ast.Module, module: str, symbol: str) -> str | None:
+    """The local name `from <module> import <symbol> [as <alias>]` binds."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            for alias in node.names:
+                if alias.name == symbol:
+                    return alias.asname or alias.name
+    return None
+
+
+def _collection_members(tree: ast.Module, within: str) -> list[ast.expr] | None:
+    """Elements of the list/tuple/set literal assigned to `within`, or None."""
+    for node in ast.walk(tree):
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign):
+            targets, value = list(node.targets), node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        if value is None:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == within for t in targets):
+            continue
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return list(value.elts)
+        return []
+    return None
+
+
+def _function_calls(tree: ast.Module, within: str) -> list[ast.Call] | None:
+    """Every call made anywhere inside the function `within`, or None."""
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == within
+        ):
+            return [c for c in ast.walk(node) if isinstance(c, ast.Call)]
+    return None
+
+
+def python_composition_problems(
+    source: str,
+    *,
+    module: str,
+    symbol: str,
+    construct: str,
+    within: str,
+    where: str = "",
+) -> list[str]:
+    """Refusals for a `composed_at` claim against one Python source text.
+
+    An empty list means the tree really does show the composition claimed.  The
+    three refusals below are the ones the mutation suite exercises, and each
+    reports which stage failed, because "not composed" and "not even imported"
+    send a reader to different places.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:  # pragma: no cover - a malformed fixture
+        return [_problem(where, f"source does not parse: {exc}")]
+
+    local = _local_binding(tree, module, symbol)
+    if local is None:
+        return [
+            _problem(
+                where,
+                f"no `from {module} import {symbol}` in this file, so the claim "
+                "fails before composition is even reachable",
+            )
+        ]
+
+    if construct == "collection_member":
+        members = _collection_members(tree, within)
+        if members is None:
+            return [
+                _problem(
+                    where,
+                    f"{local!r} is imported but no collection named {within!r} is "
+                    "assigned in this file",
+                )
+            ]
+        if not any(isinstance(e, ast.Name) and e.id == local for e in members):
+            return [
+                _problem(
+                    where,
+                    f"{local!r} is imported but is NOT a member of {within!r}. An "
+                    "import is installation; a roster entry is composition, and "
+                    "a mention in a comment is neither — this walk sees only the "
+                    "roster",
+                )
+            ]
+        return []
+
+    if construct == "call":
+        calls = _function_calls(tree, within)
+        if calls is None:
+            return [
+                _problem(
+                    where,
+                    f"{local!r} is imported but no function named {within!r} is "
+                    "defined in this file",
+                )
+            ]
+        if not any(isinstance(c.func, ast.Name) and c.func.id == local for c in calls):
+            return [
+                _problem(
+                    where,
+                    f"{local!r} is imported but never called inside {within!r}, so "
+                    "the lineage it returns is not composed into the target",
+                )
+            ]
+        return []
+
+    return [_problem(where, f"unknown construct {construct!r}")]
+
+
+def declared_dependency_version(toml_text: str, distribution: str) -> str | None:
+    """The version a consumer's `pyproject.toml` pins `distribution` to.
+
+    Handles both spellings Poetry accepts — a bare string and an inline table —
+    because a checker that understood only one would silently return None for
+    the other and report "not pinned" about a file that pins it.
+    """
+    document = tomllib.loads(toml_text)
+    tool = document.get("tool")
+    poetry = tool.get("poetry") if isinstance(tool, Mapping) else None
+    groups: list[Any] = []
+    if isinstance(poetry, Mapping):
+        groups.append(poetry.get("dependencies"))
+        for group in (poetry.get("group") or {}).values():
+            if isinstance(group, Mapping):
+                groups.append(group.get("dependencies"))
+    project = document.get("project")
+    if isinstance(project, Mapping):
+        groups.append(project.get("dependencies"))
+
+    for table in groups:
+        if not isinstance(table, Mapping):
+            continue
+        entry = table.get(distribution)
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, Mapping) and isinstance(entry.get("version"), str):
+            return str(entry["version"])
+    return None
+
+
+def composition_claim_problems(
+    *,
+    sources: Mapping[str, str],
+    rows: Sequence[Mapping[str, Any]],
+    pin_source: str | None = None,
+    distribution: str = "",
+    expected_pin: str | None = None,
+    where: str = "",
+) -> list[str]:
+    """Resolve every `composed_at` row against real source text, plus the pin.
+
+    `sources` maps each row's `path` to that file's contents at the cited
+    commit.  A row whose path is absent is reported rather than skipped: a
+    silently unresolved claim is the failure mode this whole module exists to
+    remove.
+
+    The pin cross-check is here rather than in `python_composition_problems`
+    because it is a fact about a different file in the same tree, and because
+    composition without a pin is the mirror of `dotmac-tax`: naming a module in
+    a roster while depending on nothing installs nothing.
+    """
+    problems: list[str] = []
+    seen_proofs: set[str] = set()
+
+    for index, row in enumerate(rows):
+        here = _problem(where, f"composed_at[{index}]").rstrip(":")
+        path = row.get("path")
+        if not isinstance(path, str) or path not in sources:
+            problems.append(
+                f"{here}: no source supplied for {path!r}; the claim is "
+                "unresolved, which is not the same as satisfied"
+            )
+            continue
+        proves = row.get("proves")
+        if isinstance(proves, str):
+            seen_proofs.add(proves)
+        problems.extend(
+            python_composition_problems(
+                sources[path],
+                module=str(row.get("module", "")),
+                symbol=str(row.get("symbol", "")),
+                construct=str(row.get("construct", "")),
+                within=str(row.get("within", "")),
+                where=f"{here} ({path})",
+            )
+        )
+
+    if rows:
+        missing = sorted(COMPOSITION_PROOFS - seen_proofs)
+        if missing:
+            problems.append(
+                _problem(
+                    where,
+                    f"composition evidence is missing {missing}. A registered "
+                    "manifest whose lineage is not composed installs tables "
+                    "nobody migrates; a composed lineage with no registered "
+                    "manifest migrates tables nothing registers. Both halves or "
+                    "neither",
+                )
+            )
+
+    if rows and pin_source is not None:
+        pinned = declared_dependency_version(pin_source, distribution)
+        if pinned is None:
+            problems.append(
+                _problem(
+                    where,
+                    f"the consumer's dependency table does not pin {distribution!r} "
+                    "at the cited commit, so it composes a module it does not "
+                    "depend on",
+                )
+            )
+        elif expected_pin is not None and pinned != expected_pin:
+            problems.append(
+                _problem(
+                    where,
+                    f"the consumer pins {distribution} {pinned!r} at the cited "
+                    f"commit, but the dossier's `pinned_at` row records "
+                    f"{expected_pin!r}. Composition and installation must be read "
+                    "from ONE tree; two versions across two rows is the drift "
+                    "AdoptionEvidenceV1 exists to make impossible",
+                )
+            )
+
+    return problems
