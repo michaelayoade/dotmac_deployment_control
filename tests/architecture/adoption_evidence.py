@@ -143,6 +143,12 @@ ATTESTATION_KINDS: Final = frozenset(
 #: was `pinned_at` — which is installation, not adoption.  That is how nine of
 #: the ten dossiers migrated in #496 came out pin-only, and it has now recurred
 #: on `dotmac-auth-oidc`, both `dotmac-ui` slices and this package.
+#: SOURCE-LEVEL, ALWAYS. `composed_at` reads a tree; it can never say anything
+#: about a running system. "The consumer's assembly names this module at commit
+#: X" and "this is running in production" are different claims with different
+#: oracles, and only `PRODUCTION_PROVING_KINDS` can make the second. A dossier
+#: whose adoption rests entirely on `composed_at` has proven composition on a
+#: branch and nothing more.
 AST_ASSERTION_KINDS: Final = frozenset({"composed_at"})
 
 EVIDENCE_KINDS: Final = ASSERTION_KINDS | ATTESTATION_KINDS | AST_ASSERTION_KINDS
@@ -1066,6 +1072,43 @@ INSTALLATION_KINDS: Final = frozenset(
 ADOPTION_PROVING_KINDS: Final = frozenset(
     {"adopted", "live_observation", "composed_at"}
 )
+
+#: The SECOND axis, and it is orthogonal to the first — which is the defect this
+#: constant exists to close rather than describe.
+#:
+#: `INSTALLATION_KINDS` / `ADOPTION_PROVING_KINDS` answers "was this COMPOSED or
+#: merely INSTALLED".  It says nothing about whether anything RAN, and the two
+#: questions cut across each other: `adopted` and `composed_at` prove
+#: composition by reading a SOURCE TREE, while `live_observation` proves it by
+#: watching a RUNNING SYSTEM.  A reader asking "is this in production?" and
+#: reaching for `ADOPTION_PROVING_KINDS` gets a confident wrong answer.
+#:
+#: Only these two can speak about a running production system.  `workflow_run`
+#: is CI exercising a tree, which is not that tree running anything for anyone;
+#: `image_digest` is an artifact that was BUILT, and a built image is not a
+#: deployed one.  Both are excluded deliberately.
+#:
+#: This is a subset of `ATTESTATION_KINDS` by construction and a test asserts
+#: it: a production claim cannot be a fact about a file, because no file in any
+#: tree can state that a system is running.
+PRODUCTION_PROVING_KINDS: Final = frozenset({"deploy_run", "live_observation"})
+
+
+def rests_on_source_alone(rows: object) -> bool:
+    """True when every row is a fact about a source tree.
+
+    The question `ADOPTION_PROVING_KINDS` cannot answer.  A dossier for which
+    this is true may legitimately be `adopted` — composition IS adoption — but
+    it has no evidence that anything ran, and must not be read or summarised as
+    though it had.
+    """
+    kinds = {
+        row.get("kind")
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, Mapping)
+    }
+    return bool(kinds) and not (kinds & ATTESTATION_KINDS)
+
 
 #: States in which an `adopted` ROW is admissible although the dossier no
 #: longer claims a live adoption — a "was adopted, since superseded" state.
