@@ -21,17 +21,20 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from dotmac_deployment_control import module
 from dotmac_kernel.namespaces import (
     DEPLOYMENT_CONTROL_MIGRATION_OWNER,
     MIGRATION_OWNER_LEDGER,
     module_schema,
 )
 
+from dotmac_deployment_control import module
 from tests.architecture import adoption_evidence as evidence_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_ROOT = REPO_ROOT / "packages/dotmac-deployment-control"
+# ADAPTED AT EXTRACTION: the package is the repository root here, not a
+# directory inside a workspace. `REPO_ROOT` stays as it was so the
+# `relative_to(REPO_ROOT)` offender messages below still read sensibly.
+PACKAGE_ROOT = REPO_ROOT
 SRC = PACKAGE_ROOT / "src/dotmac_deployment_control"
 MIGRATION = SRC / "migrations/versions/dc_0001_deployment_control.py"
 

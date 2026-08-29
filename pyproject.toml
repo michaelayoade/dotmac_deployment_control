@@ -28,8 +28,78 @@ python = ">=3.11,<3.14"
 # declared request-time prerequisites are older (`idempotency_ledger.v1` in a66,
 # `platform_audit_log.v1` in a68), so a lower floor would fail on the allocation
 # rather than on a capability, which is a worse error message for the same defect.
-dotmac-kernel = ">=0.1.0a77"
+dotmac-kernel = { version = ">=0.1.0a77", source = "forgejo" }
 sqlalchemy = "^2.0"
+
+# ── Resolution only: this does NOT enter the published wheel ────────────────
+#
+# In the repository this package came from, `dotmac-kernel` resolved as a path
+# dependency inside the workspace. Standing alone it must come from the private
+# index, so the source is declared here and the dependency above points at it.
+#
+# `priority = "explicit"` matters: without it every dependency in the tree would
+# be looked up on the private index first, which is both slower and a way for a
+# public package name to be shadowed by a private one of the same name. Explicit
+# means "only the dependencies that name this source come from it".
+#
+# What Poetry writes into the built wheel is the version constraint alone —
+# `Requires-Dist: dotmac-kernel (>=0.1.0a77)`. A source is a resolution
+# instruction, not package metadata, so adding it does not change the published
+# contract and does not require a version bump.
+[[tool.poetry.source]]
+name = "forgejo"
+url = "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/"
+priority = "explicit"
+
+# Never shipped: Poetry excludes non-main groups from the built distribution,
+# and `test_the_wheel_ships_no_test_or_dev_content` proves it rather than
+# trusting it.
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+ruff = "0.6.9"
+mypy = "^1.11"
+# The platform canary talks to a real PostgreSQL. psycopg is a DEV dependency
+# and must never become a runtime one: this module performs no I/O.
+psycopg = { version = "^3.2", extras = ["binary"] }
+# DEV ONLY, and the distinction is the contract. A module's migration is
+# executed by the HOST's Alembic — the module declares the lineage and never
+# runs it — so `alembic` must not become a runtime dependency of this package.
+# It is here because the canary applies the composed lineage to a real database
+# and because mypy needs the `alembic.op` stubs to check the migration.
+alembic = "^1.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "S", "RUF"]
+ignore = [
+    "S101",  # asserts are the point in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The canary drives a real database with literal SQL on purpose: it is proving
+# what the DATABASE refuses, which cannot be expressed through the ORM that the
+# service layer would use.
+"tests/**" = ["S608"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+
+# The module is held to a FULLY TYPED contract: it ships `py.typed`, so a
+# consuming assembly's type-checker treats these annotations as the contract.
+[[tool.mypy.overrides]]
+module = "dotmac_deployment_control.*"
+disallow_untyped_defs = true
 
 [build-system]
 requires = ["poetry-core"]

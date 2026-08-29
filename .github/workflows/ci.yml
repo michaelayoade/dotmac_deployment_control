@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  POETRY_HTTP_BASIC_FORGEJO_USERNAME: ci-reader
+  POETRY_HTTP_BASIC_FORGEJO_PASSWORD: ${{ secrets.FORGEJO_READ_TOKEN }}
+
+jobs:
+  # ── The credential is checked for the PROPERTY, not for existence ──────────
+  #
+  # This job carries NO `if:`. That is the whole point. `if: secrets.X != ''`
+  # would SKIP when the credential is missing, and a skipped job is not a failed
+  # job — the pull request would go green having installed and proven nothing.
+  # An absent credential must be red and loud.
+  #
+  # And it does not merely test that a string is non-empty. `AGENTS.md` rule 39:
+  # a step is renamed if it does not test the property it is named for, and
+  # presence is not the property. The property is *this credential can resolve
+  # the dependency this repository cannot build without*, so the job asks the
+  # index for `dotmac-kernel` and requires a 200.
+  credential:
+    name: forgejo read credential resolves dotmac-kernel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse to continue without a usable read credential
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::FORGEJO_READ_TOKEN is not set on this repository."
+            echo "This repository depends on dotmac-kernel from the private index"
+            echo "and cannot build, test or type-check without it. The credential"
+            echo "is a repository secret; its value lives in OpenBao and is never"
+            echo "recorded here. This job fails rather than skipping, because a"
+            echo "skipped job reads as success."
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -u "ci-reader:${TOKEN}" \
+            "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/dotmac-kernel/" || echo 000)
+          if [ "${code}" != "200" ]; then
+            echo "::error::the credential exists but cannot read dotmac-kernel (HTTP ${code})."
+            echo "Presence is not the property. A token that is set, valid, and"
+            echo "scoped to the wrong thing fails here, which is the case worth"
+            echo "catching."
+            exit 1
+          fi
+          echo "ci-reader can resolve dotmac-kernel from the private index."
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    # Deliberately independent of the credential: linting needs no dependency
+    # resolution, so it must keep working and keep reporting while the index
+    # credential is being provisioned.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install ruff==0.6.9
+      - run: ruff check .
+      - run: ruff format --check .
+
+  unit:
+    name: unit + architecture (SQLite)
+    needs: credential
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pipx install poetry==1.8.3
+      - run: poetry install --no-interaction
+      - run: poetry run pytest tests/unit tests/architecture
+
+  type-check:
+    name: mypy
+    needs: credential
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pipx install poetry==1.8.3
+      - run: poetry install --no-interaction
+      - run: poetry run mypy src/dotmac_deployment_control
+
+  # ── The reason this repository has a PostgreSQL lane at all ───────────────
+  #
+  # `tests/test_deployment_control_platform_isolation.py` is 1,001 lines proving
+  # the claim/proof CHECK constraints hold against RAW SQL, and that the tenant
+  # role holds zero grants on the platform plane. It cannot run on SQLite.
+  #
+  # `REQUIRE_NO_SKIPS=1` is not decoration. The canary calls `pytest.skip` when
+  # `TEST_DATABASE_URL` is unset — correct in the monorepo it came from, and a
+  # silent hole here, where this lane exists for this file. The conftest hook
+  # turns a skip in this lane into a failure.
+  postgres:
+    name: platform isolation canary (PostgreSQL)
+    needs: credential
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          # The canary derives the app_admin/app_user/platform_api URLs from the
+          # superuser one by swapping the USER and dropping the password — it is
+          # testing what those roles may do, not how they authenticate. Against
+          # the image default (scram-sha-256) every one of those connections
+          # fails with `fe_sendauth: no password supplied`, which is an
+          # authentication failure standing in for the grant test that never
+          # ran. `trust` is safe here and only here: an ephemeral service
+          # container on the runner's own loopback, thrown away with the job.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 20
+    env:
+      TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
+      REQUIRE_NO_SKIPS: "1"
+      # A module lineage declares the effects it needs and never names a foreign
+      # revision; the ASSEMBLY binds effect to revision. Dropping the assembly
+      # lineage removed that answer too, so the kernel correctly refused with
+      # `UnboundPrerequisiteError` rather than migrating into an unproven
+      # database — the gate working, not a gate in the way.
+      DOTMAC_MIGRATION_BINDINGS: tests.migration_bindings:CANARY_PREREQUISITE_BINDINGS
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pipx install poetry==1.8.3
+      - run: poetry install --no-interaction
+      # PostgreSQL roles are CLUSTER-wide, not per-database, and that is the
+      # whole of why this step needs more than three CREATE ROLEs.
+      #
+      # The canary builds a fresh scratch database and migrates it AS app_admin.
+      # The kernel lineage creates `outbox_dispatcher` behind an IF NOT EXISTS.
+      # In the repository this test came from that guard always found the role
+      # already present, because a superuser had run the same lineage against
+      # the shared test server earlier and the role outlived the database. Here
+      # nothing has ever run it, so the guard falls through to CREATE ROLE and
+      # app_admin is refused: "Only roles with the CREATEROLE attribute may
+      # create roles."
+      #
+      # So app_admin is created the way the kernel's own `0001` creates it —
+      # LOGIN BYPASSRLS — plus CREATEROLE, because here it is the role that
+      # actually runs the lineage rather than one the lineage produced. In
+      # PostgreSQL 16 a CREATEROLE role may only grant attributes it holds
+      # itself, which is why BYPASSRLS is not optional for it.
+      - name: Create the cluster roles the composed lineage expects
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE app_admin LOGIN BYPASSRLS CREATEROLE PASSWORD 'app_admin'"
+          for role in app_user platform_api; do
+            psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+              -c "CREATE ROLE ${role} LOGIN PASSWORD '${role}'"
+          done
+      - run: poetry run pytest tests/test_deployment_control_platform_isolation.py -rs

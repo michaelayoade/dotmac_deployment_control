@@ -1,0 +1,87 @@
+"""A skip in the lane that exists to run a test is a failure.
+
+`tests/test_deployment_control_platform_isolation.py` is 1,001 lines of proof
+that the claim/proof CHECK constraints hold against RAW SQL — the gap between
+"the service refuses this write" and "the database refuses this write". It
+opens with:
+
+    url = os.getenv("TEST_MIGRATION_DATABASE_URL") or os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL not set — the platform canary needs Postgres")
+
+In the repository it came from that was correct: a dedicated integration lane
+set the URL, and a developer without Postgres got a fast local suite. Carried
+into a repository whose whole reason for having a Postgres lane is this file,
+the same line becomes the defect it was never meant to be — **an absent thing
+reading as success**. Forget the environment variable in one workflow edit and
+the strongest proof in the repository reports green having executed nothing.
+
+So the lane that is supposed to run it sets ``REQUIRE_NO_SKIPS=1`` and every
+skip becomes a failure. The variable is deliberately not defaulted on: a local
+run without Postgres should still skip, because that is a developer choice
+rather than a silent hole in CI. The difference between the two is the presence
+of the flag, which is a fact about the lane rather than about the machine.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Generator
+from typing import Any
+
+import pytest
+
+REQUIRE_NO_SKIPS_ENV = "REQUIRE_NO_SKIPS"
+
+# `dotmac_kernel.db` builds its `DatabaseRuntime` at MODULE IMPORT time from
+# `settings.database_url`, and `record_observation` imports it lazily from
+# inside a handler — so the first test that admits an observation is what
+# triggers it. With no value configured the URL is unparseable and twelve tests
+# fail inside SQLAlchemy, a long way from the cause.
+#
+# The repository this code came from set `DATABASE_URL` in a root conftest that
+# could not travel here (it imports the assembly's TestClient). This is the one
+# line of it that this repository actually needs.
+#
+# Set at conftest IMPORT time, not in a fixture: the kernel caches the runtime
+# on first import, so a per-test fixture would be too late for whichever test
+# imported it first. `setdefault` so a lane that supplies a real URL wins.
+#
+# It must be POSTGRES-SHAPED and it is never connected to. The runtime builds a
+# pooled engine and passes `max_overflow`, which SQLite's pool does not accept —
+# `sqlite://` here raises `TypeError: Invalid argument(s) 'max_overflow'` at
+# import. Nothing dials this URL: the only thing the unit suite reaches for is
+# `conflict_savepoint`, which operates on the session the test already owns, and
+# `create_engine` does not connect. Port 1 and the `unused` names are chosen so
+# that anything which DID try to connect fails immediately and unmistakably
+# rather than reaching something real.
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+psycopg://unused:unused@127.0.0.1:1/unused"
+)
+
+
+def _skips_are_failures() -> bool:
+    return os.getenv(REQUIRE_NO_SKIPS_ENV) == "1"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: Any
+) -> Generator[None, None, None]:
+    outcome = yield
+    if not _skips_are_failures():
+        return
+    report = outcome.get_result()  # type: ignore[attr-defined]
+    if report.skipped and report.when == "setup":
+        reason = ""
+        if isinstance(report.longrepr, tuple) and len(report.longrepr) == 3:
+            reason = str(report.longrepr[2])
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{item.nodeid} was SKIPPED while {REQUIRE_NO_SKIPS_ENV}=1.\n"
+            f"  reason: {reason or '<none given>'}\n"
+            "  This lane exists to run this test. A skip here is the "
+            "'absent reads as success' defect: the suite reports green having "
+            "executed nothing. Provide the environment the test needs, or "
+            "remove the lane's claim to run it."
+        )
