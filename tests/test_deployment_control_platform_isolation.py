@@ -30,6 +30,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from dotmac_kernel.audit_actions import (
+    AuditActionRegistry,
+    AuditActionsNotInstalledError,
+    active_audit_actions,
+    install_audit_actions,
+)
+from dotmac_kernel.migrations import versions_dir as kernel_versions_dir
+from sqlalchemy import create_engine, event, select, text
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.orm import Session, sessionmaker
+
 from dotmac_deployment_control import (
     CredentialTransitionCommand,
     EnrolCredentialCommand,
@@ -47,27 +59,27 @@ from dotmac_deployment_control import (
     record_observation,
     register_target,
 )
-from dotmac_kernel.audit_actions import (
-    AuditActionRegistry,
-    AuditActionsNotInstalledError,
-    active_audit_actions,
-    install_audit_actions,
-)
-from sqlalchemy import create_engine, event, select, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.exc import DBAPIError, ProgrammingError
-from sqlalchemy.orm import Session, sessionmaker
+from dotmac_deployment_control import versions_dir as deploy_versions_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-KERNEL_VERSIONS = (
-    REPO_ROOT / "packages/dotmac-kernel/src/dotmac_kernel/migrations/versions"
-)
-ASSEMBLY_VERSIONS = REPO_ROOT / "alembic/versions"
-DEPLOY_VERSIONS = (
-    REPO_ROOT
-    / "packages/dotmac-deployment-control/src/dotmac_deployment_control"
-    / "migrations/versions"
-)
+
+# ── ADAPTED AT EXTRACTION, 2026-08-29 — the only change to this file ─────────
+#
+# In the repository this test came from, all three lineages were directories in
+# the same tree. Here the kernel and this module are INSTALLED packages, so the
+# paths are asked of the packages rather than assumed of the checkout. Every
+# other line of this 1,001-line canary is byte-identical to the source.
+#
+# `ASSEMBLY_VERSIONS` is GONE, and its absence changes what this test proves:
+# the scratch database is now built from kernel + `mod_deploy` alone, with no
+# host assembly present. That is a narrower estate than the original and, for a
+# repository whose module must stand on its own, the more faithful one — the
+# module's declared prerequisites (`idempotency_ledger.v1`, `platform_audit_log.v1`)
+# are both the KERNEL's, and the file's own docstring notes the reference
+# assembly deliberately does not compose this module. It is still a change to a
+# preserved test surface and is recorded as one rather than absorbed silently.
+KERNEL_VERSIONS = Path(kernel_versions_dir())
+DEPLOY_VERSIONS = Path(deploy_versions_dir())
 
 SCHEMA = "mod_deploy"
 TABLES = (
@@ -147,7 +159,7 @@ def migrated_scratch() -> Iterator[tuple[str, str, str]]:
         cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
         cfg.set_main_option(
             "version_locations",
-            f"{KERNEL_VERSIONS} {ASSEMBLY_VERSIONS} {DEPLOY_VERSIONS}",
+            f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}",
         )
         os.environ["MIGRATION_DATABASE_URL"] = admin_url
         # From an EMPTY database to the composed head, so the lineage's

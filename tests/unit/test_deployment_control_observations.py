@@ -30,6 +30,11 @@ from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
+from dotmac_kernel.models import Base
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+
 from dotmac_deployment_control import (
     AttemptOutcome,
     CredentialTransitionCommand,
@@ -62,10 +67,6 @@ from dotmac_deployment_control import (
     settle_attempt,
     spec_digest,
 )
-from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
-from dotmac_kernel.models import Base
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _SPEC = {"replicas": 2}

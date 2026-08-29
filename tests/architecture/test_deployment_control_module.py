@@ -21,13 +21,13 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from dotmac_deployment_control import module
 from dotmac_kernel.namespaces import (
     DEPLOYMENT_CONTROL_MIGRATION_OWNER,
     MIGRATION_OWNER_LEDGER,
     module_schema,
 )
 
+from dotmac_deployment_control import module
 from tests.architecture import adoption_evidence as evidence_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -22,6 +22,11 @@ from collections.abc import Generator
 from datetime import UTC, datetime
 
 import pytest
+from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
+from dotmac_kernel.models import Base
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import Session, sessionmaker
+
 from dotmac_deployment_control import (
     ApprovalEvidence,
     ApprovalRefusedError,
@@ -62,10 +67,6 @@ from dotmac_deployment_control import (
     snapshot_digest,
     suspend_target,
 )
-from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
-from dotmac_kernel.models import Base
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
