@@ -136,6 +136,12 @@ jobs:
     env:
       TEST_MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
       REQUIRE_NO_SKIPS: "1"
+      # A module lineage declares the effects it needs and never names a foreign
+      # revision; the ASSEMBLY binds effect to revision. Dropping the assembly
+      # lineage removed that answer too, so the kernel correctly refused with
+      # `UnboundPrerequisiteError` rather than migrating into an unproven
+      # database — the gate working, not a gate in the way.
+      DOTMAC_MIGRATION_BINDINGS: tests.migration_bindings:CANARY_PREREQUISITE_BINDINGS
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

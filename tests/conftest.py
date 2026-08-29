@@ -46,7 +46,18 @@ REQUIRE_NO_SKIPS_ENV = "REQUIRE_NO_SKIPS"
 # Set at conftest IMPORT time, not in a fixture: the kernel caches the runtime
 # on first import, so a per-test fixture would be too late for whichever test
 # imported it first. `setdefault` so a lane that supplies a real URL wins.
-os.environ.setdefault("DATABASE_URL", "sqlite://")
+#
+# It must be POSTGRES-SHAPED and it is never connected to. The runtime builds a
+# pooled engine and passes `max_overflow`, which SQLite's pool does not accept —
+# `sqlite://` here raises `TypeError: Invalid argument(s) 'max_overflow'` at
+# import. Nothing dials this URL: the only thing the unit suite reaches for is
+# `conflict_savepoint`, which operates on the session the test already owns, and
+# `create_engine` does not connect. Port 1 and the `unused` names are chosen so
+# that anything which DID try to connect fails immediately and unmistakably
+# rather than reaching something real.
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql+psycopg://unused:unused@127.0.0.1:1/unused"
+)
 
 
 def _skips_are_failures() -> bool:
