@@ -1,0 +1,127 @@
+{
+  "schema_version": 10,
+  "profile_id": "dotmac-deployment-control-engineering-standards",
+  "repository": {
+    "canonical_url": "https://github.com/michaelayoade/dotmac_deployment_control",
+    "default_branch": "main"
+  },
+  "governance_model": {
+    "kind": "pinned",
+    "canonical_url": "https://github.com/michaelayoade/dotmac_governance",
+    "revision": "4f80bd164137d34ff41f1866d7e748f2e664dee3",
+    "source": "docs/adr/0006-cross-repository-engineering-conformance.md",
+    "status": "accepted"
+  },
+  "enforcement_mode": "required",
+  "authorities": [
+    {
+      "authority_id": "deployment-target-lifecycle",
+      "subject": "What a licensed deployment SHOULD be running: the target, its opaque product/environment identity, and the versioned desired specification. One owner, because a second writer of desired state is a second answer to what a fleet is meant to run.",
+      "protected_resources": [
+        "deployment-target-desired-state"
+      ],
+      "decision_interface": "dotmac_deployment_control.service.set_desired_state",
+      "drift_test_paths": [
+        "tests/unit/test_deployment_control_intent.py",
+        "tests/test_deployment_control_platform_isolation.py"
+      ],
+      "owner_component": "deployment-control-service",
+      "owner_implementation": "src/dotmac_deployment_control/service.py",
+      "canonical_writer_paths": [
+        "src/dotmac_deployment_control/service.py",
+        "src/dotmac_deployment_control/models.py"
+      ],
+      "adapter_paths": []
+    },
+    {
+      "authority_id": "plan-immutability",
+      "subject": "Freezing the current desired state into an immutable plan and its SHA-256 digest, and refusing approval evidence whose content digest is not that digest. Changing the plan makes a prior approval stale rather than transferable, which is the whole of the binding.",
+      "protected_resources": [
+        "deployment-plan-snapshot",
+        "plan-approval-binding"
+      ],
+      "decision_interface": "dotmac_deployment_control.service.propose_plan",
+      "drift_test_paths": [
+        "tests/unit/test_deployment_control_intent.py"
+      ],
+      "owner_component": "deployment-control-service",
+      "owner_implementation": "src/dotmac_deployment_control/service.py",
+      "canonical_writer_paths": [
+        "src/dotmac_deployment_control/service.py",
+        "src/dotmac_deployment_control/models.py"
+      ],
+      "adapter_paths": []
+    },
+    {
+      "authority_id": "rollout-decision",
+      "subject": "Deciding to converge a target on an approved-or-exempt plan, opening attempts one at a time, and settling an attempt without letting a transient transport error become a deployment decision.",
+      "protected_resources": [
+        "rollout-decision",
+        "rollout-attempt-outcome"
+      ],
+      "decision_interface": "dotmac_deployment_control.service.request_rollout",
+      "drift_test_paths": [
+        "tests/unit/test_deployment_control_intent.py"
+      ],
+      "owner_component": "deployment-control-service",
+      "owner_implementation": "src/dotmac_deployment_control/service.py",
+      "canonical_writer_paths": [
+        "src/dotmac_deployment_control/service.py",
+        "src/dotmac_deployment_control/models.py"
+      ],
+      "adapter_paths": []
+    },
+    {
+      "authority_id": "observation-admission-verdict",
+      "subject": "Admitting or refusing one inbound observation, recording EVERY arrival as an append-only attempt including those that never resolve to an identity, and returning a replay's original verdict verbatim. The proven identity is kept in a different column from the reported claim, under a CHECK the database enforces.",
+      "protected_resources": [
+        "observation-admission-verdict",
+        "observation-receipt-canonicality"
+      ],
+      "decision_interface": "dotmac_deployment_control.service.record_observation",
+      "drift_test_paths": [
+        "tests/unit/test_deployment_control_observations.py",
+        "tests/test_deployment_control_platform_isolation.py"
+      ],
+      "owner_component": "deployment-control-service",
+      "owner_implementation": "src/dotmac_deployment_control/service.py",
+      "canonical_writer_paths": [
+        "src/dotmac_deployment_control/service.py",
+        "src/dotmac_deployment_control/models.py"
+      ],
+      "adapter_paths": []
+    }
+  ],
+  "typed_contract_surfaces": [
+    {
+      "surface_id": "provider-neutral-intent-and-facts",
+      "paths": [
+        "src/dotmac_deployment_control/ports.py",
+        "src/dotmac_deployment_control/facts.py"
+      ],
+      "require_public_annotations": true,
+      "forbid_any": false,
+      "require_immutable_records": true
+    }
+  ],
+  "module_declared_vocabularies": [],
+  "testing_kit_boundary": {
+    "test_roots": [
+      "tests"
+    ],
+    "kit_source_roots": [],
+    "conformance_probes": []
+  },
+  "external_connector_surface": {
+    "baselines": {
+      "outbound_transport": 0,
+      "webhook_surface": 0,
+      "provider_credential": 0,
+      "connector_task": 0,
+      "sync_checkpoint": 0,
+      "delivery_retry": 0
+    },
+    "conserved_exclusions": []
+  },
+  "deployment_artefact_surfaces": []
+}

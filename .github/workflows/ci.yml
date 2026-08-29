@@ -86,6 +86,18 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pipx install poetry==1.8.3
       - run: poetry install --no-interaction
+      # TEMPORARY, removed in this same PR once the lock is committed.
+      # Governance requires a committed `poetry.lock` to prove the dependency
+      # boundary, and resolving it needs the private index — which needs the
+      # read credential. Rather than pull that credential onto a workstation,
+      # the lock is produced HERE, where the credential already lives, and
+      # collected as an artifact. A lockfile is not a secret; the token never
+      # leaves the runner.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: poetry-lock
+          path: poetry.lock
+          if-no-files-found: error
       - run: poetry run pytest tests/unit tests/architecture
 
   type-check:
