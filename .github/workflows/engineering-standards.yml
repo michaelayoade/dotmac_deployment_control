@@ -1,0 +1,30 @@
+name: Engineering standards
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  standards:
+    name: Dotmac engineering standards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the evaluated product revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # AGENTS.md rule 16 — governance is pinned by EXACT COMMIT, and the
+      # workflow must execute that same accepted revision. A tag or a branch
+      # here would let the standards this repository is measured against change
+      # without a reviewed commit in this repository, so the pin below and the
+      # `governance_model.revision` in .dotmac/standards-profile.json move
+      # together or not at all.
+      - name: Enforce the accepted Dotmac engineering standards
+        uses: michaelayoade/dotmac_governance/.github/actions/standards-check@4f80bd164137d34ff41f1866d7e748f2e664dee3
+        with:
+          default-branch: ${{ github.event.repository.default_branch }}
