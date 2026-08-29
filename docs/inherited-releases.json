@@ -1,0 +1,47 @@
+{
+  "$comment": [
+    "Versions of this distribution published BEFORE the repository move, from",
+    "dotmac_starter_mt. Recorded here as coordinates; their TAGS are not, and",
+    "must never be, recreated in this repository.",
+    "",
+    "git filter-repo rewrote every commit on the way here, so a tag named",
+    "`dotmac-deployment-control-v0.1.0a2` created in this repository would point",
+    "at a tree that is NOT the one published under that name. One version would",
+    "name two commits and every pin against the original coordinate would become",
+    "unidentifiable. This is not hypothetical: the extraction's first filter-repo",
+    "pass carried 110 tags through the rewrite, including both of these, pointing",
+    "at rewritten SHAs. They were purged before the first push.",
+    "",
+    "`peeled_commit` is the COMMIT the annotated tag resolves to in the Starter,",
+    "not the tag object's own id. A reader with dotmac_starter_mt confirms every",
+    "row with `git rev-list -n1 <tag>`; the tag object id is recorded beside it so",
+    "the annotation itself is addressable too.",
+    "",
+    "These artifacts are immutable. Nothing in this repository may re-upload,",
+    "delete or yank them — dotmac_vendor_control_plane pins a2 by version AND by",
+    "wheel/sdist hash, so the bytes are load-bearing for a live consumer."
+  ],
+  "source_repository": "dotmac_starter_mt",
+  "source_canonical_url": "https://github.com/michaelayoade/dotmac_starter_mt",
+  "tags_remain_in_source": true,
+  "releases": [
+    {
+      "version": "0.1.0a1",
+      "tag": "dotmac-deployment-control-v0.1.0a1",
+      "tag_object": "c2700ce3bd3946da0df753aa5e423e08777a79ca",
+      "peeled_commit": "fead57bc93d6551450f5e6ae1c9de1296e27b0ae",
+      "release_run": null,
+      "release_run_note": "Not recorded in the dossier at extraction time. Absent rather than guessed: a run id invented to fill the field would be a coordinate that resolves to nothing.",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi"
+    },
+    {
+      "version": "0.1.0a2",
+      "tag": "dotmac-deployment-control-v0.1.0a2",
+      "tag_object": "8f3cc0dfcf69927bfc37c2300557bcd03c86c2d3",
+      "peeled_commit": "5c87272a632096850a80e5e9dc1f625a97c3e5d6",
+      "release_run": "32471956734",
+      "release_run_note": "Tagged only after the wheel was installed back from the private index and conformance-checked. a2 rather than a1 is the first admissible composition version: a1 published the stable-verdict contract but did not recover the losing first-arrival transaction after the receipt unique constraint selected a winner.",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi"
+    }
+  ]
+}
