@@ -120,6 +120,15 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
+          # The canary derives the app_admin/app_user/platform_api URLs from the
+          # superuser one by swapping the USER and dropping the password — it is
+          # testing what those roles may do, not how they authenticate. Against
+          # the image default (scram-sha-256) every one of those connections
+          # fails with `fe_sendauth: no password supplied`, which is an
+          # authentication failure standing in for the grant test that never
+          # ran. `trust` is safe here and only here: an ephemeral service
+          # container on the runner's own loopback, thrown away with the job.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 5s

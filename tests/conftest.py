@@ -33,6 +33,21 @@ import pytest
 
 REQUIRE_NO_SKIPS_ENV = "REQUIRE_NO_SKIPS"
 
+# `dotmac_kernel.db` builds its `DatabaseRuntime` at MODULE IMPORT time from
+# `settings.database_url`, and `record_observation` imports it lazily from
+# inside a handler — so the first test that admits an observation is what
+# triggers it. With no value configured the URL is unparseable and twelve tests
+# fail inside SQLAlchemy, a long way from the cause.
+#
+# The repository this code came from set `DATABASE_URL` in a root conftest that
+# could not travel here (it imports the assembly's TestClient). This is the one
+# line of it that this repository actually needs.
+#
+# Set at conftest IMPORT time, not in a fixture: the kernel caches the runtime
+# on first import, so a per-test fixture would be too late for whichever test
+# imported it first. `setdefault` so a lane that supplies a real URL wins.
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+
 
 def _skips_are_failures() -> bool:
     return os.getenv(REQUIRE_NO_SKIPS_ENV) == "1"
