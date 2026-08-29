@@ -186,7 +186,11 @@ jobs:
       # question it is actually asking.
       #
       # The wildcard database field is required, not laziness: each canary
-      # module creates a scratch database with a random name.
+      # module creates a scratch database with a RANDOM name. A
+      # database-specific entry would simply not match, libpq would fall back to
+      # prompting, and the connection would fail for authentication reasons
+      # inside a test asking about grants — the exact substitution removing
+      # `trust` was meant to eliminate, reintroduced through the credential file.
       - name: Give each role a real password to authenticate with
         run: |
           set -euo pipefail

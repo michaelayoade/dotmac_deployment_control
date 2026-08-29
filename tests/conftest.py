@@ -34,7 +34,6 @@ import pytest
 REQUIRE_NO_SKIPS_ENV = "REQUIRE_NO_SKIPS"
 
 
-
 def _skips_are_failures() -> bool:
     return os.getenv(REQUIRE_NO_SKIPS_ENV) == "1"
 
