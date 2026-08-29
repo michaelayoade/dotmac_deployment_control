@@ -107,6 +107,7 @@ import ast
 import re
 import tomllib
 from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any, Final
 
 #: The version marker a migrated dossier declares.  A dossier that carries typed
@@ -146,7 +147,7 @@ ATTESTATION_KINDS: Final = frozenset(
 #: SOURCE-LEVEL, ALWAYS. `composed_at` reads a tree; it can never say anything
 #: about a running system. "The consumer's assembly names this module at commit
 #: X" and "this is running in production" are different claims with different
-#: oracles, and only `PRODUCTION_PROVING_KINDS` can make the second. A dossier
+#: oracles, and only `proves_production_deployment` can make the second. A dossier
 #: whose adoption rests entirely on `composed_at` has proven composition on a
 #: branch and nothing more.
 AST_ASSERTION_KINDS: Final = frozenset({"composed_at"})
@@ -254,10 +255,60 @@ ATTESTATION_FIELDS: Final = frozenset(
         "observed",
         "observed_at",
         "observed_by",
+        "environment",
+        "outcome",
+        "deployment_run_id",
         "locator",
         "note",
     }
 )
+
+#: Which attestation kinds may carry the three claim-bearing fields above.  A
+#: `workflow_run` with an `environment` would be a CI run in a deployment's
+#: clothes.
+ATTESTATION_EXTRA_FIELDS: Final = {
+    "environment": frozenset({"deploy_run"}),
+    "outcome": frozenset({"deploy_run"}),
+    "deployment_run_id": frozenset({"live_observation"}),
+}
+
+#: Closed, for the reason G4 exists: if a caller could name its own production
+#: environment, "is this production?" would be self-asserted again.  Adding a
+#: name here is a reviewed schema change.
+PRODUCTION_ENVIRONMENTS: Final = frozenset({"production"})
+
+#: Not needed for correctness — anything outside `PRODUCTION_ENVIRONMENTS`
+#: already fails — but a rehearsal on a disposable host reading as a production
+#: deployment is the specific mistake that earns a specific message.
+NON_PRODUCTION_ENVIRONMENTS: Final = frozenset(
+    {
+        "staging",
+        "stage",
+        "rehearsal",
+        "disposable",
+        "test",
+        "testing",
+        "dev",
+        "development",
+        "ci",
+        "preview",
+        "sandbox",
+        "local",
+    }
+)
+
+#: A deploy either finished or it did not.  `in_progress` is listed so that it
+#: is a KNOWN non-terminal state rather than an unknown string, because a run
+#: that has not finished is the one most likely to be cited early.
+DEPLOY_OUTCOMES: Final = frozenset(
+    {"succeeded", "failed", "cancelled", "timed_out", "in_progress"}
+)
+SUCCESSFUL_DEPLOY_OUTCOME: Final = "succeeded"
+
+#: How old an observation may be and still read as "currently running".  A
+#: default, not a law: `proves_currently_running` takes it as a parameter,
+#: because currency is a property of the READ and never of the stored row.
+DEFAULT_OBSERVATION_MAX_AGE_DAYS: Final = 30
 AST_ASSERTION_FIELDS: Final = frozenset(
     {
         "kind",
@@ -706,6 +757,47 @@ def _attestation_problems(where: str, row: Mapping[str, Any], kind: str) -> list
             _problem(where, f"{kind} must record `observed_by` for the same reason")
         )
 
+    # The three claim-bearing fields are OPTIONAL in shape and decisive in
+    # claim.  Deliberate: five `deploy_run` rows already in the tree carry none
+    # of them, and tightening the shape would fail dossiers for rows nobody uses
+    # to claim production.  Absence is handled where it matters instead —
+    # `proves_production_deployment` and `proves_currently_running` REFUSE a row
+    # that omits them, so an absent field reads as "cannot support the claim"
+    # rather than as consent.
+    for field_name, owners in sorted(ATTESTATION_EXTRA_FIELDS.items()):
+        if field_name in row and kind not in owners:
+            problems.append(
+                _problem(
+                    where,
+                    f"{kind} must not carry {field_name!r}; it belongs to "
+                    f"{sorted(owners)}, and a run wearing another kind's field "
+                    "is a claim no procedure checks",
+                )
+            )
+
+    if "environment" in row:
+        environment = row.get("environment")
+        if not isinstance(environment, str) or not environment.strip():
+            problems.append(
+                _problem(where, f"{kind}.environment must be a non-empty string")
+            )
+
+    if "outcome" in row and row.get("outcome") not in DEPLOY_OUTCOMES:
+        problems.append(
+            _problem(
+                where,
+                f"{kind}.outcome {row.get('outcome')!r} is unknown; a deploy "
+                f"either finished or it did not. Known: {sorted(DEPLOY_OUTCOMES)}",
+            )
+        )
+
+    if "deployment_run_id" in row:
+        reference = row.get("deployment_run_id")
+        if not isinstance(reference, str) or not reference.strip():
+            problems.append(
+                _problem(where, f"{kind}.deployment_run_id must be a non-empty string")
+            )
+
     return problems
 
 
@@ -1073,41 +1165,168 @@ ADOPTION_PROVING_KINDS: Final = frozenset(
     {"adopted", "live_observation", "composed_at"}
 )
 
-#: The SECOND axis, and it is orthogonal to the first — which is the defect this
-#: constant exists to close rather than describe.
+#: The SECOND axis, and it is orthogonal to the first — which is the defect
+#: this constant exists to close rather than describe.
 #:
 #: `INSTALLATION_KINDS` / `ADOPTION_PROVING_KINDS` answers "was this COMPOSED or
 #: merely INSTALLED".  It says nothing about whether anything RAN, and the two
 #: questions cut across each other: `adopted` and `composed_at` prove
 #: composition by reading a SOURCE TREE, while `live_observation` proves it by
-#: watching a RUNNING SYSTEM.  A reader asking "is this in production?" and
-#: reaching for `ADOPTION_PROVING_KINDS` gets a confident wrong answer.
+#: watching a RUNNING SYSTEM.
 #:
-#: Only these two can speak about a running production system.  `workflow_run`
-#: is CI exercising a tree, which is not that tree running anything for anyone;
-#: `image_digest` is an artifact that was BUILT, and a built image is not a
-#: deployed one.  Both are excluded deliberately.
+#: These are the only two kinds that CAN bear on a running system.  The name
+#: says "claim", not "proving", and the distinction is the whole of the second
+#: correction: an earlier draft called this `PRODUCTION_PROVING_KINDS`, which
+#: was false of both members.  A `deploy_run` does not say WHICH environment,
+#: does not say it SUCCEEDED, and does not bind to WHAT was deployed; a
+#: `live_observation` is a statement about a moment and says nothing about now.
+#: Membership here means the kind is ELIGIBLE to support a runtime claim.
+#: Whether it actually does is decided by the three predicates below, on the
+#: row's contents.  Rule 39 applies to a constant exactly as it does to a step:
+#: it is renamed if it does not name the property it holds.
 #:
-#: This is a subset of `ATTESTATION_KINDS` by construction and a test asserts
-#: it: a production claim cannot be a fact about a file, because no file in any
-#: tree can state that a system is running.
-PRODUCTION_PROVING_KINDS: Final = frozenset({"deploy_run", "live_observation"})
+#: `workflow_run` is CI exercising a tree, which is not that tree running
+#: anything for anyone.  `image_digest` is an artifact that was BUILT, and a
+#: built image is not a deployed one.  Both are excluded, and the mutations
+#: proving they leave a dossier source-only are the two the first version of
+#: this file could not see.
+RUNTIME_CLAIM_KINDS: Final = frozenset({"deploy_run", "live_observation"})
 
 
-def rests_on_source_alone(rows: object) -> bool:
-    """True when every row is a fact about a source tree.
-
-    The question `ADOPTION_PROVING_KINDS` cannot answer.  A dossier for which
-    this is true may legitimately be `adopted` — composition IS adoption — but
-    it has no evidence that anything ran, and must not be read or summarised as
-    though it had.
-    """
-    kinds = {
+def _kinds_of(rows: object) -> set[object]:
+    return {
         row.get("kind")
         for row in (rows if isinstance(rows, list) else [])
         if isinstance(row, Mapping)
     }
-    return bool(kinds) and not (kinds & ATTESTATION_KINDS)
+
+
+def rests_on_source_alone(rows: object) -> bool:
+    """True when every row is a fact read out of a source tree.
+
+    Literal, and narrower than `has_no_runtime_evidence`: a `workflow_run` is
+    not a tree read, so it makes this False while leaving the runtime question
+    untouched.  Two predicates because they answer two questions; collapsing
+    them is what produced the defect this section corrects.
+    """
+    kinds = _kinds_of(rows)
+    return bool(kinds) and kinds <= TREE_KINDS
+
+
+def has_no_runtime_evidence(rows: object) -> bool:
+    """True when no row is even ELIGIBLE to speak about a running system.
+
+    This is the guardrail a dossier asserts to say "composition only, nothing
+    ran".  The previous implementation tested `kinds & ATTESTATION_KINDS`, which
+    contradicted the rationale shipped beside it: adding a `workflow_run` or an
+    `image_digest` row flipped it to False — asserting runtime evidence exists —
+    while the same file argued neither proves a system ran.  The sensitivity
+    proof planted only `live_observation`, so it could not see it.
+    """
+    return not (_kinds_of(rows) & RUNTIME_CLAIM_KINDS)
+
+
+# ── Three claims, not two ───────────────────────────────────────────────────
+#
+# Source composition, historical production deployment, and currently running
+# are SEPARATE claims with separate failure modes, and a vocabulary that
+# collapses any two of them will let one be read as another.
+#
+#   * A historical production deploy is not evidence that anything runs now.
+#   * A live observation unbound to a deployment receipt cannot say the running
+#     thing is the thing that was authorised.
+#
+# Each predicate below fails closed on a MISSING field: an absent `environment`
+# is not "probably production", an absent `outcome` is not "probably succeeded",
+# and an absent `deployment_run_id` is not "probably the right one".
+
+
+def proves_source_composition(rows: object) -> bool:
+    """Claim 1. The consumer's own tree composes the capability."""
+    return bool(_kinds_of(rows) & (ADOPTION_PROVING_KINDS & TREE_KINDS))
+
+
+def production_deployment_receipts(rows: object) -> list[Mapping[str, Any]]:
+    """Claim 2's admissible rows: environment-bound, terminal-success deploys.
+
+    Returned rather than counted so `proves_currently_running` can bind an
+    observation to one, and so a caller can report WHICH receipt it relied on.
+    """
+    receipts: list[Mapping[str, Any]] = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, Mapping) or row.get("kind") != "deploy_run":
+            continue
+        environment = row.get("environment")
+        if not isinstance(environment, str):
+            continue
+        if environment.strip().lower() not in PRODUCTION_ENVIRONMENTS:
+            continue
+        if row.get("outcome") != SUCCESSFUL_DEPLOY_OUTCOME:
+            continue
+        if not isinstance(row.get("run_id"), str) or not str(row["run_id"]).strip():
+            continue
+        if not isinstance(row.get("commit"), str) or not IMMUTABLE_COMMIT.fullmatch(
+            str(row["commit"])
+        ):
+            continue
+        receipts.append(row)
+    return receipts
+
+
+def proves_production_deployment(rows: object) -> bool:
+    """Claim 2. This was deployed to production, once, successfully.
+
+    Requires all four together, because each alone is satisfiable by something
+    that is not a production deployment: a named production `environment` (a
+    staging or disposable run is a real deploy of the wrong thing), a terminal
+    `succeeded` `outcome` (a failed or in-progress run is a deploy that did not
+    happen), a `run_id` (the oracle coordinate), and an immutable `commit` (what
+    was deployed).  Says nothing about now.
+    """
+    return bool(production_deployment_receipts(rows))
+
+
+def proves_currently_running(
+    rows: object,
+    *,
+    as_of: date,
+    max_age_days: int = DEFAULT_OBSERVATION_MAX_AGE_DAYS,
+) -> bool:
+    """Claim 3. Something is running now, and it is what was deployed.
+
+    `as_of` is required and has no default.  Currency cannot be a property of a
+    stored row — an observation is a statement about a moment, so the answer
+    depends on when the question is asked, and a function that hid that behind
+    `date.today()` would return different answers to the same inputs.
+
+    Two bindings, because either alone is insufficient: FRESHNESS, or the row is
+    a historical fact being rendered as a present-tense one; and a
+    `deployment_run_id` resolving to a production receipt in the same dossier,
+    or the observation cannot say the running thing is the authorised thing.
+    """
+    receipts = {
+        str(receipt["run_id"]) for receipt in production_deployment_receipts(rows)
+    }
+    if not receipts:
+        return False
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, Mapping) or row.get("kind") != "live_observation":
+            continue
+        reference = row.get("deployment_run_id")
+        if not isinstance(reference, str) or reference.strip() not in receipts:
+            continue
+        observed_at = row.get("observed_at")
+        if not isinstance(observed_at, str) or not ISO_DAY.fullmatch(observed_at):
+            continue
+        try:
+            seen = date.fromisoformat(observed_at)
+        except ValueError:  # pragma: no cover - guarded by ISO_DAY above
+            continue
+        if seen > as_of:
+            continue
+        if (as_of - seen).days <= max_age_days:
+            return True
+    return False
 
 
 #: States in which an `adopted` ROW is admissible although the dossier no
