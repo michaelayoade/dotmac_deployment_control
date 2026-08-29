@@ -149,12 +149,31 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pipx install poetry==1.8.3
       - run: poetry install --no-interaction
-      - name: Create the three roles the canary grants against
+      # PostgreSQL roles are CLUSTER-wide, not per-database, and that is the
+      # whole of why this step needs more than three CREATE ROLEs.
+      #
+      # The canary builds a fresh scratch database and migrates it AS app_admin.
+      # The kernel lineage creates `outbox_dispatcher` behind an IF NOT EXISTS.
+      # In the repository this test came from that guard always found the role
+      # already present, because a superuser had run the same lineage against
+      # the shared test server earlier and the role outlived the database. Here
+      # nothing has ever run it, so the guard falls through to CREATE ROLE and
+      # app_admin is refused: "Only roles with the CREATEROLE attribute may
+      # create roles."
+      #
+      # So app_admin is created the way the kernel's own `0001` creates it —
+      # LOGIN BYPASSRLS — plus CREATEROLE, because here it is the role that
+      # actually runs the lineage rather than one the lineage produced. In
+      # PostgreSQL 16 a CREATEROLE role may only grant attributes it holds
+      # itself, which is why BYPASSRLS is not optional for it.
+      - name: Create the cluster roles the composed lineage expects
         env:
           PGPASSWORD: postgres
         run: |
           set -euo pipefail
-          for role in app_admin app_user platform_api; do
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE app_admin LOGIN BYPASSRLS CREATEROLE PASSWORD 'app_admin'"
+          for role in app_user platform_api; do
             psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
               -c "CREATE ROLE ${role} LOGIN PASSWORD '${role}'"
           done
