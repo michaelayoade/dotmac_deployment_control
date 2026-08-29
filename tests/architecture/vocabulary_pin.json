@@ -1,0 +1,18 @@
+{
+  "$comment": [
+    "AdoptionEvidenceV1 lives in dotmac_starter_mt and is COPIED here, because",
+    "the dossier gate this repository must run cannot work without it. Rule 24:",
+    "copying is a one-time extraction, never a permanent fork or a second",
+    "writer. Two copies with no control is how they silently disagree — and the",
+    "thing that would disagree here is the vocabulary that decides whether",
+    "adoption claims are true, so the drift would be self-concealing.",
+    "",
+    "The pin names a COMMIT, never a branch. A moving ref would let the Starter",
+    "change underneath the check and the check would keep passing."
+  ],
+  "source_repository": "dotmac_starter_mt",
+  "source_commit": "761b6c2e98660ef6fbbb8d168d2d5cf36ab41cad",
+  "source_path": "tests/architecture/adoption_evidence.py",
+  "blob_sha1": "811101ca679b2758b4a0994ccf5b79d1a599b9fb",
+  "pinned_on": "2026-08-29"
+}

@@ -61,6 +61,12 @@ mypy = "^1.11"
 # The platform canary talks to a real PostgreSQL. psycopg is a DEV dependency
 # and must never become a runtime one: this module performs no I/O.
 psycopg = { version = "^3.2", extras = ["binary"] }
+# DEV ONLY, and the distinction is the contract. A module's migration is
+# executed by the HOST's Alembic — the module declares the lineage and never
+# runs it — so `alembic` must not become a runtime dependency of this package.
+# It is here because the canary applies the composed lineage to a real database
+# and because mypy needs the `alembic.op` stubs to check the migration.
+alembic = "^1.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
