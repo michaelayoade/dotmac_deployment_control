@@ -278,6 +278,18 @@ UNMONITORED_BY_THIS_GATE: Final = {
         "it cannot run on a shallow checkout. NOT BUILT; the append-only "
         "discipline is stated review discipline, not a guard."
     ),
+    "composition_claim_semantics": (
+        "Whether an `adopted` row's `field`/`expected` really DESCRIBES "
+        "composition, and whether a `live_observation`'s `subject` really "
+        "names this capability. The kind split ('a pin is installation, not "
+        "adoption') is checked; the SEMANTICS of the chosen field are not. "
+        '`kind = "adopted"` on a row addressing a second dependency entry '
+        "would pass, because deciding that `deploy/product.toml`'s `schema` "
+        "means composition while `pyproject.toml`'s version does not needs a "
+        "reader, not a matcher. Stated review discipline, NOT enforced — a "
+        "regex over field names would be a prose scanner wearing a schema, "
+        "and `dotmac_governance` ADR 0013 already rejected that shape."
+    ),
     "consumer_cross_check": (
         "Whether `contract_consumers` and the set of `adopted` repositories "
         "agree. Deliberately NOT enforced: `contract_consumers` is already "
@@ -762,6 +774,180 @@ def evidence_problems(
         for path in paths if isinstance(paths, list) else []:
             if isinstance(path, str):
                 pointed.add((repository, path, field))
+
+    return problems
+
+
+# ── A pin is installation, not adoption ─────────────────────────────────────
+#
+# AdoptionEvidenceV1 typed the COORDINATE and left the CLAIM untyped.  A
+# dossier's `status` could say `adopted` while every row beneath it recorded
+# only that some consumer's dependency file names the distribution — and nine
+# of the ten dossiers migrated in #496 came out exactly that way: `pinned_at`
+# and no `adopted` row.  Nothing was red, because the status coupling and the
+# row vocabulary were checked by two functions that never compared notes.
+#
+# The ruling that closes it:
+#
+#     A pin is installation, not adoption.  An exact pin means INSTALLED.
+#     Lineage absent + storage absent + writer unchanged means NOT COMPOSED,
+#     and therefore NOT ADOPTED.
+#
+# `dotmac-tax` is the case it was ruled on: ERP pins `dotmac-tax 0.1.0a3` at an
+# exact commit, and ERP's own
+# `app/services/finance/tax/adoption/composition.py` declares the module NOT
+# COMPOSED — the `tx` lineage is absent from `alembic.ini`, `mod_tax` exists in
+# no ERP database, and no writer is repointed.  Every one of those facts is
+# true at once; the pin is simply not the fact that was being claimed.
+#
+# So each kind is classified by what it can prove ON ITS OWN.  The
+# classification is TOTAL: a kind added later without being placed on one side
+# would count as neither, and the guard would weaken by omission rather than by
+# decision.  `test_every_evidence_kind_is_classified_by_the_adoption_split`
+# fails in that case.
+
+#: Rows that prove a consumer INSTALLED, SHIPPED or BOUND the distribution.
+#: Necessary for adoption and never sufficient for it.
+#:
+#: `deploy_run` and `image_digest` sit here for a reason visible in this
+#: repository's own data rather than by argument: run `32022599873` and digest
+#: `sha256:56ec5531…` are each cited by THREE dossiers (`dotmac-approvals`,
+#: `dotmac-entitlement-allocation`, `dotmac-release-catalog`), and run
+#: `32485479666` with digest `sha256:45715e42…` by two more.  One observation
+#: that is equally true of several distributions cannot say which capability
+#: was composed; it says an image containing all of them shipped, which is
+#: installation at fleet scale.  `workflow_run` is weaker still — CI exercising
+#: a tree is not that tree running anything in production.
+INSTALLATION_KINDS: Final = frozenset(
+    {"pinned_at", "contract_binding", "workflow_run", "deploy_run", "image_digest"}
+)
+
+#: Rows that can prove COMPOSITION or CUTOVER, which is what adoption means.
+#:
+#: `adopted` — an assertion: one structured field of one file in the consumer's
+#: tree, at an immutable commit, declaring that the capability is composed or
+#: that the local writer moved.  Re-derivable forever.
+#:
+#: `live_observation` — an attestation, and the weaker of the two, but it is
+#: the one that carries a per-capability `subject`: `mod_approvals`,
+#: `mod_ealloc`, `mod_relcat`, a launcher exercised in a production pilot.  A
+#: subject naming THIS capability inside the consumer's running system is a
+#: statement about composition that a shared image digest cannot make.  It
+#: decays, which is why it is dated and signed, and why it is never rendered as
+#: a statement about today.
+ADOPTION_PROVING_KINDS: Final = frozenset({"adopted", "live_observation"})
+
+#: States in which an `adopted` ROW is admissible although the dossier no
+#: longer claims a live adoption — a "was adopted, since superseded" state.
+#:
+#: DELIBERATELY EMPTY, and the emptiness is the claim.  The dossier vocabulary
+#: (`audit-complete`, `adopted`, `reuse-proven`) has no such member today, so
+#: an `adopted` row under a non-adoption status is unconditionally a
+#: contradiction: either the row is wrong or the status is.  `PRE_RULE_DEBT`'s
+#: `historical-pre-rule` is NOT such a state — ADR-0018 requires
+#: "grandfathered" to stay distinguishable from "reviewed and correct", and
+#: reusing a debt marker as a superseded-adoption state would collapse exactly
+#: that distinction.  The parameter exists so that adding such a state later is
+#: a schema decision with a reviewer, not a quiet loosening of this refusal;
+#: `test_a_historical_state_admits_the_row_it_is_defined_for` proves the branch
+#: is live rather than dead code.
+HISTORICAL_ADOPTION_STATES: Final = frozenset()
+
+
+def rests_on_installation_alone(
+    *, status: object, rows: object, adoption_states: frozenset[str]
+) -> bool:
+    """True when a status claims composition and no row can prove one.
+
+    Exposed separately from the refusal so a caller can run the ratchet over
+    the whole tree (which entries are still in this shape?) without catching a
+    refusal it is about to suppress.  One predicate, two readers — a second
+    hand-rolled copy of this test is how a backlog and its guard drift apart.
+    """
+    if not isinstance(status, str) or status not in adoption_states:
+        return False
+    kinds = {
+        row.get("kind")
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, Mapping)
+    }
+    return not (kinds & ADOPTION_PROVING_KINDS)
+
+
+def adoption_state_problems(
+    *,
+    status: object,
+    rows: object,
+    adoption_states: frozenset[str],
+    historical_states: frozenset[str] = HISTORICAL_ADOPTION_STATES,
+    installation_only_is_declared_debt: bool = False,
+    where: str = "",
+) -> list[str]:
+    """The two-directional coupling between a dossier's `status` and its rows.
+
+    Kept out of `evidence_problems` on purpose.  That function answers "is this
+    row well formed"; this one answers "does the claim above match the rows
+    below", and the caller supplies its own status vocabulary rather than this
+    module importing one.  A shape check and a claim check must stay separable,
+    or a dossier can be made green by weakening the wrong half.
+
+    Both directions, because the previous model only ever ran one of them:
+
+    1.  A status that asserts a product RAN the capability, with nothing but
+        installation rows beneath it.  This is `dotmac-tax` and it is the whole
+        point.
+    2.  An `adopted` ROW under a status that does not claim adoption.  A row is
+        the stronger statement of the two, so the dossier is contradicting
+        itself in the direction that under-reports the fleet — the same failure
+        ADR-0006's 2026-08-12 amendment calls "a false statement about the
+        fleet rather than a missing one".
+
+    `installation_only_is_declared_debt` suppresses direction 1 ONLY, for a
+    scope the caller's exact, two-directional backlog already names.  It never
+    suppresses direction 2, and it is not an exemption in ADR-0018's sense:
+    the premise ("this scope is in the map") is machine-checked in the same
+    change, and the map fails when it grows OR shrinks without being edited.
+
+    Nothing here is an input to a permission.  It refuses a self-contradictory
+    file; it authorises nothing.
+    """
+    problems: list[str] = []
+    kinds = {
+        row.get("kind")
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, Mapping)
+    }
+
+    if isinstance(status, str) and status in adoption_states:
+        if not (kinds & ADOPTION_PROVING_KINDS) and not (
+            installation_only_is_declared_debt
+        ):
+            present = sorted(k for k in kinds if isinstance(k, str))
+            problems.append(
+                _problem(
+                    where,
+                    f"status {status!r} claims a product composed this "
+                    f"capability, but the evidence is {present or 'empty'} — "
+                    f"only {sorted(INSTALLATION_KINDS)} rows, which record what "
+                    "a consumer INSTALLED, SHIPPED or BOUND. A pin is "
+                    "installation, not adoption: lineage absent, storage absent "
+                    "and writer unchanged are all compatible with an exact pin. "
+                    f"Cite an {sorted(ADOPTION_PROVING_KINDS)} row, or claim the "
+                    "state the evidence supports",
+                )
+            )
+    elif isinstance(status, str) and status not in historical_states:
+        if "adopted" in kinds:
+            problems.append(
+                _problem(
+                    where,
+                    f"an `adopted` row sits under status {status!r}, which does "
+                    "not claim adoption. The row is the stronger statement, so "
+                    "one of the two is wrong; the schema defines no "
+                    "historical/superseded state that would admit both "
+                    f"(historical states: {sorted(historical_states) or 'none'})",
+                )
+            )
 
     return problems
 
