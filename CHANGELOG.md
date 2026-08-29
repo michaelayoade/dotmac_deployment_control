@@ -5,6 +5,34 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a3 — UNRELEASED
+
+**Not published.** The declared version is a3 rather than a2 because the package
+source changed after a2 was published, and a version that names two different
+contents is the hazard, not the bump. a2's artifact in the index is untouched
+and stays the authoritative a2 forever.
+
+### Fixed
+
+- `record_observation` imported `conflict_savepoint` from `dotmac_kernel.db` —
+  the reference assembly's CONFIGURED instance, which builds a
+  `DatabaseRuntime` at module import time. Every operation in this package
+  takes a caller-owned `Session` and opens nothing, so importing the module
+  that makes a connection was a boundary violation whether or not the runtime
+  was ever used. It now imports the engine-free `dotmac_kernel.transactions`,
+  which re-exports the same function and constructs nothing.
+
+  The import was also LAZY, inside the handler, which is how the violation
+  stayed invisible: absent from the file's imports, absent when the package was
+  imported, and surfacing only as `ArgumentError: Could not parse SQLAlchemy
+  URL` deep inside SQLAlchemy when an observation was finally admitted. It is
+  now a module-level import, so the boundary is a fact static analysis can
+  read.
+
+  A consumer sees one behavioural difference: admitting an observation no
+  longer causes the assembly's database runtime to be constructed as a side
+  effect.
+
 ## 0.1.0a2 — 2026-08-21
 
 Published, installed back from the private index, conformance-checked and

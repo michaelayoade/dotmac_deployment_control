@@ -59,6 +59,20 @@ from uuid import UUID
 
 from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.messaging import enqueue_platform_event, process_once_platform
+
+# `transactions`, NOT `db`. Both re-export the same function, and the difference
+# is the import graph: `dotmac_kernel.db` is the reference assembly's CONFIGURED
+# instance and builds a `DatabaseRuntime` at module import time. This module
+# never owns a connection — every operation takes a caller-owned `Session` — so
+# importing the module that makes one is a boundary violation regardless of
+# whether the runtime is ever used.
+#
+# It was previously imported lazily inside the handler, which hid the violation
+# from static analysis and made the failure surface deep inside SQLAlchemy's
+# `make_url`, far from the cause. A module-level import of the engine-free
+# surface is the honest declaration, and `test_no_eager_database_runtime.py`
+# holds it there.
+from dotmac_kernel.transactions import conflict_savepoint
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1502,10 +1516,6 @@ def record_observation(
         # one winner without aborting the caller's transaction; the loser can
         # then retain its attempt and return the winner's stable verdict.
         #
-        # Imported at use-time so importing this independently releasable module
-        # does not construct the kernel's configured database runtime.
-        from dotmac_kernel.db import conflict_savepoint
-
         try:
             with conflict_savepoint(session):
                 receipt = ObservationReceipt(

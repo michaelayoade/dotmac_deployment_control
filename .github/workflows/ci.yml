@@ -120,15 +120,6 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: postgres
-          # The canary derives the app_admin/app_user/platform_api URLs from the
-          # superuser one by swapping the USER and dropping the password — it is
-          # testing what those roles may do, not how they authenticate. Against
-          # the image default (scram-sha-256) every one of those connections
-          # fails with `fe_sendauth: no password supplied`, which is an
-          # authentication failure standing in for the grant test that never
-          # ran. `trust` is safe here and only here: an ephemeral service
-          # container on the runner's own loopback, thrown away with the job.
-          POSTGRES_HOST_AUTH_METHOD: trust
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready --health-interval 5s
@@ -177,4 +168,37 @@ jobs:
             psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
               -c "CREATE ROLE ${role} LOGIN PASSWORD '${role}'"
           done
+
+      # Explicit credentials for every role, NOT `POSTGRES_HOST_AUTH_METHOD=trust`.
+      #
+      # The canary builds each role's URL from the superuser one by swapping the
+      # USER and dropping the password, so libpq must find the password
+      # somewhere else. `.pgpass` is that somewhere, and choosing it over `trust`
+      # is deliberate.
+      #
+      # `trust` would make these connections succeed by removing authentication
+      # from the picture entirely — and this lane exists because 92 errors were
+      # once authentication failures STANDING IN for a grant test that never
+      # ran. Deleting authentication does not remove that substitution, it makes
+      # the reverse one possible: a future auth regression would leave the grant
+      # assertions passing and say nothing. With real passwords, a connection
+      # that succeeds has PROVEN authentication before the test reaches the
+      # question it is actually asking.
+      #
+      # The wildcard database field is required, not laziness: each canary
+      # module creates a scratch database with a RANDOM name. A
+      # database-specific entry would simply not match, libpq would fall back to
+      # prompting, and the connection would fail for authentication reasons
+      # inside a test asking about grants — the exact substitution removing
+      # `trust` was meant to eliminate, reintroduced through the credential file.
+      - name: Give each role a real password to authenticate with
+        run: |
+          set -euo pipefail
+          umask 077
+          {
+            echo "localhost:5432:*:app_admin:app_admin"
+            echo "localhost:5432:*:app_user:app_user"
+            echo "localhost:5432:*:platform_api:platform_api"
+          } > "$HOME/.pgpass"
+          chmod 600 "$HOME/.pgpass"
       - run: poetry run pytest tests/test_deployment_control_platform_isolation.py -rs
