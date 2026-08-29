@@ -1,7 +1,7 @@
 schema_version = 1
 package = "dotmac-deployment-control"
 classification = "optional-module"
-status = "audit-complete"
+status = "adopted"
 source_mode = "greenfield-after-inventory"
 owner = "Desired deployment intent for licensed Dotmac application deployments: the target and its identity credentials, the immutable approved plan, the rollout decision and its attempts, the authenticated acknowledgements a target reports, and the drift between what was rolled out and what is observed"
 contract = "Register a deployment target with an opaque subject, product, environment and stable target reference; declare a versioned desired specification with opaque release, licence and brand-profile references; enrol a target's own PUBLIC verification key as PENDING and admit it only after the caller proves possession through the kernel (ADR-0007); freeze the current desired state into an immutable plan with a SHA-256 digest, superseding any earlier undecided plan; require ApprovalEvidence whose content_digest equals the plan digest for a plan declared sensitive; request a rollout only against an approved-or-exempt plan and an active target; open attempts one at a time and return a provider-neutral DeliveryIntent carrying WHAT to deploy and never HOW; settle an attempt without failing the rollout, so a transient transport error is not a deployment decision; distinguish timed-out from failed and manual-repair from cancelled; record EVERY inbound observation as an append-only attempt including the ones that never resolve to an identity, admit only valid-and-eligible-and-matching arrivals, return a replay's ORIGINAL verdict verbatim, and keep the proven identity in a different column from the reported claim under a CHECK; and compute drift on demand against the plan that was actually rolled out. NOT provider credentials, provider clients, webhook verification, connector retry or checkpoint state, the release catalogue, licence authority, brand definition, application-domain migrations, billing/entitlement/support decisions, or general infrastructure observability."
@@ -44,24 +44,101 @@ preserved_tests = [
   "dotmac_starter_mt:tests/architecture/test_deployment_control_module.py",
   "dotmac_starter_mt:tests/test_deployment_control_platform_isolation.py",
 ]
-contract_consumers = []
-candidate_consumers = ["dotmac_vendor_control_plane"]
-adoption_evidence = []
+# One consumer, so the state is `adopted` and not a choice: `_state_for` is
+# exact in both directions, and a package with a live consumer that still claims
+# "nothing has adopted it" makes a false statement about the fleet.
+contract_consumers = ["dotmac_vendor_control_plane"]
+# Empty deliberately. A candidate is a product that does NOT have this contract
+# yet; Vendor was the only one named and it now holds the contract, so leaving
+# it in both lists would assert two contradictory things about one product. No
+# second product is queued, and inventing one to keep this list non-empty would
+# be the "package built for nobody" failure wearing a name.
+candidate_consumers = []
+adoption_evidence_schema = "v1"
 composition_boundary = "ADR-0024 / hard rule 28: the module emits a provider-neutral DeliveryIntent and the Integrator owns transport, provider clients, credentials, webhook verification, connector retry and checkpoint state. There is no HTTP library, no provider client and no endpoint column anywhere in the package. ADR-0007: signature and possession verification are the KERNEL's; the caller runs verify_applied_state / verify_possession and passes the result in, so there is no second verifier that could disagree with the first. ADR-0026 s6: approvals decide approval and this module performs its own transition; ApprovalEvidence arrives as a VALUE through the assembly and no sibling is imported. ADR-0006 D1: no foreign key leaves mod_deploy; release_ref, licence_ref and brand_profile_ref are opaque and unconstrained. ADR-0023 / ADR-0057 s7: platform plane only, for a reason close to tautological - a module that decides what a FLEET should run cannot live inside one of the deployments it decides about. Ruling A4: this module holds no health status; whether a deployment is UP belongs to Dotmac Observability, and keeping them apart is what makes `no mutating consumer of health` a checkable dependency direction."
 inventory_evidence = [
   "docs/inventories/vendor-cp-gap-sources.md",
   "docs/adr/0057-the-vendor-control-plane-composes-existing-owners.md",
 ]
 source_mode_note = "greenfield-after-inventory, not product-first, and the distinction is the whole point of rule 24: a qualifying source must be PRODUCTION-USED. The Vendor V6 slices named in source_paths are a tested REFERENCE - never merged, never deployed, and their migration slots since reused by different work on Vendor main - so they cannot qualify however good they are, and the receipt half of this module is a port of a reference rather than an extraction of a production implementation. The plan/rollout half has no source at all, evidenced across every branch, stash, dangling object and reflog of the Vendor repository plus seven others. Both halves are therefore greenfield under rule 24, taken after the inventory that proves it."
-first_cutover = "Not started, and this module's path to adoption is different from its two siblings'. There is nothing in Vendor production to cut over FROM: the V6 slices were never merged and never deployed, and their migration slots v011/v012 were subsequently reused by different work on Vendor main - which is positive evidence the line was abandoned rather than merely pending. So the first cutover is a greenfield composition rather than an authority transfer: Vendor exact-pins the module, installs the dc lineage, writes the assembly adapter, and registers its existing deployment targets. No legacy table is drained because none exists."
+first_cutover = "COMPLETE, and this dossier previously said the opposite. dotmac_vendor_control_plane composed the module on 2026-08-21 in merge 69a877d6f0c6886e300f5433020f7f25421e111c ('Compose Deployment Control, and cut target authority over to it', #71): it exact-pins 0.1.0a2 from the private index with the wheel and sdist hashes locked, registers the manifest in STATEFUL_MODULES, composes the dc lineage into composed_version_locations, and v017 sealed the independent deployment-target registration path so vendor_cp.deployment.adapter is the only seam. It was a greenfield composition rather than an authority transfer for plans, rollouts, credentials and observations - no revision in this lineage ever created one - and an authority cutover for the deployment-TARGET half alone. No legacy table was drained because none existed. WHAT IS NOT CLAIMED: that Vendor PRODUCTION runs this. Composition is a fact about Vendor's main branch, established by parsing its assembly and migration modules at that commit. A production claim needs a deployment_run oracle with immutable coordinates (Governance ADR 0013) and no such oracle exists, so none is cited."
 shadow_and_drift = "No shadow phase and no data-bearing migration are owed, and the reason is measurable rather than convenient: the capability has never run anywhere, so there is no second writer to reconcile against, no parallel evaluator to compare, and no rows to preserve. What IS owed at composition is the pair of proofs the source design earned and this port must not lose. (1) The claim/proof separation must hold against RAW SQL, not only against the service: the two CHECK constraints are declared on both the model and the migration, and the Postgres canary proves an insert claiming an authenticated identity without a valid signature is refused. (2) The stable-verdict rule must hold under concurrency: two simultaneous arrivals under one idempotency key must produce one canonical receipt and one loser pointing at it, never two receipts or a re-decided verdict. The V6 source shipped a concurrency rehearsal for exactly this and it is preserved as a named obligation on the Vendor composition, because a single-process test cannot establish it."
 local_copy_retirement = "Nothing to retire in any product: the V6 slices were never merged. The obligation runs the other way - the branches feat/v6-slice1-deployment-credentials and feat/v6-slice2-applied-state-admission must be DELETED from dotmac_vendor_control_plane once this module is composed, so that no future reader mistakes an abandoned line for a second implementation of a capability that now has an owner. Their migration slots are already reused on main, so leaving them is also a live rebase hazard."
-next_action = "dotmac-deployment-control 0.1.0a2 is published, installed back from the private index, conformance-checked and tagged from exact protected-main SHA 5c87272a by release run 32471956734. a2 is the first admissible composition version: a1 published the stable-verdict contract but did not recover the losing first-arrival transaction after the receipt unique constraint selected a winner, so Vendor must exact-pin a2 rather than a1. Publication moved no authority. Still owed, unchanged by the release: compose in the vendor control plane by exact-pinning dotmac-deployment-control 0.1.0a2 and dotmac-kernel 0.1.0a77, install the dc lineage with its prerequisite bindings, write the assembly adapter that runs dotmac_kernel.licensing.verify_applied_state and hands the result in as an ObservedState, wire the DeliveryIntent to the Integrator, register existing targets, re-run the deterministic concurrency rehearsal named in shadow_and_drift against the Vendor composition, and delete the two abandoned V6 branches in the same change. Until then this package is built, validated and published but unadopted, and must not be described as in production."
+next_action = "dotmac-deployment-control 0.1.0a2 is published, installed back from the private index, conformance-checked and tagged from exact protected-main SHA 5c87272a by release run 32471956734; a1 peels to fead57bc93d6551450f5e6ae1c9de1296e27b0ae and a2 to 5c87272a632096850a80e5e9dc1f625a97c3e5d6. Composition is done (see first_cutover). Two obligations remain from that composition and neither is discharged by it: re-run the deterministic concurrency rehearsal named in shadow_and_drift against the Vendor composition, and delete the abandoned V6 branches feat/v6-slice1-deployment-credentials and feat/v6-slice2-applied-state-admission from dotmac_vendor_control_plane so no future reader mistakes an abandoned line for a second implementation. Separately, Michael ruled on 2026-08-29 that this package MOVES to its own repository, dotmac_deployment_control: the distribution name, public API and history are preserved, the Starter copy is frozen by removing its .github/release-modules.json row, and exactly one repository publishes afterwards. The released a1/a2 tags stay here permanently because git filter-repo rewrites SHAs and a tag on a rewritten commit would make one published version name two trees. Until the move completes this package is published, composed by one consumer, and not proven in any production system."
+
+# ── Adoption evidence ───────────────────────────────────────────────────────
+#
+# Three rows, one tree. The pin says Vendor INSTALLED the module; the two
+# `composed_at` rows say Vendor COMPOSED it. A pin is installation, not
+# adoption, and neither composition row is adoption on its own either: a
+# registered manifest whose lineage is not composed installs tables nobody
+# migrates, and a composed lineage with no registered manifest migrates tables
+# nothing registers. All three are read from ONE commit, because a roster entry
+# at one commit beside a pin at another is two true facts arranged to look like
+# one.
+#
+# The commit is the merge that did it: "Compose Deployment Control, and cut
+# target authority over to it (#71)", 2026-08-21.
+
+[[adoption_evidence]]
+kind = "pinned_at"
+repository = "dotmac_vendor_control_plane"
+commit = "69a877d6f0c6886e300f5433020f7f25421e111c"
+path = "pyproject.toml"
+field = "tool.poetry.dependencies.dotmac-deployment-control.version"
+expected = "0.1.0a2"
+locator = "dotmac_vendor_control_plane:pull/71"
+note = "a2 rather than a1: a1 published the stable-verdict contract but did not recover the losing first-arrival transaction after the receipt unique constraint selected a winner, so a1 was never an admissible composition version."
+
+[[adoption_evidence]]
+kind = "composed_at"
+repository = "dotmac_vendor_control_plane"
+commit = "69a877d6f0c6886e300f5433020f7f25421e111c"
+path = "src/vendor_cp/assembly.py"
+module = "dotmac_deployment_control"
+symbol = "module"
+construct = "collection_member"
+within = "STATEFUL_MODULES"
+proves = "module_registration"
+expected = "deployment_control_module is a member of STATEFUL_MODULES, the roster build_spec composes into the assembly"
+locator = "dotmac_vendor_control_plane:pull/71"
+
+[[adoption_evidence]]
+kind = "composed_at"
+repository = "dotmac_vendor_control_plane"
+commit = "69a877d6f0c6886e300f5433020f7f25421e111c"
+path = "src/vendor_cp/migrations.py"
+module = "dotmac_deployment_control"
+symbol = "versions_dir"
+construct = "call"
+within = "composed_version_locations"
+proves = "migration_lineage"
+expected = "deployment_control_versions_dir() is called inside composed_version_locations, so the dc lineage is part of the composed Alembic target"
+locator = "dotmac_vendor_control_plane:pull/71"
+
+# The rows above are PAST TENSE and this repository holds no copy of the live
+# pin. Where the present-tense answer lives:
+[[adoption_evidence_pointer]]
+subject = "current_pin"
+repository = "dotmac_vendor_control_plane"
+paths = ["pyproject.toml", "poetry.lock"]
+field = "tool.poetry.dependencies.dotmac-deployment-control.version"
+note = "no value here on purpose: a copied pin went stale in twenty minutes once, and a pointer's failure mode is loud where a stale copy's is silent."
 
 [[product_writers]]
 product = "dotmac_vendor_control_plane"
 writer_state = "inventory_only"
 retirement_required = false
+# UNCHANGED, deliberately, and the first attempt at this correction got it
+# wrong. `revision` is the AUDIT coordinate - the tree the inventory was
+# actually read at - and `product_writer_check` enforces that it equals this
+# product's one effective audit pin in `source_revisions`. Advancing it to the
+# composition commit would have claimed an inventory that was never re-run.
+# Composing the module did not change the writer state either: somebody LOOKED
+# and Vendor writes none of this capability locally, which composition does not
+# alter - it adds a consumer, not a second writer. The composition is a later,
+# separate fact and it is recorded where later facts belong, in
+# `adoption_evidence` above.
 revision = "0c77e85c7f54538e69061614c8de42ad0f6d2332"
 evidence_paths = ["src/vendor_cp/deployment/adapter.py", "src/vendor_cp/assembly.py"]
 [[product_writers]]
