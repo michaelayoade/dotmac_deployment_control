@@ -28,6 +28,8 @@ from dotmac_kernel.namespaces import (
     module_schema,
 )
 
+from tests.architecture import adoption_evidence as evidence_schema
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = REPO_ROOT / "packages/dotmac-deployment-control"
 SRC = PACKAGE_ROOT / "src/dotmac_deployment_control"
@@ -568,12 +570,51 @@ class TestTheExtractionDossierIsHonestAboutSplitProvenance:
         repositories = str(dossier["source_repositories"])
         assert "dotmac_sub" in repositories
 
-    def test_it_claims_no_adoption_it_does_not_have(
+    def test_it_claims_exactly_the_adoption_its_evidence_supports(
         self, dossier: dict[str, object]
     ) -> None:
-        assert dossier["status"] == "audit-complete"
-        assert dossier["adoption_evidence"] == []
-        assert dossier["contract_consumers"] == []
+        """This assertion used to read `audit-complete` / no evidence / no
+        consumers, and was true when written.
+
+        It stopped being true on 2026-08-21, when Vendor Control Plane merged
+        69a877d6 and composed the module — and nothing went red, because the
+        test asserted a SNAPSHOT of the answer rather than the PROPERTY. A
+        snapshot of a fact about another repository ages silently; the property
+        does not.
+
+        The property is the two-directional ratchet: a package may not claim
+        more than its consumers prove, and may not sit in a state weaker than
+        its evidence supports. `_state_for` makes one contract consumer exactly
+        `adopted`, so the status is derived here rather than restated.
+        """
+        consumers = dossier["contract_consumers"]
+        assert consumers == ["dotmac_vendor_control_plane"]
+        assert (
+            dossier["status"]
+            == ("audit-complete", "adopted", "reuse-proven")[
+                min(len(consumers), 2)  # type: ignore[arg-type]
+            ]
+        )
+
+        kinds = {row["kind"] for row in dossier["adoption_evidence"]}  # type: ignore[union-attr,index]
+        assert kinds & evidence_schema.ADOPTION_PROVING_KINDS, (
+            "an adoption state resting on installation rows alone is the "
+            "`dotmac-tax` shape: a pin is installation, not adoption"
+        )
+
+    def test_it_does_not_claim_a_production_adoption_nobody_has_proven(
+        self, dossier: dict[str, object]
+    ) -> None:
+        """Composition on Vendor's main branch is not a deployment.
+
+        Governance ADR 0013 turns on that distinction, so it is asserted rather
+        than left to prose a later editor can soften. A `deploy_run` row is what
+        a production claim would look like; none exists because no such oracle
+        has been produced.
+        """
+        kinds = {row["kind"] for row in dossier["adoption_evidence"]}  # type: ignore[union-attr,index]
+        assert "deploy_run" not in kinds
+        assert "NOT CLAIMED" in str(dossier["first_cutover"])
 
     def test_it_records_the_two_proofs_the_composition_still_owes(
         self, dossier: dict[str, object]
