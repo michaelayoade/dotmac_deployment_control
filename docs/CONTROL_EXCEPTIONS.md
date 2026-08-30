@@ -4,70 +4,68 @@ Controls this repository claims, where the claim is narrower than it sounds.
 Each entry states what is enforced, what is NOT, and by whom — so that a reader
 does not infer coverage that does not exist.
 
-## Publisher scope cannot be restricted to one package name
+## The publisher's identity IS asserted — resolved 2026-08-30
 
-**Status:** open, and structural rather than a configuration gap.
+**Status:** closed. Recorded rather than deleted, because the reasoning that
+looked like a dead end is the reasoning a future reader will repeat.
 
-Forgejo packages belong to the **owner**, not to a repository. Write authority
-is owner-scoped and repository linkage does not narrow it
-(https://forgejo.org/docs/latest/user/packages/). A credential able to publish
-`dotmac-deployment-control` under the `dotmac` owner is therefore able to
-publish **any** package under that owner.
+The earlier entry said this was unimplementable as specified: a
+`write:package`-only token returned 403 from `/api/v1/user`, so the preflight
+could not compare an identity, and the honest outcome was to record that rather
+than soften the check into "a token exists and can reach the registry".
 
-**Enforced elsewhere, deliberately.** `scripts/release_guard.py` refuses any
-distribution but this one and any version at or below the inherited floor, and
-the release workflow will be structurally restricted to this package, a version
-strictly greater than a2, an exact protected-main SHA, immutable conflict
-refusal, and a registry read-back before tagging.
+**What was actually wrong was the diagnosis, not the requirement.** Scopes and
+package reach turned out to be two different mechanisms:
 
-**Not enforced by Forgejo.** All of the above is workflow-side. A credential
-used outside this workflow is bounded only by the packages-write-only team it
-belongs to. Compensating controls are: `write:package` scope only — no
-repository, user, issue or administration scope; a dedicated principal with no
-repository permissions; and storage in a protected `registry-release`
-environment.
+- `read:package` was **normalised away** by Forgejo, implied by `write:package`,
+  and the token still 401'd on the index. The scope string was a red herring.
+- Package access is granted by **org team membership**. A team carrying only
+  unit type 9 (packages) at write made the index read succeed immediately, while
+  every repository endpoint stayed 403.
+- The account is **not** `restricted`. That flag was set initially, broke index
+  reads, and removing it changed no refusal — so it never provided containment
+  and must not be cited as though it did.
 
-**Preferred replacement.** Authorized Integrations
-(https://forgejo.org/docs/latest/user/api/authorized-integrations/) would issue
-short-lived OIDC/JWT bound to this repository, workflow and protected ref. The
-capability endpoint is scope-blocked from the tokens available, so an
-administrator must confirm availability on the instance.
+So the preflight asserts **behaviour, never a scope string**: `/api/v1/user`
+returns exactly `dotmac-deployment-control-publisher`, and a package-namespace
+read returns 200. It additionally re-proves that the credential cannot reach
+repositories, because a publish token that can read source has a different blast
+radius than the one recorded here.
 
-## The publisher's identity cannot be asserted with a `write:package`-only token
+**The general lesson, which outlives this entry:** a permission system can have
+two independent mechanisms where the documented one is the more visible. Asserting
+on configuration would have passed with the token that did not work and would
+pass again with a token whose team membership was later removed.
 
-**Status:** open, and it is a genuine conflict between two requirements rather
-than an oversight.
+## Publisher scope cannot be restricted to one package NAME
 
-The release preflight is supposed to authenticate and compare the publisher's
-**identity** — presence is not the property (`AGENTS.md` rule 39), and a token
-that is valid but belongs to the Starter's publisher is exactly the case worth
-catching, because it silently recreates the two-writer hazard the extraction
-removed.
+**Status:** open, structural, and now the only remaining gap.
 
-Measured against the live registry with an existing `read:package` token:
+Forgejo packages belong to the **owner**. Registry permission is
+owner/package-namespace scoped, so a credential that may publish
+`dotmac-deployment-control` under `dotmac` may publish **any** package under
+that owner. Repository linkage does not narrow it, and the packages-only team
+above stops repository access without touching package-name reach.
 
-| Endpoint | Result |
-| --- | --- |
-| `/api/packages/dotmac/pypi/simple/dotmac-kernel/` | 200 |
-| `/api/v1/packages/dotmac?type=pypi` | 200 |
-| `/api/v1/version` | 200 (11.0.16+gitea-1.22.0) |
-| `/api/v1/user` | 403 |
-| `/api/v1/user/orgs` | 403 |
-| `/api/v1/user/applications/oauth2` | 403 |
+**The protected workflow is the boundary, and nothing on the Forgejo side is.**
+`.github/workflows/release.yml` refuses a foreign distribution before any build
+or upload, refuses a version at or below the inherited floor, requires the exact
+protected-main SHA, refuses a conflicting re-upload, reads the published version
+back as the publisher before tagging, and carries an unconditional identity
+preflight. `tests/architecture/test_release_workflow_structure.py` is the sixth
+layer: it exists because the first five are each removable by one line, and each
+removal leaves a workflow that still runs and still goes green.
 
-The 200s are the control: the token authenticates and reaches the registry, so
-the 403s are **scope** refusals rather than authentication failures. A
-`write:package`-only credential therefore cannot call `/api/v1/user`, and the
-identity assertion the preflight needs cannot be made with the credential the
-scope rule requires.
+Compensating controls: a dedicated principal with no repository permissions;
+`write:package` only; a packages-only team; and the credential held in the
+protected `registry-release` environment with
+`deployment_branch_policy.protected_branches = true`, so a job using it must
+declare that environment and can only run from a protected branch.
 
-**This is recorded rather than worked around.** Weakening the preflight to "a
-token exists and can reach the registry" would be the existence-not-identity
-check rule 39 forbids, and the exact failure the design exists to prevent. Until
-an identity assertion is available — an Authorized Integration, or a narrowly
-added read scope accepted as a deliberate widening — step 7 of the publisher
-design is **unimplementable as specified**, and this exception is the honest
-record of that rather than a softer check pretending otherwise.
+**Preferred replacement.** Authorized Integrations would issue short-lived
+OIDC/JWT bound to this repository, workflow and protected ref. The capability
+endpoint is scope-blocked from the tokens available, so an administrator must
+confirm availability on Forgejo `11.0.16`.
 
 ## The copied evidence vocabulary is pinned, not shared
 

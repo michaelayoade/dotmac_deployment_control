@@ -1,0 +1,347 @@
+name: Release
+
+# Publishes `dotmac-deployment-control` to the private index. This is the ONLY
+# path by which that distribution may be published, and the structure below is
+# what makes that true rather than asserted.
+#
+# WHY THE STRUCTURE CARRIES THE RESTRICTION
+#
+# Forgejo packages belong to the OWNER, not to a repository. The publishing
+# identity holds `write:package` through a team carrying only the packages unit,
+# which stops it reaching any repository — but it cannot be narrowed to one
+# PACKAGE NAME. Registry permission is owner/package-namespace scoped, so
+# nothing on the Forgejo side prevents this credential publishing some other
+# `dotmac` package. This workflow is the boundary, and
+# `docs/CONTROL_EXCEPTIONS.md` records that plainly rather than implying the
+# server enforces it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: >-
+          Must be dotmac-deployment-control. An input rather than a constant so
+          the refusal is DEMONSTRABLE: dispatching a foreign name produces a
+          real refused run, which is the evidence that the boundary exists.
+        required: true
+        default: dotmac-deployment-control
+      version:
+        description: The version to publish. Must be strictly greater than the inherited floor.
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DISTRIBUTION: dotmac-deployment-control
+  INDEX_HOST: registry.dotmac.io
+  INDEX_UPLOAD: https://registry.dotmac.io/api/packages/dotmac/pypi
+  INDEX_SIMPLE: https://registry.dotmac.io/api/packages/dotmac/pypi/simple
+
+jobs:
+  # ── 1. IDENTITY, unconditionally, before anything else ────────────────────
+  #
+  # No `if:`. Every other job `needs:` it. A secret-conditioned `if:` would SKIP
+  # when the credential is missing, and a skipped job is not a failed job.
+  #
+  # It asserts BEHAVIOUR, never a scope string. During provisioning `read:package`
+  # was normalised away by Forgejo (implied by `write:package`) and the token
+  # still 401'd on the index; the actual cause was org TEAM MEMBERSHIP, which the
+  # stored scope string says nothing about. So: the login must be exactly the
+  # expected publisher, and a package-namespace read must return 200. Two
+  # behaviours, both observable, neither inferable from configuration.
+  preflight:
+    name: publisher identity
+    runs-on: ubuntu-latest
+    environment: registry-release
+    steps:
+      - name: The authenticated identity must be the publisher, and it must reach packages
+        env:
+          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          EXPECTED_LOGIN: dotmac-deployment-control-publisher
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN}" ]; then
+            echo "::error::FORGEJO_PUBLISH_TOKEN is absent from the registry-release environment."
+            echo "This job fails rather than skipping: a skipped job reads as success."
+            exit 1
+          fi
+
+          # Identity. Presence is not the property (AGENTS.md rule 39): a token
+          # that is set, valid, and belongs to the Starter's publisher is exactly
+          # the case worth catching, because it silently recreates the two-writer
+          # hazard the extraction removed.
+          login=$(curl -sS -H "Authorization: token ${TOKEN}" \
+            "https://${INDEX_HOST}/api/v1/user" | python3 -c \
+            'import json,sys; print(json.load(sys.stdin).get("login",""))')
+          if [ "${login}" != "${EXPECTED_LOGIN}" ]; then
+            echo "::error::authenticated as '${login}', expected '${EXPECTED_LOGIN}'."
+            exit 1
+          fi
+          echo "identity: ${login}"
+
+          # Package reach. Granted by team membership, not by the scope string.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/")
+          if [ "${code}" != "200" ] && [ "${code}" != "404" ]; then
+            echo "::error::package-namespace read returned ${code}; the credential cannot reach the index."
+            exit 1
+          fi
+          echo "package namespace reachable (HTTP ${code}; 404 is a first release)"
+
+      # Acceptance 2, re-proven here rather than trusted from provisioning: this
+      # credential must not read or mutate repositories. A publish token that can
+      # reach source is a different blast radius than the one recorded.
+      - name: The publisher must NOT be able to reach repositories
+        env:
+          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          for path in "user/repos" "repos/dotmac/dotmac_deployment_control"; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: token ${TOKEN}" "https://${INDEX_HOST}/api/v1/${path}")
+            if [ "${code}" = "200" ]; then
+              echo "::error::/api/v1/${path} returned 200 — this credential can reach repositories."
+              exit 1
+            fi
+            echo "/api/v1/${path} -> ${code} (refused, as required)"
+          done
+
+  # ── 2. STRUCTURAL REFUSALS, before a build exists ─────────────────────────
+  guard:
+    name: refuse anything but this distribution above the floor
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: This run must be the exact current tip of protected main
+        run: bash scripts/assert_current_main.sh "${GITHUB_SHA}"
+
+      # Refuses a foreign distribution, a version at or below the inherited
+      # floor, and a version shape it cannot order. BEFORE any build or upload,
+      # which is the requirement: a foreign name must never reach a wheel.
+      - name: Distribution and version
+        run: |
+          python scripts/release_guard.py \
+            --distribution '${{ inputs.distribution }}' --version '${{ inputs.version }}'
+
+      # The dispatch input and the tree must agree. Otherwise a correct-looking
+      # dispatch could publish a pyproject that was renamed underneath it.
+      - name: The tree must declare the same distribution and version
+        id: decide
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "${GITHUB_OUTPUT}"
+          import tomllib, os, sys
+          p = tomllib.load(open("pyproject.toml", "rb"))["tool"]["poetry"]
+          want_dist, want_ver = os.environ["IN_DIST"], os.environ["IN_VER"]
+          if p["name"] != want_dist or p["version"] != want_ver:
+              sys.exit(
+                  f"::error::dispatch asked for {want_dist} {want_ver} but the tree "
+                  f"declares {p['name']} {p['version']}"
+              )
+          print(f"tag=dotmac-deployment-control-v{want_ver}")
+          PY
+        env:
+          IN_DIST: ${{ inputs.distribution }}
+          IN_VER: ${{ inputs.version }}
+
+      # IMMUTABLE CONFLICT REFUSAL, checked before building. The index refuses a
+      # re-upload anyway, but failing here means a conflicting release never
+      # reaches the credential at all — and the message says what happened
+      # instead of surfacing as a transport error at upload time.
+      - name: The version must not already exist on the index
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          body=$(curl -sS -u "ci-reader:${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/" || true)
+          if printf '%s' "${body}" | grep -q -- "-${{ inputs.version }}[.-]"; then
+            echo "::error::${DISTRIBUTION} ${{ inputs.version }} is already on the index."
+            echo "A published version is immutable. Publish a new version; never overwrite."
+            exit 1
+          fi
+          echo "${{ inputs.version }} is not yet on the index"
+
+  build:
+    needs: [preflight, guard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pipx install poetry==1.8.3
+      - run: poetry build
+      - name: Record the artifact hashes the consumer proof must reproduce
+        run: |
+          set -euo pipefail
+          ( cd dist && sha256sum * | tee ../artifact-hashes.txt )
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dist
+          path: |
+            dist/*
+            artifact-hashes.txt
+          if-no-files-found: error
+
+  publish:
+    needs: [preflight, guard, build]
+    runs-on: ubuntu-latest
+    environment: registry-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Re-assert at the irreversible boundary. `guard` proved this run was
+      # main's tip at dispatch; a queued publish can start after main moves.
+      - name: Re-assert the run SHA is still the current protected main
+        run: bash scripts/assert_current_main.sh "${GITHUB_SHA}"
+      - name: Re-assert distribution and floor
+        run: |
+          python scripts/release_guard.py \
+            --distribution '${{ inputs.distribution }}' --version '${{ inputs.version }}'
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dist
+
+      # The credential goes in a .netrc, never in a URL. A URL carrying
+      # `user:token@host` leaks the moment anything echoes the command — and
+      # `set -x`, a curl error message or a pip resolver diagnostic all do.
+      # Acceptance 7 is a property of how the credential is PASSED, not of
+      # remembering not to print it.
+      - name: Publish the exact built bytes
+        env:
+          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'machine %s login %s password %s\n' \
+            "${INDEX_HOST}" "dotmac-deployment-control-publisher" "${TOKEN}" > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          python -m pip install --quiet twine
+          # NO --skip-existing. It converts a conflicting upload into a silent
+          # success, which is precisely the shape this repository refuses.
+          python -m twine upload --non-interactive \
+            --repository-url "${INDEX_UPLOAD}" dist/*
+          rm -f "${HOME}/.netrc"
+
+  verify:
+    needs: [preflight, guard, build, publish]
+    runs-on: ubuntu-latest
+    environment: registry-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dist
+
+      # PUBLISHER-AUTHENTICATED READ-BACK, before the tag. The tag is this
+      # repository's assertion that the release is good; writing it for a version
+      # the index cannot serve would make the assertion false.
+      - name: Read the published version back as the publisher
+        env:
+          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'machine %s login %s password %s\n' \
+            "${INDEX_HOST}" "dotmac-deployment-control-publisher" "${TOKEN}" > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          for i in $(seq 1 30); do
+            if curl -sS --netrc "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
+                 | grep -q -- "-${{ inputs.version }}[.-]"; then
+              echo "publisher read-back: ${{ inputs.version }} is on the index"; exit 0
+            fi
+            echo "not yet on the index (attempt $i)…"; sleep 10
+          done
+          echo "::error::${{ inputs.version }} did not appear on the index in time"
+          exit 1
+
+      # CONSUMER PROOF, deliberately with ci-reader and NOT the publisher.
+      # A clean install that used the publishing credential would prove the
+      # publisher can read its own upload — not that an ordinary consumer can
+      # retrieve it, which is the claim that matters.
+      - name: An ordinary consumer can install it, and the bytes match
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'machine %s login %s password %s\n' \
+            "${INDEX_HOST}" "ci-reader" "${TOKEN}" > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          python -m venv /tmp/consumer
+          /tmp/consumer/bin/pip install --quiet --upgrade pip
+          /tmp/consumer/bin/pip download --no-deps --dest /tmp/downloaded \
+            --index-url "${INDEX_SIMPLE}" \
+            "${DISTRIBUTION}==${{ inputs.version }}"
+          echo "--- hashes built here ---"; cat artifact-hashes.txt
+          echo "--- hashes retrieved from the index ---"
+          ( cd /tmp/downloaded && sha256sum * )
+          python3 - <<'PY'
+          import hashlib, pathlib, sys
+          built = {}
+          for line in pathlib.Path("artifact-hashes.txt").read_text().split("\n"):
+              if line.strip():
+                  digest, name = line.split()
+                  built[name.lstrip("*")] = digest
+          for got in pathlib.Path("/tmp/downloaded").iterdir():
+              digest = hashlib.sha256(got.read_bytes()).hexdigest()
+              want = built.get(got.name)
+              if want is None:
+                  sys.exit(f"::error::index served {got.name}, which this run did not build")
+              if want != digest:
+                  sys.exit(
+                      f"::error::{got.name} differs from the bytes built here.\n"
+                      f"  built:    {want}\n  retrieved:{digest}"
+                  )
+              print(f"identical: {got.name} {digest}")
+          PY
+          rm -f "${HOME}/.netrc"
+          /tmp/consumer/bin/pip install --quiet --no-index --find-links /tmp/downloaded \
+            "${DISTRIBUTION}==${{ inputs.version }}" || true
+
+      - name: Tag the verified release
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.guard.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "${DISTRIBUTION} ${{ inputs.version }} (published, read back as the publisher, and installed by an ordinary consumer)" "${GITHUB_SHA}"
+          git push origin "${TAG}"
+          echo "tagged ${TAG} on ${GITHUB_SHA}"
+
+      # The tag makes the publication-ledger row false the moment it lands, and
+      # `test_ported_gate_declared_publication.py` refuses a stale absolution.
+      # That gate going red is CORRECT — it is the two-directional ratchet doing
+      # its job — so this says so loudly rather than pretending the release is
+      # complete without the record.
+      - name: State what is now owed
+        run: |
+          echo "::notice::OWED: remove the ${{ inputs.version }} row from docs/publication-ledger.json."
+          echo "::notice::Until it is removed, test_the_gate_refuses_a_stale_absolution fails, correctly."
