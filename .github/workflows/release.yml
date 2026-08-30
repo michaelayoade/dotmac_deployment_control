@@ -185,7 +185,7 @@ jobs:
           python-version: "3.12"
       - run: pipx install poetry==1.8.3
       - run: poetry build
-      - name: Record the artifact hashes the consumer proof must reproduce
+      - name: Record the artifact hashes the independent verifier must reproduce
         run: |
           set -euo pipefail
           ( cd dist && sha256sum * | tee ../artifact-hashes.txt )
@@ -254,104 +254,56 @@ jobs:
           python -m twine upload --non-interactive \
             --repository-url "${INDEX_UPLOAD}" dist/*
 
-  verify:
+  # ── 5. READ-BACK ONLY. THIS RUN DOES NOT VERIFY ITSELF, AND DOES NOT TAG ──
+  #
+  # `0.1.0a4` was tagged by a job in THIS workflow that called itself a
+  # verification and could not perform one. It compared hashes over whatever
+  # `pip download` happened to retrieve — the wheel, never the sdist, which is
+  # the exact gap that made a3 unprovable — and it swallowed the install result
+  # with `|| true`, so "an ordinary consumer can install it" was a step name and
+  # nothing more. Both defects went green.
+  #
+  # The structural repair is not a better check here. A publishing run that
+  # verifies its own output is the wrong SHAPE for the claim: it holds the
+  # publishing credential, it already has the bytes on disk, and it is the one
+  # party that cannot be an independent witness to the registry. So this job
+  # now asserts exactly one thing it is competent to assert — the upload landed
+  # somewhere the index will list — and the tag, which is this repository's
+  # assertion that a release was verified, is written only by
+  # `verify-release.yml`, in a separate run, from evidence gathered afresh.
+  #
+  # `contents: write` is deliberately ABSENT. The permission a tag needs is the
+  # permission this job must not hold.
+  readback:
+    name: the upload landed
     needs: [preflight, guard, build, publish]
     runs-on: ubuntu-latest
     environment: registry-release
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-dist
-
-      # PUBLISHER-AUTHENTICATED READ-BACK, before the tag. The tag is this
-      # repository's assertion that the release is good; writing it for a version
-      # the index cannot serve would make the assertion false.
       - name: Read the published version back as the publisher
         env:
           TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
           # Header auth, the same form the preflight already exercised against
-          # this index in this workflow — a mechanism proven here rather than
-          # assumed. Still no credential in the URL.
+          # this index in this workflow. Still no credential in the URL.
           for i in $(seq 1 30); do
             if curl -sS -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
                  | grep -q -- "-${{ inputs.version }}[.-]"; then
               echo "publisher read-back: ${{ inputs.version }} is on the index"; exit 0
             fi
-            echo "not yet on the index (attempt $i)…"; sleep 10
+            echo "not yet on the index (attempt $i)..."; sleep 10
           done
           echo "::error::${{ inputs.version }} did not appear on the index in time"
           exit 1
 
-      # CONSUMER PROOF, deliberately with ci-reader and NOT the publisher.
-      # A clean install that used the publishing credential would prove the
-      # publisher can read its own upload — not that an ordinary consumer can
-      # retrieve it, which is the claim that matters.
-      - name: An ordinary consumer can install it, and the bytes match
-        env:
-          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          umask 077
-          printf 'machine %s login %s password %s\n' \
-            "${INDEX_HOST}" "ci-reader" "${TOKEN}" > "${HOME}/.netrc"
-          chmod 600 "${HOME}/.netrc"
-          python -m venv /tmp/consumer
-          /tmp/consumer/bin/pip install --quiet --upgrade pip
-          /tmp/consumer/bin/pip download --no-deps --dest /tmp/downloaded \
-            --index-url "${INDEX_SIMPLE}" \
-            "${DISTRIBUTION}==${{ inputs.version }}"
-          echo "--- hashes built here ---"; cat artifact-hashes.txt
-          echo "--- hashes retrieved from the index ---"
-          ( cd /tmp/downloaded && sha256sum * )
-          python3 - <<'PY'
-          import hashlib, pathlib, sys
-          built = {}
-          for line in pathlib.Path("artifact-hashes.txt").read_text().split("\n"):
-              if line.strip():
-                  digest, name = line.split()
-                  built[name.lstrip("*")] = digest
-          for got in pathlib.Path("/tmp/downloaded").iterdir():
-              digest = hashlib.sha256(got.read_bytes()).hexdigest()
-              want = built.get(got.name)
-              if want is None:
-                  sys.exit(f"::error::index served {got.name}, which this run did not build")
-              if want != digest:
-                  sys.exit(
-                      f"::error::{got.name} differs from the bytes built here.\n"
-                      f"  built:    {want}\n  retrieved:{digest}"
-                  )
-              print(f"identical: {got.name} {digest}")
-          PY
-          rm -f "${HOME}/.netrc"
-          /tmp/consumer/bin/pip install --quiet --no-index --find-links /tmp/downloaded \
-            "${DISTRIBUTION}==${{ inputs.version }}" || true
-
-      - name: Tag the verified release
-        run: |
-          set -euo pipefail
-          TAG="${{ needs.guard.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "${DISTRIBUTION} ${{ inputs.version }} (published, read back as the publisher, and installed by an ordinary consumer)" "${GITHUB_SHA}"
-          git push origin "${TAG}"
-          echo "tagged ${TAG} on ${GITHUB_SHA}"
-
-      # The tag makes the publication-ledger row false the moment it lands, and
-      # `test_ported_gate_declared_publication.py` refuses a stale absolution.
-      # That gate going red is CORRECT — it is the two-directional ratchet doing
-      # its job — so this says so loudly rather than pretending the release is
-      # complete without the record.
+      # A published version with no tag and no ledger row is the state this
+      # repository is designed to sit in until an independent witness speaks.
+      # Saying so loudly is the point: silence here is how a4 acquired a tag
+      # nobody had earned.
       - name: State what is now owed
         run: |
-          echo "::notice::OWED: remove the ${{ inputs.version }} row from docs/publication-ledger.json."
-          echo "::notice::Until it is removed, test_the_gate_refuses_a_stale_absolution fails, correctly."
+          echo "::notice::PUBLISHED, NOT YET VERIFIED, NOT YET TAGGED."
+          echo "::notice::OWED 1: dispatch 'Verify release' with version=${{ inputs.version }} and release_run=${{ github.run_id }}."
+          echo "::notice::OWED 2: only that run may write the tag, and only on a VERIFIED verdict."
+          echo "::notice::OWED 3: record ${{ inputs.version }} in docs/published-versions.json and remove its docs/publication-ledger.json row."

@@ -11,13 +11,14 @@ this artifact could not be gathered — an expired run artifact, a registry that
 will not serve the file, a provenance link that cannot be closed. It is reported
 as unprovable and never retried into looking green.
 
-## The five properties, and why each is separate
+## The six properties, and why each is separate
 
-1. The registry's wheel matches the artifact produced by the exact release run.
+1. Every artifact the release run built matches the bytes the registry serves.
 2. Distribution, version, source revision and hashes all agree.
 3. The publisher can read the published version back.
-4. A clean read-only consumer can install those exact bytes.
+4. A clean read-only consumer can install it WITH its dependencies.
 5. No second upload or overwrite occurred.
+6. The installed distribution actually imports.
 
 Provenance and hash equality are not the same claim. A wheel on the index with
 the expected sha256 proves the BYTES are the ones somebody built; it says
@@ -36,6 +37,16 @@ check was unproven, so narrowing it to whatever pip happens to retrieve would
 have converted the finding into a pass. Both artifacts are now fetched
 EXPLICITLY and compared, and "a consumer can install it" is a separate assertion
 about pip succeeding.
+
+## Why installation and importability are also separate
+
+The same mistake, one layer out. Property 4 originally installed with
+`--no-deps` and then ran an import behind `|| true`. Against `0.1.0a4` that
+combination reported a clean consumer install while the import raised
+`ModuleNotFoundError: No module named 'dotmac_kernel'` two lines later, in a
+step that went green. A resolvable dependency is not a working one, and a
+distribution that installs and cannot import is a real outcome — so it gets its
+own numbered property, its own observation, and its own way to fail.
 """
 
 from __future__ import annotations
@@ -115,6 +126,7 @@ def evaluate(
     built_hashes: dict[str, str],
     fetched: dict[str, str],
     consumer_installed: bool,
+    consumer_imported: bool,
     read_back_ok: bool,
     index_filenames: list[str],
 ) -> Outcome:
@@ -215,6 +227,19 @@ def evaluate(
             "ci-reader installed the version into a clean virtual environment"
             if consumer_installed
             else "the read-only consumer could not install the version",
+        )
+    )
+
+    # ── 6: installed is not the same as usable ──────────────────────────────
+    findings.append(
+        Finding(
+            6,
+            "the installed distribution imports",
+            consumer_imported,
+            "the installed distribution imported in the consumer environment"
+            if consumer_imported
+            else "the distribution installed but could not be imported; a "
+            "resolvable dependency is not a working one",
         )
     )
 

@@ -5,15 +5,17 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "0.1.0a3 is NOT listed here and that is deliberate: it IS published, so it is",
-    "not an unpublished declaration. It carries no tag because its verification",
-    "returned UNPROVABLE, and `docs/published-versions.json` records it as",
-    "immutable and never pinnable. A row here would say the opposite of the truth."
+    "EMPTY, and that is the correct state: every declared version is published.",
+    "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 is published and",
+    "independently verified. Neither is an unpublished declaration, so neither",
+    "belongs here — `docs/published-versions.json` is where both live.",
+    "",
+    "The a4 row that used to sit here said `never-published` and outlived its own",
+    "publication by six hours. That is the stale absolution the two-directional",
+    "ratchet in test_ported_gate_declared_publication.py exists to catch, and it",
+    "did not catch it: CI checked out without tags, so the gate could not see the",
+    "tag that contradicted this file. Both halves are fixed together — the row is",
+    "gone and the checkout now fetches tags."
   ],
-  "unpublished": {
-    "0.1.0a4": {
-      "state": "never-published",
-      "reason": "Supersedes 0.1.0a3, which was published by a run cancelled during its own verify job and is permanently UNPROVABLE. a4 is published by a fresh protected-main run on the corrected workflow, and tagged only after authenticated read-back, exact hash equality over every built artifact, and clean consumer installation all succeed."
-    }
-  }
+  "unpublished": {}
 }

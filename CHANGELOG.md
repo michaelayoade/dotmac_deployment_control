@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a4 — UNRELEASED
+## 0.1.0a4 — RELEASED 2026-08-30, independently verified
 
 Supersedes `0.1.0a3`. No source change from a3: the module's code is identical,
 and the bump exists because a3 can never be pinned.
@@ -19,6 +19,22 @@ and the bump exists because a3 can never be pinned.
   An index cannot un-publish, so a3 remains on it permanently, recorded
   UNPROVABLE and never pinnable, and a4 carries the same code with a complete
   chain behind it.
+
+### Released
+
+- Published by release run `33297423568` from peeled commit
+  `2c61540f74018b7e19d7c5add893e0653cfcdb17`, and **independently** verified by
+  run `33310594187`: both artifacts fetched from the index by name and
+  sha256-equal to the release build (wheel
+  `ad1aaaa2d20b9a565d0656f64762564f4dfd90eb4c367187aa63fdd54a33c37e`, sdist
+  `a5dae85d76e17ab34b1868741def46aab514ffba119110ec750794f5dc1c6e2c`),
+  provenance closed on that commit, publisher read-back, read-only consumer
+  install, and exactly one wheel and one sdist on the index.
+
+  The tag was written earlier, by a job in the release run that called itself a
+  verification and compared the wheel only. That defect is recorded in
+  `docs/CONTROL_EXCEPTIONS.md` and structurally removed: a publishing run can no
+  longer tag, and only `verify-release.yml` may.
 
 ## 0.1.0a3 — PUBLISHED, UNPROVABLE, NEVER PIN
 
