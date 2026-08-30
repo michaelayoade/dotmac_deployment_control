@@ -108,9 +108,10 @@ a recorded tag is not locally visible rather than passing over an empty set.
 
 ## Credentials appear in curl process arguments, not in URLs
 
-**Status:** REMEDIATED 2026-08-30. Recorded rather than deleted: the entry is
-the record of an acceptance that was made deliberately, held for four releases,
-and then withdrawn — and of an undercount that the acceptance itself contained.
+**Status:** REMEDIATED 2026-08-30 by PR #10. Recorded rather than deleted: the
+entry is the record of an acceptance that was made deliberately, held for four
+releases, and then withdrawn — and of an undercount that the acceptance itself
+contained.
 
 ### What was accepted, and why
 
