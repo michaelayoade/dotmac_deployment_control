@@ -57,6 +57,7 @@ def test_every_published_version_is_recorded() -> None:
         "0.1.0a3",
         "0.1.0a4",
         "0.1.0a5",
+        "0.1.0a6",
     ], versions
 
 
@@ -120,7 +121,7 @@ def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
     """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
     floor that skipped it would let the next release collide with bytes that are
     permanently on the index."""
-    assert release_guard.published_floor() == "0.1.0a5"
+    assert release_guard.published_floor() == "0.1.0a6"
 
 
 def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
@@ -132,19 +133,19 @@ def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> No
 
 def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
-    with a guard that refuses everything.
+        with a guard that refuses everything.
 
-    a6 rather than a5, as of the change that recorded a5's coordinates. a5 is
-    now PUBLISHED, so the guard is required to refuse it; leaving the control on
-    a5 would assert that this repository may re-upload a name that already
-    exists — the exact hazard the floor is for.
+    a7 rather than a6, as of the change that recorded a6's coordinates. a6 is
+        now PUBLISHED, so the guard is required to refuse it; leaving the control on
+        a6 would assert that this repository may re-upload a name that already
+        exists — the exact hazard the floor is for.
 
-    The two moves are one change because the floor is DERIVED from
-    `docs/published-versions.json`: recording a5 there raises the floor, and a
-    control left behind the floor is a control asserting the opposite of what
-    the floor says.
+        The two moves are one change because the floor is DERIVED from
+        `docs/published-versions.json`: recording a5 there raises the floor, and a
+        control left behind the floor is a control asserting the opposite of what
+        the floor says.
     """
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a6") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a7") == []
 
 
 def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
@@ -257,7 +258,7 @@ def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNADOPTABLE" in problems[0], problems
-    assert any("not greater than 0.1.0a5" in p for p in problems), problems
+    assert any("not greater than 0.1.0a6" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -269,7 +270,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a5" in problems[0], problems
+    assert problems and "not greater than 0.1.0a6" in problems[0], problems
     assert not any("UNPINNABLE" in p for p in problems), (
         "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
         "unpinnable would be a different and wrong statement"
@@ -278,13 +279,22 @@ def test_attempting_the_inherited_version_is_refused() -> None:
 
 @pytest.mark.parametrize(
     "version",
-    ["0.1.0a1", "0.1.0a2", "0.1.0a3", "0.1.0a4", "0.1.0a5", "0.0.9a99", "0.1.0a0"],
+    [
+        "0.1.0a1",
+        "0.1.0a2",
+        "0.1.0a3",
+        "0.1.0a4",
+        "0.1.0a5",
+        "0.1.0a6",
+        "0.0.9a99",
+        "0.1.0a0",
+    ],
 )
 def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a6", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a7", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
     """`0.1.0a10` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse the tenth alpha
@@ -299,7 +309,7 @@ def test_another_distribution_is_refused(distribution: str) -> None:
     """The credential will be owner-scoped on Forgejo and able to write any
     package under `dotmac`. This check is the only thing narrowing it to one
     name, so it is tested as a first-class refusal rather than a formality."""
-    problems = release_guard.refusals(distribution, "0.1.0a6")
+    problems = release_guard.refusals(distribution, "0.1.0a7")
     assert problems and "and nothing else" in problems[0], problems
 
 
@@ -471,6 +481,7 @@ def test_the_supersession_chain_ends_at_a_version_that_may_be_pinned() -> None:
             "a declared-and-unpublished one. It ends nowhere."
         )
     assert seen == ["0.1.0a4", "0.1.0a5"], seen
+    assert version == "0.1.0a6", version
 
 
 # ── a5: verified, and still not adoptable ───────────────────────────────────
@@ -563,7 +574,101 @@ def test_a5_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNSUITABLE FOR NEW ADOPTION" in problems[0], problems
-    assert any("not greater than 0.1.0a5" in p for p in problems), problems
+    assert any("not greater than 0.1.0a6" in p for p in problems), problems
+
+
+# ── a6: the first release whose declared floor is itself proven ─────────────
+
+
+def test_a6_is_recorded_as_published_and_independently_verified() -> None:
+    """Cut through the same two-workflow path a5 was: the publishing run neither
+    verified itself nor tagged, and a separate run gathered the evidence afresh
+    and wrote the tag on a VERIFIED verdict."""
+    a6 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a6")
+    assert a6["pinnable"] is True
+    assert a6["status"] == "released"
+    assert a6["release_run"] == "33322980430"
+    assert a6["verify_run"] == "33323067886"
+    assert a6["verify_run"] != a6["release_run"], (
+        "the verification must not be the publishing run; a publisher "
+        "witnessing its own upload is how a4 was tagged in the first place"
+    )
+    assert a6["supersedes"] == "0.1.0a5"
+    assert a6["peeled_commit"] == "518711c36e9e5774e11b02c6ab35ec0c9c7b75b9"
+
+
+def test_a6_records_the_exact_bytes_it_names() -> None:
+    a6 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a6")
+    digests = a6["sha256"]
+    assert set(digests) == {
+        "dotmac_deployment_control-0.1.0a6-py3-none-any.whl",
+        "dotmac_deployment_control-0.1.0a6.tar.gz",
+    }, sorted(digests)
+    for name, digest in digests.items():
+        assert re.fullmatch(r"[0-9a-f]{64}", digest), f"{name} = {digest!r}"
+
+
+def test_a6_records_the_floor_it_declares_and_it_matches_the_tree() -> None:
+    """THE FACT a5's ROW COULD NOT HAVE CARRIED, because nobody was recording it.
+
+    A release record that names bytes and a commit answers "which artifact".
+    a5 proved that is not enough: the question a consumer actually loses on is
+    "against which dependency floor", and that had no field. It has one now,
+    and it is checked against the declaration rather than transcribed beside it.
+    """
+    a6 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a6")
+    assert a6["declared_kernel_floor"] == ">=0.1.0a98"
+    declared = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["tool"]["poetry"]["dependencies"]["dotmac-kernel"]["version"]
+    assert a6["declared_kernel_floor"] == declared, (
+        "the recorded floor and the declared floor disagree. A record that "
+        "quotes a constraint the tree does not carry is the two-literals defect "
+        "a4 shipped, moved into the provenance file."
+    )
+
+
+def test_a6s_record_states_the_upgrade_it_obliges_a_consumer_to_make() -> None:
+    """Raising a floor is not free, and the cost lands on somebody else.
+
+    Adopting a6 means moving the kernel 21 alphas. The record says so, because
+    an obligation created by this release and discharged elsewhere is exactly
+    the kind that goes unnoticed until a consumer's resolver makes the choice
+    silently — which is the ruling Michael gave on 2026-08-30.
+    """
+    a6 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a6")
+    note = a6["adoption_note"]
+    assert "a77" in note and "a98" in note
+    assert "21-alpha" in note
+
+
+def test_a6s_record_names_the_mutation_that_proved_the_floor() -> None:
+    """A floor claim with no falsification behind it is the claim a5 made.
+
+    The record must carry BOTH observations, because they fail independently:
+    the resolver refusing a97, and a97 forced in producing the named
+    ModuleNotFoundError. "The floor is proven" without them is a sentence.
+    """
+    a6 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a6")
+    note = a6["release_run_note"]
+    for evidence in (
+        "0.1.0a97",
+        "conflicting dependencies",
+        "ModuleNotFoundError",
+        "dotmac_kernel.transactions",
+        "--force-reinstall",
+        "dotmac-kernel==0.1.0a98 EXACTLY",
+    ):
+        assert evidence in note, evidence
+
+
+def test_a6_is_the_version_a5_points_at() -> None:
+    """Both directions, as with a4 and a5."""
+    releases = {r["version"]: r for r in _published()["releases"]}
+    assert releases["0.1.0a5"]["superseded_by"] == "0.1.0a6"
+    assert releases["0.1.0a6"]["supersedes"] == "0.1.0a5"
+    assert releases["0.1.0a5"]["pinnable"] is False
+    assert releases["0.1.0a6"]["pinnable"] is True
 
 
 def test_the_ledger_holds_the_declared_version_and_nothing_else() -> None:

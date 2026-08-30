@@ -265,6 +265,19 @@ Without the mutation the floor lane passes for the wrong reason and nobody
 learns whether it can fail (ADR-0018). Without the floor lane the mutation is
 comparing an artifact against itself.
 
+**Both lanes were observed doing their job on the release commit itself**
+(`518711c3`), which is why this entry says "closed" rather than "guarded":
+
+| observation | result |
+| --- | --- |
+| floor lane, `dotmac-kernel==0.1.0a98` pinned exactly | all 9 canaries passed |
+| mutation, resolver | `ERROR: Cannot install dotmac-deployment-control==0.1.0a6 and dotmac-kernel==0.1.0a97 because these package versions have conflicting dependencies` |
+| mutation, a97 forced in | all 9 canaries failed, `ModuleNotFoundError: No module named 'dotmac_kernel.transactions'` |
+
+`0.1.0a6` was published by release run `33322980430` and verified by
+independent run `33323067886` — VERIFIED on all seven properties, nine canaries
+against the wheel the registry served, tag written by that run alone.
+
 ### a5's disposition, and what is NOT withdrawn
 
 Michael ruled 2026-08-30: **a5 remains immutable and verified, and is
