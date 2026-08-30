@@ -160,6 +160,26 @@
         "declared_dependency_floor_evidence": "service.py:73 `from dotmac_kernel.transactions import conflict_savepoint`. `dotmac_kernel/transactions.py` is ABSENT from the published dotmac_kernel-0.1.0a97-py3-none-any.whl and PRESENT in dotmac_kernel-0.1.0a98-py3-none-any.whl, both read from registry.dotmac.io. a5's wheel declares `Requires-Dist: dotmac-kernel (>=0.1.0a77)`, so any resolver may satisfy it with a kernel that cannot import the module. Discovered by the Platform CP lane at container boot, after resolution succeeded, the lock wrote cleanly, and both artifacts matched their published hashes exactly.",
         "adoption_eligibility_evidence": "`pinnable: false`. release_guard.refusals() refuses 0.1.0a5 by NAME, distinctly from the floor, so depending on it is a decision somebody has to overrule rather than an omission. 0.1.0a6 declares `>=0.1.0a98` and CI proves that floor in both directions: a lane that installs the declared minimum literally, and a mutation lane that installs the newest kernel the floor excludes and requires the canaries to fail."
       }
+    },
+    {
+      "version": "0.1.0a6",
+      "tag": "dotmac-deployment-control-v0.1.0a6",
+      "tag_object": "553c2bb014a9c2a3d8ebecafa06c4166bc94be1b",
+      "peeled_commit": "518711c36e9e5774e11b02c6ab35ec0c9c7b75b9",
+      "release_run": "33322980430",
+      "verify_run": "33323067886",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "pinnable": true,
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a6-py3-none-any.whl": "9b02cf33f954b6562858af320b518c10f9e93aa92fbc3873e4a83fdf117b8fc0",
+        "dotmac_deployment_control-0.1.0a6.tar.gz": "68871c24360ece99d8cd8301daa6c0d246e646c2c57ed19a7b9ea3d42b1adad0"
+      },
+      "supersedes": "0.1.0a5",
+      "declared_kernel_floor": ">=0.1.0a98",
+      "release_run_note": "THE FIRST RELEASE WHOSE DECLARED DEPENDENCY FLOOR IS ITSELF PROVEN, and the first verified on nine behavioural canaries rather than seven. Published by run 33322980430 from the exact tip of protected main (518711c36e9e5774e11b02c6ab35ec0c9c7b75b9); that run neither verified itself nor tagged. INDEPENDENT verify run 33323067886 returned VERIFIED on all seven properties: both artifacts fetched from registry.dotmac.io by NAME and sha256-equal to the release build, provenance closed on the peeled commit, publisher read-back, a read-only consumer install WITH the real dependency graph, import, exactly one wheel and one sdist on the index, and all NINE behavioural canaries passing against the wheel the REGISTRY served. Only that run wrote the tag, on a VERIFIED verdict, through tag_once.py. WHAT IS NEW HERE AND WAS NOT TRUE OF a5: the wheel declares `Requires-Dist: dotmac-kernel (>=0.1.0a98)`, and that floor is proven in BOTH directions by the required `behavioural canaries (installed wheel)` context on commit 518711c3. The floor lane installed the wheel with dotmac-kernel==0.1.0a98 EXACTLY — the declared minimum, not the resolver's choice — and all nine canaries passed. The mutation lane derived 0.1.0a97 from the index as the newest kernel the floor excludes, observed pip refuse the pairing with `ERROR: Cannot install dotmac-deployment-control==0.1.0a6 and dotmac-kernel==0.1.0a97 because these package versions have conflicting dependencies`, then FORCED a97 in with --no-deps --force-reinstall and observed all nine canaries fail with `ModuleNotFoundError: No module named 'dotmac_kernel.transactions'`. Supersedes 0.1.0a5, which remains immutable, verified on seven properties, and UNDER-CONSTRAINED AND UNSUITABLE FOR NEW ADOPTION.",
+      "adoption_note": "Adopting a6 obliges a consumer to move from dotmac-kernel a77 to a98 — a 21-alpha jump. Michael's constraint of 2026-08-30: that upgrade receives its own migration and compatibility run and must not be chosen silently by a resolver. Recorded here because the obligation is created by this release and discharged by its consumer."
     }
   ],
   "tags_remain_in_source_for": [

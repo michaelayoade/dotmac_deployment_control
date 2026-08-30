@@ -5,7 +5,22 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a6 — declared 2026-08-30, a metadata repair with a falsifiable floor
+## 0.1.0a6 — RELEASED 2026-08-30, verified on seven properties with nine canaries
+
+Published by run `33322980430` from protected main `518711c3`; independently
+verified by run `33323067886`, which wrote the tag on a VERIFIED verdict.
+Wheel `9b02cf33f954b6562858af320b518c10f9e93aa92fbc3873e4a83fdf117b8fc0`, sdist
+`68871c24360ece99d8cd8301daa6c0d246e646c2c57ed19a7b9ea3d42b1adad0`.
+
+**The floor was observed failing before it was observed passing.** On the
+release commit the mutation lane derived `0.1.0a97` from the index as the newest
+kernel the floor excludes, saw pip refuse the pairing (`ERROR: Cannot install
+dotmac-deployment-control==0.1.0a6 and dotmac-kernel==0.1.0a97 because these
+package versions have conflicting dependencies`), then forced a97 in with
+`--no-deps --force-reinstall` and saw all nine canaries fail with
+`ModuleNotFoundError: No module named 'dotmac_kernel.transactions'`. The floor
+lane then installed `dotmac-kernel==0.1.0a98` exactly — the declared minimum,
+not the resolver's choice — and all nine passed.
 
 Supersedes `0.1.0a5` for its DECLARED DEPENDENCY FLOOR. **a5's artifact identity
 and its behaviour are sound and are not withdrawn**; what failed is the

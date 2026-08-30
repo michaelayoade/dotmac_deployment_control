@@ -5,33 +5,21 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "ONE ROW, and it is the version this tree declares. 0.1.0a6 is a metadata",
-    "repair with no published artifact yet: the declared dotmac-kernel floor",
-    "moves from >=0.1.0a77 to >=0.1.0a98, which is the version that first",
-    "shipped the `dotmac_kernel.transactions` module `service.py` imports.",
+    "EMPTY, and that is the correct state: every declared version is published.",
+    "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 is published,",
+    "independently verified, and refused for adoption; 0.1.0a5 is published,",
+    "verified on seven properties, and refused for adoption because its declared",
+    "dotmac-kernel floor is 21 alphas below the module it imports; 0.1.0a6 is",
+    "published, verified on seven properties with nine behavioural canaries, and",
+    "is the version to pin. All of them live in docs/published-versions.json,",
+    "each superseding disposition APPENDED to its original record rather than",
+    "replacing it.",
     "",
-    "The row is added HERE and not in docs/published-versions.json, and the",
-    "ordering is load-bearing rather than tidy: the release floor is derived as",
-    "the maximum of the versions recorded there, so a row written before the",
-    "upload would raise the floor above the version being published and the",
-    "guard would refuse the release it exists to admit. The two files are never",
-    "both true about one version at once, and",
-    "test_the_ledger_and_the_published_record_never_claim_the_same_version",
-    "states that over the two FILES so it holds even in a tagless checkout.",
-    "",
-    "The a4 row that used to sit here said `never-published` and outlived its",
-    "own publication by six hours. That is the stale absolution the",
-    "two-directional ratchet in test_ported_gate_declared_publication.py exists",
-    "to catch, and it did not catch it: CI checked out without tags, so the gate",
-    "could not see the tag that contradicted this file. Both halves are fixed",
-    "together — the row is gone and the checkout now fetches tags. a5's row was",
-    "deleted in the change that recorded its coordinates, which is the",
-    "discipline the a4 row failed, and a6's row is owed the same treatment."
+    "The a6 row that sat here between the declaration and the publication is gone",
+    "in the change that records the coordinates — the same discipline a5 kept and",
+    "the a4 row failed by six hours. A row here and a row in",
+    "docs/published-versions.json are never both true at once, and a test states",
+    "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {
-    "0.1.0a6": {
-      "state": "declared-not-yet-published",
-      "reason": "Declared by this tree and not yet uploaded. a6 exists because 0.1.0a5's declared kernel floor is under-constrained by 21 alphas: it imports `dotmac_kernel.transactions` (service.py:73), first shipped in dotmac-kernel 0.1.0a98, while declaring >=0.1.0a77. a5's artifact identity and behaviour are sound and are not withdrawn — what failed is the declaration, so a6 is a metadata repair carrying a floor canary rather than a behaviour change. DELETE THIS ROW in the change that records a6's coordinates in docs/published-versions.json, and never later."
-    }
-  }
+  "unpublished": {}
 }
