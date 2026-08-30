@@ -474,20 +474,56 @@ def test_the_consumer_download_may_still_use_one() -> None:
     assert PUBLISH_TOKEN not in consumer
 
 
-def test_every_netrc_written_is_removed_in_the_same_step() -> None:
+_NETRC_TRAP = re.compile(r"trap\s+'rm -f[^']*\$\{HOME\}/\.netrc[^']*'\s+EXIT")
+
+
+def test_every_netrc_written_is_removed_by_a_trap_not_a_trailing_rm() -> None:
     """A credential file that outlives its step is a credential file on the
     runner for every later step, including ones that were never trusted with
-    it. Scoped like the credential itself: written, used, gone."""
+    it. Scoped like the credential itself: written, used, gone.
+
+    The removal must be a TRAP, and this test used to accept a trailing `rm`.
+    That was the weaker half: a removal on the last line runs only when every
+    line before it succeeded, and `set -e` makes not-succeeding the common
+    case — `python -m venv` failing, or the run being CANCELLED, which is how
+    `0.1.0a3` was lost. A step that fails with a `.netrc` still on disk is the
+    exact state this rule exists to forbid, and the old form permitted it.
+    """
     for workflow in (WORKFLOW, VERIFY_WORKFLOW):
         for name, block in split_jobs(workflow.read_text(encoding="utf-8")).items():
             for step in split_steps(block):
                 code = "\n".join(executable_lines(step))
                 if ".netrc" not in code:
                     continue
-                assert 'rm -f "${HOME}/.netrc"' in code, (
-                    f"{workflow.name} {name}: a step writes a .netrc and never "
-                    f"removes it:\n{code[:300]}"
+                assert _NETRC_TRAP.search(code), (
+                    f"{workflow.name} {name}: a step writes a .netrc without a "
+                    f"trap that removes it on EXIT:\n{code[:300]}"
                 )
+
+
+def test_a_netrc_cleaned_up_only_on_the_success_path_is_caught() -> None:
+    """SENSITIVITY: the shape the trap replaced. Without this, the rule above
+    would pass over a workflow that had simply stopped writing a `.netrc` at
+    all, and would have gone on passing if someone reinstated the trailing
+    `rm`."""
+    text = VERIFY_WORKFLOW.read_text(encoding="utf-8")
+    trap_line = next(
+        line for line in text.splitlines() if _NETRC_TRAP.search(line.strip())
+    )
+    mutated = _mutate(text, trap_line + "\n", "")
+    mutated = _mutate(
+        mutated,
+        "          python -m venv /tmp/consumer",
+        '          rm -f "${HOME}/.netrc"\n          python -m venv /tmp/consumer',
+    )
+    offenders = [
+        step
+        for block in split_jobs(mutated).values()
+        for step in split_steps(block)
+        if ".netrc" in "\n".join(executable_lines(step))
+        and not _NETRC_TRAP.search("\n".join(executable_lines(step)))
+    ]
+    assert offenders, "a .netrc cleaned up without a trap was not detected"
 
 
 def test_a_netrc_added_to_the_publish_step_is_caught() -> None:
