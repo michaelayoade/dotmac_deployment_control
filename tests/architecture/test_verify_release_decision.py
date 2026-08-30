@@ -62,7 +62,8 @@ def observations(**overrides: object) -> dict[str, object]:
         "head_sha_on_main": True,
         "pyproject_at_head": PYPROJECT,
         "built_hashes": {WHEEL: WHEEL_SHA, SDIST: SDIST_SHA},
-        "downloaded": {WHEEL: WHEEL_SHA, SDIST: SDIST_SHA},
+        "fetched": {WHEEL: WHEEL_SHA, SDIST: SDIST_SHA},
+        "consumer_installed": True,
         "read_back_ok": True,
         "index_filenames": [WHEEL, SDIST],
     }
@@ -98,7 +99,7 @@ def test_the_render_names_the_verdict_and_never_says_ok() -> None:
 
 def test_a_served_file_with_a_different_hash_is_unprovable() -> None:
     outcome = verify.evaluate(
-        **observations(downloaded={WHEEL: "0" * 64, SDIST: SDIST_SHA})
+        **observations(fetched={WHEEL: "0" * 64, SDIST: SDIST_SHA})
     )
     assert outcome.verdict == verify.UNPROVABLE
     assert not finding(outcome, 1).proven
@@ -106,7 +107,7 @@ def test_a_served_file_with_a_different_hash_is_unprovable() -> None:
 
 
 def test_a_file_the_run_did_not_build_is_unprovable() -> None:
-    outcome = verify.evaluate(**observations(downloaded={"other-1.0.whl": "a" * 64}))
+    outcome = verify.evaluate(**observations(fetched={"other-1.0.whl": "a" * 64}))
     assert not finding(outcome, 1).proven
     assert "not built by that run" in finding(outcome, 1).detail
 
@@ -120,9 +121,9 @@ def test_a_missing_run_artifact_is_unprovable_rather_than_ignored() -> None:
 
 
 def test_a_built_file_the_index_does_not_serve_is_unprovable() -> None:
-    outcome = verify.evaluate(**observations(downloaded={WHEEL: WHEEL_SHA}))
+    outcome = verify.evaluate(**observations(fetched={WHEEL: WHEEL_SHA}))
     assert not finding(outcome, 1).proven
-    assert "was not served" in finding(outcome, 1).detail
+    assert "could not be fetched from the index" in finding(outcome, 1).detail
 
 
 # ── property 2: provenance, which a matching hash does NOT establish ────────
@@ -177,11 +178,37 @@ def test_a_failed_read_back_is_unprovable() -> None:
     assert not finding(outcome, 3).proven
 
 
-def test_a_consumer_that_retrieves_nothing_is_unprovable() -> None:
-    outcome = verify.evaluate(**observations(downloaded={}))
+def test_a_consumer_that_cannot_install_is_unprovable() -> None:
+    outcome = verify.evaluate(**observations(consumer_installed=False))
     assert outcome.verdict == verify.UNPROVABLE
     assert not finding(outcome, 4).proven
-    assert "retrieved nothing" in finding(outcome, 4).detail
+    assert "could not install" in finding(outcome, 4).detail
+
+
+def test_hash_equality_and_installation_are_independent() -> None:
+    """THE COLLISION THAT MADE a3 UNPROVABLE, now impossible by construction.
+
+    The first design asked one question of a `pip download`: "did the consumer
+    retrieve everything the run built?" pip takes the wheel and leaves the
+    sdist, so a sound release looked unproven. These are two questions and each
+    must be able to fail alone.
+    """
+    only_bytes = verify.evaluate(**observations(consumer_installed=False))
+    assert only_bytes.verdict == verify.UNPROVABLE
+    assert finding(only_bytes, 1).proven and not finding(only_bytes, 4).proven
+
+    only_install = verify.evaluate(**observations(fetched={WHEEL: WHEEL_SHA}))
+    assert only_install.verdict == verify.UNPROVABLE
+    assert finding(only_install, 4).proven and not finding(only_install, 1).proven
+
+
+def test_the_sdist_is_not_optional() -> None:
+    """a3's exact shape: wheel present and matching, sdist never compared. The
+    ruling that made a3 unreleasable rests on this refusal, so narrowing it
+    would retroactively pass the version Michael declared unreleasable."""
+    outcome = verify.evaluate(**observations(fetched={WHEEL: WHEEL_SHA}))
+    assert outcome.verdict == verify.UNPROVABLE
+    assert SDIST in finding(outcome, 1).detail
 
 
 @pytest.mark.parametrize(

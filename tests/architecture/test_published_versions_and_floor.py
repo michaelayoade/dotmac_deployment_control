@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-INHERITED = REPO_ROOT / "docs" / "inherited-releases.json"
+PUBLISHED = REPO_ROOT / "docs" / "published-versions.json"
 
 _spec = importlib.util.spec_from_file_location(
     "release_guard", REPO_ROOT / "scripts" / "release_guard.py"
@@ -41,23 +41,29 @@ _spec.loader.exec_module(release_guard)
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
-def _inherited() -> dict[str, Any]:
-    return json.loads(INHERITED.read_text(encoding="utf-8"))
+def _published() -> dict[str, Any]:
+    return json.loads(PUBLISHED.read_text(encoding="utf-8"))
 
 
 # ── Step 7: the coordinates ─────────────────────────────────────────────────
 
 
-def test_both_inherited_releases_are_recorded() -> None:
-    versions = [r["version"] for r in _inherited()["releases"]]
-    assert versions == ["0.1.0a1", "0.1.0a2"], versions
+def test_every_published_version_is_recorded() -> None:
+    versions = [r["version"] for r in _published()["releases"]]
+    assert versions == ["0.1.0a1", "0.1.0a2", "0.1.0a3"], versions
 
 
 @pytest.mark.parametrize("field", ["tag_object", "peeled_commit"])
-def test_every_coordinate_is_an_immutable_commit(field: str) -> None:
-    """A branch or an abbreviation here would not be a coordinate at all."""
-    for release in _inherited()["releases"]:
+def test_every_coordinate_is_an_immutable_commit_or_absent(field: str) -> None:
+    """A branch or an abbreviation would not be a coordinate at all. `None` is
+    permitted only where the thing genuinely does not exist — a3 has no tag
+    object because it was never tagged, and inventing one would be worse than
+    the gap."""
+    for release in _published()["releases"]:
         value = release[field]
+        if value is None:
+            assert release["version"] == "0.1.0a3", release["version"]
+            continue
         assert COMMIT.fullmatch(value), f"{release['version']}.{field} = {value!r}"
 
 
@@ -66,7 +72,9 @@ def test_the_peeled_commit_is_distinct_from_the_tag_object() -> None:
     would leave a reader unable to tell which they had. Conflating them is an
     easy mistake because `git rev-parse <tag>` returns the tag object while
     `git rev-list -n1 <tag>` returns the commit."""
-    for release in _inherited()["releases"]:
+    for release in _published()["releases"]:
+        if release["tag_object"] is None:
+            continue
         assert release["tag_object"] != release["peeled_commit"], release["version"]
 
 
@@ -74,28 +82,51 @@ def test_an_absent_release_run_is_null_and_explained() -> None:
     """a1's run id was not recorded at extraction time. Absent rather than
     invented: a coordinate that resolves to nothing is worse than a gap that
     says so."""
-    by_version = {r["version"]: r for r in _inherited()["releases"]}
+    by_version = {r["version"]: r for r in _published()["releases"]}
     assert by_version["0.1.0a1"]["release_run"] is None
     assert by_version["0.1.0a1"]["release_run_note"].strip()
     assert by_version["0.1.0a2"]["release_run"] == "32471956734"
 
 
-def test_the_record_says_the_tags_stay_in_the_source_repository() -> None:
-    assert _inherited()["tags_remain_in_source"] is True
-    assert _inherited()["source_repository"] == "dotmac_starter_mt"
+def test_the_record_says_which_tags_stay_in_the_source_repository() -> None:
+    assert _published()["tags_remain_in_source_for"] == ["0.1.0a1", "0.1.0a2"]
+    sources = {r["version"]: r["source_repository"] for r in _published()["releases"]}
+    assert sources["0.1.0a1"] == "dotmac_starter_mt"
+    assert sources["0.1.0a3"] == "dotmac_deployment_control"
+
+
+def test_a3_is_recorded_as_published_and_never_pinnable() -> None:
+    """An index cannot un-publish. The only place "this exists and must never be
+    depended on" can live is this record and the guard that reads it."""
+    a3 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a3")
+    assert a3["pinnable"] is False
+    assert a3["status"] == "UNPROVABLE"
+    assert a3["tag"] is None and a3["tag_object"] is None
+    assert a3["verify_run"] == "33296262948"
+    assert "UNPROVABLE" in a3["release_run_note"]
 
 
 # ── Step 8: the floor ───────────────────────────────────────────────────────
 
 
 def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
-    assert release_guard.inherited_floor() == "0.1.0a2"
+    """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
+    floor that skipped it would let the next release collide with bytes that are
+    permanently on the index."""
+    assert release_guard.published_floor() == "0.1.0a3"
+
+
+def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
+    """A distinct refusal. "Below the floor" would understate why a3 is refused:
+    it is not merely superseded, it is permanently unverifiable."""
+    problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a3")
+    assert problems and "UNPINNABLE" in problems[0], problems
 
 
 def test_the_declared_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything."""
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a3") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a4") == []
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -107,15 +138,17 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a2" in problems[0], problems
+    assert problems and "not greater than 0.1.0a3" in problems[0], problems
 
 
-@pytest.mark.parametrize("version", ["0.1.0a1", "0.1.0a2", "0.0.9a99", "0.1.0a0"])
+@pytest.mark.parametrize(
+    "version", ["0.1.0a1", "0.1.0a2", "0.1.0a3", "0.0.9a99", "0.1.0a0"]
+)
 def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a3", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a4", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
     """`0.1.0a10` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse the tenth alpha
@@ -130,12 +163,12 @@ def test_another_distribution_is_refused(distribution: str) -> None:
     """The credential will be owner-scoped on Forgejo and able to write any
     package under `dotmac`. This check is the only thing narrowing it to one
     name, so it is tested as a first-class refusal rather than a formality."""
-    problems = release_guard.refusals(distribution, "0.1.0a3")
+    problems = release_guard.refusals(distribution, "0.1.0a4")
     assert problems and "and nothing else" in problems[0], problems
 
 
 @pytest.mark.parametrize(
-    "version", ["0.1.0", "0.1.0b1", "0.1.0rc1", "1.0.0", "0.1.0a2+local", "", "latest"]
+    "version", ["0.1.0", "0.1.0b1", "0.1.0rc1", "1.0.0", "0.1.0a4+local", "", "latest"]
 )
 def test_a_shape_the_guard_cannot_order_is_refused_not_guessed(version: str) -> None:
     """Fail closed on the unfamiliar. A comparator that reasons about a version

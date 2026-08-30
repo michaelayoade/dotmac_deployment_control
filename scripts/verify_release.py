@@ -19,11 +19,23 @@ as unprovable and never retried into looking green.
 4. A clean read-only consumer can install those exact bytes.
 5. No second upload or overwrite occurred.
 
-1 and 2 are not the same claim, and conflating them is the gap this exists to
-close. A wheel on the index with the expected sha256 proves the BYTES are the
-ones somebody built; it says nothing about WHICH run built them or from what
-source. Property 2 is what ties the hash to a workflow run, that run to a head
-commit, and that commit to a declared name and version.
+Provenance and hash equality are not the same claim. A wheel on the index with
+the expected sha256 proves the BYTES are the ones somebody built; it says
+nothing about WHICH run built them or from what source.
+
+## Why hash equality and consumer installation are separate
+
+They collided once, and the collision produced a verdict that looked wrong and
+was right. The first version asked one question — "did the consumer retrieve
+everything the run built?" — of a `pip download`, which takes the WHEEL and has
+no reason to pull the sdist beside it. The sdist was on the index the whole
+time; nothing had ever compared its bytes.
+
+The repair is not to stop asking. Michael ruled a3 unreleasable BECAUSE that
+check was unproven, so narrowing it to whatever pip happens to retrieve would
+have converted the finding into a pass. Both artifacts are now fetched
+EXPLICITLY and compared, and "a consumer can install it" is a separate assertion
+about pip succeeding.
 """
 
 from __future__ import annotations
@@ -101,7 +113,8 @@ def evaluate(
     head_sha_on_main: bool,
     pyproject_at_head: str | None,
     built_hashes: dict[str, str],
-    downloaded: dict[str, str],
+    fetched: dict[str, str],
+    consumer_installed: bool,
     read_back_ok: bool,
     index_filenames: list[str],
 ) -> Outcome:
@@ -149,29 +162,35 @@ def evaluate(
         )
     )
 
-    # ── 1: the registry's bytes are that run's bytes ────────────────────────
+    # ── 1: EXACT HASH EQUALITY over every artifact the run built ────────────
+    # Each file is fetched from the index EXPLICITLY rather than left to a
+    # resolver's preference: `pip download` takes the wheel and ignores the
+    # sdist, which is correct pip behaviour and useless as a bytes proof.
     if not built_hashes:
         detail, proven = "the release run's artifact could not be read", False
-    elif not downloaded:
-        detail, proven = "nothing was retrieved from the registry", False
+    elif not fetched:
+        detail, proven = "nothing could be fetched from the registry", False
     else:
         mismatched = []
-        for name, digest in sorted(downloaded.items()):
+        for name, digest in sorted(fetched.items()):
             want = built_hashes.get(name)
             if want is None:
                 mismatched.append(f"{name} was served but not built by that run")
             elif want != digest:
                 mismatched.append(f"{name}: built {want[:12]}…, served {digest[:12]}…")
-        missing = sorted(set(built_hashes) - set(downloaded))
+        missing = sorted(set(built_hashes) - set(fetched))
         proven = not mismatched and not missing
         detail = (
-            "; ".join(mismatched + [f"{m} was not served" for m in missing])
+            "; ".join(
+                mismatched
+                + [f"{m} could not be fetched from the index" for m in missing]
+            )
             if not proven
-            else ", ".join(f"{n} {d[:12]}…" for n, d in sorted(downloaded.items()))
+            else ", ".join(f"{n} {d[:12]}…" for n, d in sorted(fetched.items()))
         )
     findings.append(
         Finding(
-            1, "registry bytes are the exact release run's artifact", proven, detail
+            1, "exact hash equality for every artifact the run built", proven, detail
         )
     )
 
@@ -191,11 +210,11 @@ def evaluate(
     findings.append(
         Finding(
             4,
-            "a clean read-only consumer installs those bytes",
-            bool(downloaded),
-            f"ci-reader retrieved {len(downloaded)} file(s) into a clean environment"
-            if downloaded
-            else "the read-only consumer retrieved nothing",
+            "a clean read-only consumer installs it",
+            consumer_installed,
+            "ci-reader installed the version into a clean virtual environment"
+            if consumer_installed
+            else "the read-only consumer could not install the version",
         )
     )
 
