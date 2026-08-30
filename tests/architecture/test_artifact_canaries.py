@@ -391,6 +391,13 @@ def test_the_floor_canary_reads_the_floor_from_the_artifact_not_the_tree() -> No
     ), "nothing in the script reads the artifact's own dependency declaration"
 
 
+#: Names that would mean the canary script had started driving the replay path.
+#: `CONFLICT` is the disposition a mismatched replay produces, and
+#: `IDEMPOTENT_REPLAY` the matching one; reaching either from here means the
+#: canary went through `_replay_observation`.
+REPLAY_PATH_NAMES = frozenset({"_replay_observation", "IDEMPOTENT_REPLAY", "CONFLICT"})
+
+
 def test_the_conflict_savepoint_canary_does_not_touch_the_replay_path() -> None:
     """SCOPE, held by a test rather than by a promise.
 
@@ -399,14 +406,48 @@ def test_the_conflict_savepoint_canary_does_not_touch_the_replay_path() -> None:
     addressed independently; a canary that drove it would make this file a
     stakeholder in that redesign and would quietly re-enable the path in every
     lane that runs the script.
+
+    COMMENT-BLIND, like every other check in this repository that watches for a
+    shape — and the first version of this test was not, which is why the note
+    is here. It compared the raw source text and failed on the DOCSTRING that
+    explains the exclusion. That is the fourth time a guard in this repository
+    has tripped over prose describing the thing it forbids, and the resolution
+    is always the same: the prose is worth keeping, so the check reads
+    executable code. Here that means every name and attribute the parser can
+    see, which is also strictly stronger: a name assembled at runtime out of
+    two string halves would defeat a text search, and is refused below by the
+    absence of any reference at all.
     """
-    source = _source()
-    for forbidden in ("_replay_observation", "IDEMPOTENT_REPLAY", "CONFLICT.value"):
-        assert forbidden not in source, (
-            f"the canary script names {forbidden!r}. The replay path is out of "
-            "scope for the floor repair and must stay that way until its typed "
-            "boundary is addressed on its own."
-        )
+    tree = ast.parse(_source())
+    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            referenced |= {alias.name for alias in node.names}
+    offenders = sorted(referenced & REPLAY_PATH_NAMES)
+    assert not offenders, (
+        f"the canary script references {offenders}. The replay path is out of "
+        "scope for the floor repair and must stay that way until its typed "
+        "boundary is addressed on its own."
+    )
+
+
+def test_the_replay_path_detector_would_fire() -> None:
+    """SENSITIVITY. The check above is a non-existence claim, and a
+    non-existence claim over a set nothing populates passes for free. So the
+    forbidden names are fed to the same parser as real code."""
+    tree = ast.parse(
+        "from dotmac_deployment_control.service import _replay_observation\n"
+        "x = ObservationDisposition.CONFLICT.value\n"
+    )
+    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            referenced |= {alias.name for alias in node.names}
+    assert referenced & REPLAY_PATH_NAMES == {"_replay_observation", "CONFLICT"}
 
 
 # ── a failing canary blocks the tag ─────────────────────────────────────────
