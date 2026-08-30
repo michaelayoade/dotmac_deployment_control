@@ -26,6 +26,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEDGER = REPO_ROOT / "docs" / "publication-ledger.json"
+PUBLISHED = REPO_ROOT / "docs" / "published-versions.json"
 TAG_PREFIX = "dotmac-deployment-control-v"
 
 #: Published from `dotmac_starter_mt`; their tags stay there permanently.
@@ -129,3 +130,71 @@ def test_the_gate_passes_a_published_version() -> None:
     """POSITIVE CONTROL. Without it the four refusals are equally consistent
     with a function that refuses everything."""
     assert publication_problems("0.1.0a7", {"0.1.0a7"}, {}) == []
+
+
+# ── the gate must be able to SEE the tags it rules on ───────────────────────
+
+
+def _published_here_with_a_tag() -> dict[str, str]:
+    """version -> tag, for versions this repository published and tagged.
+
+    a1 and a2 are excluded by construction: they were published from
+    `dotmac_starter_mt` and their tags live there, so their absence here is
+    correct rather than a gap.
+    """
+    data = json.loads(PUBLISHED.read_text(encoding="utf-8"))
+    return {
+        r["version"]: r["tag"]
+        for r in data["releases"]
+        if r.get("tag") and r.get("source_repository") == "dotmac_deployment_control"
+    }
+
+
+def test_a_tag_this_repository_published_is_visible_to_the_gate() -> None:
+    """THE VACUITY PROOF, and it is not hypothetical.
+
+    `publication_problems` decides publication from `git tag --list`. A checkout
+    that fetches no tags gives it exactly one possible answer — none — and the
+    half of the ratchet that catches a stale absolution can then never fire. It
+    never fired: `0.1.0a4` was tagged at 06:41 and the ledger went on calling it
+    `never-published`, through green CI, because CI could not see the tag.
+
+    So the recorded coordinates are the oracle. Every version this repository
+    published and tagged must be visible as a local tag; if one is not, the
+    checkout is tagless and every assertion in this file is passing for the
+    wrong reason. The repair is `fetch-tags: true` on the CI checkout, or
+    `git fetch --tags` locally — never deleting this test.
+    """
+    expected = _published_here_with_a_tag()
+    assert expected, (
+        "no version is recorded as published AND tagged from this repository, "
+        "so this check proves nothing. Record the coordinates in "
+        "docs/published-versions.json."
+    )
+    visible = _local_tags()
+    missing = sorted(v for v in expected if v not in visible)
+    assert not missing, (
+        f"tags for {missing} are recorded in docs/published-versions.json but "
+        f"are not visible locally (visible: {sorted(visible) or 'none'}). The "
+        "publication gate reads `git tag --list`, so a tagless checkout makes "
+        "it answer 'unpublished' for everything. Add `fetch-tags: true` to the "
+        "checkout."
+    )
+
+
+def test_the_ledger_and_the_published_record_never_claim_the_same_version() -> None:
+    """A version cannot be both published and awaiting publication.
+
+    The ratchet already catches a ledger row that outlived its tag, but only
+    when the tag is visible. This is the same contradiction stated over two
+    FILES rather than over git state, so it holds even in a tagless checkout —
+    the belt to the previous test's braces.
+    """
+    record = json.loads(PUBLISHED.read_text(encoding="utf-8"))
+    published = {r["version"] for r in record["releases"]}
+    both = sorted(published & set(_ledger()))
+    assert not both, (
+        f"{both} appear in docs/published-versions.json AND in "
+        "docs/publication-ledger.json's `unpublished`. An index cannot "
+        "un-publish; remove the ledger row in the change that publishes."
+    )

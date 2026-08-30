@@ -64,6 +64,7 @@ def observations(**overrides: object) -> dict[str, object]:
         "built_hashes": {WHEEL: WHEEL_SHA, SDIST: SDIST_SHA},
         "fetched": {WHEEL: WHEEL_SHA, SDIST: SDIST_SHA},
         "consumer_installed": True,
+        "consumer_imported": True,
         "read_back_ok": True,
         "index_filenames": [WHEEL, SDIST],
     }
@@ -84,7 +85,7 @@ def test_a_complete_evidence_chain_is_verified() -> None:
     outcome = verify.evaluate(**observations())
     assert outcome.verdict == verify.VERIFIED, outcome.render()
     assert all(f.proven for f in outcome.findings)
-    assert len(outcome.findings) == 5
+    assert len(outcome.findings) == 6
 
 
 def test_the_render_names_the_verdict_and_never_says_ok() -> None:
@@ -185,6 +186,38 @@ def test_a_consumer_that_cannot_install_is_unprovable() -> None:
     assert "could not install" in finding(outcome, 4).detail
 
 
+# ── property 6: installed is not the same as usable ─────────────────────────
+
+
+def test_a_distribution_that_installs_but_cannot_be_imported_is_unprovable() -> None:
+    """THE a4 OBSERVATION, promoted from a swallowed warning to a verdict.
+
+    Verify run 33310594187 installed `0.1.0a4` with `--no-deps` and reported a
+    clean consumer install, and the very next line raised
+    `ModuleNotFoundError: No module named 'dotmac_kernel'` behind a `|| true`.
+    A resolvable dependency is not a working one.
+    """
+    outcome = verify.evaluate(**observations(consumer_imported=False))
+    assert outcome.verdict == verify.UNPROVABLE
+    assert finding(outcome, 4).proven, "it installed — only the import failed"
+    assert not finding(outcome, 6).proven
+    assert "resolvable dependency is not a working one" in finding(outcome, 6).detail
+
+
+def test_installation_and_importability_can_fail_independently() -> None:
+    """Two claims that can only fail together are one claim wearing two names.
+    Each must be reachable alone or the split is decoration."""
+    only_install_failed = verify.evaluate(
+        **observations(consumer_installed=False, consumer_imported=True)
+    )
+    assert not finding(only_install_failed, 4).proven
+    assert finding(only_install_failed, 6).proven
+
+    only_import_failed = verify.evaluate(**observations(consumer_imported=False))
+    assert finding(only_import_failed, 4).proven
+    assert not finding(only_import_failed, 6).proven
+
+
 def test_hash_equality_and_installation_are_independent() -> None:
     """THE COLLISION THAT MADE a3 UNPROVABLE, now impossible by construction.
 
@@ -256,5 +289,5 @@ def test_the_report_lists_every_property_even_when_one_fails() -> None:
     hold — and 'the bytes matched but provenance did not' is exactly the
     distinction a reader needs."""
     outcome = verify.evaluate(**observations(read_back_ok=False))
-    assert {f.prop for f in outcome.findings} == {1, 2, 3, 4, 5}
+    assert {f.prop for f in outcome.findings} == {1, 2, 3, 4, 5, 6}
     assert len(outcome.unproven) == 1

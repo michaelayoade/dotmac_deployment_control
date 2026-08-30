@@ -80,7 +80,23 @@ jobs:
     needs: credential
     runs-on: ubuntu-latest
     steps:
+      # `fetch-tags: true` is load-bearing, not tidiness.
+      #
+      # `test_ported_gate_declared_publication.py` decides whether a declared
+      # version is published by asking `git tag --list`. The default checkout
+      # fetches no tags, so that question had exactly one possible answer here:
+      # none. The gate's two-directional ratchet — the half that catches a
+      # ledger row outliving its own publication — was therefore unable to fire
+      # at all, and it did not fire when `0.1.0a4` was tagged while the ledger
+      # still called it `never-published`.
+      #
+      # A guard that cannot observe the thing it rules on is not a lenient
+      # guard, it is an absent one. `test_a_tag_this_repository_published_is_
+      # visible_to_the_gate` fails if this line is removed, so the blindness
+      # cannot come back silently.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-tags: true
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}

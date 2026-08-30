@@ -53,8 +53,25 @@
       "source_repository": "dotmac_deployment_control",
       "pinnable": false,
       "status": "UNPROVABLE",
-      "release_run_note": "Published by a run cancelled during its own verify job: the upload succeeded, the read-back, consumer proof and tag never ran. Verify run 33296262948 returned UNPROVABLE on property 1 \u2014 the sdist was never retrieved or compared by any automated check. Both artifacts were LATER confirmed byte-correct out of band (wheel 45,911 bytes, sdist 42,256 bytes, both sha256-matching the release run's build), so the BYTES are sound and the EVIDENCE CHAIN is not. Michael ruled 2026-08-30: immutable, unprovable, never pinnable, superseded by a4.",
+      "release_run_note": "Published by a run cancelled during its own verify job: the upload succeeded, the read-back, consumer proof and tag never ran. Verify run 33296262948 returned UNPROVABLE on property 1 — the sdist was never retrieved or compared by any automated check. Both artifacts were LATER confirmed byte-correct out of band (wheel 45,911 bytes, sdist 42,256 bytes, both sha256-matching the release run's build), so the BYTES are sound and the EVIDENCE CHAIN is not. Michael ruled 2026-08-30: immutable, unprovable, never pinnable, superseded by a4.",
       "index": "registry.dotmac.io/api/packages/dotmac/pypi"
+    },
+    {
+      "version": "0.1.0a4",
+      "tag": "dotmac-deployment-control-v0.1.0a4",
+      "tag_object": "3bc4ab0000c3a3dc8a4cf495d9cfec56ded6ed6a",
+      "peeled_commit": "2c61540f74018b7e19d7c5add893e0653cfcdb17",
+      "release_run": "33297423568",
+      "verify_run": "33310594187",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "pinnable": true,
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a4-py3-none-any.whl": "ad1aaaa2d20b9a565d0656f64762564f4dfd90eb4c367187aa63fdd54a33c37e",
+        "dotmac_deployment_control-0.1.0a4.tar.gz": "a5dae85d76e17ab34b1868741def46aab514ffba119110ec750794f5dc1c6e2c"
+      },
+      "release_run_note": "Published by run 33297423568 from the exact tip of protected main. Its tag was written in that same run by a job that called itself a verification and could not perform one: it compared hashes over whatever `pip download` returned (the wheel; never the sdist) and swallowed the install result with `|| true`. INDEPENDENT verify run 33310594187 later returned VERIFIED against the registry — both artifacts fetched by name and sha256-equal to the release run's build, provenance closed on peeled commit 2c61540f74018b7e19d7c5add893e0653cfcdb17, publisher read-back, read-only consumer install, and exactly one wheel and one sdist on the index. Michael ruled 2026-08-30: published and independently provable, so a4 is retained and never republished. The tag is left exactly where that run wrote it and is never moved."
     }
   ],
   "tags_remain_in_source_for": [

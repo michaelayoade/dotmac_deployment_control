@@ -126,12 +126,27 @@ jobs:
             --dest fetched
           ls -l fetched || true
 
-      # PROPERTY 4, deliberately as ci-reader and deliberately an INSTALL.
+      # PROPERTIES 4 AND 6, deliberately as ci-reader and deliberately SEPARATE.
+      #
       # A clean install performed with the PUBLISHING credential would prove the
-      # publisher can read its own upload, which is not the claim. And this asks
-      # whether pip can install it — a separate question from whether the bytes
-      # match, which is property 1's job.
-      - name: A clean read-only consumer installs it
+      # publisher can read its own upload, which is not the claim. And whether
+      # pip can install it is a different question from whether the bytes match,
+      # which is property 1's job.
+      #
+      # DEPENDENCY-COMPLETE, and that is the change. The first version passed
+      # `--no-deps`, which asks whether the index will hand over one file — a
+      # resolvable dependency, not a working one. Run against `0.1.0a4` it
+      # "passed" while the very next line raised
+      # `ModuleNotFoundError: No module named 'dotmac_kernel'`, swallowed by a
+      # `|| true`. So the install now resolves the real dependency graph and the
+      # import is a first-class observation that can fail on its own.
+      #
+      # Two indexes because the graph spans two: `dotmac-kernel` is private and
+      # `sqlalchemy` is not, and the Forgejo registry proxies nothing. PyPI is
+      # the primary and the private index is the EXTRA, so a public name cannot
+      # be shadowed by a private one; `.netrc` is host-scoped, so the credential
+      # is only ever offered to registry.dotmac.io.
+      - name: A clean read-only consumer installs it, with its dependencies
         env:
           TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
         run: |
@@ -142,8 +157,9 @@ jobs:
           chmod 600 "${HOME}/.netrc"
           python -m venv /tmp/consumer
           /tmp/consumer/bin/pip install --quiet --upgrade pip
-          if /tmp/consumer/bin/pip install --quiet --no-deps \
-               --index-url "${INDEX_SIMPLE}" \
+          if /tmp/consumer/bin/pip install --quiet \
+               --index-url "https://pypi.org/simple" \
+               --extra-index-url "${INDEX_SIMPLE}" \
                "${DISTRIBUTION}==${{ inputs.version }}"; then
             echo "true" > consumer-installed.txt
           else
@@ -151,7 +167,24 @@ jobs:
             echo "::warning::the read-only consumer could not install the version"
           fi
           rm -f "${HOME}/.netrc"
-          /tmp/consumer/bin/python -c "import dotmac_deployment_control as m; print(m.__name__)" || true
+
+      # PROPERTY 6, and it is its own property rather than a tail on property 4
+      # for the reason the whole file is built around: two claims that can only
+      # fail together are one claim wearing two names. An sdist that installs
+      # and cannot import is a real and separate outcome, and it is the one that
+      # actually occurred here.
+      #
+      # No `|| true`. That is the entire defect this step was rebuilt to remove.
+      - name: The installed distribution imports in that environment
+        run: |
+          set -euo pipefail
+          if /tmp/consumer/bin/python -c \
+               'import dotmac_deployment_control as m; from dotmac_deployment_control.manifest import module; print(m.__name__, module.code)'; then
+            echo "true" > consumer-imported.txt
+          else
+            echo "false" > consumer-imported.txt
+            echo "::warning::the installed distribution does not import"
+          fi
 
       - name: Decide — verified, or unprovable
         run: |
@@ -182,6 +215,8 @@ jobs:
               "fetched": digests("fetched"),
               "consumer_installed": pathlib.Path("consumer-installed.txt").read_text().strip() == "true"
                   if pathlib.Path("consumer-installed.txt").is_file() else False,
+              "consumer_imported": pathlib.Path("consumer-imported.txt").read_text().strip() == "true"
+                  if pathlib.Path("consumer-imported.txt").is_file() else False,
               "read_back_ok": pathlib.Path("read-back.txt").read_text().strip() == "true",
               "index_filenames": json.loads(pathlib.Path("index-files.json").read_text()),
           }))
@@ -191,18 +226,21 @@ jobs:
       # Only a VERIFIED outcome reaches this step: the decision above exits
       # non-zero on UNPROVABLE, so an unproven artifact cannot acquire a tag that
       # asserts a verification which did not happen.
-      - name: Tag the verified release
+      #
+      # The write itself is delegated to `scripts/tag_once.py`, which is
+      # idempotent on the same commit and REFUSES on a different one. Both
+      # behaviours are proven by unit tests rather than by a comment, and the
+      # first was learnt the hard way: a re-dispatch for `0.1.0a4` reached a
+      # clean VERIFIED verdict and then died on `tag already exists`, turning a
+      # green finding into a red run.
+      - name: Tag the verified release, once
         run: |
           set -euo pipefail
-          TAG="${DISTRIBUTION}-v${{ inputs.version }}"
           HEAD_SHA=$(python3 -c "import json;print(json.load(open('run.json'))['head_sha'])")
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" \
-            -m "${DISTRIBUTION} ${{ inputs.version }} verified: registry bytes match release run ${{ inputs.release_run }}, read back as the publisher, installed by a read-only consumer" \
-            "${HEAD_SHA}"
-          git push origin "${TAG}"
-          echo "tagged ${TAG} on ${HEAD_SHA}"
+          python scripts/tag_once.py \
+            --tag "${DISTRIBUTION}-v${{ inputs.version }}" \
+            --commit "${HEAD_SHA}" \
+            --message "${DISTRIBUTION} ${{ inputs.version }} verified: registry bytes match release run ${{ inputs.release_run }}, read back as the publisher, installed with its dependencies by a read-only consumer, and imported"
 
       - name: State what is now owed
         run: |
