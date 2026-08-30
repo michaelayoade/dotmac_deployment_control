@@ -222,26 +222,32 @@ jobs:
         with:
           name: release-dist
 
-      # The credential goes in a .netrc, never in a URL. A URL carrying
-      # `user:token@host` leaks the moment anything echoes the command — and
-      # `set -x`, a curl error message or a pip resolver diagnostic all do.
-      # Acceptance 7 is a property of how the credential is PASSED, not of
-      # remembering not to print it.
+      # THE PROPERTY: the credential is never part of a URL.
+      #
+      # Stated as the property rather than as a mechanism, because the mechanism
+      # already moved once. This step first passed the credential through a
+      # `.netrc`; current twine no longer reads one, so `--non-interactive`
+      # found no username and refused — correctly, and before transferring a
+      # byte. Naming `.netrc` here would have left a comment describing
+      # something that no longer exists.
+      #
+      # What must stay true is that `https://user:token@host` never appears.
+      # That shape leaks the instant anything echoes the command, and `set -x`,
+      # a curl error and a pip resolver diagnostic all do. Environment variables
+      # keep the credential out of the URL and out of the process arguments, and
+      # Actions masks them — proven in the failed run above, where the env dump
+      # showed `TOKEN: ***` while the step was failing.
       - name: Publish the exact built bytes
         env:
-          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          TWINE_USERNAME: dotmac-deployment-control-publisher
+          TWINE_PASSWORD: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          umask 077
-          printf 'machine %s login %s password %s\n' \
-            "${INDEX_HOST}" "dotmac-deployment-control-publisher" "${TOKEN}" > "${HOME}/.netrc"
-          chmod 600 "${HOME}/.netrc"
           python -m pip install --quiet twine
           # NO --skip-existing. It converts a conflicting upload into a silent
           # success, which is precisely the shape this repository refuses.
           python -m twine upload --non-interactive \
             --repository-url "${INDEX_UPLOAD}" dist/*
-          rm -f "${HOME}/.netrc"
 
   verify:
     needs: [preflight, guard, build, publish]
@@ -268,12 +274,11 @@ jobs:
           TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          umask 077
-          printf 'machine %s login %s password %s\n' \
-            "${INDEX_HOST}" "dotmac-deployment-control-publisher" "${TOKEN}" > "${HOME}/.netrc"
-          chmod 600 "${HOME}/.netrc"
+          # Header auth, the same form the preflight already exercised against
+          # this index in this workflow — a mechanism proven here rather than
+          # assumed. Still no credential in the URL.
           for i in $(seq 1 30); do
-            if curl -sS --netrc "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
+            if curl -sS -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
                  | grep -q -- "-${{ inputs.version }}[.-]"; then
               echo "publisher read-back: ${{ inputs.version }} is on the index"; exit 0
             fi
