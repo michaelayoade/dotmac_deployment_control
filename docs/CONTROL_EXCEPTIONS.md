@@ -139,6 +139,32 @@ The runners are still ephemeral. The ruling on 2026-08-30 was that a credential
 in argv is not worth holding open for a reason that amounts to "the fix is
 untested" — the fix being untested is an argument for testing it.
 
+### The entry also had the exposure backwards, and the tests found it
+
+The record said `-u` "places the credential in the process arguments, where a
+process listing can read it". That is only half right, and the first version of
+the process-table sensitivity proof **failed** because of it: reconstructing
+`curl -u` and scanning `/proc` found nothing.
+
+curl built with writable argv **blanks its own `-u` argument in place** once it
+has parsed it. A `ps` taken during the request shows
+`curl -sS -u<spaces> http://…` while `Authorization: Basic …` still goes on the
+wire. curl does this for `--user` and `--proxy-user`; it does **not** do it for
+`-H`.
+
+So the two sites the record named were the LESS exposed pair, and the five it
+did not name were the ones readable in the process table for the entire
+request — including a thirty-attempt read-back loop. `-u` is still not safe:
+`execve` records argv before curl can scrub it, so auditd and any exec tracer
+keep the credential, and `bash -x` prints the expanded command untouched.
+`test_curl_scrubs_its_own_dash_u_value_but_not_the_wire_or_the_trace` holds
+that finding as an assertion rather than as prose.
+
+**The lesson, which outlives this entry:** the sensitivity proof was not
+ceremony. It was the only thing in the change that could discover that the
+recorded description of the defect was wrong about its own mechanism, and it
+discovered it by failing.
+
 ### The entry undercounted the defect: it was five more steps, not two
 
 The acceptance named the two `-u` sites. `-H "Authorization: token ${TOKEN}"`

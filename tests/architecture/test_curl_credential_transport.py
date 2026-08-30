@@ -38,9 +38,27 @@ for which claim.
 The repository is clean, so a check over the current tree passes for the wrong
 reason unless the offending shape is reconstructed and each detector is watched
 to fire on it (`AGENTS.md` rule 23 / ADR-0018 failure mode 1: empty scope). So
-each assertion here is paired with a planted `curl -u`, a planted trailing
-`rm`, a planted 0644 config, a planted un-suppressed `set -x`, or a planted
-workflow mutation — and the pair asserts the detector reports the violation.
+each assertion here is paired with a planted credential-bearing curl, a planted
+trailing `rm`, a planted 0644 config, a planted un-suppressed `set -x`, a
+planted workspace-local config, or a planted workflow mutation — and the pair
+asserts the detector reports the violation.
+
+## What the sensitivity proofs turned up about `curl -u` itself
+
+The first version of the process-table proof reconstructed `curl -u` and FAILED:
+the scan found nothing. curl built with writable argv **blanks its own `-u`
+argument in place** after parsing it, so a `ps` during the request shows
+`curl -sS -u<spaces> http://...` while `Authorization: Basic ...` still goes on
+the wire.
+
+The exception record was therefore wrong about which sites were worse. The two
+`-u` sites it named were the LESS exposed pair; the five
+`-H "Authorization: token ${TOKEN}"` sites it did not name are visible in the
+process table for the entire request, because curl scrubs `--user` and not a
+header. `-u` still leaks through `execve` (recorded before curl can scrub, so
+auditd and any exec tracer keep it) and through `bash -x`, and
+`test_curl_scrubs_its_own_dash_u_value_but_not_the_wire_or_the_trace` holds that
+finding as an assertion rather than as prose.
 
 ## No real credential is used anywhere
 
@@ -339,29 +357,46 @@ def test_basic_mode_sends_what_dash_u_sent(tmp_path: Path) -> None:
     assert not hits, hits
 
 
+def live_curl_argvs() -> list[list[str]]:
+    """Every live curl process's argument vector."""
+    argvs: list[list[str]] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        argv = [part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part]
+        if argv and argv[0].endswith("curl"):
+            argvs.append(argv)
+    return argvs
+
+
+LEAKY_HEADER = """#!/usr/bin/env bash
+# Five of the seven replaced sites had this shape. curl does NOT scrub a header
+# argument, so it stays in the process table for the whole request.
+set -euo pipefail
+curl -sS -H "Authorization: token ${CURL_CREDENTIAL_SECRET}" "$@"
+"""
+
 LEAKY_DASH_U = """#!/usr/bin/env bash
-# The shape this repository used to ship, reconstructed so the detector above
-# can be watched failing on it.
+# The other two. See the test below for why this one behaves differently.
 set -euo pipefail
 curl -sS -u "ci-reader:${CURL_CREDENTIAL_SECRET}" "$@"
 """
 
 
-def test_the_process_table_scan_catches_a_dash_u_invocation(tmp_path: Path) -> None:
-    """SENSITIVITY for the measurement above.
-
-    Without this the argv assertion would pass on a repository where curl was
-    never called at all. Here the OLD form is reconstructed and the same scan
-    must report it.
-    """
-    _procfs_or_skip()
-    secret = _sentinel()
+def _run_leaky(
+    tmp_path: Path, body: str, secret: str, *, xtrace: bool = False
+) -> tuple[list[str], list[list[str]], str, str]:
+    """Run a reconstructed leaky invocation and observe it mid-request."""
     leaky = tmp_path / "leaky.sh"
-    leaky.write_text(LEAKY_DASH_U, encoding="utf-8")
-    leaky.chmod(0o700)
+    leaky.write_text(body, encoding="utf-8")
     with Probe() as probe:
+        command = ["bash"] + (["-x"] if xtrace else []) + [str(leaky), probe.url]
         proc = subprocess.Popen(  # noqa: S603
-            ["bash", str(leaky), probe.url],  # noqa: S607
+            command,
             cwd=tmp_path,
             env=_helper_env(tmp_path, secret),
             stdout=subprocess.PIPE,
@@ -369,15 +404,77 @@ def test_the_process_table_scan_catches_a_dash_u_invocation(tmp_path: Path) -> N
             text=True,
         )
         try:
-            assert probe.in_flight.wait(timeout=PROBE_TIMEOUT)
+            assert probe.in_flight.wait(timeout=PROBE_TIMEOUT), "curl never arrived"
             hits = process_table_hits(secret)
+            argvs = live_curl_argvs()
+            request = probe.request.decode("utf-8", "replace")
         finally:
             probe.release.set()
-            proc.communicate(timeout=PROBE_TIMEOUT)
+            _, stderr = proc.communicate(timeout=PROBE_TIMEOUT)
+    return hits, argvs, request, stderr
 
+
+def test_the_process_table_scan_catches_a_credential_bearing_curl(
+    tmp_path: Path,
+) -> None:
+    """SENSITIVITY for the measurement above.
+
+    Without this the argv assertion would pass on a repository where curl was
+    never called at all. The `-H "Authorization: ..."` form is reconstructed —
+    five of the seven sites this change replaced used it — and the same scan
+    must report it.
+    """
+    _procfs_or_skip()
+    secret = _sentinel()
+    hits, _, request, _ = _run_leaky(tmp_path, LEAKY_HEADER, secret)
+    assert f"Authorization: token {secret}" in request
     assert hits, (
-        "the process-table scan did not see a credential passed as `curl -u`. "
+        "the process-table scan did not see a credential passed as `curl -H`. "
         "The detector is blind, and every clean result it reports is worthless."
+    )
+
+
+def test_curl_scrubs_its_own_dash_u_value_but_not_the_wire_or_the_trace(
+    tmp_path: Path,
+) -> None:
+    """A CORRECTION TO THE EXCEPTION RECORD, kept as an executable observation.
+
+    The record said `curl -u` "places the credential in the process arguments,
+    where a process listing can read it", and named those two sites as the
+    defect. That is only half right. curl built with writable argv **blanks its
+    own `-u` argument in place** once it has parsed it — a `ps` taken during the
+    request shows `curl -sS -u<spaces> http://...` — so the two sites the record
+    named were the LESS exposed pair, and the five `-H` sites it did not name
+    were the ones visible for the whole request.
+
+    That does not make `-u` safe, and this asserts the two channels that remain:
+
+    - the credential still goes **on the wire**, so the form was authenticating
+      and its scrubbing is not a refusal;
+    - `bash -x` prints the **expanded** command, and the trace is not scrubbed —
+      the leak arrives through the log instead of the process table.
+
+    A third channel is not observable from here and is stated rather than
+    asserted: `execve` records argv BEFORE curl can scrub it, so auditd, eBPF
+    and any exec-tracing agent capture the credential regardless.
+
+    The `-u` flag itself is asserted present, not its value: whether the value
+    survives depends on `HAVE_WRITABLE_ARGV` in the local build, and a test that
+    demanded one answer would be asserting a property of the runner image.
+    """
+    _procfs_or_skip()
+    secret = _sentinel()
+    expected = base64.b64encode(f"ci-reader:{secret}".encode()).decode()
+    _, argvs, request, stderr = _run_leaky(tmp_path, LEAKY_DASH_U, secret, xtrace=True)
+    assert f"Authorization: Basic {expected}" in request, (
+        "the reconstructed `-u` invocation did not authenticate, so this "
+        "observation is about nothing"
+    )
+    assert any("-u" in argv for argv in argvs), argvs
+    assert secret in stderr, (
+        "`bash -x` did not print the credential for a `curl -u` command. That "
+        "is the channel `-u` leaks through even where curl scrubs its argv, and "
+        "it is why the helper suppresses xtrace across its own credential write."
     )
 
 
