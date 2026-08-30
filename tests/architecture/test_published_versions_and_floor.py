@@ -176,9 +176,12 @@ def test_a4_carries_the_superseding_disposition_in_four_named_terms() -> None:
     assert disposition["functional_authorization"] == "failed"
     assert disposition["version_self_reporting"] == "failed"
     assert disposition["adoption_eligibility"] == "refused"
-    assert disposition["superseded_by"] == "0.1.0a5" or a4["superseded_by"] == (
-        "0.1.0a5"
-    )
+    # A release-level fact, beside `pinnable`, not inside the disposition blob:
+    # a reader scanning the rows must be able to see what to pin instead without
+    # opening one. `or` was wrong here and could not short-circuit — the first
+    # operand raised `KeyError` before the second was reached, which is a test
+    # asserting two places and reaching neither.
+    assert a4["superseded_by"] == "0.1.0a5"
     for term in (
         "artifact_identity",
         "functional_authorization",
@@ -207,7 +210,7 @@ def test_the_disposition_is_APPENDED_and_never_overwrites_the_pass_record() -> N
         "INDEPENDENT verify run 33310594187 later returned VERIFIED",
         "2c61540f74018b7e19d7c5add893e0653cfcdb17",
         "publisher read-back, read-only consumer install",
-        "the tag is left exactly where that run wrote it and is never moved",
+        "The tag is left exactly where that run wrote it and is never moved",
     ):
         assert original in note, (
             f"the original PASS record has lost {original!r}. The superseding "
