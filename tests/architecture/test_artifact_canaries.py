@@ -59,7 +59,22 @@ EXPECTED_CANARIES = (
     "a4_bare_hex_still_binds",
     "encoding_fault_is_not_a_mutation",
     "mutation_after_authorization_is_refused",
+    # 0.1.0a6. The two that answer a defect the seven above cannot see: an
+    # artifact whose bytes are perfect and whose DECLARED DEPENDENCY FLOOR is
+    # 21 alphas too low.
+    "declared_kernel_floor",
+    "conflict_savepoint_executes",
 )
+
+#: Every virtualenv `ci.yml` may run the canaries with, and what each proves.
+#: The point of the list is that it is a list: through `0.1.0a5` there was one
+#: environment, it resolved `dotmac-kernel` freely, and "whatever the index
+#: happens to offer" was the only kernel any canary ever met.
+CI_CANARY_INTERPRETERS = {
+    "/tmp/canary/bin/python": "the resolver's choice, which is what a consumer gets",
+    "/tmp/floor/bin/python": "EXACTLY the declared minimum kernel",
+    "/tmp/below-floor/bin/python": "the newest kernel the floor excludes — must FAIL",
+}
 
 
 def _source() -> str:
@@ -186,29 +201,45 @@ def _canary_invocations(text: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("workflow", "interpreter"),
+    ("workflow", "interpreters"),
     [
-        (CI_WORKFLOW, "/tmp/canary/bin/python"),
-        (VERIFY_WORKFLOW, "/tmp/consumer/bin/python"),
+        (CI_WORKFLOW, frozenset(CI_CANARY_INTERPRETERS)),
+        (VERIFY_WORKFLOW, frozenset({"/tmp/consumer/bin/python"})),
     ],
     ids=["ci", "verify"],
 )
 def test_the_workflow_runs_the_canaries_with_a_virtualenv_interpreter(
-    workflow: Path, interpreter: str
+    workflow: Path, interpreters: frozenset[str]
 ) -> None:
     """THE CLAUSE THE WHOLE THING TURNS ON. `python scripts/artifact_canaries.py`
     would run against the runner's interpreter, where the package is not
     installed at all — and the first canary would fail, loudly, which is the
     correct outcome but not the one anybody wants to discover during a
-    release."""
+    release.
+
+    An ALLOWED SET rather than one name, as of `0.1.0a6`: CI now runs the same
+    script in three environments that differ only in which kernel is installed.
+    The set is closed, so a fourth environment is a deliberate edit here rather
+    than a lane nobody declared.
+    """
     invocations = _canary_invocations(workflow.read_text(encoding="utf-8"))
     assert invocations, f"{workflow.name} does not run the canaries"
     for line in invocations:
-        assert interpreter in line, (
-            f"{workflow.name} runs the canaries as {line!r}, not with "
-            f"{interpreter}. A canary run from a source checkout proves nothing "
-            "about an artifact."
+        assert any(interpreter in line for interpreter in interpreters), (
+            f"{workflow.name} runs the canaries as {line!r}, with none of "
+            f"{sorted(interpreters)}. A canary run from a source checkout "
+            "proves nothing about an artifact."
         )
+
+
+def test_every_declared_ci_interpreter_is_actually_used() -> None:
+    """The other direction. A declared lane that no step runs is a claim about
+    coverage with nothing behind it, which is the shape this repository refuses
+    everywhere else."""
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    invocations = "\n".join(_canary_invocations(text))
+    unused = sorted(i for i in CI_CANARY_INTERPRETERS if i not in invocations)
+    assert not unused, f"declared but never run: {unused}"
 
 
 def test_the_release_workflow_does_not_run_them() -> None:
@@ -243,6 +274,182 @@ def test_the_expected_version_comes_from_outside_the_artifact() -> None:
     assert "inputs.version" in verify_text
 
 
+# ── the declared kernel floor is falsifiable, in both directions ────────────
+
+
+def _canary_job() -> str:
+    """The `artifact-canaries` job block, which is the required merge context."""
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+    start = text.index("  artifact-canaries:")
+    end = text.index("\n  postgres:", start)
+    return text[start:end]
+
+
+def test_the_floor_lane_installs_the_declared_minimum_and_pins_it() -> None:
+    """THE PROOF `0.1.0a5` DID NOT HAVE.
+
+    a5's artifact was byte-perfect, independently verified on seven properties,
+    and unusable: it imports `dotmac_kernel.transactions`, first shipped in
+    kernel `a98`, while declaring `>=0.1.0a77`. Every check the repository owned
+    was satisfied, because every one of them ran in an environment where a
+    compatible kernel happened to be present.
+
+    The repair is not another hash. It is a lane that installs the DECLARED
+    MINIMUM literally — `dotmac-kernel==${FLOOR}` beside the wheel — and hands
+    the canaries `--expect-kernel`, so an environment holding anything else is
+    refused rather than accepted as close enough.
+    """
+    job = _canary_job()
+    assert "dotmac-kernel==${FLOOR}" in job, (
+        "the floor lane does not pin the kernel to the declared floor, so it "
+        "runs against whatever the resolver chose — which is the environment "
+        "0.1.0a5's 21-alpha under-constraint was invisible in"
+    )
+    assert "kernel_floor.py declared" in job, (
+        "the floor must be read from the declaration rather than written as a "
+        "literal in the workflow; a second literal is a second authority"
+    )
+    assert "--expect-kernel" in job, (
+        "the canaries are not told which kernel the lane pinned, so they cannot "
+        "refuse an environment that quietly resolved a newer one"
+    )
+
+
+def test_the_mutation_proves_the_excluded_kernel_cannot_satisfy_the_canaries() -> None:
+    """WITHOUT THIS THE FLOOR LANE PASSES FOR THE WRONG REASON.
+
+    A canary nobody has seen refuse is not a canary (ADR-0018). The mutation
+    installs the newest kernel the declared floor EXCLUDES and requires the same
+    script to fail — which also catches a floor set too HIGH, because a version
+    below a needlessly-high floor would run everything perfectly well.
+
+    Both halves are required and they fail independently: the resolver refusing
+    the pairing says the declared number is enforced, and the forced downgrade
+    says the number is the RIGHT one. Half one alone is close to circular.
+    """
+    job = _canary_job()
+    assert "kernel_floor.py excluded" in job, (
+        "the mutation target is not derived from the index, so it is a literal "
+        "that can name a version nobody ever published"
+    )
+    assert "--force-reinstall" in job and "--no-deps" in job, (
+        "the mutation never defeats the constraint, so it can only observe pip "
+        "obeying the metadata — never whether the metadata is correct"
+    )
+    assert "the canaries PASSED with dotmac-kernel" in job, (
+        "the mutation does not fail when the excluded kernel WORKS, so an "
+        "over-constrained floor would go unnoticed"
+    )
+    assert "ResolutionImpossible" in job, (
+        "the resolver half accepts ANY non-zero pip, so a network error or a "
+        "typo'd index would report the floor proven on a run that resolved "
+        "nothing"
+    )
+    assert "dotmac_kernel.transactions" in job, (
+        "the mutation accepts any failure. The floor exists for one symbol; a "
+        "failure that never names it is some other breakage standing in for the "
+        "proof"
+    )
+
+
+def test_the_floor_canary_reads_the_floor_from_the_artifact_not_the_tree() -> None:
+    """A canary that PARSED `pyproject.toml` would be reading the source tree
+    from an environment built to exclude it — the a4 mistake, committed inside
+    the file written to prevent it. The declaration under test is the wheel's
+    own `Requires-Dist`, which is the same statement a consumer's resolver
+    reads.
+
+    Checked over the script's imports and path literals rather than over the
+    word: the docstrings discuss `pyproject.toml` at length, and they should.
+    """
+    tree = ast.parse(_source())
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        (node.module or "").split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 0
+    }
+    assert "tomllib" not in imported, (
+        "the canary script imports a TOML parser, so it can read the source "
+        "tree's declaration instead of the artifact's"
+    )
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "pyproject.toml" not in literals, (
+        "the canary script holds `pyproject.toml` as a path; the artifact's "
+        "metadata is the only declaration it may read"
+    )
+    assert (
+        "Requires-Dist" in _source()
+    ), "nothing in the script reads the artifact's own dependency declaration"
+
+
+#: Names that would mean the canary script had started driving the replay path.
+#: `CONFLICT` is the disposition a mismatched replay produces, and
+#: `IDEMPOTENT_REPLAY` the matching one; reaching either from here means the
+#: canary went through `_replay_observation`.
+REPLAY_PATH_NAMES = frozenset({"_replay_observation", "IDEMPOTENT_REPLAY", "CONFLICT"})
+
+
+def test_the_conflict_savepoint_canary_does_not_touch_the_replay_path() -> None:
+    """SCOPE, held by a test rather than by a promise.
+
+    `_replay_observation` compares `payload_digest` as text. It is a recorded
+    unmonitored region with its own enforceable premise and it is being
+    addressed independently; a canary that drove it would make this file a
+    stakeholder in that redesign and would quietly re-enable the path in every
+    lane that runs the script.
+
+    COMMENT-BLIND, like every other check in this repository that watches for a
+    shape — and the first version of this test was not, which is why the note
+    is here. It compared the raw source text and failed on the DOCSTRING that
+    explains the exclusion. That is the fourth time a guard in this repository
+    has tripped over prose describing the thing it forbids, and the resolution
+    is always the same: the prose is worth keeping, so the check reads
+    executable code. Here that means every name and attribute the parser can
+    see, which is also strictly stronger: a name assembled at runtime out of
+    two string halves would defeat a text search, and is refused below by the
+    absence of any reference at all.
+    """
+    tree = ast.parse(_source())
+    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            referenced |= {alias.name for alias in node.names}
+    offenders = sorted(referenced & REPLAY_PATH_NAMES)
+    assert not offenders, (
+        f"the canary script references {offenders}. The replay path is out of "
+        "scope for the floor repair and must stay that way until its typed "
+        "boundary is addressed on its own."
+    )
+
+
+def test_the_replay_path_detector_would_fire() -> None:
+    """SENSITIVITY. The check above is a non-existence claim, and a
+    non-existence claim over a set nothing populates passes for free. So the
+    forbidden names are fed to the same parser as real code."""
+    tree = ast.parse(
+        "from dotmac_deployment_control.service import _replay_observation\n"
+        "x = ObservationDisposition.CONFLICT.value\n"
+    )
+    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            referenced |= {alias.name for alias in node.names}
+    assert referenced & REPLAY_PATH_NAMES == {"_replay_observation", "CONFLICT"}
+
+
 # ── a failing canary blocks the tag ─────────────────────────────────────────
 
 
@@ -269,7 +476,7 @@ def _observations(**overrides: object) -> dict[str, object]:
         "consumer_installed": True,
         "consumer_imported": True,
         "canaries_passed": True,
-        "canary_detail": "all 7 canaries passed against the installed artifact",
+        "canary_detail": "all 9 canaries passed against the installed artifact",
         "read_back_ok": True,
         "index_filenames": [wheel, sdist],
     }

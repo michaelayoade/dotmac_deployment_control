@@ -46,6 +46,42 @@ absence let a4's defect survive publication:
                                 changed. The defect itself.
 * `mutation_after_authorization_is_refused` — and the refusal a4 was reaching
                                 for still happens, on a real change.
+
+## The two canaries `0.1.0a6` added, and the different defect they answer
+
+`0.1.0a5` passed every canary above, against the wheel the registry served, and
+still could not run in its consuming assembly. It imports
+`dotmac_kernel.transactions` (`service.py:73`), first shipped in kernel `a98`,
+while declaring `dotmac-kernel >=0.1.0a77` — **under-constrained by 21 alphas**.
+Resolution succeeded, the lock wrote cleanly, the artifacts matched their
+published hashes byte-for-byte, and the failure appeared at container boot.
+
+Nothing above could have caught it, and the reason is worth being precise
+about: the canaries ran in an environment where a compatible kernel HAPPENED to
+be installed. That proves the wheel imports. It does not prove the wheel's
+DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
+
+* `declared_kernel_floor`  — the kernel in this environment satisfies the floor
+                             the ARTIFACT'S OWN `Requires-Dist` declares, and
+                             `dotmac_kernel.transactions` resolves out of
+                             `site-packages`. With `--expect-kernel` the
+                             equality is exact, which is how `ci.yml`'s floor
+                             lane pins the declared minimum literally rather
+                             than accepting whatever the resolver chose.
+* `conflict_savepoint_executes` — the symbol whose availability sets that floor
+                             is not merely importable but WORKS: an accepted
+                             observation runs the `with conflict_savepoint(...)`
+                             block, and a genuine unique-constraint collision
+                             driven through the same context manager leaves the
+                             caller's transaction usable. `0.1.0a1` is the
+                             version that got this wrong, so it is a property
+                             with a history rather than a hypothesis.
+
+Deliberately NOT exercised: `_replay_observation`. Its text comparison of
+`payload_digest` is a recorded unmonitored region with its own enforceable
+premise (`tests/architecture/test_digest_comparison_is_typed.py`), and it is
+being addressed independently. A canary that drove it would make this file a
+stakeholder in a redesign it has nothing to say about.
 """
 
 from __future__ import annotations
@@ -57,13 +93,28 @@ import sysconfig
 import traceback
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 DISTRIBUTION = "dotmac-deployment-control"
 IMPORT_NAME = "dotmac_deployment_control"
+KERNEL_DISTRIBUTION = "dotmac-kernel"
+KERNEL_IMPORT_NAME = "dotmac_kernel"
 CANONICAL_DIGEST = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
+
+#: `0.1.0a98`, and nothing else. The same narrow shape `scripts/release_guard
+#: .py` and `scripts/kernel_floor.py` accept, repeated here rather than
+#: imported because this script runs in an environment that has the wheel
+#: installed and does NOT have this repository importable — importing a
+#: sibling script would be the one thing these canaries exist to refuse.
+_ALPHA = re.compile(r"\A(\d+)\.(\d+)\.(\d+)a(\d+)\Z")
+
+#: `dotmac-kernel (>=0.1.0a98)` and `dotmac-kernel>=0.1.0a98` are both seen in
+#: the wild depending on the build backend's metadata version.
+_REQUIRES_KERNEL = re.compile(
+    r"\Adotmac[-_]kernel\s*\(?\s*>=\s*(\d+\.\d+\.\d+a\d+)\s*\)?\Z"
+)
 
 
 class CanaryFailure(AssertionError):
@@ -163,6 +214,129 @@ def canary_version_agreement(expect_version: str) -> str:
     return f"__version__ == METADATA Version: == {expect_version}"
 
 
+# ── the declared dependency floor, which a hash cannot see ──────────────────
+
+
+def _alpha_key(version: str) -> tuple[int, int, int, int]:
+    """An orderable key, refusing an unfamiliar shape rather than guessing.
+
+    Ordering, not text: `0.1.0a97` sorts ABOVE `0.1.0a100` as a string, so a
+    string comparison here would start answering wrongly at the kernel's
+    hundredth alpha and would do it silently.
+    """
+    match = _ALPHA.fullmatch(version.strip())
+    if match is None:
+        raise CanaryFailure(
+            f"{version!r} is not a version shape this canary can order. It "
+            "accepts `<major>.<minor>.<patch>a<n>` only, and refuses anything "
+            "else rather than reasoning about it."
+        )
+    major, minor, patch, alpha = match.groups()
+    return (int(major), int(minor), int(patch), int(alpha))
+
+
+def _declared_kernel_floor() -> str:
+    """The kernel floor the INSTALLED artifact's own metadata declares.
+
+    Read from `Requires-Dist`, never from `pyproject.toml`. This script runs
+    where the repository is not importable, and the whole point of the floor
+    lane is that the ARTIFACT's declaration is the thing under test — a source
+    tree the artifact was built from is a different fact that nothing here can
+    see.
+    """
+    import importlib.metadata
+
+    requirements = importlib.metadata.metadata(DISTRIBUTION).get_all("Requires-Dist")
+    matches = [
+        match.group(1)
+        for requirement in (requirements or [])
+        for match in [_REQUIRES_KERNEL.fullmatch(str(requirement).strip())]
+        if match
+    ]
+    if not matches:
+        raise CanaryFailure(
+            f"the installed {DISTRIBUTION} metadata declares no plain "
+            f"`{KERNEL_DISTRIBUTION} >=<version>` requirement. Its "
+            f"Requires-Dist is {list(requirements or [])}. This canary reads a "
+            "bare lower bound and refuses anything else: an upper bound or an "
+            "environment marker changes what 'the declared minimum' means, and "
+            "the floor lane installs that minimum literally."
+        )
+    if len(matches) > 1:
+        raise CanaryFailure(
+            f"the metadata declares {KERNEL_DISTRIBUTION} more than once "
+            f"({matches}), so 'the declared floor' is not one value"
+        )
+    return matches[0]
+
+
+def canary_declared_kernel_floor(expect_kernel: str | None = None) -> str:
+    """THE DEFECT `0.1.0a6` WAS CUT FOR: the declared floor must be honest.
+
+    a5's artifact identity was perfect and it could not be composed. It
+    imported `dotmac_kernel.transactions`, first shipped in kernel `a98`, and
+    declared `>=0.1.0a77`. Every proof the repository had was satisfied by an
+    environment where a compatible kernel happened to be present.
+
+    Three statements, because each closes a different half of that:
+
+    1. the kernel installed here satisfies the floor the artifact declares —
+       true in any lane, so the canary is never vacuous;
+    2. `dotmac_kernel.transactions` — the module whose availability SETS this
+       floor — resolves out of `site-packages`, not out of a checkout;
+    3. with `--expect-kernel`, the installed kernel is EXACTLY that version.
+       That is the floor lane's tightening, and it is the one statement a
+       resolver free to pick a newer kernel can never make.
+    """
+    import importlib.metadata
+
+    floor = _declared_kernel_floor()
+    installed = importlib.metadata.version(KERNEL_DISTRIBUTION)
+    if _alpha_key(installed) < _alpha_key(floor):
+        raise CanaryFailure(
+            f"{KERNEL_DISTRIBUTION} {installed} is installed and the artifact "
+            f"declares >={floor}. The environment does not satisfy the "
+            "distribution's own metadata."
+        )
+
+    transactions = __import__(f"{KERNEL_IMPORT_NAME}.transactions", fromlist=["x"])
+    origin = Path(transactions.__file__ or "").resolve()
+    sites = _site_directories()
+    if not any(origin.is_relative_to(site) for site in sites):
+        raise CanaryFailure(
+            f"{KERNEL_IMPORT_NAME}.transactions was imported from {origin}, "
+            f"which is not inside any install directory ({sites}). The floor "
+            "is a statement about a PUBLISHED kernel; satisfying it from a "
+            "working tree would prove nothing about what a consumer resolves."
+        )
+    if not hasattr(transactions, "conflict_savepoint"):
+        raise CanaryFailure(
+            f"{KERNEL_IMPORT_NAME}.transactions exists but exports no "
+            "`conflict_savepoint`, which is the symbol this floor is set by"
+        )
+
+    if expect_kernel is not None:
+        if installed != expect_kernel:
+            raise CanaryFailure(
+                f"this lane pinned {KERNEL_DISTRIBUTION}=={expect_kernel} and "
+                f"{installed} is installed. The floor lane's claim is that the "
+                "DECLARED MINIMUM works, so it must run against that exact "
+                "version — 'some compatible kernel' is what let 0.1.0a5 "
+                "through."
+            )
+        if installed != floor:
+            raise CanaryFailure(
+                f"this lane pinned {installed}, the artifact declares "
+                f">={floor}, and the two must be the same version. A floor "
+                "lane testing anything other than the declared minimum has "
+                "stopped testing the floor."
+            )
+        return (
+            f"declared >={floor}; installed EXACTLY {installed} ({origin.name} present)"
+        )
+    return f"declared >={floor}; installed {installed} satisfies it"
+
+
 # ── a database, inside the environment under test ───────────────────────────
 
 
@@ -213,6 +387,7 @@ def _session() -> Any:
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
 _POLICY_VERSION = 4
+_RELEASE = "dotmac_sub@7.187.1"
 
 
 def _command_id() -> str:
@@ -288,6 +463,69 @@ def _approve(db: Any, plan_id: Any, digest: str) -> Any:
             command_id=_command_id(), plan_id=plan_id, evidence=_evidence(digest)
         ),
     )
+
+
+def _enrolled_target(db: Any) -> tuple[Any, str]:
+    """A registered target with an ACTIVE credential, ready to be reported to.
+
+    Enrolment and activation are two steps because the module refuses to admit
+    a key it has only been told about: the caller proves possession through the
+    kernel (ADR-0007) and activation is the record of that. Skipping it here
+    would leave the credential PENDING, every observation would be recorded
+    `not_eligible`, and the savepoint block would never be reached — a canary
+    that passed while proving nothing.
+    """
+    from dotmac_deployment_control import (
+        CredentialTransitionCommand,
+        DesiredDeployment,
+        EnrolCredentialCommand,
+        RegisterTargetCommand,
+        SetDesiredStateCommand,
+        activate_credential,
+        enrol_credential,
+        register_target,
+        set_desired_state,
+    )
+
+    target = register_target(
+        db,
+        RegisterTargetCommand(
+            command_id=_command_id(),
+            target_ref=f"tgt-{uuid.uuid4().hex[:8]}",
+            subject_ref="acme-operator",
+            product_code="dotmac_sub",
+            environment="production",
+        ),
+    )
+    set_desired_state(
+        db,
+        SetDesiredStateCommand(
+            command_id=_command_id(),
+            target_id=target.id,
+            desired=DesiredDeployment(release_ref=_RELEASE, spec={"replicas": 2}),
+        ),
+    )
+    key_id = f"key-{uuid.uuid4().hex[:8]}"
+    credential_id = enrol_credential(
+        db,
+        EnrolCredentialCommand(
+            command_id=_command_id(),
+            target_id=target.id,
+            key_id=key_id,
+            public_key_b64="AAAA",
+            public_key_fingerprint=f"sha256:{uuid.uuid4().hex}",
+            enrollment_authority="platform_admin_policy",
+        ),
+    )
+    activate_credential(
+        db,
+        CredentialTransitionCommand(
+            command_id=_command_id(),
+            credential_id=credential_id,
+            at=_NOW - timedelta(days=1),
+        ),
+    )
+    return target, key_id
 
 
 # ── the behavioural canaries ────────────────────────────────────────────────
@@ -481,6 +719,166 @@ def canary_mutation_after_authorization_is_refused() -> str:
     )
 
 
+def canary_conflict_savepoint_executes() -> str:
+    """THE SYMBOL THAT SETS THE FLOOR IS NOT MERELY IMPORTABLE — IT WORKS.
+
+    `declared_kernel_floor` proves `dotmac_kernel.transactions` resolves. That
+    is the check a5 would have failed and it is still only half the question:
+    an import that succeeds and a mechanism that behaves are two facts, and
+    this repository's whole argument is that two facts which can only fail
+    together are one fact wearing two names.
+
+    So this drives the real path, twice:
+
+    * an ACCEPTED observation runs `record_observation`, whose canonical
+      receipt is established inside `with conflict_savepoint(session)`. The
+      happy path through the block.
+    * a genuine unique-constraint collision is then driven through the SAME
+      context manager, and the caller's transaction must still be usable
+      afterwards. That is the property `0.1.0a1` shipped without — it did not
+      recover the losing first arrival after the receipt constraint chose a
+      winner — so it is a property with a history, not a hypothesis.
+
+    `_replay_observation` is deliberately not reached. Its text comparison of
+    `payload_digest` is a recorded unmonitored region being addressed
+    independently, and a canary that drove it would tie this file to a
+    redesign it has nothing to say about.
+    """
+    import importlib.metadata
+
+    from dotmac_kernel.transactions import conflict_savepoint
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from dotmac_deployment_control import service
+
+    # The service module resolved to the INSTALLED package, and the symbol it
+    # calls is the kernel's rather than a local shim of the same name. Both are
+    # cheap to state and neither is implied by the import succeeding.
+    service_origin = Path(service.__file__ or "").resolve()
+    if not any(service_origin.is_relative_to(site) for site in _site_directories()):
+        raise CanaryFailure(
+            f"{IMPORT_NAME}.service was imported from {service_origin}, which "
+            "is not an install directory"
+        )
+    bound = getattr(service, "conflict_savepoint", None)
+    if bound is not conflict_savepoint:
+        raise CanaryFailure(
+            f"{IMPORT_NAME}.service.conflict_savepoint is {bound!r}, not "
+            f"{KERNEL_IMPORT_NAME}.transactions.conflict_savepoint. The floor "
+            "is declared for the kernel's implementation; a local one of the "
+            "same name would make the declaration describe nothing."
+        )
+
+    from dotmac_deployment_control import (
+        ObservationDisposition,
+        ObservationReceipt,
+        ObservedState,
+        RecordObservationCommand,
+        SignatureStatus,
+        spec_digest,
+    )
+
+    db = _session()
+    target, key_id = _enrolled_target(db)
+    report_id = f"rep-{uuid.uuid4().hex[:8]}"
+
+    verdict = service.record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=_command_id(),
+            observed=ObservedState(
+                report_id=report_id,
+                observed_release_ref=_RELEASE,
+                observed_spec_digest=spec_digest({"replicas": 2}),
+                reported_at=_NOW,
+                authenticated_target_ref=target.target_ref,
+                claimed_target_ref=target.target_ref,
+                key_id=key_id,
+                raw_body=b"{}",
+                raw_body_digest="sha256:" + "b" * 64,
+                signature_status=SignatureStatus.VALID.value,
+            ),
+            received_at=_NOW,
+        ),
+    )
+    if verdict.disposition != ObservationDisposition.ACCEPTED.value:
+        raise CanaryFailure(
+            f"a valid, eligible, matching observation was {verdict.disposition!r} "
+            "rather than accepted, so the savepoint block was never reached"
+        )
+    if verdict.receipt_id is None:
+        raise CanaryFailure(
+            "the observation was accepted and no canonical receipt was "
+            "established, which is the row the savepoint exists to create"
+        )
+
+    # THE RECOVERY, which is the half an import cannot show. A second receipt
+    # under the same (identity, report_id) violates
+    # `uq_observation_receipts_identity_report`; the savepoint must absorb it
+    # and leave the caller's transaction alive.
+    #
+    # The `try` sits OUTSIDE the `with`, exactly as `service.py` writes it, and
+    # that placement is the contract rather than a style choice:
+    # `conflict_savepoint` rolls the SAVEPOINT back and RE-RAISES unchanged, so
+    # the caller's transaction survives and the caller still learns what
+    # happened. A canary that caught the error inside the block would be
+    # testing a shape no caller uses.
+    collided = False
+    try:
+        with conflict_savepoint(db):
+            db.add(
+                ObservationReceipt(
+                    authenticated_target_ref=target.target_ref,
+                    report_id=report_id,
+                    payload=b"{}",
+                    payload_digest="sha256:" + "c" * 64,
+                    key_id=key_id,
+                    first_received_at=_NOW,
+                    original_verdict=ObservationDisposition.ACCEPTED.value,
+                )
+            )
+            db.flush()
+    except IntegrityError:
+        collided = True
+    if not collided:
+        raise CanaryFailure(
+            "a duplicate canonical receipt was inserted without violating "
+            "`uq_observation_receipts_identity_report`, so this canary proved "
+            "nothing about recovering from a conflict — the constraint is "
+            "missing from the artifact"
+        )
+
+    # The caller's transaction survived: it can still read, and there is still
+    # exactly one canonical receipt.
+    receipts = (
+        db.execute(
+            select(ObservationReceipt).where(
+                ObservationReceipt.authenticated_target_ref == target.target_ref,
+                ObservationReceipt.report_id == report_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(receipts) != 1:
+        raise CanaryFailure(
+            f"{len(receipts)} canonical receipts exist for one idempotency key; "
+            "the savepoint either rolled back too much or too little"
+        )
+    if receipts[0].id != verdict.receipt_id:
+        raise CanaryFailure(
+            "the surviving receipt is not the one the accepted observation "
+            "established, so the loser overwrote the winner"
+        )
+
+    kernel = importlib.metadata.version(KERNEL_DISTRIBUTION)
+    return (
+        f"accepted through conflict_savepoint, and a real collision left the "
+        f"transaction usable (kernel {kernel})"
+    )
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 
@@ -493,6 +891,19 @@ def main(argv: list[str] | None = None) -> int:
             "the version the artifact must report. Supplied by the caller so "
             "the canary compares the artifact against an EXTERNAL statement of "
             "what was built, rather than against itself."
+        ),
+    )
+    parser.add_argument(
+        "--expect-kernel",
+        default=None,
+        help=(
+            "the EXACT dotmac-kernel version this environment was built with. "
+            "Optional, and the option is the whole floor lane: without it the "
+            "canaries run against whatever the resolver chose, which is "
+            "precisely the environment in which 0.1.0a5's 21-alpha "
+            "under-constraint was invisible. Supplied, it requires the "
+            "installed kernel to be that version AND that version to be the "
+            "floor the artifact declares."
         ),
     )
     args = parser.parse_args(argv)
@@ -511,10 +922,17 @@ def main(argv: list[str] | None = None) -> int:
             "mutation_after_authorization_is_refused",
             canary_mutation_after_authorization_is_refused,
         ),
+        (
+            "declared_kernel_floor",
+            lambda: canary_declared_kernel_floor(args.expect_kernel),
+        ),
+        ("conflict_savepoint_executes", canary_conflict_savepoint_executes),
     ]
 
     print(f"artifact canaries — {DISTRIBUTION} {args.expect_version}")
     print(f"interpreter: {sys.executable}")
+    if args.expect_kernel:
+        print(f"kernel pinned to the declared floor: {args.expect_kernel}")
     failures: list[str] = []
     for name, canary in canaries:
         try:

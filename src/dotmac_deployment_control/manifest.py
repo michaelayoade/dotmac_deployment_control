@@ -60,7 +60,10 @@ module = ModuleManifest(
     #: prerequisites, audit actions — changes, and NOT when the distribution is
     #: republished. `0.1.0a5` changes behaviour and a column width inside an
     #: already-declared table; it declares no new table, prerequisite or audit
-    #: action, so this stays where it is.
+    #: action, so this stays where it is. `0.1.0a6` changes ONLY the declared
+    #: `dotmac-kernel` floor and the CI lanes that keep it honest — no source
+    #: file under `src/` moved — so moving this would make a metadata repair
+    #: read as a contract change to every composing assembly.
     #:
     #: It is a literal, and it is not the second version authority `0.1.0a5`
     #: removed. That one was `__version__`, which duplicated `pyproject.toml`'s

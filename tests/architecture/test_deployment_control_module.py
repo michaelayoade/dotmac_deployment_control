@@ -148,6 +148,51 @@ class TestTheManifestMatchesTheLedger:
         assert schemas.count(module_schema("deploy")) == 1
 
 
+class TestTheContractVersionIsNotTheDistributionVersion:
+    """Two versions, two facts, and the confusion between them costs both ways.
+
+    `manifest.version` is the MODULE CONTRACT version: a composing assembly
+    reads it to decide contract compatibility, so it moves when the declared
+    surface — code, schema, tables, prerequisites, audit actions — changes.
+    `pyproject.toml`'s version is the DISTRIBUTION version and moves on every
+    republication, including one that changes no source file at all.
+
+    `0.1.0a6` is exactly such a republication: the declared `dotmac-kernel`
+    floor moves from `>=0.1.0a77` to `>=0.1.0a98` and nothing under `src/`
+    changes. Pointing the manifest at the distribution version would make that
+    metadata repair announce a contract change to every consumer — and pointing
+    the distribution at the manifest would hide a real surface change behind a
+    version that had not moved.
+    """
+
+    def test_the_two_versions_are_separate_literals(self) -> None:
+        declared = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text())["tool"][
+            "poetry"
+        ]["version"]
+        assert module.version != declared, (
+            f"the module contract version and the distribution version are both "
+            f"{declared!r}. They are different facts; equality here is how a "
+            "republication starts reading as a contract change."
+        )
+
+    def test_the_manifest_declares_no_surface_this_release_added(self) -> None:
+        """The premise behind leaving it alone, checked rather than asserted.
+
+        The contract version may stay put only because the declared surface
+        did. If a later change adds a table, a prerequisite or an audit action
+        without moving `manifest.version`, this is the test that should have
+        stopped it — so the surface is pinned here, beside the reason.
+        """
+        assert module.version == "0.1.0a2"
+        assert module.tables == ()
+        assert {
+            "deployment_targets",
+            "deployment_plans",
+            "observation_receipts",
+            "observation_attempts",
+        } <= set(module.platform_tables)
+
+
 class TestThePlaneIsDeclaredNotDiscovered:
     def test_the_tenant_plane_is_empty(self) -> None:
         """A module that decides what a FLEET should run cannot live inside one

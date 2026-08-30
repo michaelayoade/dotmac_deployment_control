@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -396,7 +397,11 @@ def test_a5_is_recorded_as_published_and_independently_verified() -> None:
     publishing run neither verified itself nor tagged, and a separate run
     gathered the evidence afresh and wrote the tag on a VERIFIED verdict."""
     a5 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a5")
-    assert a5["pinnable"] is True
+    # `pinnable` is deliberately NOT asserted here, for the same reason it is
+    # absent from a4's identity test: whether a5's bytes are what they say they
+    # are and whether a5 may be adopted are different questions, and conflating
+    # them is what lets a superseding disposition quietly erase a proof. a5's
+    # adoption standing has its own tests below.
     assert a5["status"] == "released"
     assert a5["release_run"] == "33318227812"
     assert a5["verify_run"] == "33318433336"
@@ -425,14 +430,179 @@ def test_a5_is_the_version_a4_points_at() -> None:
     assert releases["0.1.0a4"]["superseded_by"] == "0.1.0a5"
     assert releases["0.1.0a5"]["supersedes"] == "0.1.0a4"
     assert releases["0.1.0a4"]["pinnable"] is False
-    assert releases["0.1.0a5"]["pinnable"] is True
 
 
-def test_the_ledger_row_that_declared_a5_is_gone() -> None:
-    """THE DISCIPLINE THE a4 ROW FAILED. Its `never-published` entry outlived
-    its own publication by six hours. The row is deleted in the change that
-    records the coordinates, not later."""
+def test_the_supersession_chain_ends_at_a_version_that_may_be_pinned() -> None:
+    """THE QUESTION A CONSUMER ACTUALLY ASKS, and the one a per-row `pinnable`
+    flag cannot answer on its own.
+
+    a3 is unprovable, a4 is unadoptable, a5 is under-constrained. Three rows
+    each saying "not this one" leave a reader to reconstruct the chain by hand,
+    and the reconstruction is exactly where somebody pins the wrong thing. So
+    every refused row must name its replacement, and following the chain from
+    the oldest refusal must terminate — either at a pinnable published row, or
+    at a version that is declared and not yet published, which is the honest
+    answer while a repair is in flight.
+    """
+    releases = {r["version"]: r for r in _published()["releases"]}
     ledger = json.loads(
         (REPO_ROOT / "docs" / "publication-ledger.json").read_text(encoding="utf-8")
+    )["unpublished"]
+
+    seen: list[str] = []
+    version = "0.1.0a4"
+    while version in releases and releases[version].get("pinnable") is False:
+        assert version not in seen, f"the supersession chain loops at {version}"
+        seen.append(version)
+        nxt = releases[version].get("superseded_by")
+        assert nxt, (
+            f"{version} is refused and names no replacement. A consumer reading "
+            "this file has to guess, and guessing is how 0.1.0a4 nearly got "
+            "pinned."
+        )
+        version = nxt
+
+    assert version not in seen
+    if version in releases:
+        assert releases[version].get("pinnable") is True, version
+    else:
+        assert version in ledger, (
+            f"the chain ends at {version}, which is neither a published row nor "
+            "a declared-and-unpublished one. It ends nowhere."
+        )
+    assert seen == ["0.1.0a4", "0.1.0a5"], seen
+
+
+# ── a5: verified, and still not adoptable ───────────────────────────────────
+
+
+def test_a5_carries_the_superseding_disposition_in_four_named_terms() -> None:
+    """MICHAEL'S RULING, 2026-08-30, and it is NEW EVIDENCE rather than a record
+    adjusted after the fact.
+
+    a5 is the version that separates a third question from the two a4 already
+    separated. a4 showed that artifact identity and functional behaviour are
+    different findings. a5 shows that BOTH of those can pass while the DECLARED
+    DEPENDENCY FLOOR is wrong: its bytes are the published bytes, the encoding
+    defect it was cut for is genuinely fixed, and it still cannot be composed,
+    because it imports a kernel module 21 alphas above the floor it declares.
+    """
+    a5 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a5")
+    disposition = a5["disposition"]
+    assert disposition["artifact_identity"] == "passed"
+    assert disposition["functional_authorization"] == "passed"
+    assert disposition["declared_dependency_floor"] == "failed"
+    assert disposition["adoption_eligibility"] == "refused"
+    assert a5["superseded_by"] == "0.1.0a6"
+    for term in (
+        "artifact_identity",
+        "functional_authorization",
+        "declared_dependency_floor",
+        "adoption_eligibility",
+    ):
+        assert str(disposition[f"{term}_evidence"]).strip(), (
+            f"{term} is a verdict with no evidence behind it, which is the "
+            "shape this repository refuses everywhere else"
+        )
+
+
+def test_a5s_disposition_is_APPENDED_and_never_overwrites_the_pass_record() -> None:
+    """THE SAME TREATMENT a4 RECEIVED, and for the same reason.
+
+    a5's seven-property verification really happened and is not withdrawn.
+    Rewriting the record to say "failed" would destroy the evidence that a
+    complete identity verification and a working artifact are still not enough
+    to make a distribution composable — which is the only lesson a6 has to
+    teach.
+    """
+    a5 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a5")
+    note = a5["release_run_note"]
+    for original in (
+        "THE FIRST RELEASE CUT THROUGH THE CORRECTED TWO-WORKFLOW PATH",
+        "INDEPENDENT verify run 33318433336 returned VERIFIED",
+        "b182a99892067f26c0c1d03d958c5fcdc97c5869",
+        "all seven behavioural canaries passing against the wheel the REGISTRY served",
+        "Only that run wrote the tag, on a VERIFIED verdict, through tag_once.py",
+    ):
+        assert original in note, (
+            f"the original PASS record has lost {original!r}. The superseding "
+            "disposition is APPENDED; it never rewrites what was proven."
+        )
+    assert a5["tag"] == "dotmac-deployment-control-v0.1.0a5"
+    assert a5["tag_object"] == "ed5f62fc68cb068a829d3c28b83f2c65dee2860c"
+    assert a5["peeled_commit"] == "b182a99892067f26c0c1d03d958c5fcdc97c5869"
+    assert set(a5["sha256"]) == {
+        "dotmac_deployment_control-0.1.0a5-py3-none-any.whl",
+        "dotmac_deployment_control-0.1.0a5.tar.gz",
+    }
+
+
+def test_a5_is_refused_for_its_declaration_not_for_its_bytes() -> None:
+    """The refusal must say WHICH question failed. "a5 is bad" would send the
+    next reader hunting a byte problem that does not exist, and would erase the
+    distinction that makes this repository's release record worth keeping."""
+    a5 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a5")
+    assert a5["pinnable"] is False
+    reason = a5["unpinnable_reason"]
+    assert "0.1.0a6" in reason, "the record must name what to pin instead"
+    for evidence in (
+        "dotmac_kernel.transactions",
+        "0.1.0a98",
+        ">=0.1.0a77",
+        "21 alphas",
+    ):
+        assert evidence in reason, evidence
+    assert "IDENTITY" in reason.upper()
+
+
+def test_a5_is_refused_by_name_as_well_as_by_the_floor() -> None:
+    """TWO independent refusals, exactly as a4 gets. The floor alone would say
+    "publish something higher", which is true and says nothing about why a5
+    must not be adopted by a consumer that is not publishing at all."""
+    problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a5")
+    assert len(problems) >= 2, problems
+    assert "UNPINNABLE" in problems[0], problems
+    assert "UNSUITABLE FOR NEW ADOPTION" in problems[0], problems
+    assert any("not greater than 0.1.0a5" in p for p in problems), problems
+
+
+def test_the_ledger_holds_the_declared_version_and_nothing_else() -> None:
+    """THE DISCIPLINE THE a4 ROW FAILED, stated as a rule rather than as a
+    snapshot.
+
+    a4's `never-published` entry outlived its own publication by six hours, and
+    the earlier form of this test — `unpublished == {}` — could only be true
+    between releases. Held literally it would have forced a6's declaration into
+    `docs/published-versions.json` BEFORE the upload, which raises the derived
+    floor above the version being published and makes the release guard refuse
+    the very release it exists to admit.
+
+    So the rule is the one the two files actually owe each other: the ledger
+    holds exactly the versions this tree declares and has not yet published,
+    and every row is deleted in the change that records its coordinates.
+    """
+    ledger = json.loads(
+        (REPO_ROOT / "docs" / "publication-ledger.json").read_text(encoding="utf-8")
+    )["unpublished"]
+    declared = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["tool"]["poetry"]["version"]
+    published = {r["version"] for r in _published()["releases"]}
+
+    stale = sorted(set(ledger) - {declared})
+    assert not stale, (
+        f"{stale} sit in the ledger and are not the version this tree declares. "
+        "A row outliving its own release is the stale absolution the "
+        "two-directional ratchet exists to catch."
     )
-    assert ledger["unpublished"] == {}, ledger["unpublished"]
+    if declared not in published:
+        assert declared in ledger, (
+            f"{declared} is declared, unpublished, and unrecorded. A consumer "
+            "pinning it gets a resolver error."
+        )
+        assert str(ledger[declared].get("reason", "")).strip()
+    else:
+        assert declared not in ledger, (
+            f"{declared} is published AND recorded unpublished. Remove the "
+            "ledger row in the change that records the coordinates."
+        )
