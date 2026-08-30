@@ -257,7 +257,14 @@ def test_a_job_that_drops_the_preflight_dependency_is_caught() -> None:
 
 def test_skip_existing_is_caught() -> None:
     """Planted into the COMMAND, so it exercises the comment-stripping too."""
-    mutated = _mutate(_text(), "--non-interactive", "--non-interactive --skip-existing")
+    # Anchored on the COMMAND, not on the flag name — the workflow's comment
+    # mentions `--non-interactive` too, and planting there would only prove that
+    # comment-stripping works. It does; this must prove the command check does.
+    mutated = _mutate(
+        _text(),
+        "python -m twine upload --non-interactive",
+        "python -m twine upload --non-interactive --skip-existing",
+    )
     offenders = [
         line for line in executable_lines(mutated) if "--skip-existing" in line
     ]
