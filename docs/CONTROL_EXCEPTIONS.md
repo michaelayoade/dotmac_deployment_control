@@ -108,28 +108,100 @@ a recorded tag is not locally visible rather than passing over an empty set.
 
 ## Credentials appear in curl process arguments, not in URLs
 
-**Status:** open, narrow, and stated rather than enforced.
+**Status:** REMEDIATED 2026-08-30. Recorded rather than deleted: the entry is
+the record of an acceptance that was made deliberately, held for four releases,
+and then withdrawn — and of an undercount that the acceptance itself contained.
 
-Two steps authenticate with `curl -u "ci-reader:${TOKEN}"` — the CI credential
+### What was accepted, and why
+
+Two steps authenticated with `curl -u "ci-reader:${TOKEN}"` — the CI credential
 probe and the release guard's index-conflict check. `-u` places the credential
 in the process arguments, where a process listing can read it. **No credential
-is in a URL** anywhere in either workflow, and
-`test_no_credential_ever_appears_in_a_url` enforces that across both workflows
-and both credentials; the argv exposure is a strictly smaller and different
+was in a URL** anywhere in either workflow, and
+`test_no_credential_ever_appears_in_a_url` enforced that across both workflows
+and both credentials; the argv exposure was a strictly smaller and different
 thing.
 
-It is recorded rather than fixed because the only argv-free curl form
-(`--config -` on stdin) would be an untested change to a path CI does not
-exercise: the release guard runs on `workflow_dispatch` only, so a mistake in it
-would surface at the next release rather than in a pull request. The exposure is
-bounded by the runner being ephemeral and single-tenant, and by the credential
-being read-only.
+It was recorded rather than fixed because the only argv-free curl form then
+considered (`--config -` on stdin) would have been an untested change to a path
+CI does not exercise: the release guard runs on `workflow_dispatch` only, so a
+mistake in it would surface at the next release rather than in a pull request.
+The exposure was bounded by the runner being ephemeral and single-tenant, and by
+the credential being read-only.
 
-**The premise, stated so it can be falsified:** this is acceptable only while
-these runners are ephemeral and not shared with untrusted workloads. If either
-changes, the form must change with it. `scripts/fetch_published_artifacts.py`
-already shows the shape — credential from the environment, into an
-`Authorization` header, never into argv or a URL.
+**The premise, stated so it could be falsified:** acceptable only while these
+runners are ephemeral and not shared with untrusted workloads.
+
+### The premise was not what changed. Michael withdrew the acceptance.
+
+The runners are still ephemeral. The ruling on 2026-08-30 was that a credential
+in argv is not worth holding open for a reason that amounts to "the fix is
+untested" — the fix being untested is an argument for testing it.
+
+### The entry undercounted the defect: it was five more steps, not two
+
+The acceptance named the two `-u` sites. `-H "Authorization: token ${TOKEN}"`
+places the credential in argv in exactly the same way, and there were **five**
+of those: the publisher identity probe, the package-namespace read, the
+repository-refusal loop, the publish read-back (a thirty-attempt loop, so up to
+five minutes of a credential-bearing command line), and the verify workflow's
+publisher read-back. A remediation that fixed only what the record named would
+have left the property false while claiming it true, so all seven were changed.
+
+### What replaced it
+
+`scripts/curl_with_credential.sh`. A curl configuration file supplies `user =`
+or `header =`; only its PATH reaches argv. The file is created under
+`umask 077` — 0600 from the instant it exists, never world-readable and then
+tightened — under `RUNNER_TEMP` rather than the workspace, so no
+`upload-artifact` glob can reach it, and it is removed by a `trap` on `EXIT`,
+`HUP`, `INT` and `TERM`. A trailing `rm` was not sufficient: it runs only when
+every preceding line succeeded, and this repository lost `0.1.0a3` to a
+cancelled run. The same trap repair was applied to the consumer step's `.netrc`
+in `verify-release.yml`, which had exactly the trailing-`rm` shape.
+
+The wire form is unchanged. Both modes send the header the previous flags sent,
+so this is a transport change and not an authentication change.
+
+### What proves it, and what each proof does NOT prove
+
+`tests/architecture/test_curl_credential_transport.py`, in three unequal
+layers, described there in full. In short:
+
+- **A process-table observation** is the only layer that measures the property.
+  Real curl, a real request held open against a loopback socket, and every
+  readable `/proc/<pid>/cmdline` scanned for the credential — while also
+  asserting the credential reached the server, so a clean argv cannot be the
+  argv of a request that never authenticated.
+- **A `curl` shim on `PATH`** records argv, and the config file's path, mode
+  and contents at the moment curl opened it. It carries the cleanup proofs on
+  the FAILING paths — a non-zero curl, an unexecutable curl, and a `SIGTERM`
+  cancellation — and the `bash -x` log proof.
+- **A static ratchet** over the workflows and `scripts/*.sh`. This proves the
+  checked-in SOURCE contains no argv-placing form. **It proves nothing about a
+  running process**, and must never be cited as though it did.
+
+Every one of those detectors is paired with a reconstruction of the offending
+shape — a planted `curl -u`, a planted trailing `rm`, a planted 0644 config, a
+planted un-suppressed `set -x`, a planted workspace-local config, and planted
+workflow mutations — and the pair asserts the detector fires. The repository is
+clean, so without those pairs each check would pass over an empty set.
+
+**What is still NOT enforced.** The credential remains in the step's
+ENVIRONMENT, which is where a workflow secret has to live and is readable by
+anything running as the same user in the same step. Moving it out of argv
+narrows the exposure to that; it does not remove it. And the static ratchet
+scans `.github/workflows/*.yml` and `scripts/*.sh` only — a credential-bearing
+curl inside a composite action, a reusable workflow, or a Python script would
+be an unmonitored region rather than a covered one.
+
+**The boundary this did not cross.** "The publish path may not rely on a
+credential file" (recorded above, after twine dropped `.netrc` support between
+two runs) is about twine, and the upload step still authenticates by
+`TWINE_USERNAME`/`TWINE_PASSWORD` and reads no file.
+`test_the_upload_still_authenticates_only_through_the_environment` asserts that
+rather than leaving it to be assumed, because the curl config file and the
+uploader now sit in the same workflow.
 
 ## The publisher's identity IS asserted — resolved 2026-08-30
 

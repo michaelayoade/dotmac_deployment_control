@@ -59,9 +59,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: registry-release
     steps:
+      # Checked out for ONE file: `scripts/curl_with_credential.sh`. Every
+      # authenticated request below used to carry `-H "Authorization: token
+      # ${TOKEN}"`, which places the credential in curl's ARGUMENT VECTOR just
+      # as `-u` does. Same wire form now, from a 0600 config file.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: The authenticated identity must be the publisher, and it must reach packages
         env:
           TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
           EXPECTED_LOGIN: dotmac-deployment-control-publisher
         run: |
           set -euo pipefail
@@ -75,7 +81,7 @@ jobs:
           # that is set, valid, and belongs to the Starter's publisher is exactly
           # the case worth catching, because it silently recreates the two-writer
           # hazard the extraction removed.
-          login=$(curl -sS -H "Authorization: token ${TOKEN}" \
+          login=$(bash scripts/curl_with_credential.sh token -sS \
             "https://${INDEX_HOST}/api/v1/user" | python3 -c \
             'import json,sys; print(json.load(sys.stdin).get("login",""))')
           if [ "${login}" != "${EXPECTED_LOGIN}" ]; then
@@ -85,8 +91,8 @@ jobs:
           echo "identity: ${login}"
 
           # Package reach. Granted by team membership, not by the scope string.
-          code=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/")
+          code=$(bash scripts/curl_with_credential.sh token \
+            -sS -o /dev/null -w '%{http_code}' "${INDEX_SIMPLE}/${DISTRIBUTION}/")
           if [ "${code}" != "200" ] && [ "${code}" != "404" ]; then
             echo "::error::package-namespace read returned ${code}; the credential cannot reach the index."
             exit 1
@@ -98,12 +104,12 @@ jobs:
       # reach source is a different blast radius than the one recorded.
       - name: The publisher must NOT be able to reach repositories
         env:
-          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
           for path in "user/repos" "repos/dotmac/dotmac_deployment_control"; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' \
-              -H "Authorization: token ${TOKEN}" "https://${INDEX_HOST}/api/v1/${path}")
+            code=$(bash scripts/curl_with_credential.sh token \
+              -sS -o /dev/null -w '%{http_code}' "https://${INDEX_HOST}/api/v1/${path}")
             if [ "${code}" = "200" ]; then
               echo "::error::/api/v1/${path} returned 200 — this credential can reach repositories."
               exit 1
@@ -164,10 +170,12 @@ jobs:
       # instead of surfacing as a transport error at upload time.
       - name: The version must not already exist on the index
         env:
-          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+          CURL_CREDENTIAL_USER: ci-reader
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_READ_TOKEN }}
         run: |
           set -euo pipefail
-          body=$(curl -sS -u "ci-reader:${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/" || true)
+          body=$(bash scripts/curl_with_credential.sh basic -sS \
+            "${INDEX_SIMPLE}/${DISTRIBUTION}/" || true)
           if printf '%s' "${body}" | grep -q -- "-${{ inputs.version }}[.-]"; then
             echo "::error::${DISTRIBUTION} ${{ inputs.version }} is already on the index."
             echo "A published version is immutable. Publish a new version; never overwrite."
@@ -280,15 +288,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: registry-release
     steps:
+      # For `scripts/curl_with_credential.sh` only; this job builds nothing.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Read the published version back as the publisher
         env:
-          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
           # Header auth, the same form the preflight already exercised against
-          # this index in this workflow. Still no credential in the URL.
+          # this index in this workflow. No credential in the URL, and — since
+          # the helper replaced `-H "Authorization: token ${TOKEN}"` — none in
+          # curl's arguments either. This loop is the reason that mattered
+          # most: it can hold a credential-bearing curl in the process table
+          # for five minutes.
           for i in $(seq 1 30); do
-            if curl -sS -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
+            if bash scripts/curl_with_credential.sh token -sS "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
                  | grep -q -- "-${{ inputs.version }}[.-]"; then
               echo "publisher read-back: ${{ inputs.version }} is on the index"; exit 0
             fi

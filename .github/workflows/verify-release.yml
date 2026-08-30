@@ -88,11 +88,11 @@ jobs:
       # PROPERTY 3.
       - name: Publisher-authenticated read-back
         env:
-          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          code=$(curl -sS -o index.html -w '%{http_code}' \
-            -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/")
+          code=$(bash scripts/curl_with_credential.sh token \
+            -sS -o index.html -w '%{http_code}' "${INDEX_SIMPLE}/${DISTRIBUTION}/")
           if [ "${code}" = "200" ] && grep -q -- "-${{ inputs.version }}[.-]" index.html; then
             echo "true" > read-back.txt
           else
@@ -151,10 +151,19 @@ jobs:
           TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
         run: |
           set -euo pipefail
+          # THE TRAP IS THE CLEANUP, and the trailing `rm -f` that used to be
+          # here was not. A removal on the last line runs only when every line
+          # before it succeeded, and `set -e` makes not-succeeding the common
+          # case: `python -m venv` failing, or the run being CANCELLED — which
+          # is how this repository lost `0.1.0a3` — left the credential file on
+          # the runner for every later step. EXIT covers the failure path,
+          # HUP/INT/TERM cover cancellation.
+          trap 'rm -f -- "${HOME}/.netrc"' EXIT HUP INT TERM
           umask 077
+          : > "${HOME}/.netrc"          # 0600 from the instant it exists
+          chmod 600 "${HOME}/.netrc"    # explicit, and before the secret
           printf 'machine %s login %s password %s\n' \
-            "${INDEX_HOST}" "ci-reader" "${TOKEN}" > "${HOME}/.netrc"
-          chmod 600 "${HOME}/.netrc"
+            "${INDEX_HOST}" "ci-reader" "${TOKEN}" >> "${HOME}/.netrc"
           python -m venv /tmp/consumer
           /tmp/consumer/bin/pip install --quiet --upgrade pip
           if /tmp/consumer/bin/pip install --quiet \
@@ -166,7 +175,6 @@ jobs:
             echo "false" > consumer-installed.txt
             echo "::warning::the read-only consumer could not install the version"
           fi
-          rm -f "${HOME}/.netrc"
 
       # PROPERTY 6, and it is its own property rather than a tail on property 4
       # for the reason the whole file is built around: two claims that can only

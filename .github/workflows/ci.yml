@@ -34,9 +34,18 @@ jobs:
     name: forgejo read credential resolves dotmac-kernel
     runs-on: ubuntu-latest
     steps:
+      # Checked out for ONE file: `scripts/curl_with_credential.sh`. This job
+      # needed no working tree while it authenticated with `curl -u`, and that
+      # form is precisely what put the credential in the process arguments.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Refuse to continue without a usable read credential
         env:
           TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+          # By ENVIRONMENT, never on a command line. The helper reads it from
+          # here and writes it into a 0600 config file whose PATH is the only
+          # thing curl's argv ever holds.
+          CURL_CREDENTIAL_USER: ci-reader
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_READ_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${TOKEN}" ]; then
@@ -48,8 +57,8 @@ jobs:
             echo "skipped job reads as success."
             exit 1
           fi
-          code=$(curl -sS -o /dev/null -w '%{http_code}' \
-            -u "ci-reader:${TOKEN}" \
+          code=$(bash scripts/curl_with_credential.sh basic \
+            -sS -o /dev/null -w '%{http_code}' \
             "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/dotmac-kernel/" || echo 000)
           if [ "${code}" != "200" ]; then
             echo "::error::the credential exists but cannot read dotmac-kernel (HTTP ${code})."
