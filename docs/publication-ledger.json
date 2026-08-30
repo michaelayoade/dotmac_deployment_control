@@ -5,17 +5,37 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "EMPTY, and that is the correct state: every declared version is published.",
-    "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 is published and",
-    "independently verified. Neither is an unpublished declaration, so neither",
-    "belongs here — `docs/published-versions.json` is where both live.",
+    "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 is published,",
+    "independently verified, and refused for adoption. Neither is an unpublished",
+    "declaration, so neither belongs here — `docs/published-versions.json` is",
+    "where both live, and a4's superseding disposition is appended to its",
+    "original PASS record there rather than replacing it.",
     "",
     "The a4 row that used to sit here said `never-published` and outlived its own",
     "publication by six hours. That is the stale absolution the two-directional",
     "ratchet in test_ported_gate_declared_publication.py exists to catch, and it",
     "did not catch it: CI checked out without tags, so the gate could not see the",
     "tag that contradicted this file. Both halves are fixed together — the row is",
-    "gone and the checkout now fetches tags."
+    "gone and the checkout now fetches tags.",
+    "",
+    "0.1.0a5 sits here for the ONLY correct reason a row belongs in this file: it",
+    "is declared in pyproject.toml and nothing has been published under that name",
+    "yet. It is NOT in docs/published-versions.json, and that is deliberate — the",
+    "release floor is derived as the maximum of the rows in that file, so",
+    "recording a5 there before it exists would raise the floor above the version",
+    "being published and the release guard would refuse the release it is meant",
+    "to admit. The row moves in the same change that records the real",
+    "coordinates, and this one is deleted then."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a5": {
+      "state": "declared-awaiting-release",
+      "reason": "Cut on Michael's ruling of 2026-08-30 that 0.1.0a4 is immutable and identity-verified but UNADOPTABLE. a5 carries the Control-owned `PlanDigestV1` value type (algorithm plus digest bytes, canonical `sha256:<64 lowercase hex>`, compared typed and never as a string), the separation of `DigestEncodingError` from `ApprovalRefusedError` so a formatting fault can no longer be reported as a changed plan, a4's bare-hex form accepted only through the explicitly named legacy parser INSIDE Control, and `__version__` derived from the installed distribution's metadata so one literal version authority remains. Publication is owed: dispatch Release, then Verify release, and only that second run may write the tag.",
+      "owed": [
+        "dispatch `Release` with distribution=dotmac-deployment-control version=0.1.0a5 from the exact tip of protected main",
+        "dispatch `Verify release` with version=0.1.0a5 and the release run id; only a VERIFIED verdict writes the tag",
+        "record the coordinates and both sha256 digests in docs/published-versions.json, move the release floor to a5, move the positive control to a6, and delete this row"
+      ]
+    }
+  }
 }

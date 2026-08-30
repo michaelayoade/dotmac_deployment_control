@@ -120,6 +120,33 @@ class ApprovalRefusedError(DeploymentControlError):
     """
 
 
+class DigestEncodingError(DeploymentControlError):
+    """A digest could not be READ. Deliberately not an `ApprovalRefusedError`.
+
+    THE DISTINCTION IS THE POINT, and it is the defect `0.1.0a5` was cut for.
+    Through `0.1.0a4` a caller who supplied the right digest in the other
+    encoding — bare hex where the plan had been stored prefixed, or the
+    reverse — was refused with *"the plan changed after approval, so a new
+    approval is required"*. That is a security finding standing in for a
+    formatting bug, and it is the worst available failure shape because it
+    looks exactly like the system working: the operator re-runs an approval
+    that was never stale.
+
+    So the two outcomes are two exceptions, and neither is a subclass of the
+    other:
+
+    * `DigestEncodingError` — "I cannot read the value you sent." Nothing was
+      compared. No claim is made about the plan. The repair is the caller's
+      encoding, and the reader is whoever wrote the caller.
+    * `ApprovalRefusedError` — "I read it, and it is not this plan's digest."
+      The plan moved under the approval. The repair is a new approval, and the
+      reader is whoever approves deployments.
+
+    Callers that must treat both as a refusal still can: both derive from
+    `DeploymentControlError`.
+    """
+
+
 class ObservationRefusedError(DeploymentControlError):
     """An observation cannot be admitted.
 
@@ -236,6 +263,7 @@ __all__ = [
     "DeliveryIntent",
     "DeploymentControlError",
     "DesiredDeployment",
+    "DigestEncodingError",
     "ExpectedStateError",
     "ObservationRefusedError",
     "ObservedState",

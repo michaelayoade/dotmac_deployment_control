@@ -49,8 +49,6 @@ never constructs a session.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -78,6 +76,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
+from dotmac_deployment_control.digests import PlanDigestV1, SpecDigestV1
 from dotmac_deployment_control.models import (
     TERMINAL_ROLLOUT_STATUSES,
     AttemptOutcome,
@@ -101,6 +100,7 @@ from dotmac_deployment_control.ports import (
     ApprovalRefusedError,
     DeliveryIntent,
     DesiredDeployment,
+    DigestEncodingError,
     ExpectedStateError,
     ObservationRefusedError,
     ObservedState,
@@ -302,24 +302,88 @@ def plan_snapshot(target: DeploymentTarget) -> dict[str, Any]:
     }
 
 
+def plan_digest_of(snapshot: Mapping[str, Any]) -> PlanDigestV1:
+    """The TYPED identity of a plan snapshot — algorithm and digest bytes.
+
+    This, not its rendering, is what the authorization path compares. Through
+    `0.1.0a4` the two digest functions in this file returned different
+    encodings of the same kind of value — one bare hex, one `sha256:`-prefixed,
+    ten lines apart — and `approve_plan` compared the strings. See
+    `dotmac_deployment_control.digests` for what that cost.
+    """
+    return PlanDigestV1.over_json(snapshot)
+
+
 def snapshot_digest(snapshot: Mapping[str, Any]) -> str:
-    """SHA-256 over the canonical JSON encoding of a plan snapshot."""
-    canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """The CANONICAL SERIALIZATION of `plan_digest` — `sha256:<64 hex>`.
+
+    Retained as the rendering helper for storage and for the delivery intent.
+    It no longer returns bare hex: a digest that leaves this module now carries
+    its own algorithm, so no reader has to infer one from a length.
+    """
+    return plan_digest_of(snapshot).canonical
+
+
+def spec_digest_of(spec: Mapping[str, Any]) -> SpecDigestV1:
+    """The TYPED identity of a deployment spec alone.
+
+    Separate from `plan_digest` because a target reports what it is RUNNING, not
+    which plan produced it — it has no way to know the plan's identity. So the
+    comparable value on both sides is the spec's own digest.
+
+    A DIFFERENT TYPE, not merely a different function: a spec digest can never
+    satisfy a plan-digest binding by arriving in the right shape, because the
+    values compare unequal across types. Comparing strings, as `0.1.0a4` did,
+    had no such protection.
+    """
+    return SpecDigestV1.over_json(spec)
 
 
 def spec_digest(spec: Mapping[str, Any]) -> str:
-    """SHA-256 over a deployment spec alone.
-
-    Separate from `snapshot_digest` because a target reports what it is RUNNING,
-    not which plan produced it — it has no way to know the plan's identity. So
-    the comparable value on both sides is the spec's own digest.
-    """
-    canonical = json.dumps(dict(spec), sort_keys=True, separators=(",", ":"))
-    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+    """The canonical serialization of `spec_digest_of`. Unchanged since a4."""
+    return spec_digest_of(spec).canonical
 
 
 # ── Internals ───────────────────────────────────────────────────────────────
+
+
+def _frozen_plan_digest(row: DeploymentPlan) -> PlanDigestV1:
+    """The digest THIS MODULE froze, read back from its own column.
+
+    Tolerant of the `0.1.0a4` bare-hex form because a row written by that
+    version carries it, and a stored value this module wrote is not a caller
+    error. A value that cannot be read at all is a DATA fault and says so —
+    distinct from the caller's encoding and from a changed plan, because the
+    person who fixes each of the three is a different person.
+    """
+    try:
+        return PlanDigestV1.parse_accepting_a4_bare_hex(row.plan_digest)
+    except DigestEncodingError as exc:
+        raise DigestEncodingError(
+            f"plan {row.id} has a stored digest this module cannot read: {exc} "
+            "This is a data fault in the frozen plan, not a caller error and "
+            "not a changed plan. Do not re-approve; investigate the row."
+        ) from exc
+
+
+def _supplied_plan_digest(row: DeploymentPlan, value: str) -> PlanDigestV1:
+    """The digest the CALLER bound its approval to.
+
+    The only place in the fleet that normalizes a Control digest. Platform CP
+    and the deployment foundation hand the value across as received — a
+    consumer that normalizes has forked this parser, and the fork surfaces as a
+    false "the plan changed".
+    """
+    try:
+        return PlanDigestV1.parse_accepting_a4_bare_hex(value)
+    except DigestEncodingError as exc:
+        raise DigestEncodingError(
+            f"approval evidence for plan {row.id} does not carry a readable "
+            f"plan digest: {exc} No comparison was made against plan {row.id}, "
+            "and no claim is made about whether it changed — supply the digest "
+            f"as `{PlanDigestV1.__name__}` canonical text "
+            "(`sha256:<64 lowercase hex>`) and approve again."
+        ) from exc
 
 
 def _load_target(session: Session, target_id: UUID) -> DeploymentTarget:
@@ -886,7 +950,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
             status=PlanStatus.PROPOSED.value,
             snapshot=snapshot,
             desired_revision=target.desired_revision,
-            plan_digest=snapshot_digest(snapshot),
+            plan_digest=plan_digest_of(snapshot).canonical,
             requires_approval=command.requires_approval,
             approval_policy_code=command.approval_policy_code,
             approval_policy_version=command.approval_policy_version,
@@ -971,12 +1035,27 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
                 f"plan {row.id} has no frozen digest; propose it before supplying "
                 "approval evidence"
             )
-        if command.evidence.content_digest != row.plan_digest:
+
+        # THREE OUTCOMES, and separating them is the whole of this change.
+        #
+        # `0.1.0a4` had two: equal, or "the plan changed after approval". A
+        # caller who supplied the SAME digest in the other encoding got the
+        # second one — a security refusal standing in for a formatting bug,
+        # which is the worst failure shape available because it looks like the
+        # system working.
+        frozen = _frozen_plan_digest(row)
+        supplied = _supplied_plan_digest(row, command.evidence.content_digest)
+        if supplied != frozen:
+            # TYPED comparison. Two `PlanDigestV1` values are equal when the
+            # algorithm and the raw bytes are equal, which no encoding can
+            # change — so reaching here means the plan really did move.
             raise ApprovalRefusedError(
-                f"approval evidence binds to digest "
-                f"{command.evidence.content_digest!r} but plan {row.id} froze "
-                f"{row.plan_digest!r}; the plan changed after approval, so a new "
-                "approval is required"
+                f"approval evidence binds to plan digest {supplied.canonical} "
+                f"but plan {row.id} froze {frozen.canonical}. Both values were "
+                f"read as well-formed {supplied.algorithm} digests and their "
+                "bytes differ, so this is a genuine mismatch and not an "
+                "encoding difference: the plan changed after approval, and a "
+                "new approval is required."
             )
         if command.evidence.policy_code != (row.approval_policy_code or ""):
             raise ApprovalRefusedError(
@@ -1633,9 +1712,20 @@ def _revision_for_observation(
         .scalars()
         .all()
     )
+    try:
+        reported = SpecDigestV1.parse_accepting_a4_bare_hex(
+            observed.observed_spec_digest
+        )
+    except DigestEncodingError:
+        # NOT raised. Rule 3: every arrival is recorded, and an unreadable spec
+        # digest is a finding about the REPORT, not a reason to lose it. The
+        # caller has already written the append-only attempt; returning None
+        # says "this matches no plan we produced", which is exactly true and is
+        # the same answer an unrecognised-but-well-formed digest gets.
+        return None
     for plan in plans:
         snapshot = plan.snapshot or {}
-        if spec_digest(snapshot.get("spec") or {}) == observed.observed_spec_digest:
+        if spec_digest_of(snapshot.get("spec") or {}) == reported:
             return plan.desired_revision
     return None
 
@@ -1830,10 +1920,12 @@ __all__ = [
     "register_target",
     "request_rollout",
     "require_manual_repair",
+    "plan_digest_of",
     "revoke_credential",
     "set_desired_state",
     "settle_attempt",
     "snapshot_digest",
     "spec_digest",
+    "spec_digest_of",
     "suspend_target",
 ]

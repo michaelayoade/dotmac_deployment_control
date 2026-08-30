@@ -17,6 +17,7 @@ CHECKs and migration-from-empty are proven against real Postgres in
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -33,8 +34,10 @@ from dotmac_deployment_control import (
     ApprovePlanCommand,
     AttemptOutcome,
     DesiredDeployment,
+    DigestEncodingError,
     EnrolCredentialCommand,
     ExpectedStateError,
+    PlanDigestV1,
     PlanRefusedError,
     PlanStatus,
     ProposePlanCommand,
@@ -302,7 +305,16 @@ class TestPlansFreezeAndSupersede:
         target = _desired(db, _target(db).id)
         plan = _plan(db, target.id)
         assert plan.status == PlanStatus.PROPOSED.value
-        assert plan.plan_digest and len(plan.plan_digest) == 64
+        # CANONICAL, not bare hex. Through `0.1.0a4` this column held 64
+        # characters that could not say which algorithm produced them, while
+        # `spec_digest` ten lines away produced the prefixed form — one kind of
+        # value with two encodings, compared with `!=`.
+        assert plan.plan_digest and re.fullmatch(
+            r"sha256:[0-9a-f]{64}", plan.plan_digest
+        ), plan.plan_digest
+        assert PlanDigestV1.parse(plan.plan_digest) == PlanDigestV1.over_json(
+            plan.snapshot
+        )
         assert plan.desired_revision == target.desired_revision
         assert plan.snapshot["release_ref"] == "dotmac_sub@7.187.1"
 
@@ -379,6 +391,86 @@ class TestApprovalBindsToThePlanDigest:
                 db,
                 ApprovePlanCommand(
                     command_id=_cmd(), plan_id=plan.id, evidence=_evidence("f" * 64)
+                ),
+            )
+
+    def test_the_same_digest_in_a4s_ENCODING_still_authorizes(self, db) -> None:
+        """THE DEFECT `0.1.0a5` WAS CUT FOR, and its sensitivity proof.
+
+        The evidence carries a4's bare-hex rendering of the plan's OWN digest.
+        As strings the two values differ, so a4's `evidence.content_digest !=
+        row.plan_digest` refused this and said the plan had changed — a
+        security refusal standing in for a formatting bug.
+
+        This test cannot be satisfied by a string comparison, which is what
+        makes it worth its length rather than a restatement of the happy path.
+        """
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        a4_form = PlanDigestV1.parse(plan.plan_digest or "").a4_bare_hex
+        assert a4_form != plan.plan_digest, "the two encodings must differ here"
+        approved = approve_plan(
+            db,
+            ApprovePlanCommand(
+                command_id=_cmd(), plan_id=plan.id, evidence=_evidence(a4_form)
+            ),
+        )
+        assert approved.status == PlanStatus.APPROVED.value
+
+    @pytest.mark.parametrize(
+        "unreadable",
+        [
+            "",
+            "not-a-digest",
+            "SHA256:" + "a" * 64,
+            "sha256:" + "A" * 64,
+            "md5:" + "a" * 32,
+        ],
+        ids=[
+            "empty",
+            "prose",
+            "uppercase-algorithm",
+            "uppercase-hex",
+            "wrong-algorithm",
+        ],
+    )
+    def test_an_unreadable_digest_is_an_encoding_fault_not_a_mutation(
+        self, db, unreadable: str
+    ) -> None:
+        """A caller who sends something unreadable must not be told the plan
+        changed. The two findings have different readers and different repairs,
+        and collapsing them is what made a4's refusal look like the system
+        working."""
+        target = _desired(db, _target(db).id)
+        plan = _plan(db, target.id)
+        with pytest.raises(DigestEncodingError) as raised:
+            approve_plan(
+                db,
+                ApprovePlanCommand(
+                    command_id=_cmd(), plan_id=plan.id, evidence=_evidence(unreadable)
+                ),
+            )
+        message = str(raised.value).lower()
+        assert "plan changed" not in message, raised.value
+        assert "no comparison was made" in message, raised.value
+        assert not isinstance(raised.value, ApprovalRefusedError)
+
+    def test_a_stale_digest_is_still_reported_as_a_changed_plan(self, db) -> None:
+        """THE OTHER HALF. Separating the encoding fault from the mutation must
+        not have loosened the binding — a fix that made everything approve
+        would satisfy every test above."""
+        target = _desired(db, _target(db).id)
+        first = _plan(db, target.id)
+        _desired(db, target.id, spec={"replicas": 9})
+        second = _plan(db, target.id)
+        assert second.plan_digest != first.plan_digest
+        with pytest.raises(ApprovalRefusedError, match="plan changed"):
+            approve_plan(
+                db,
+                ApprovePlanCommand(
+                    command_id=_cmd(),
+                    plan_id=second.id,
+                    evidence=_evidence(first.plan_digest or ""),
                 ),
             )
 

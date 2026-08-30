@@ -65,6 +65,14 @@ not: import from here.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
+
+from dotmac_deployment_control.digests import (
+    ALGORITHM,
+    PlanDigestV1,
+    SpecDigestV1,
+)
 from dotmac_deployment_control.facts import (
     CREDENTIAL_ACTIVATED_V1,
     CREDENTIAL_ENROLLED_V1,
@@ -120,6 +128,7 @@ from dotmac_deployment_control.ports import (
     DeliveryIntent,
     DeploymentControlError,
     DesiredDeployment,
+    DigestEncodingError,
     ExpectedStateError,
     ObservationRefusedError,
     ObservedState,
@@ -155,6 +164,7 @@ from dotmac_deployment_control.service import (
     get_rollout,
     get_target,
     observation_attempts,
+    plan_digest_of,
     plan_snapshot,
     propose_plan,
     record_observation,
@@ -166,12 +176,36 @@ from dotmac_deployment_control.service import (
     settle_attempt,
     snapshot_digest,
     spec_digest,
+    spec_digest_of,
     suspend_target,
 )
 
-__version__ = "0.1.0a2"
+#: ONE literal version authority, and it is `pyproject.toml`.
+#:
+#: Through `0.1.0a4` there were two. `pyproject.toml` said `0.1.0a4` and this
+#: line said `0.1.0a2`, so the published a4 wheel reported itself as a2 — and
+#: an authorization recording "which version of Control decided this" would
+#: have recorded the wrong one. Nothing detected it, because nothing compared
+#: them: two literals for one fact drift the moment somebody bumps the one they
+#: happen to be looking at.
+#:
+#: Reading the INSTALLED distribution's metadata removes the second literal
+#: rather than adding a third check. The value now comes from the same
+#: `METADATA` a consumer's resolver reads, so `__version__`, the wheel and
+#: `pyproject.toml` cannot disagree — and `scripts/artifact_canaries.py` proves
+#: that against the built artifact rather than against this source tree, which
+#: is how the a4 defect survived to publication.
+try:  # pragma: no cover - both branches are exercised by the canary, not here
+    __version__ = _distribution_version("dotmac-deployment-control")
+except PackageNotFoundError:  # pragma: no cover
+    #: NOT a plausible version. A source tree with no install has no version to
+    #: report, and guessing one from `pyproject.toml` would rebuild the second
+    #: authority this change removed. `release_guard.parse` refuses this shape,
+    #: so it can never be mistaken for something publishable.
+    __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "ALGORITHM",
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
     "AUDIT_ACTION_ROLLOUT",
@@ -210,6 +244,7 @@ __all__ = [
     "DeploymentPlan",
     "DeploymentTarget",
     "DesiredDeployment",
+    "DigestEncodingError",
     "DriftReport",
     "EligibilityAtReceipt",
     "EnrolCredentialCommand",
@@ -220,6 +255,7 @@ __all__ = [
     "ObservationRefusedError",
     "ObservationVerdict",
     "ObservedState",
+    "PlanDigestV1",
     "PlanRefusedError",
     "PlanStatus",
     "PlanView",
@@ -234,6 +270,7 @@ __all__ = [
     "RolloutView",
     "SetDesiredStateCommand",
     "SettleAttemptCommand",
+    "SpecDigestV1",
     "SignatureStatus",
     "TargetCredential",
     "TargetStatus",
@@ -255,6 +292,7 @@ __all__ = [
     "get_target",
     "module",
     "observation_attempts",
+    "plan_digest_of",
     "plan_snapshot",
     "propose_plan",
     "record_observation",
@@ -266,6 +304,7 @@ __all__ = [
     "settle_attempt",
     "snapshot_digest",
     "spec_digest",
+    "spec_digest_of",
     "suspend_target",
     "versions_dir",
 ]

@@ -87,6 +87,107 @@ of that is undone. Ordering the read-back before the tag — the previous rule �
 was satisfied by a4 and did not help: ordering is not the property when one run
 controls both ends of it.
 
+## 0.1.0a4 is identity-verified AND unadoptable
+
+**Status:** permanent. Both halves are true, and the PAIR is the record.
+
+Michael ruled on 2026-08-30: **a4 remains immutable and identity-verified, but
+it is unadoptable. Cut a5. Platform CP must pin a5, never a4.**
+
+Four terms, and they are separate findings:
+
+| | |
+|---|---|
+| Artifact identity | **passed** |
+| Functional authorization | **failed** |
+| Version self-reporting | **failed** |
+| Adoption eligibility | **refused** |
+
+**Artifact identity passed, and that proof stands.** All five: the tag peels to
+`2c61540f74018b7e19d7c5add893e0653cfcdb17`; the wheel is
+`ad1aaaa2d20b9a565d0656f64762564f4dfd90eb4c367187aa63fdd54a33c37e` and the sdist
+`a5dae85d76e17ab34b1868741def46aab514ffba119110ec750794f5dc1c6e2c`, both fetched
+from the index by name by INDEPENDENT verify run `33310594187` and equal to
+release run `33297423568`'s build; a clean read-only consumer installed it with
+its dependencies; it imported. Nothing about that is withdrawn, and the entry
+above about how a4's TAG was written is a different finding again.
+
+**Functional authorization failed.** `approve_plan` refused a correctly-supplied
+approval digest. `snapshot_digest` (`service.py:305`) returned bare hex,
+`spec_digest` (`:311`) returned the `sha256:`-prefixed form, `propose_plan`
+stored the bare one (`:889`), and `approve_plan` compared
+`evidence.content_digest != row.plan_digest` (`:974`) — two encodings of one
+kind of value, ten lines apart in one file, with a string comparison between
+them at the point an approval is authorized. A caller using the other encoding
+of the same digest was told *"the plan changed after approval, so a new approval
+is required"*.
+
+That message is why this is a ruling and not a bug report. A security refusal
+standing in for a formatting bug is the worst available failure shape, because
+it looks exactly like the system working: the operator reads "the plan changed",
+does the diligent thing, and re-runs an approval that was never stale.
+
+**Version self-reporting failed.** The published wheel carries
+`__version__ = "0.1.0a2"` while `pyproject.toml` declares `0.1.0a4`. An
+authorization recording which version of Control decided something would record
+the wrong one. Two literals for one fact; `0.1.0a5` derives `__version__` from
+the installed distribution's metadata and deletes the second.
+
+**Adoption eligibility is refused.** `docs/published-versions.json` records a4
+`pinnable: false` with an `unpinnable_reason` naming a5, and
+`scripts/release_guard.py` refuses it by name — a distinct refusal from the
+floor's, because "publish something higher" would say the same thing about a4 as
+about a3 and they failed different questions.
+
+**The disposition is APPENDED, never a rewrite.** a4's original PASS record —
+the tag, the tag object, the peeled commit, both digests, the release run, the
+verify run and the note recording them — is unchanged in
+`docs/published-versions.json`, and
+`test_the_disposition_is_APPENDED_and_never_overwrites_the_pass_record` fails if
+any of it is lost. Rewriting it to say "failed" would destroy the only worked
+example the fleet has of the distinction between an artifact's identity and its
+behaviour, and would also be false.
+
+**The tag and both artifacts are never deleted, moved, overwritten or
+recreated.** An index cannot un-publish, and a tag that moved would make one
+version name two commits.
+
+**What is NOT enforced:** nothing stops a consumer outside this repository
+pinning `==0.1.0a4`. The refusal is a publish-side control. The compensating
+control is this record plus the `pinnable: false` row a consumer's own gate can
+read.
+
+## Six identity properties could not see a functional defect
+
+**Status:** closed by property 7 as of `0.1.0a5`.
+
+`verify-release.yml` proved six things about a4 and every one of them was true.
+None of them could see either defect above, because all six are questions about
+WHICH BYTES are on the index and by whom — not about what those bytes do.
+
+The gap was not a weak check. It was a missing KIND of check, and its shape is
+worth naming: every proof the repository had ran against the SOURCE TREE, where
+`__version__ = "0.1.0a2"` and `pyproject.toml` disagreed in two files that no
+test compared. A proof about an artifact has to execute the artifact.
+
+`scripts/artifact_canaries.py` is that proof. It runs with the interpreter of an
+environment that has the wheel installed, and its first canary refuses to
+continue unless the module it imported came out of that environment's
+`site-packages` — without which the rest would be a slower copy of the unit
+tests wearing a stronger claim. It runs twice, on two different claims:
+
+- **`ci.yml`, pre-merge**, against a wheel built from the pull request. Catches a
+  functional defect before an immutable upload exists.
+- **`verify-release.yml`, post-publication**, against the wheel the REGISTRY
+  served, as property 7 of the verdict. A failure is UNPROVABLE, and an
+  UNPROVABLE version is never tagged.
+
+**What is NOT enforced:** the canaries prove the behaviours they name and no
+others. They are a floor under "does this artifact work", not a claim that it is
+correct. A defect in a path no canary drives ships exactly as a4's did, and the
+answer is to add a canary in the change that finds one — never to describe the
+existing seven as coverage.
+
 ## The publication gate was blind to tags in CI
 
 **Status:** closed.

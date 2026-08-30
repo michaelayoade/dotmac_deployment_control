@@ -73,12 +73,30 @@ def published_floor(path: Path = PUBLISHED) -> str:
 
 
 def unpinnable(path: Path = PUBLISHED) -> dict[str, str]:
-    """version -> why it may never be depended on."""
-    return {
-        r["version"]: str(r.get("release_run_note", "recorded as not pinnable"))
-        for r in published_versions(path)
-        if r.get("pinnable") is False
-    }
+    """version -> why it may never be depended on.
+
+    `unpinnable_reason` first, `release_run_note` only as a fallback. The two
+    are different facts and a4 is why the distinction exists: its
+    `release_run_note` records a COMPLETE and unchanged PASS — published from
+    protected main, independently verified, both artifacts hash-matched — and
+    quoting that as the reason it may not be depended on would read as
+    nonsense. Michael's ruling of 2026-08-30 is that a4 is immutable,
+    identity-verified AND unadoptable, so the refusal has its own field and the
+    proof keeps its own.
+
+    a3 carries no `unpinnable_reason` and needs none: its note already says
+    UNPROVABLE, which is both the record and the reason.
+    """
+    reasons: dict[str, str] = {}
+    for release in published_versions(path):
+        if release.get("pinnable") is not False:
+            continue
+        reasons[release["version"]] = str(
+            release.get("unpinnable_reason")
+            or release.get("release_run_note")
+            or "recorded as not pinnable"
+        )
+    return reasons
 
 
 def refusals(distribution: str, version: str, *, floor: str | None = None) -> list[str]:
@@ -86,10 +104,18 @@ def refusals(distribution: str, version: str, *, floor: str | None = None) -> li
     problems: list[str] = []
     ceiling = floor if floor is not None else published_floor()
 
-    # A distinct refusal, before the generic floor message. `0.1.0a3` is
-    # refused for a reason the floor cannot express: it EXISTS and is
-    # permanently unverifiable, so "publish something higher" is the remedy and
-    # "this is below the floor" would understate why.
+    # A distinct refusal, before the generic floor message. Two versions carry
+    # one now, for two DIFFERENT reasons the floor cannot express:
+    #
+    # * `0.1.0a3` EXISTS and is permanently unverifiable — its evidence chain
+    #   was never closed.
+    # * `0.1.0a4` exists and its evidence chain IS closed. Every identity proof
+    #   passed. It is refused because it cannot be ADOPTED: it reports the
+    #   wrong version of itself, and it refuses a correctly-supplied approval
+    #   digest as a changed plan. Michael ruled it unadoptable on 2026-08-30.
+    #
+    # "this is below the floor" would understate both, and would say the same
+    # thing about them, which is the more misleading half.
     reason = unpinnable().get(version.strip())
     if reason is not None:
         problems.append(

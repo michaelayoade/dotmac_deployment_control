@@ -127,20 +127,131 @@ def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything.
 
-    a5 rather than a4: the declared version is now PUBLISHED, so the guard is
-    required to refuse it. Leaving the old positive control pointed at a4 would
-    have asserted that this repository may re-upload a name that already exists
-    — the exact hazard the floor is for."""
+    a5, and it must STAY a5 until a5 is on the index. `0.1.0a5` is the version
+    this repository is publishing, so the guard is required to ADMIT it — a
+    control pointed at a6 here would be consistent with a guard that also
+    refuses the release it exists to allow.
+
+    The control moves to a6 in the same change that records a5's coordinates in
+    `docs/published-versions.json`. From that moment leaving it on a5 would
+    assert that this repository may re-upload an existing name, which is the
+    exact hazard the floor is for. The two moves are one change because the
+    floor is DERIVED from that file: neither can happen without the other.
+    """
     assert release_guard.refusals("dotmac-deployment-control", "0.1.0a5") == []
 
 
-def test_the_declared_version_is_now_refused_because_it_is_published() -> None:
-    """0.1.0a4 is on the index. The floor must close behind it the moment it is
-    recorded, or a re-dispatch of the release workflow reaches twine and is
-    stopped only by the registry — a transport error standing in for a
-    decision."""
+def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
+    """The rule behind the comment above, checked rather than remembered.
+
+    The admitted control must be exactly one alpha above the derived floor. A
+    control that drifted below the floor would be asserting the repository may
+    re-upload; one that drifted far above would stop proving the boundary is at
+    the floor at all.
+    """
+    floor = release_guard.published_floor()
+    major, minor, patch, alpha = release_guard.parse(floor)
+    assert (
+        release_guard.refusals(
+            "dotmac-deployment-control", f"{major}.{minor}.{patch}a{alpha + 1}"
+        )
+        == []
+    )
+    assert release_guard.refusals("dotmac-deployment-control", floor)
+
+
+def test_a4_carries_the_superseding_disposition_in_four_named_terms() -> None:
+    """MICHAEL'S RULING, 2026-08-30, recorded in the exact terms he gave.
+
+    a4 is the version that separates two questions this repository used to ask
+    as one. Its five identity proofs stand — the tag peels to
+    `2c61540f7`, the wheel and sdist hash as recorded, a clean dependency
+    install succeeded, and it imported. It is still unadoptable, because an
+    artifact whose identity is beyond doubt can still refuse a correct approval
+    and report the wrong version of itself.
+    """
+    a4 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a4")
+    disposition = a4["disposition"]
+    assert disposition["artifact_identity"] == "passed"
+    assert disposition["functional_authorization"] == "failed"
+    assert disposition["version_self_reporting"] == "failed"
+    assert disposition["adoption_eligibility"] == "refused"
+    # A release-level fact, beside `pinnable`, not inside the disposition blob:
+    # a reader scanning the rows must be able to see what to pin instead without
+    # opening one. `or` was wrong here and could not short-circuit — the first
+    # operand raised `KeyError` before the second was reached, which is a test
+    # asserting two places and reaching neither.
+    assert a4["superseded_by"] == "0.1.0a5"
+    for term in (
+        "artifact_identity",
+        "functional_authorization",
+        "version_self_reporting",
+        "adoption_eligibility",
+    ):
+        assert str(disposition[f"{term}_evidence"]).strip(), (
+            f"{term} is a verdict with no evidence behind it, which is the "
+            "shape this repository refuses everywhere else"
+        )
+
+
+def test_the_disposition_is_APPENDED_and_never_overwrites_the_pass_record() -> None:
+    """THE PROPERTY THAT MATTERS MOST ABOUT a4's ROW.
+
+    Both facts are true at once and the PAIR is the useful evidence: identity
+    verification and functional authorization are different questions, and a4
+    answers the first completely while failing the second. Rewriting the
+    original record to say "failed" would destroy the only worked example the
+    fleet has of that distinction — and would also be false.
+    """
+    a4 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a4")
+    note = a4["release_run_note"]
+    for original in (
+        "Published by run 33297423568 from the exact tip of protected main",
+        "INDEPENDENT verify run 33310594187 later returned VERIFIED",
+        "2c61540f74018b7e19d7c5add893e0653cfcdb17",
+        "publisher read-back, read-only consumer install",
+        "The tag is left exactly where that run wrote it and is never moved",
+    ):
+        assert original in note, (
+            f"the original PASS record has lost {original!r}. The superseding "
+            "disposition is APPENDED; it never rewrites what was proven."
+        )
+    assert a4["tag"] == "dotmac-deployment-control-v0.1.0a4"
+    assert a4["tag_object"] == "3bc4ab0000c3a3dc8a4cf495d9cfec56ded6ed6a"
+    assert a4["peeled_commit"] == "2c61540f74018b7e19d7c5add893e0653cfcdb17"
+    assert set(a4["sha256"]) == {
+        "dotmac_deployment_control-0.1.0a4-py3-none-any.whl",
+        "dotmac_deployment_control-0.1.0a4.tar.gz",
+    }
+
+
+def test_a4_is_recorded_unadoptable_for_functional_reasons_not_identity_ones() -> None:
+    """The refusal must say WHICH question failed. "a4 is bad" would send the
+    next reader hunting a byte problem that does not exist."""
+    a4 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a4")
+    assert a4["pinnable"] is False
+    reason = a4["unpinnable_reason"]
+    assert "identity" in reason.lower()
+    assert "0.1.0a5" in reason, "the record must name what to pin instead"
+    for evidence in ("approve_plan", "__version__", "the plan changed after approval"):
+        assert evidence in reason, evidence
+
+
+def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
+    """TWO independent refusals, and the order matters.
+
+    The floor alone would say "publish something higher", which understates
+    why. a4 is not merely superseded: Michael ruled it UNADOPTABLE on
+    2026-08-30, so it is recorded `pinnable: false` and refused by name — the
+    same distinct refusal a3 gets, for a different reason. The floor refusal
+    stays behind it, because a4 is also on the index and re-uploading a name is
+    its own hazard.
+    """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a4")
-    assert problems and "not greater than 0.1.0a4" in problems[0], problems
+    assert len(problems) >= 2, problems
+    assert "UNPINNABLE" in problems[0], problems
+    assert "UNADOPTABLE" in problems[0], problems
+    assert any("not greater than 0.1.0a4" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -153,6 +264,10 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
     assert problems and "not greater than 0.1.0a4" in problems[0], problems
+    assert not any("UNPINNABLE" in p for p in problems), (
+        "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
+        "unpinnable would be a different and wrong statement"
+    )
 
 
 @pytest.mark.parametrize(
@@ -202,7 +317,10 @@ def test_a4_is_recorded_as_published_and_verified_by_an_independent_run() -> Non
     the SEPARATE verify run recorded here, so the run id is a required
     coordinate rather than a note."""
     a4 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a4")
-    assert a4["pinnable"] is True
+    # `pinnable` is deliberately NOT asserted here. This test is about a4's
+    # IDENTITY, which is settled and unchanged; whether it may be adopted is a
+    # separate question with its own test below, and conflating them is exactly
+    # what would let a superseding disposition quietly erase a proof.
     assert a4["status"] == "released"
     assert a4["release_run"] == "33297423568"
     assert a4["verify_run"] == "33310594187"
