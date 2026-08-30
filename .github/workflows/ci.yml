@@ -189,6 +189,159 @@ jobs:
           # asserts that rather than trusting it.
           /tmp/canary/bin/python scripts/artifact_canaries.py --expect-version "${VERSION}"
 
+      # ── THE FLOOR LANE — the whole reason 0.1.0a6 exists ─────────────────
+      #
+      # Everything above installs `dist/*.whl` and lets pip resolve
+      # `dotmac-kernel` freely, so it runs against whatever the index happens
+      # to offer. That is a real proof and it is NOT a proof about the declared
+      # floor, which is exactly how `0.1.0a5` shipped: it imports
+      # `dotmac_kernel.transactions` (`service.py:73`), first shipped in kernel
+      # `a98`, while declaring `>=0.1.0a77` — under-constrained by 21 alphas.
+      #
+      # Every gate the repository had was satisfied. Resolution succeeded, the
+      # lock wrote cleanly, the published artifacts matched their recorded
+      # sha256 byte-for-byte, seven canaries passed against the wheel the
+      # registry served, and the consuming assembly died at container boot. A
+      # hash comparison proves you got the published bytes; it cannot prove
+      # they import. And an import performed in an environment where a
+      # compatible kernel happened to be present proves the wheel imports —
+      # never that its declared FLOOR is honest.
+      #
+      # So this lane installs the wheel with EXACTLY the minimum the artifact's
+      # own metadata declares, and `--expect-kernel` makes the canaries refuse
+      # if anything else is present. "Some compatible kernel" is what let a5
+      # through.
+      - name: Install that wheel with EXACTLY the declared minimum kernel
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f -- "${HOME}/.netrc"' EXIT HUP INT TERM
+          umask 077
+          : > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          printf 'machine %s login %s password %s\n' \
+            "registry.dotmac.io" "ci-reader" "${TOKEN}" >> "${HOME}/.netrc"
+          FLOOR=$(python3 scripts/kernel_floor.py declared)
+          echo "the artifact declares dotmac-kernel >=${FLOOR}"
+          echo "FLOOR=${FLOOR}" >> "${GITHUB_ENV}"
+          python -m venv /tmp/floor
+          /tmp/floor/bin/pip install --quiet --upgrade pip
+          # `==${FLOOR}` beside the wheel, so pip must place the declared
+          # minimum rather than the newest thing that satisfies the range.
+          /tmp/floor/bin/pip install --quiet \
+            --index-url "https://pypi.org/simple" \
+            --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+            dist/*.whl "dotmac-kernel==${FLOOR}"
+      - name: Run the canaries against the declared minimum, not a convenient one
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['poetry']['version'])")
+          /tmp/floor/bin/python scripts/artifact_canaries.py \
+            --expect-version "${VERSION}" --expect-kernel "${FLOOR}"
+
+      # ── THE MUTATION — without it the lane above passes for the wrong reason
+      #
+      # A floor lane that has never been seen to fail is a step name (ADR-0018).
+      # The mutation target is not a literal: it is the NEWEST kernel actually
+      # on the index that the declared floor excludes, which makes the check the
+      # closest possible near-miss and catches a floor set too HIGH as well as
+      # one set too low.
+      #
+      # Two halves, because they can fail independently and each would be
+      # invisible behind the other:
+      #
+      #   1. THE METADATA. pip must refuse to place the excluded kernel beside
+      #      this wheel at all. This proves the declared floor is enforced by a
+      #      real resolver rather than being a literal nobody reads.
+      #   2. THE BEHAVIOUR. Half one alone is close to circular — it says pip
+      #      honours the number in the metadata, not that the number is the
+      #      right one. So the excluded kernel is FORCED into an otherwise
+      #      working environment and the canaries must fail, naming
+      #      `dotmac_kernel.transactions`. That is the symbol the floor exists
+      #      for, and requiring the failure to name it is what stops this
+      #      passing on some unrelated breakage.
+      - name: The kernel below the floor must not satisfy those canaries
+        env:
+          CURL_CREDENTIAL_USER: ci-reader
+          CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_READ_TOKEN }}
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f -- "${HOME}/.netrc"' EXIT HUP INT TERM
+          umask 077
+          : > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          printf 'machine %s login %s password %s\n' \
+            "registry.dotmac.io" "ci-reader" "${TOKEN}" >> "${HOME}/.netrc"
+
+          bash scripts/curl_with_credential.sh basic -sS --fail -o kernel-index.html \
+            "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/dotmac-kernel/"
+          EXCLUDED=$(python3 scripts/kernel_floor.py excluded --index-html kernel-index.html)
+          echo "the newest kernel the declared floor excludes: ${EXCLUDED}"
+
+          # 1. THE METADATA
+          python -m venv /tmp/resolver-check
+          /tmp/resolver-check/bin/pip install --quiet --upgrade pip
+          if /tmp/resolver-check/bin/pip install --quiet \
+               --index-url "https://pypi.org/simple" \
+               --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+               dist/*.whl "dotmac-kernel==${EXCLUDED}" > resolver.log 2>&1; then
+            echo "::error::pip installed this wheel alongside dotmac-kernel ${EXCLUDED}."
+            echo "The declared floor does not actually exclude it, so the floor lane"
+            echo "above is not testing a boundary. Fix the declaration, not this step."
+            exit 1
+          fi
+          # The refusal has to be the RIGHT refusal. A step that accepts any
+          # non-zero pip would be satisfied by a network error or a typo'd
+          # index URL, and would report the floor proven on a run where nothing
+          # was resolved at all — the same substitution `--fail`-less curl and
+          # `|| true` made elsewhere in this repository.
+          tail -n 5 resolver.log
+          if ! grep -qiE "conflict|ResolutionImpossible" resolver.log; then
+            echo "::error::pip failed, but not with a dependency conflict. The"
+            echo "installation of dotmac-kernel ${EXCLUDED} beside this wheel has to"
+            echo "be refused BY THE DECLARED FLOOR; any other failure means this"
+            echo "half of the mutation observed something else entirely."
+            exit 1
+          fi
+          echo "the resolver refused dotmac-kernel==${EXCLUDED}, as the floor requires"
+
+          # 2. THE BEHAVIOUR
+          python -m venv /tmp/below-floor
+          /tmp/below-floor/bin/pip install --quiet --upgrade pip
+          /tmp/below-floor/bin/pip install --quiet \
+            --index-url "https://pypi.org/simple" \
+            --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+            dist/*.whl
+          # `--no-deps --force-reinstall` is how the constraint is DEFEATED on
+          # purpose: nothing else in the environment changes, so a failure below
+          # can only be the kernel downgrade.
+          /tmp/below-floor/bin/pip install --quiet --no-deps --force-reinstall \
+            --index-url "https://pypi.org/simple" \
+            --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+            "dotmac-kernel==${EXCLUDED}"
+          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['poetry']['version'])")
+          if /tmp/below-floor/bin/python scripts/artifact_canaries.py \
+               --expect-version "${VERSION}" > mutation.txt 2>&1; then
+            cat mutation.txt
+            echo "::error::the canaries PASSED with dotmac-kernel ${EXCLUDED} installed."
+            echo "The declared floor is higher than anything this artifact needs, so"
+            echo "the floor lane proves nothing about a boundary. Lower the floor to"
+            echo "the version the code actually requires."
+            exit 1
+          fi
+          cat mutation.txt
+          if ! grep -q "dotmac_kernel.transactions" mutation.txt; then
+            echo "::error::the canaries failed with dotmac-kernel ${EXCLUDED}, but not"
+            echo "for the reason the floor names. The floor is declared for"
+            echo "dotmac_kernel.transactions; a failure that never mentions it means"
+            echo "this mutation is observing some other breakage and the boundary is"
+            echo "still unproven."
+            exit 1
+          fi
+          echo "dotmac-kernel ${EXCLUDED} cannot satisfy the canaries: dotmac_kernel.transactions is absent"
+
   # ── The reason this repository has a PostgreSQL lane at all ───────────────
   #
   # `tests/test_deployment_control_platform_isolation.py` is 1,001 lines proving

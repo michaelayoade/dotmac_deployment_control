@@ -5,6 +5,88 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a6 — declared 2026-08-30, a metadata repair with a falsifiable floor
+
+Supersedes `0.1.0a5` for its DECLARED DEPENDENCY FLOOR. **a5's artifact identity
+and its behaviour are sound and are not withdrawn**; what failed is the
+declaration. Platform CP pins a6 with kernel a98, never a5.
+
+**No behaviour changes in this release.** The public surface, the models, the
+migrations and the module contract version are all untouched.
+
+### Fixed
+
+- **The declared `dotmac-kernel` floor is `>=0.1.0a98`, not `>=0.1.0a77`.**
+  `service.py:73` imports `dotmac_kernel.transactions`, and that module first
+  shipped in kernel `a98` — it is absent from the published `a97` wheel.
+  Under-constrained by 21 alphas.
+
+  a5 is the strongest artifact this repository has published and it could not be
+  composed. Its bytes are the published bytes, seven canaries passed against the
+  wheel the registry served, and the Platform CP lane raised
+  `ModuleNotFoundError` at container boot after resolution succeeded, the lock
+  wrote cleanly, and both sha256 digests matched byte-for-byte.
+
+  **A hash comparison proves you got the published bytes; it cannot prove they
+  import.** a5's verification did exercise importability — in an environment
+  where a compatible kernel happened to be installed. That proves the wheel
+  imports; it says nothing about whether the declared floor is honest, because
+  nothing in that run ever installed the declared floor.
+
+### Added
+
+- **A floor lane, in the required `behavioural canaries (installed wheel)`
+  context.** It installs the built wheel with `dotmac-kernel==${FLOOR}` — the
+  floor read from the declaration by `scripts/kernel_floor.py`, never a literal
+  — and runs the canaries with `--expect-kernel`, so an environment holding
+  anything else is refused. "Some compatible kernel" is what let a5 through.
+
+- **A mutation lane, without which the floor lane passes for the wrong reason.**
+  It asks the index for the newest kernel the floor EXCLUDES — the closest
+  possible near-miss — and requires two independent things: that pip refuses to
+  place that kernel beside this wheel, and that forcing it in (`--no-deps
+  --force-reinstall`) makes the canaries fail **naming
+  `dotmac_kernel.transactions`**. Any other failure is unrelated breakage
+  standing in for the proof.
+
+  Together the two lanes make the floor falsifiable in BOTH directions: too low
+  and the floor lane goes red, too high and the mutation lane does. An
+  over-constrained floor is a smaller harm than a5's and it is still a harm — it
+  forces a consumer into an upgrade nothing requires.
+
+- **Two canaries, running in every lane.** `declared_kernel_floor` reads the
+  floor out of the artifact's own `Requires-Dist` (never `pyproject.toml`, which
+  is the source tree these canaries exist to exclude) and checks that
+  `dotmac_kernel.transactions` resolves from `site-packages`.
+  `conflict_savepoint_executes` drives the symbol that floor is set by: an
+  accepted observation runs the `with conflict_savepoint(...)` block, and a real
+  unique-constraint collision through the same context manager must leave the
+  caller's transaction usable — the property `0.1.0a1` shipped without.
+
+- **`scripts/kernel_floor.py`**, which both lanes ask for their versions so the
+  workflow carries no second literal. It refuses a constraint shape it was not
+  written for, and refuses loudly when the index lists nothing below the floor —
+  an empty answer there would turn the mutation into a lane that proves nothing.
+
+### Consequence for consumers, recorded and not discharged here
+
+Adopting a6 obliges a **21-alpha kernel jump, a77 → a98**. That upgrade gets its
+own migration and compatibility run; it must not be chosen silently by a
+resolver.
+
+### Unchanged on purpose
+
+- **The module contract version stays `0.1.0a2`.** `manifest.py`'s `version` is
+  the MODULE CONTRACT version and it moves when the declared surface changes,
+  not on every republication. Nothing in the manifest's declared surface moved
+  here, so bumping it would make a metadata repair look like a contract change.
+- **The replay path is untouched and stays out of scope.**
+  `_replay_observation` compares `payload_digest` as text. It is a recorded
+  unmonitored region with an enforceable premise
+  (`test_digest_comparison_is_typed.py`), it is being addressed independently,
+  and `test_the_conflict_savepoint_canary_does_not_touch_the_replay_path` keeps
+  the new canary out of it.
+
 ## 0.1.0a5 — RELEASED 2026-08-30, independently verified on seven properties
 
 Supersedes `0.1.0a4` for FUNCTIONAL reasons. a4's identity proofs stand and are

@@ -126,11 +126,28 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Pin `0.1.0a5` or later. `0.1.0a4` is
-immutable and identity-verified and must never be pinned: it refuses a
-correctly-supplied approval digest and reports the wrong version of itself
-(`docs/CONTROL_EXCEPTIONS.md`, "0.1.0a4 is identity-verified AND unadoptable").
-`0.1.0a3` is published and permanently unprovable.
+**Built and validated, not adopted.** Pin `0.1.0a6` or later, with
+`dotmac-kernel >=0.1.0a98`.
+
+Three published versions must never be pinned, and they failed three different
+questions — the distinction is the record, so the reason is named rather than
+collapsed into "bad":
+
+- `0.1.0a3` is published and permanently **unprovable**: its evidence chain was
+  never closed.
+- `0.1.0a4` is immutable and **identity-verified and unadoptable**: it refuses a
+  correctly-supplied approval digest and reports the wrong version of itself.
+- `0.1.0a5` is immutable, verified on all seven properties, and
+  **under-constrained**: it imports `dotmac_kernel.transactions`, first shipped
+  in kernel `a98`, while declaring `>=0.1.0a77`. Its bytes and its behaviour are
+  sound; its declaration is not, and a consumer that resolves a kernel inside
+  the declared range gets a clean lock, matching hashes and a
+  `ModuleNotFoundError` at container boot.
+
+`docs/CONTROL_EXCEPTIONS.md` carries each disposition in full. A hash comparison
+proves you got the published bytes; it cannot prove they import, which is why
+the declared floor is now proven in both directions by CI's floor and mutation
+lanes.
 
 Unlike its two siblings there is nothing to cut over *from*: the V6 slices were never merged. `EXTRACTION.toml` records the
 two proofs the composition still owes — the claim/proof CHECKs against raw SQL,

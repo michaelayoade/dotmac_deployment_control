@@ -186,7 +186,123 @@ tests wearing a stronger claim. It runs twice, on two different claims:
 others. They are a floor under "does this artifact work", not a claim that it is
 correct. A defect in a path no canary drives ships exactly as a4's did, and the
 answer is to add a canary in the change that finds one — never to describe the
-existing seven as coverage.
+existing set as coverage. `0.1.0a5` is the worked example: seven canaries passed
+against the wheel the registry served, and the entry below is what they could
+not see.
+
+## Seven canaries could not see a dishonest dependency floor
+
+**Status:** closed for a6 by the floor and mutation lanes; **a5 is permanently
+under-constrained and unsuitable for new adoption.**
+
+`0.1.0a5` is the strongest artifact this repository has published and it could
+not be composed.
+
+Its identity is beyond doubt and nothing about that is withdrawn. The tag peels
+to `b182a99892067f26c0c1d03d958c5fcdc97c5869`; the wheel is
+`c02804b1b9f6dab7becc21696efccdf3820de06dba50903568e2db4c966e0aec` and the
+sdist `5883f8ead3caab1a5d93977e6f086ad0f9f2b9df3e5828b5380ea0c41d841ef8`, both
+fetched from `registry.dotmac.io` by INDEPENDENT verify run `33318433336` and
+equal to release run `33318227812`'s build. A read-only consumer installed it
+with its real dependency graph and imported it. Seven behavioural canaries
+passed against the wheel the registry served. The encoding defect a5 was cut for
+is genuinely fixed.
+
+**What failed is the declaration.** `service.py:73` reads
+
+    from dotmac_kernel.transactions import conflict_savepoint
+
+`dotmac_kernel/transactions.py` — the public, engine-free re-export a module
+holding a caller-owned `Session` is meant to use instead of importing
+`dotmac_kernel.db` — is **absent** from the published
+`dotmac_kernel-0.1.0a97-py3-none-any.whl` and **present** in
+`dotmac_kernel-0.1.0a98-py3-none-any.whl`. a5's metadata declares
+`Requires-Dist: dotmac-kernel (>=0.1.0a77)`. **Under-constrained by 21 alphas.**
+
+The Platform CP lane found it at container boot: resolution succeeded, the lock
+wrote cleanly, and both artifacts matched their published hashes byte-for-byte.
+
+### The lesson, stated narrowly enough to act on
+
+**A hash comparison proves you got the published bytes; it cannot prove they
+import.**
+
+And the half that is easier to miss: a5's verification DID exercise
+importability. It ran in an environment where a compatible kernel happened to be
+installed. That proves the wheel imports. It says nothing about whether the
+declared FLOOR is honest, because nothing in that run ever installed the
+declared floor. Property 6 asks "does it import?"; nobody was asking "does it
+import against the minimum it claims to need?".
+
+### What now makes the floor falsifiable
+
+Two lanes inside `behavioural canaries (installed wheel)`, which is a REQUIRED
+context on `main`, so neither can be skipped past:
+
+| the floor is… | which lane goes red | because |
+| --- | --- | --- |
+| too LOW (a5's defect) | the floor lane | the declared minimum cannot import |
+| too HIGH | the mutation lane | the version below it runs everything fine |
+
+- **The floor lane** installs the built wheel with `dotmac-kernel==${FLOOR}`,
+  where `FLOOR` comes from `scripts/kernel_floor.py declared` rather than from a
+  literal, and runs the canaries with `--expect-kernel`. Two new canaries run
+  there and in every other lane: `declared_kernel_floor` reads the floor out of
+  the ARTIFACT'S OWN `Requires-Dist` and refuses an environment that does not
+  match, and `conflict_savepoint_executes` drives the symbol the floor is set by
+  — an accepted observation through the `with conflict_savepoint(...)` block,
+  then a real unique-constraint collision through the same context manager,
+  proving the caller's transaction survives.
+- **The mutation lane** asks the index for the newest kernel the floor EXCLUDES
+  — the closest possible near-miss, so an over-constrained floor is caught too —
+  and requires two independent things: that pip refuses to place that kernel
+  beside this wheel at all, and that FORCING it in (`--no-deps
+  --force-reinstall`) makes the canaries fail **naming
+  `dotmac_kernel.transactions`**. Any other failure is some unrelated breakage
+  standing in for the proof, and the lane says so.
+
+Without the mutation the floor lane passes for the wrong reason and nobody
+learns whether it can fail (ADR-0018). Without the floor lane the mutation is
+comparing an artifact against itself.
+
+### a5's disposition, and what is NOT withdrawn
+
+Michael ruled 2026-08-30: **a5 remains immutable and verified, and is
+under-constrained and unsuitable for new adoption. Cut a6. Platform CP must pin
+a6 with kernel a98, never a5.**
+
+| | |
+|---|---|
+| Artifact identity | **passed** |
+| Functional authorization | **passed** |
+| Declared dependency floor | **failed** |
+| Adoption eligibility | **refused** |
+
+**The disposition is APPENDED, never a rewrite** — the same treatment a4
+received, for a different failure, and the two rows are worth reading together:
+a4 separated artifact identity from functional behaviour, and a5 separates both
+of those from the declared dependency floor. a5's original PASS record in
+`docs/published-versions.json` is unchanged, and
+`test_a5s_disposition_is_APPENDED_and_never_overwrites_the_pass_record` fails if
+any of it is lost.
+
+**The tag and both artifacts are never deleted, moved, overwritten or
+recreated.** An index cannot un-publish, and a tag that moved would make one
+version name two commits.
+
+**What is NOT enforced:** nothing stops a consumer outside this repository
+pinning `==0.1.0a5`, and the refusal remains a publish-side control. The
+compensating control is this record plus the `pinnable: false` row a consumer's
+own gate can read. And the two lanes prove the floor of THIS distribution
+against THIS kernel; they say nothing about any other dependency's floor, and
+`scripts/kernel_floor.py` refuses a constraint shape it has not been taught
+rather than reasoning about one.
+
+**The consequence a consumer inherits, recorded because it is not this
+repository's to discharge:** raising the floor obliges anyone adopting a6 to
+move from kernel a77 to a98 — a 21-alpha jump. Michael's constraint is that
+the upgrade receives its own migration and compatibility run and is not chosen
+silently by a resolver.
 
 ## The publication gate was blind to tags in CI
 

@@ -119,14 +119,47 @@
       "verify_run": "33318433336",
       "source_repository": "dotmac_deployment_control",
       "index": "registry.dotmac.io/api/packages/dotmac/pypi",
-      "pinnable": true,
+      "pinnable": false,
       "status": "released",
       "sha256": {
         "dotmac_deployment_control-0.1.0a5-py3-none-any.whl": "c02804b1b9f6dab7becc21696efccdf3820de06dba50903568e2db4c966e0aec",
         "dotmac_deployment_control-0.1.0a5.tar.gz": "5883f8ead3caab1a5d93977e6f086ad0f9f2b9df3e5828b5380ea0c41d841ef8"
       },
       "supersedes": "0.1.0a4",
-      "release_run_note": "THE FIRST RELEASE CUT THROUGH THE CORRECTED TWO-WORKFLOW PATH, and the first verified on SEVEN properties rather than six. Published by run 33318227812 from the exact tip of protected main (b182a99892067f26c0c1d03d958c5fcdc97c5869); that run neither verified itself nor tagged. INDEPENDENT verify run 33318433336 returned VERIFIED: both artifacts fetched from registry.dotmac.io by NAME and sha256-equal to the release build, provenance closed on the peeled commit, publisher read-back, a read-only consumer install WITH the real dependency graph, import, exactly one wheel and one sdist on the index, and — property 7, new here — all seven behavioural canaries passing against the wheel the REGISTRY served rather than against a source checkout. Only that run wrote the tag, on a VERIFIED verdict, through tag_once.py. Supersedes 0.1.0a4, which remains immutable, identity-verified and UNADOPTABLE."
+      "release_run_note": "THE FIRST RELEASE CUT THROUGH THE CORRECTED TWO-WORKFLOW PATH, and the first verified on SEVEN properties rather than six. Published by run 33318227812 from the exact tip of protected main (b182a99892067f26c0c1d03d958c5fcdc97c5869); that run neither verified itself nor tagged. INDEPENDENT verify run 33318433336 returned VERIFIED: both artifacts fetched from registry.dotmac.io by NAME and sha256-equal to the release build, provenance closed on the peeled commit, publisher read-back, a read-only consumer install WITH the real dependency graph, import, exactly one wheel and one sdist on the index, and — property 7, new here — all seven behavioural canaries passing against the wheel the REGISTRY served rather than against a source checkout. Only that run wrote the tag, on a VERIFIED verdict, through tag_once.py. Supersedes 0.1.0a4, which remains immutable, identity-verified and UNADOPTABLE.",
+      "superseded_by": "0.1.0a6",
+      "unpinnable_reason": "SUPERSEDED BY 0.1.0a6 FOR ITS DECLARED DEPENDENCY FLOOR, NOT FOR ITS ARTIFACT IDENTITY OR ITS BEHAVIOUR. a5's seven verification properties stand and are recorded above unchanged: the bytes on the index are the bytes release run 33318227812 built, and the encoding defect a5 was cut for is genuinely fixed. It is refused here because it cannot be COMPOSED. `service.py:73` reads `from dotmac_kernel.transactions import conflict_savepoint`; `dotmac_kernel/transactions.py` first shipped in dotmac-kernel 0.1.0a98 and is absent from the published 0.1.0a97 wheel, while a5's metadata declares `Requires-Dist: dotmac-kernel (>=0.1.0a77)` — under-constrained by 21 alphas. The Platform CP lane resolved a kernel inside the declared range, wrote a clean lock, matched both published sha256 digests byte-for-byte, and raised ModuleNotFoundError at container boot. Michael ruled 2026-08-30: a5 is immutable and verified, and is UNDER-CONSTRAINED AND UNSUITABLE FOR NEW ADOPTION. Platform CP must pin 0.1.0a6 with dotmac-kernel 0.1.0a98, never 0.1.0a5.",
+      "disposition": {
+        "recorded": "2026-08-30",
+        "ruled_by": "Michael",
+        "$comment": [
+          "APPENDED, never a rewrite — the same treatment a4 received, and for a",
+          "DIFFERENT failure, which is the point of keeping the two rows side by",
+          "side. a4 separated artifact identity from functional behaviour. a5",
+          "separates both of those from the DECLARED DEPENDENCY FLOOR: it is the",
+          "version whose bytes were right, whose behaviour was right, and whose",
+          "metadata described an environment it cannot run in.",
+          "",
+          "This is new evidence, not a record adjusted after the fact. a5's",
+          "verification exercised importability in an environment where a",
+          "compatible kernel happened to be installed. That proves the wheel",
+          "imports; it cannot prove the declared floor is honest, because",
+          "nothing in that run ever installed the declared floor.",
+          "",
+          "The tag dotmac-deployment-control-v0.1.0a5 and both artifacts are",
+          "never deleted, moved, overwritten or recreated. An index cannot",
+          "un-publish and a tag that moved would make one version name two",
+          "commits."
+        ],
+        "artifact_identity": "passed",
+        "functional_authorization": "passed",
+        "declared_dependency_floor": "failed",
+        "adoption_eligibility": "refused",
+        "artifact_identity_evidence": "All seven properties, unchanged: the tag peels to b182a99892067f26c0c1d03d958c5fcdc97c5869; wheel sha256 c02804b1b9f6dab7becc21696efccdf3820de06dba50903568e2db4c966e0aec; sdist sha256 5883f8ead3caab1a5d93977e6f086ad0f9f2b9df3e5828b5380ea0c41d841ef8; publisher read-back; a read-only consumer installed it with its real dependency graph and imported it; exactly one wheel and one sdist on the index; and all seven behavioural canaries passed against the wheel the registry served. Independent verify run 33318433336.",
+        "functional_authorization_evidence": "The defect a5 was cut for is fixed and stays fixed. `PlanDigestV1` makes a digest a value rather than a string, `approve_plan` accepts a4's bare-hex encoding of the plan's own digest, and an unreadable digest raises `DigestEncodingError` rather than claiming the plan changed. Canaries `a4_bare_hex_still_binds` and `encoding_fault_is_not_a_mutation` proved it against the published wheel, and 0.1.0a6 keeps both.",
+        "declared_dependency_floor_evidence": "service.py:73 `from dotmac_kernel.transactions import conflict_savepoint`. `dotmac_kernel/transactions.py` is ABSENT from the published dotmac_kernel-0.1.0a97-py3-none-any.whl and PRESENT in dotmac_kernel-0.1.0a98-py3-none-any.whl, both read from registry.dotmac.io. a5's wheel declares `Requires-Dist: dotmac-kernel (>=0.1.0a77)`, so any resolver may satisfy it with a kernel that cannot import the module. Discovered by the Platform CP lane at container boot, after resolution succeeded, the lock wrote cleanly, and both artifacts matched their published hashes exactly.",
+        "adoption_eligibility_evidence": "`pinnable: false`. release_guard.refusals() refuses 0.1.0a5 by NAME, distinctly from the floor, so depending on it is a decision somebody has to overrule rather than an omission. 0.1.0a6 declares `>=0.1.0a98` and CI proves that floor in both directions: a lane that installs the declared minimum literally, and a mutation lane that installs the newest kernel the floor excludes and requires the canaries to fail."
+      }
     }
   ],
   "tags_remain_in_source_for": [
