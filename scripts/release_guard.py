@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INHERITED = REPO_ROOT / "docs" / "inherited-releases.json"
+PUBLISHED = REPO_ROOT / "docs" / "published-versions.json"
 
 DISTRIBUTION = "dotmac-deployment-control"
 
@@ -47,26 +47,55 @@ def parse(version: str) -> tuple[int, int, int, int] | None:
     return (int(major), int(minor), int(patch), int(alpha))
 
 
-def inherited_floor(path: Path = INHERITED) -> str:
-    """The highest version published from the source repository.
+def published_versions(path: Path = PUBLISHED) -> list[dict]:
+    return list(json.loads(path.read_text(encoding="utf-8"))["releases"])
+
+
+def published_floor(path: Path = PUBLISHED) -> str:
+    """The highest version that EXISTS on the index, from any source.
 
     Read from the recorded coordinates rather than hard-coded, so the floor and
-    the provenance move together. A floor written as a literal here could drift
-    from the file that says which versions actually exist.
+    the provenance move together. A literal here could drift from the file that
+    says which versions actually exist.
+
+    "Exists" is the criterion, not "was released successfully". `0.1.0a3` was
+    published by a run cancelled during its own verification and is recorded
+    UNPROVABLE and unpinnable — but an index cannot un-publish, so it bounds the
+    floor exactly as a good release does. A floor that skipped it would let the
+    next release collide with bytes that are permanently there.
     """
-    data = json.loads(path.read_text(encoding="utf-8"))
-    versions = [r["version"] for r in data["releases"]]
+    versions = [r["version"] for r in published_versions(path)]
     keys = {v: parse(v) for v in versions}
     unorderable = sorted(v for v, k in keys.items() if k is None)
     if unorderable:
-        raise ValueError(f"inherited releases have unorderable versions: {unorderable}")
+        raise ValueError(f"published versions are unorderable: {unorderable}")
     return max(versions, key=lambda v: keys[v])  # type: ignore[index]
+
+
+def unpinnable(path: Path = PUBLISHED) -> dict[str, str]:
+    """version -> why it may never be depended on."""
+    return {
+        r["version"]: str(r.get("release_run_note", "recorded as not pinnable"))
+        for r in published_versions(path)
+        if r.get("pinnable") is False
+    }
 
 
 def refusals(distribution: str, version: str, *, floor: str | None = None) -> list[str]:
     """Every reason this publication must not happen. Empty means proceed."""
     problems: list[str] = []
-    ceiling = floor if floor is not None else inherited_floor()
+    ceiling = floor if floor is not None else published_floor()
+
+    # A distinct refusal, before the generic floor message. `0.1.0a3` is
+    # refused for a reason the floor cannot express: it EXISTS and is
+    # permanently unverifiable, so "publish something higher" is the remedy and
+    # "this is below the floor" would understate why.
+    reason = unpinnable().get(version.strip())
+    if reason is not None:
+        problems.append(
+            f"version {version} exists on the index and is recorded UNPINNABLE. "
+            f"{reason}"
+        )
 
     if distribution != DISTRIBUTION:
         problems.append(
@@ -93,11 +122,11 @@ def refusals(distribution: str, version: str, *, floor: str | None = None) -> li
 
     if key <= ceiling_key:
         problems.append(
-            f"version {version} is not greater than {ceiling}, which was "
-            "published from dotmac_starter_mt. Those artifacts are immutable and "
-            "a consumer pins one by wheel and sdist hash; re-uploading the name "
+            f"version {version} is not greater than {ceiling}, which already "
+            "exists on the index. Published artifacts are immutable and a "
+            "consumer pins one by wheel and sdist hash; re-uploading a name "
             "would either be refused by the index or break that lock. Publish a "
-            "version strictly greater than the inherited floor."
+            "version strictly greater than the published floor."
         )
     return problems
 
@@ -113,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error {problem}", file=sys.stderr)
     if problems:
         return 1
-    print(f"{args.distribution} {args.version} is above the inherited floor")
+    print(f"{args.distribution} {args.version} is above the published floor")
     return 0
 
 

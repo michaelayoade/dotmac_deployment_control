@@ -4,6 +4,33 @@ Controls this repository claims, where the claim is narrower than it sounds.
 Each entry states what is enforced, what is NOT, and by whom — so that a reader
 does not infer coverage that does not exist.
 
+## 0.1.0a3 is published, immutable, and must never be pinned
+
+**Status:** permanent. Not a gap to close — a fact to keep visible.
+
+`0.1.0a3` was published by release run `33295149495`, which was **cancelled
+during its own verify job**. The upload succeeded; the authenticated read-back,
+the consumer proof and the tag never ran. Verify run `33296262948` returned
+**UNPROVABLE**.
+
+Both artifacts were subsequently confirmed byte-correct out of band — wheel
+45,911 bytes and sdist 42,256 bytes, each sha256-matching what the release run
+built. **The bytes are sound. The evidence chain is not**, and it cannot be
+repaired after the fact: the proofs that were skipped were meant to run against
+that publication, in that order, before the tag asserted them.
+
+Michael ruled on 2026-08-30: do not tag, adopt, overwrite or delete it. An index
+cannot un-publish, so a3 exists permanently and the only available control is to
+make it unpinnable. `docs/published-versions.json` records it with
+`pinnable: false`, `scripts/release_guard.py` refuses it by name with a distinct
+message, and the release floor moves through it — a floor that skipped a3 would
+let a later release collide with bytes that are permanently there.
+
+**What is NOT enforced:** nothing stops a consumer outside this repository
+pinning `==0.1.0a3` from the index. The refusal is a publish-side control, and
+no server-side mechanism exists to withdraw a version. The compensating control
+is the record itself.
+
 ## The publisher's identity IS asserted — resolved 2026-08-30
 
 **Status:** closed. Recorded rather than deleted, because the reasoning that

@@ -108,10 +108,30 @@ jobs:
           PY
           cat index-files.json
 
-      # PROPERTY 4, deliberately as ci-reader. A clean install performed with the
-      # PUBLISHING credential proves the publisher can read its own upload, which
-      # is not the claim.
-      - name: A clean read-only consumer retrieves the exact bytes
+      # PROPERTY 1's input: EVERY artifact the run built, fetched EXPLICITLY.
+      #
+      # Not via a resolver. `pip download` takes the wheel and leaves the sdist,
+      # which is correct pip behaviour and no proof at all about the sdist's
+      # bytes — that gap is what made a3 unprovable. Each filename the run built
+      # is requested by name from the index.
+      - name: Fetch every built artifact from the index by name
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          INDEX_TOKEN="${TOKEN}" python scripts/fetch_published_artifacts.py \
+            --index "${INDEX_SIMPLE}" \
+            --distribution "${DISTRIBUTION}" \
+            --manifest from-run/artifact-hashes.txt \
+            --dest fetched
+          ls -l fetched || true
+
+      # PROPERTY 4, deliberately as ci-reader and deliberately an INSTALL.
+      # A clean install performed with the PUBLISHING credential would prove the
+      # publisher can read its own upload, which is not the claim. And this asks
+      # whether pip can install it — a separate question from whether the bytes
+      # match, which is property 1's job.
+      - name: A clean read-only consumer installs it
         env:
           TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
         run: |
@@ -122,13 +142,16 @@ jobs:
           chmod 600 "${HOME}/.netrc"
           python -m venv /tmp/consumer
           /tmp/consumer/bin/pip install --quiet --upgrade pip
-          mkdir -p downloaded
-          /tmp/consumer/bin/pip download --no-deps --no-binary :none: --dest downloaded \
-            --index-url "${INDEX_SIMPLE}" \
-            "${DISTRIBUTION}==${{ inputs.version }}" || \
-            echo "::warning::the read-only consumer could not retrieve the version"
+          if /tmp/consumer/bin/pip install --quiet --no-deps \
+               --index-url "${INDEX_SIMPLE}" \
+               "${DISTRIBUTION}==${{ inputs.version }}"; then
+            echo "true" > consumer-installed.txt
+          else
+            echo "false" > consumer-installed.txt
+            echo "::warning::the read-only consumer could not install the version"
+          fi
           rm -f "${HOME}/.netrc"
-          ls -l downloaded || true
+          /tmp/consumer/bin/python -c "import dotmac_deployment_control as m; print(m.__name__)" || true
 
       - name: Decide — verified, or unprovable
         run: |
@@ -156,7 +179,9 @@ jobs:
               "head_sha_on_main": pathlib.Path("head-on-main.txt").read_text().strip() == "true",
               "pyproject_at_head": head.read_text() if head.is_file() and head.stat().st_size else None,
               "built_hashes": built,
-              "downloaded": digests("downloaded"),
+              "fetched": digests("fetched"),
+              "consumer_installed": pathlib.Path("consumer-installed.txt").read_text().strip() == "true"
+                  if pathlib.Path("consumer-installed.txt").is_file() else False,
               "read_back_ok": pathlib.Path("read-back.txt").read_text().strip() == "true",
               "index_filenames": json.loads(pathlib.Path("index-files.json").read_text()),
           }))

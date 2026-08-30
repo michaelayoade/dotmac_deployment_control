@@ -5,9 +5,24 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a3 — UNRELEASED
+## 0.1.0a4 — UNRELEASED
 
-**Not published.** The declared version is a3 rather than a2 because the package
+Supersedes `0.1.0a3`. No source change from a3: the module's code is identical,
+and the bump exists because a3 can never be pinned.
+
+### Changed
+
+- Nothing in the package. `0.1.0a3` was published by a release run cancelled
+  during its own verification, so the upload succeeded while the read-back,
+  consumer proof and tag never ran. Both a3 artifacts were later confirmed
+  byte-correct out of band — the BYTES are sound and the EVIDENCE CHAIN is not.
+  An index cannot un-publish, so a3 remains on it permanently, recorded
+  UNPROVABLE and never pinnable, and a4 carries the same code with a complete
+  chain behind it.
+
+## 0.1.0a3 — PUBLISHED, UNPROVABLE, NEVER PIN
+
+**Published and unusable.** It was declared a3 rather than a2 because the package
 source changed after a2 was published, and a version that names two different
 contents is the hazard, not the bump. a2's artifact in the index is untouched
 and stays the authoritative a2 forever.

@@ -1,0 +1,64 @@
+{
+  "$comment": [
+    "Every version of this distribution that EXISTS on the private index, wherever",
+    "it was published from, and whether or not it may be pinned.",
+    "",
+    "Renamed from inherited-releases.json on 2026-08-30. The old name stopped",
+    "covering the file's job the moment this repository published one of its own:",
+    "the release floor is derived from everything here, and a version published",
+    "HERE bounds the floor exactly as an inherited one does. Keeping the old name",
+    "and adding a non-inherited row would have made the filename a lie.",
+    "",
+    "`pinnable = false` means the version exists permanently and must never be",
+    "depended on. That is not the same as absent, and the distinction is the whole",
+    "reason this file lists it: an index cannot un-publish, so the only place a",
+    "'do not pin this' fact can live is here and in the guard that reads it."
+  ],
+  "source_canonical_url": "https://github.com/michaelayoade/dotmac_starter_mt",
+  "releases": [
+    {
+      "version": "0.1.0a1",
+      "tag": "dotmac-deployment-control-v0.1.0a1",
+      "tag_object": "c2700ce3bd3946da0df753aa5e423e08777a79ca",
+      "peeled_commit": "fead57bc93d6551450f5e6ae1c9de1296e27b0ae",
+      "release_run": null,
+      "release_run_note": "Not recorded in the dossier at extraction time. Absent rather than guessed: a run id invented to fill the field would be a coordinate that resolves to nothing.",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "source_repository": "dotmac_starter_mt",
+      "pinnable": true,
+      "status": "released",
+      "verify_run": null
+    },
+    {
+      "version": "0.1.0a2",
+      "tag": "dotmac-deployment-control-v0.1.0a2",
+      "tag_object": "8f3cc0dfcf69927bfc37c2300557bcd03c86c2d3",
+      "peeled_commit": "5c87272a632096850a80e5e9dc1f625a97c3e5d6",
+      "release_run": "32471956734",
+      "release_run_note": "Tagged only after the wheel was installed back from the private index and conformance-checked. a2 rather than a1 is the first admissible composition version: a1 published the stable-verdict contract but did not recover the losing first-arrival transaction after the receipt unique constraint selected a winner.",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "source_repository": "dotmac_starter_mt",
+      "pinnable": true,
+      "status": "released",
+      "verify_run": null
+    },
+    {
+      "version": "0.1.0a3",
+      "tag": null,
+      "tag_note": "NOT TAGGED, and must not be. A tag is this repository's assertion that a release was verified; a3's verification returned UNPROVABLE.",
+      "tag_object": null,
+      "peeled_commit": "31b6b82f14fee65d22c6d1d218455d21bb12c0f6",
+      "release_run": "33295149495",
+      "verify_run": "33296262948",
+      "source_repository": "dotmac_deployment_control",
+      "pinnable": false,
+      "status": "UNPROVABLE",
+      "release_run_note": "Published by a run cancelled during its own verify job: the upload succeeded, the read-back, consumer proof and tag never ran. Verify run 33296262948 returned UNPROVABLE on property 1 \u2014 the sdist was never retrieved or compared by any automated check. Both artifacts were LATER confirmed byte-correct out of band (wheel 45,911 bytes, sdist 42,256 bytes, both sha256-matching the release run's build), so the BYTES are sound and the EVIDENCE CHAIN is not. Michael ruled 2026-08-30: immutable, unprovable, never pinnable, superseded by a4.",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi"
+    }
+  ],
+  "tags_remain_in_source_for": [
+    "0.1.0a1",
+    "0.1.0a2"
+  ]
+}

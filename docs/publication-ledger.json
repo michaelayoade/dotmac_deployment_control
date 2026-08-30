@@ -1,21 +1,19 @@
 {
   "$comment": [
-    "Declared versions of this distribution that are NOT published FROM THIS",
-    "REPOSITORY, each with the reason it is acceptable. A declared version",
-    "nobody can install is detected here rather than discovered by a consumer's",
-    "resolver.",
+    "Declared versions NOT published from this repository, each with the reason.",
     "",
-    "State is computed from THIS repository's git tags. a1 and a2 were published",
-    "from dotmac_starter_mt and their tags stay there permanently — git",
-    "filter-repo rewrote every commit, so a tag recreated here would point at a",
-    "different tree and make one published version name two of them. Recording",
-    "those inherited coordinates is a separate, later step; this ledger answers",
-    "only 'may this repository declare that version unpublished'."
+    "State is computed from this repository's git tags. a1 and a2 were published",
+    "from dotmac_starter_mt and their tags stay there permanently.",
+    "",
+    "0.1.0a3 is NOT listed here and that is deliberate: it IS published, so it is",
+    "not an unpublished declaration. It carries no tag because its verification",
+    "returned UNPROVABLE, and `docs/published-versions.json` records it as",
+    "immutable and never pinnable. A row here would say the opposite of the truth."
   ],
   "unpublished": {
-    "0.1.0a3": {
+    "0.1.0a4": {
       "state": "never-published",
-      "reason": "First release from this repository. The package source changed after a2 was published (the eager-database-runtime boundary fix), so declaring a2 would make one version name two different contents. a3 is declared here and published by the release step; a2's artifact in the private index is untouched and remains the authoritative a2."
+      "reason": "Supersedes 0.1.0a3, which was published by a run cancelled during its own verify job and is permanently UNPROVABLE. a4 is published by a fresh protected-main run on the corrected workflow, and tagged only after authenticated read-back, exact hash equality over every built artifact, and clean consumer installation all succeed."
     }
   }
 }
