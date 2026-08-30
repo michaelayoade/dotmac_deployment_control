@@ -84,10 +84,17 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# The canary drives a real database with literal SQL on purpose: it is proving
-# what the DATABASE refuses, which cannot be expressed through the ORM that the
-# service layer would use.
-"tests/**" = ["S608"]
+# S608 — the canary drives a real database with literal SQL on purpose: it is
+# proving what the DATABASE refuses, which cannot be expressed through the ORM
+# the service layer would use.
+#
+# S105/S106 — the release-workflow guard holds secret NAMES as constants
+# (`FORGEJO_PUBLISH_TOKEN`) so it can assert where they may and may not appear.
+# Ruff reads any string assigned to a token-ish name as a possible credential.
+# These are the names, never the values; no secret value exists anywhere in this
+# repository, which is what `test_the_publish_credential_never_appears_in_a_url`
+# is for.
+"tests/**" = ["S608", "S105", "S106"]
 
 [tool.mypy]
 python_version = "3.12"
