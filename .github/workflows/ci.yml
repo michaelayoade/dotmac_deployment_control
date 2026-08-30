@@ -126,6 +126,69 @@ jobs:
       - run: poetry install --no-interaction
       - run: poetry run mypy src/dotmac_deployment_control
 
+  # ── The canaries run against a BUILT WHEEL, never against `src/` ──────────
+  #
+  # `0.1.0a4` published a wheel whose `__version__` said `0.1.0a2`. Every check
+  # that could have caught it was reading the source tree, where the two
+  # literals were equally wrong and equally invisible. A proof about an
+  # ARTIFACT has to execute the artifact, so this job builds one, installs it
+  # into a clean virtualenv with its real dependency graph, and runs
+  # `scripts/artifact_canaries.py` with THAT interpreter.
+  #
+  # The first canary refuses to continue unless the module it imported came out
+  # of the venv's site-packages, so the job cannot silently degrade into a
+  # slower copy of the `unit` lane if the path ever changes.
+  #
+  # This is pre-merge, on the built wheel. `verify-release.yml` runs the SAME
+  # script against the wheel the REGISTRY served, which is a different and
+  # stronger claim; neither replaces the other, because a wheel that is correct
+  # on a runner and a wheel that is correct on the index are two facts.
+  artifact-canaries:
+    name: behavioural canaries (installed wheel)
+    needs: credential
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pipx install poetry==1.8.3
+      - name: Build the artifact the canaries will be run against
+        run: poetry build
+      - name: Install that wheel, with its dependencies, into a clean environment
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          # THE TRAP, not a trailing `rm`: a removal on the last line runs only
+          # when every line before it succeeded, and `set -e` makes
+          # not-succeeding the common case. Same rule the verify workflow's
+          # consumer step is held to.
+          trap 'rm -f -- "${HOME}/.netrc"' EXIT HUP INT TERM
+          umask 077
+          : > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          printf 'machine %s login %s password %s\n' \
+            "registry.dotmac.io" "ci-reader" "${TOKEN}" >> "${HOME}/.netrc"
+          python -m venv /tmp/canary
+          /tmp/canary/bin/pip install --quiet --upgrade pip
+          # PyPI primary, the private index EXTRA, so a public name cannot be
+          # shadowed by a private one. `.netrc` is host-scoped, so the
+          # credential is only ever offered to registry.dotmac.io.
+          /tmp/canary/bin/pip install --quiet \
+            --index-url "https://pypi.org/simple" \
+            --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+            dist/*.whl
+      - name: Run the canaries with the installed environment's interpreter
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['poetry']['version'])")
+          echo "declared version: ${VERSION}"
+          # The repository is NOT on this interpreter's path: `sys.path[0]` is
+          # `scripts/`, and the package lives under `src/`. The first canary
+          # asserts that rather than trusting it.
+          /tmp/canary/bin/python scripts/artifact_canaries.py --expect-version "${VERSION}"
+
   # ── The reason this repository has a PostgreSQL lane at all ───────────────
   #
   # `tests/test_deployment_control_platform_isolation.py` is 1,001 lines proving

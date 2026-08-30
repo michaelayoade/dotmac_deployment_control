@@ -12,7 +12,15 @@
     "`pinnable = false` means the version exists permanently and must never be",
     "depended on. That is not the same as absent, and the distinction is the whole",
     "reason this file lists it: an index cannot un-publish, so the only place a",
-    "'do not pin this' fact can live is here and in the guard that reads it."
+    "'do not pin this' fact can live is here and in the guard that reads it.",
+    "",
+    "0.1.0a5 is DECLARED and NOT HERE, deliberately. Every row in this file is a",
+    "version that EXISTS on the index, and the release floor is derived as the",
+    "maximum of them. A row added before publication would raise the floor above",
+    "the version being published and the release guard would refuse the very",
+    "release it is meant to admit. Until a5 is on the index it lives in",
+    "docs/publication-ledger.json, which is where a declared-but-unpublished",
+    "version belongs; the run that publishes it moves the row here."
   ],
   "source_canonical_url": "https://github.com/michaelayoade/dotmac_starter_mt",
   "releases": [
@@ -65,13 +73,38 @@
       "verify_run": "33310594187",
       "source_repository": "dotmac_deployment_control",
       "index": "registry.dotmac.io/api/packages/dotmac/pypi",
-      "pinnable": true,
+      "pinnable": false,
       "status": "released",
       "sha256": {
         "dotmac_deployment_control-0.1.0a4-py3-none-any.whl": "ad1aaaa2d20b9a565d0656f64762564f4dfd90eb4c367187aa63fdd54a33c37e",
         "dotmac_deployment_control-0.1.0a4.tar.gz": "a5dae85d76e17ab34b1868741def46aab514ffba119110ec750794f5dc1c6e2c"
       },
-      "release_run_note": "Published by run 33297423568 from the exact tip of protected main. Its tag was written in that same run by a job that called itself a verification and could not perform one: it compared hashes over whatever `pip download` returned (the wheel; never the sdist) and swallowed the install result with `|| true`. INDEPENDENT verify run 33310594187 later returned VERIFIED against the registry — both artifacts fetched by name and sha256-equal to the release run's build, provenance closed on peeled commit 2c61540f74018b7e19d7c5add893e0653cfcdb17, publisher read-back, read-only consumer install, and exactly one wheel and one sdist on the index. Michael ruled 2026-08-30: published and independently provable, so a4 is retained and never republished. The tag is left exactly where that run wrote it and is never moved."
+      "release_run_note": "Published by run 33297423568 from the exact tip of protected main. Its tag was written in that same run by a job that called itself a verification and could not perform one: it compared hashes over whatever `pip download` returned (the wheel; never the sdist) and swallowed the install result with `|| true`. INDEPENDENT verify run 33310594187 later returned VERIFIED against the registry — both artifacts fetched by name and sha256-equal to the release run's build, provenance closed on peeled commit 2c61540f74018b7e19d7c5add893e0653cfcdb17, publisher read-back, read-only consumer install, and exactly one wheel and one sdist on the index. Michael ruled 2026-08-30: published and independently provable, so a4 is retained and never republished. The tag is left exactly where that run wrote it and is never moved.",
+      "unpinnable_reason": "SUPERSEDED BY 0.1.0a5 FOR FUNCTIONAL REASONS, NOT IDENTITY ONES. a4's five identity proofs stand and are recorded above unchanged. It is refused here because it cannot be adopted: `approve_plan` refuses a correctly-supplied approval digest with \"the plan changed after approval\" whenever the caller uses the other encoding of the same digest (`propose_plan` stored bare hex, `spec_digest` produced the `sha256:`-prefixed form, and the comparison was between two strings), and the published wheel reports `__version__ == \"0.1.0a2\"` while declaring 0.1.0a4, so an authorization would record the wrong version of the deciding module. Michael ruled 2026-08-30: a4 remains immutable and identity-verified, and is UNADOPTABLE. Platform CP must pin 0.1.0a5, never 0.1.0a4.",
+      "superseded_by": "0.1.0a5",
+      "disposition": {
+        "recorded": "2026-08-30",
+        "ruled_by": "Michael",
+        "$comment": [
+          "APPENDED, never a rewrite. The PASS record above is the original and is",
+          "unchanged; both facts are true at once and the PAIR is the useful",
+          "evidence. a4 is the version that proves identity verification and",
+          "functional authorization are different questions: it answers the first",
+          "completely and fails the second.",
+          "",
+          "The tag dotmac-deployment-control-v0.1.0a4 and both artifacts are never",
+          "deleted, moved, overwritten or recreated. An index cannot un-publish and",
+          "a tag that moved would make one version name two commits."
+        ],
+        "artifact_identity": "passed",
+        "functional_authorization": "failed",
+        "version_self_reporting": "failed",
+        "adoption_eligibility": "refused",
+        "artifact_identity_evidence": "All five proofs, unchanged: the tag peels to 2c61540f74018b7e19d7c5add893e0653cfcdb17; wheel sha256 ad1aaaa2d20b9a565d0656f64762564f4dfd90eb4c367187aa63fdd54a33c37e; sdist sha256 a5dae85d76e17ab34b1868741def46aab514ffba119110ec750794f5dc1c6e2c; a clean read-only consumer installed it with its dependencies; it imported. Independent verify run 33310594187.",
+        "functional_authorization_evidence": "service.py:305 `snapshot_digest` returns bare hex; service.py:311 `spec_digest` returns `sha256:`-prefixed; service.py:889 `propose_plan` stores the bare form; service.py:974 `approve_plan` evaluates `evidence.content_digest != row.plan_digest`. A caller supplying the same digest in the other encoding is refused with \"the plan changed after approval, so a new approval is required\" — a security refusal standing in for a formatting bug.",
+        "version_self_reporting_evidence": "__init__.py:172 declares `__version__ = \"0.1.0a2\"` while pyproject.toml declares 0.1.0a4. Two literals for one fact; nothing compared them because every check read the source tree rather than the built artifact.",
+        "adoption_eligibility_evidence": "`pinnable: false`. release_guard.refusals() refuses 0.1.0a4 by NAME, distinctly from the floor, so an attempt to depend on it is a decision someone has to overrule rather than an omission."
+      }
     }
   ],
   "tags_remain_in_source_for": [

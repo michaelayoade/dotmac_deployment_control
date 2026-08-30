@@ -586,7 +586,7 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
         _observe(
             db,
             observed_release_ref="dotmac_sub@6.0.0",
-            observed_spec_digest="sha256:something-else",
+            observed_spec_digest=spec_digest({"replicas": 99}),
         )
         report = drift(db, target.id)
         assert report is not None
@@ -602,7 +602,30 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
         finding."""
         target, _ = enrolled
         self._rolled_out(db, target.id)
-        _observe(db, observed_spec_digest="sha256:unrecognised")
+        # WELL-FORMED and unmatched. `"sha256:unrecognised"` used to stand in
+        # here, and since `0.1.0a5` that value is not a readable digest at all —
+        # it would exercise the encoding path and report no revision for the
+        # wrong reason, which is a test passing by accident.
+        _observe(db, observed_spec_digest=spec_digest({"never": "planned"}))
+        view = get_target(db, target.id)
+        assert view is not None
+        assert view.observed_revision is None
+
+    def test_an_unreadable_spec_digest_is_recorded_not_raised(
+        self, db, enrolled
+    ) -> None:
+        """Rule 3: EVERY arrival is recorded, including the ones that fail.
+
+        A report whose spec digest this module cannot read is a finding about
+        the report. It resolves to no revision — the same honest answer an
+        unrecognised-but-well-formed digest gets — and it must not raise, or a
+        malformed arrival would be the one thing the append-only log never
+        holds.
+        """
+        target, _ = enrolled
+        self._rolled_out(db, target.id)
+        verdict = _observe(db, observed_spec_digest="sha256:NOT-LOWERCASE-HEX")
+        assert verdict.disposition == ObservationDisposition.ACCEPTED.value
         view = get_target(db, target.id)
         assert view is not None
         assert view.observed_revision is None

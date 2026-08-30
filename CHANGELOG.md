@@ -5,6 +5,93 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a5 — UNRELEASED
+
+Supersedes `0.1.0a4` for FUNCTIONAL reasons. a4's identity proofs stand and are
+not withdrawn: it is immutable, independently verified, and **unadoptable**
+(Michael's ruling, 2026-08-30). Platform CP pins a5, never a4.
+
+### Fixed
+
+- **`approve_plan` no longer reports an encoding difference as a plan
+  mutation.** This is the defect a5 exists for. `snapshot_digest` returned bare
+  hex, `spec_digest` returned the `sha256:`-prefixed form, `propose_plan` stored
+  the bare one, and `approve_plan` compared the two as STRINGS — so a caller
+  supplying the plan's own digest in the other encoding was refused with *"the
+  plan changed after approval, so a new approval is required"*.
+
+  A security refusal standing in for a formatting bug is the worst available
+  failure shape: it looks exactly like the system working, and the operator
+  re-runs an approval that was never stale.
+
+- **`__version__` is derived from the installed distribution's metadata.** The
+  published a4 wheel carries `__version__ = "0.1.0a2"` while declaring
+  `0.1.0a4`, so an authorization would have recorded the wrong version of the
+  deciding module. Two literals for one fact is the root cause; one is deleted
+  rather than a third check added. A source tree with no install reports
+  `0.0.0+not-installed`, a shape `release_guard` refuses, rather than guessing.
+
+### Added
+
+- **`dotmac_deployment_control.digests` — Control-owned `PlanDigestV1`.** An
+  ALGORITHM and its digest BYTES, not a string. Canonical serialization
+  `sha256:<64 lowercase hex>`. Equality is over the bytes, so no encoding can
+  change it, and nothing on the authorization path compares digest text —
+  `tests/architecture/test_digest_comparison_is_typed.py` parses the package and
+  fails the build if it comes back.
+
+  `SpecDigestV1` is a separate type for the observation path. Same algorithm and
+  encoding, different subject, and the values compare unequal across types — so
+  a spec digest can never satisfy a plan-digest binding by arriving in the right
+  shape.
+
+  Malformed, uppercase, wrong-length and unknown-algorithm values are refused,
+  each naming what is wrong: those have genuinely different repairs.
+
+- **`DigestEncodingError`, and it is deliberately NOT an
+  `ApprovalRefusedError`.** "I cannot read the value you sent" and "the plan you
+  approved is not the plan you are approving" are different findings, for
+  different readers, with different repairs. Both remain catchable as
+  `DeploymentControlError`.
+
+- **a4's bare-hex form is accepted, in ONE named place, inside Control.**
+  `PlanDigestV1.parse_a4_bare_hex` / `parse_accepting_a4_bare_hex` — named for
+  the version they exist for, so the compatibility carries an expiry
+  conversation rather than becoming the format. **Consumers must not normalize
+  a Control digest.** A second implementation of this parser will disagree
+  eventually, and the disagreement arrives as a false "the plan changed".
+
+- **`scripts/artifact_canaries.py` — seven behavioural canaries that execute the
+  INSTALLED wheel**, never a source checkout. Its first canary refuses to
+  continue unless the module it imported came out of the environment's
+  `site-packages`; without that the rest would be a slower copy of the unit
+  tests wearing a stronger claim, which is precisely how a4 shipped a stale
+  `__version__`. Run pre-merge in `ci.yml` against a wheel built from the pull
+  request, and post-publication in `verify-release.yml` against the wheel the
+  registry served.
+
+- **Property 7 of the release verdict: "the installed distribution behaves as
+  published".** a4 passed all six identity properties and was unadoptable; the
+  seventh is what stops that combination reaching a tag. A failing canary is
+  UNPROVABLE and therefore untagged.
+
+### Changed
+
+- `mod_deploy.deployment_plans.plan_digest` widened `VARCHAR(64)` ->
+  `VARCHAR(128)` by `dc_0002_canonical_plan_digest`. 64 was exactly the width of
+  bare hex, which is a fair summary of why a4 stored bare hex: the column could
+  not hold a value that said which algorithm produced it. Metadata-only in
+  PostgreSQL; existing rows are deliberately NOT rewritten, because rewriting
+  them would be a migration silently restating other people's frozen approval
+  bindings.
+- `snapshot_digest` now returns the canonical `sha256:`-prefixed form. Its
+  bare-hex return is the a4 behaviour and is gone. `spec_digest` is unchanged.
+  `plan_digest_of` and `spec_digest_of` are the new typed accessors.
+- `0.1.0a4` is recorded `pinnable: false` and refused BY NAME by
+  `scripts/release_guard.py`, distinctly from the floor. Its original PASS
+  record is untouched and the superseding disposition is APPENDED beside it —
+  both facts are true and the pair is the useful evidence.
+
 ## 0.1.0a4 — RELEASED 2026-08-30, independently verified
 
 Supersedes `0.1.0a3`. No source change from a3: the module's code is identical,

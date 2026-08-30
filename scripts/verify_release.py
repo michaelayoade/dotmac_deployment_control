@@ -11,7 +11,7 @@ this artifact could not be gathered — an expired run artifact, a registry that
 will not serve the file, a provenance link that cannot be closed. It is reported
 as unprovable and never retried into looking green.
 
-## The six properties, and why each is separate
+## The seven properties, and why each is separate
 
 1. Every artifact the release run built matches the bytes the registry serves.
 2. Distribution, version, source revision and hashes all agree.
@@ -19,6 +19,8 @@ as unprovable and never retried into looking green.
 4. A clean read-only consumer can install it WITH its dependencies.
 5. No second upload or overwrite occurred.
 6. The installed distribution actually imports.
+7. The installed distribution BEHAVES — `scripts/artifact_canaries.py` passes
+   against it.
 
 Provenance and hash equality are not the same claim. A wheel on the index with
 the expected sha256 proves the BYTES are the ones somebody built; it says
@@ -47,6 +49,26 @@ combination reported a clean consumer install while the import raised
 step that went green. A resolvable dependency is not a working one, and a
 distribution that installs and cannot import is a real outcome — so it gets its
 own numbered property, its own observation, and its own way to fail.
+
+## Why importing and behaving are separate too — property 7
+
+Once more, one layer further out, and this one is Michael's ruling on
+`0.1.0a4`. That version passed all six properties above: the bytes matched,
+provenance closed, the publisher read it back, a read-only consumer installed
+it with its dependencies, exactly one wheel and one sdist were on the index,
+and the installed distribution imported. It is immutable and identity-verified,
+and those proofs stand.
+
+It was still unadoptable. `approve_plan` refused a correctly-supplied approval
+digest with *"the plan changed after approval"* because `propose_plan` stored
+bare hex and the comparison was between strings; and the wheel reported
+`__version__ == "0.1.0a2"` while declaring `0.1.0a4`. Six properties about
+IDENTITY cannot see either, because neither is a fact about which bytes are on
+the index.
+
+So property 7 asks the seventh question — does the artifact do what it says? —
+against the wheel the REGISTRY served, in the consumer environment, and an
+answer of no is UNPROVABLE and therefore untagged.
 """
 
 from __future__ import annotations
@@ -127,6 +149,8 @@ def evaluate(
     fetched: dict[str, str],
     consumer_installed: bool,
     consumer_imported: bool,
+    canaries_passed: bool,
+    canary_detail: str,
     read_back_ok: bool,
     index_filenames: list[str],
 ) -> Outcome:
@@ -240,6 +264,26 @@ def evaluate(
             if consumer_imported
             else "the distribution installed but could not be imported; a "
             "resolvable dependency is not a working one",
+        )
+    )
+
+    # ── 7: imported is not the same as CORRECT ──────────────────────────────
+    #
+    # The property `0.1.0a4` failed while passing every other one. See the
+    # module docstring: identity proofs cannot see a functional defect, and a4
+    # had two — an approval refused for an encoding difference, and a wheel
+    # reporting the wrong version.
+    findings.append(
+        Finding(
+            7,
+            "the installed distribution behaves as published",
+            canaries_passed,
+            canary_detail
+            or (
+                "scripts/artifact_canaries.py passed against the installed wheel"
+                if canaries_passed
+                else "the behavioural canaries failed against the installed wheel"
+            ),
         )
     )
 

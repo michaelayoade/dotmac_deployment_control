@@ -65,6 +65,8 @@ def observations(**overrides: object) -> dict[str, object]:
         "fetched": {WHEEL: WHEEL_SHA, SDIST: SDIST_SHA},
         "consumer_installed": True,
         "consumer_imported": True,
+        "canaries_passed": True,
+        "canary_detail": "all 7 canaries passed against the installed artifact",
         "read_back_ok": True,
         "index_filenames": [WHEEL, SDIST],
     }
@@ -85,7 +87,7 @@ def test_a_complete_evidence_chain_is_verified() -> None:
     outcome = verify.evaluate(**observations())
     assert outcome.verdict == verify.VERIFIED, outcome.render()
     assert all(f.proven for f in outcome.findings)
-    assert len(outcome.findings) == 6
+    assert len(outcome.findings) == 7
 
 
 def test_the_render_names_the_verdict_and_never_says_ok() -> None:
@@ -289,5 +291,44 @@ def test_the_report_lists_every_property_even_when_one_fails() -> None:
     hold — and 'the bytes matched but provenance did not' is exactly the
     distinction a reader needs."""
     outcome = verify.evaluate(**observations(read_back_ok=False))
-    assert {f.prop for f in outcome.findings} == {1, 2, 3, 4, 5, 6}
+    assert {f.prop for f in outcome.findings} == {1, 2, 3, 4, 5, 6, 7}
     assert len(outcome.unproven) == 1
+
+
+# ── property 7: identity is not behaviour ───────────────────────────────────
+
+
+def test_an_artifact_that_fails_its_canaries_is_unprovable() -> None:
+    """`0.1.0a4` PASSED properties 1-6. The bytes matched, provenance closed,
+    the publisher read it back, a read-only consumer installed it with its
+    dependencies, exactly one wheel and one sdist were on the index, and the
+    installed distribution imported. Every one of those proofs still stands.
+
+    It was still unadoptable: `approve_plan` refused a correctly-supplied
+    approval digest as "the plan changed", and the wheel reported
+    `__version__ == "0.1.0a2"`. Six identity properties cannot see either,
+    which is why there is a seventh.
+    """
+    outcome = verify.evaluate(
+        **observations(
+            canaries_passed=False,
+            canary_detail="2 canary/canaries failed: version_agreement, "
+            "a4_bare_hex_still_binds",
+        )
+    )
+    assert outcome.verdict == verify.UNPROVABLE
+    assert not finding(outcome, 7).proven
+    assert "version_agreement" in finding(outcome, 7).detail
+
+
+def test_the_other_six_properties_can_all_hold_while_the_seventh_fails() -> None:
+    """SENSITIVITY, and it is the whole argument for adding property 7. If a
+    canary failure could only occur alongside another failure, the property
+    would be decoration."""
+    outcome = verify.evaluate(
+        **observations(
+            canaries_passed=False,
+            canary_detail="1 canary/canaries failed: propose_emits_canonical",
+        )
+    )
+    assert [f.prop for f in outcome.unproven] == [7]

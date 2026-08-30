@@ -96,6 +96,29 @@ answers neither "how many times did we try?" nor "what did we decide?".
   stays a checkable dependency direction.
 - **Imports no sibling module** (ADR-0024).
 
+## A digest is a value, not a string
+
+A plan's identity is `PlanDigestV1` — an algorithm and its bytes — serialized
+canonically as `sha256:<64 lowercase hex>`. Equality is over the bytes, so no
+encoding can change it, and nothing on the authorization path compares digest
+text.
+
+This is the defect `0.1.0a5` was cut for. Through `0.1.0a4` `propose_plan`
+stored bare hex while `spec_digest` produced the prefixed form, and
+`approve_plan` compared the two as strings — so a caller supplying the plan's
+own digest in the other encoding was refused with *"the plan changed after
+approval"*. A security refusal standing in for a formatting bug is the worst
+failure shape available, because it looks exactly like the system working.
+
+So the two outcomes are two exceptions and neither is a subclass of the other:
+`DigestEncodingError` means the value could not be READ and nothing was
+compared; `ApprovalRefusedError` means it was read and the plan really did move.
+
+**Consumers do not normalize.** a4's bare-hex form is accepted through
+`parse_a4_bare_hex` / `parse_accepting_a4_bare_hex`, inside Control, and nowhere
+else. A consumer that normalizes has forked this parser; the two will disagree,
+and the disagreement surfaces as a false "the plan changed".
+
 ## Published facts
 
 Nineteen types, all `.v1` — read `PUBLISHED_EVENT_TYPES` rather than keeping a
@@ -103,8 +126,13 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Unlike its two siblings there is nothing to
-cut over *from*: the V6 slices were never merged. `EXTRACTION.toml` records the
+**Built and validated, not adopted.** Pin `0.1.0a5` or later. `0.1.0a4` is
+immutable and identity-verified and must never be pinned: it refuses a
+correctly-supplied approval digest and reports the wrong version of itself
+(`docs/CONTROL_EXCEPTIONS.md`, "0.1.0a4 is identity-verified AND unadoptable").
+`0.1.0a3` is published and permanently unprovable.
+
+Unlike its two siblings there is nothing to cut over *from*: the V6 slices were never merged. `EXTRACTION.toml` records the
 two proofs the composition still owes — the claim/proof CHECKs against raw SQL,
 and a concurrency rehearsal for the stable-verdict rule that a single-process test
 cannot establish — and the obligation to **delete** the two abandoned V6 branches,

@@ -53,6 +53,24 @@ from dotmac_kernel.prerequisites import IDEMPOTENCY_LEDGER_V1, PLATFORM_AUDIT_LO
 
 module = ModuleManifest(
     code="deployment_control",
+    #: THE MODULE CONTRACT VERSION, and deliberately not the distribution's.
+    #:
+    #: A composing assembly reads this to decide contract compatibility, so it
+    #: moves when the module's declared surface — code, schema, tables,
+    #: prerequisites, audit actions — changes, and NOT when the distribution is
+    #: republished. `0.1.0a5` changes behaviour and a column width inside an
+    #: already-declared table; it declares no new table, prerequisite or audit
+    #: action, so this stays where it is.
+    #:
+    #: It is a literal, and it is not the second version authority `0.1.0a5`
+    #: removed. That one was `__version__`, which duplicated `pyproject.toml`'s
+    #: statement of the DISTRIBUTION version and drifted to `0.1.0a2` while the
+    #: tree said `0.1.0a4`. `__version__` is now derived from installed
+    #: metadata. This field states a different fact and has no other copy.
+    #:
+    #: Its equality with a4's `__version__` is a coincidence of history, not a
+    #: relationship — do not "fix" it by pointing it at the distribution
+    #: version, which would make every republication look like a contract change.
     version="0.1.0a2",
     core=False,
     short_code="deploy",

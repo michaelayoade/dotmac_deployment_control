@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-deployment-control"
-version = "0.1.0a4"
+version = "0.1.0a5"
 description = "DotMac Deployment Control — desired deployment intent, immutable plans, approval-gated rollouts, authenticated target acknowledgements and drift reconciliation for licensed deployments (ADR-0057 § 3)"
 authors = ["DotMac"]
 readme = "README.md"
@@ -94,7 +94,13 @@ ignore = [
 # These are the names, never the values; no secret value exists anywhere in this
 # repository, which is what `test_the_publish_credential_never_appears_in_a_url`
 # is for.
-"tests/**" = ["S608", "S105", "S106"]
+#
+# S108 — `test_artifact_canaries.py` asserts that the workflows run the canaries
+# with `/tmp/canary/bin/python` and `/tmp/consumer/bin/python`. Those literals
+# are the PATHS THE WORKFLOWS USE, quoted so the assertion can compare them; the
+# test creates no temporary file of its own. Ruff reads any `/tmp` string as a
+# temp-file hazard, which is right in general and wrong for a text comparison.
+"tests/**" = ["S608", "S105", "S106", "S108"]
 
 [tool.mypy]
 python_version = "3.12"

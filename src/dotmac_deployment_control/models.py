@@ -383,7 +383,14 @@ class DeploymentPlan(Base, TimestampMixin):
     #: revision is what makes drift computable afterwards.
     snapshot: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
     desired_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    plan_digest: Mapped[str | None] = mapped_column(String(64))
+    #: `sha256:<64 lowercase hex>` — the CANONICAL serialization of
+    #: `PlanDigestV1`, 71 characters. `String(64)` through `0.1.0a4` was exactly
+    #: the width of bare hex, which is a fair summary of why a4 stored bare hex:
+    #: the column could not hold a value that said which algorithm produced it.
+    #: Widened to 128 by `dc_0002_canonical_plan_digest`, matching the other
+    #: digest columns on this plane so the next algorithm does not need a third
+    #: width.
+    plan_digest: Mapped[str | None] = mapped_column(String(128))
 
     #: Whether this plan is a SENSITIVE operation requiring approval. Declared
     #: per plan rather than inferred, because sensitivity is a product policy

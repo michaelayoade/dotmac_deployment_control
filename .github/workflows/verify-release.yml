@@ -194,11 +194,50 @@ jobs:
             echo "::warning::the installed distribution does not import"
           fi
 
+      # PROPERTY 7: the artifact BEHAVES.
+      #
+      # Properties 1-6 are all about identity — which bytes, from which run,
+      # readable by whom, installable, importable. `0.1.0a4` passed every one
+      # of them and was still unadoptable: `approve_plan` refused a correct
+      # approval digest as "the plan changed" because the comparison was
+      # between two encodings of one value, and the wheel reported
+      # `__version__ == "0.1.0a2"`. Neither is visible to a hash.
+      #
+      # Run with the CONSUMER interpreter, against the wheel the REGISTRY
+      # served. The script's first canary refuses to continue unless the module
+      # it imported came out of that environment's site-packages — a canary run
+      # from a checkout proves nothing about an artifact, and is exactly how a4
+      # shipped a stale `__version__`.
+      #
+      # No `|| true`. The result is an observation the decision below consumes,
+      # so a failure is UNPROVABLE and therefore untagged.
+      - name: The installed distribution behaves as published
+        run: |
+          set -euo pipefail
+          if /tmp/consumer/bin/python scripts/artifact_canaries.py \
+               --expect-version "${{ inputs.version }}" > canaries.txt 2>&1; then
+            echo "true" > canaries-passed.txt
+          else
+            echo "false" > canaries-passed.txt
+            echo "::warning::the behavioural canaries failed against the installed wheel"
+          fi
+          cat canaries.txt
+
       - name: Decide — verified, or unprovable
         run: |
           set -euo pipefail
           python3 - <<'PY' > observations.json
           import hashlib, json, pathlib
+          def _canary_detail():
+              # The LAST line of the canary output, which is either the
+              # all-passed summary or the list of canaries that failed. Carried
+              # into the verdict so an UNPROVABLE record says WHICH property of
+              # the artifact was wrong, rather than only that one was.
+              report = pathlib.Path("canaries.txt")
+              if not report.is_file():
+                  return "the canaries did not run"
+              lines = [line for line in report.read_text(errors="replace").splitlines() if line.strip()]
+              return lines[-1] if lines else "the canaries produced no output"
           def digests(directory):
               d = pathlib.Path(directory)
               return {
@@ -225,6 +264,9 @@ jobs:
                   if pathlib.Path("consumer-installed.txt").is_file() else False,
               "consumer_imported": pathlib.Path("consumer-imported.txt").read_text().strip() == "true"
                   if pathlib.Path("consumer-imported.txt").is_file() else False,
+              "canaries_passed": pathlib.Path("canaries-passed.txt").read_text().strip() == "true"
+                  if pathlib.Path("canaries-passed.txt").is_file() else False,
+              "canary_detail": _canary_detail(),
               "read_back_ok": pathlib.Path("read-back.txt").read_text().strip() == "true",
               "index_filenames": json.loads(pathlib.Path("index-files.json").read_text()),
           }))
