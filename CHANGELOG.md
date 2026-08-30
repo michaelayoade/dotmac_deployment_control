@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a5 — UNRELEASED
+## 0.1.0a5 — RELEASED 2026-08-30, independently verified on seven properties
 
 Supersedes `0.1.0a4` for FUNCTIONAL reasons. a4's identity proofs stand and are
 not withdrawn: it is immutable, independently verified, and **unadoptable**
@@ -91,6 +91,26 @@ not withdrawn: it is immutable, independently verified, and **unadoptable**
   `scripts/release_guard.py`, distinctly from the floor. Its original PASS
   record is untouched and the superseding disposition is APPENDED beside it —
   both facts are true and the pair is the useful evidence.
+
+### Released
+
+- Published by release run `33318227812` from peeled commit
+  `b182a99892067f26c0c1d03d958c5fcdc97c5869`, the exact tip of protected main.
+  That run neither verified itself nor tagged.
+
+- **Independently** verified by run `33318433336`, which returned VERIFIED on
+  all seven properties: both artifacts fetched from the index by name and
+  sha256-equal to the release build (wheel
+  `c02804b1b9f6dab7becc21696efccdf3820de06dba50903568e2db4c966e0aec`, sdist
+  `5883f8ead3caab1a5d93977e6f086ad0f9f2b9df3e5828b5380ea0c41d841ef8`),
+  provenance closed on that commit, publisher read-back, a read-only consumer
+  install with the real dependency graph, import, exactly one wheel and one
+  sdist on the index, and **all seven behavioural canaries passing against the
+  wheel the registry served**.
+
+  The first release cut through the corrected two-workflow path, and the first
+  verified on seven properties rather than six. Only the verification run wrote
+  the tag, on a VERIFIED verdict, through `tag_once.py`.
 
 ## 0.1.0a4 — RELEASED 2026-08-30, independently verified
 

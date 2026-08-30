@@ -14,13 +14,17 @@
     "reason this file lists it: an index cannot un-publish, so the only place a",
     "'do not pin this' fact can live is here and in the guard that reads it.",
     "",
-    "0.1.0a5 is DECLARED and NOT HERE, deliberately. Every row in this file is a",
     "version that EXISTS on the index, and the release floor is derived as the",
     "maximum of them. A row added before publication would raise the floor above",
     "the version being published and the release guard would refuse the very",
     "release it is meant to admit. Until a5 is on the index it lives in",
-    "docs/publication-ledger.json, which is where a declared-but-unpublished",
-    "version belongs; the run that publishes it moves the row here."
+    "",
+    "A row is added here only AFTER publication, and that ordering is load-",
+    "bearing rather than tidy: the release floor is derived as the maximum of",
+    "these versions, so a row written before the upload would raise the floor",
+    "above the version being published and the guard would refuse the release it",
+    "exists to admit. Until then the version lives in docs/publication-ledger",
+    ".json, and the two are never both true at once."
   ],
   "source_canonical_url": "https://github.com/michaelayoade/dotmac_starter_mt",
   "releases": [
@@ -105,6 +109,24 @@
         "version_self_reporting_evidence": "__init__.py:172 declares `__version__ = \"0.1.0a2\"` while pyproject.toml declares 0.1.0a4. Two literals for one fact; nothing compared them because every check read the source tree rather than the built artifact.",
         "adoption_eligibility_evidence": "`pinnable: false`. release_guard.refusals() refuses 0.1.0a4 by NAME, distinctly from the floor, so an attempt to depend on it is a decision someone has to overrule rather than an omission."
       }
+    },
+    {
+      "version": "0.1.0a5",
+      "tag": "dotmac-deployment-control-v0.1.0a5",
+      "tag_object": "ed5f62fc68cb068a829d3c28b83f2c65dee2860c",
+      "peeled_commit": "b182a99892067f26c0c1d03d958c5fcdc97c5869",
+      "release_run": "33318227812",
+      "verify_run": "33318433336",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "pinnable": true,
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a5-py3-none-any.whl": "c02804b1b9f6dab7becc21696efccdf3820de06dba50903568e2db4c966e0aec",
+        "dotmac_deployment_control-0.1.0a5.tar.gz": "5883f8ead3caab1a5d93977e6f086ad0f9f2b9df3e5828b5380ea0c41d841ef8"
+      },
+      "supersedes": "0.1.0a4",
+      "release_run_note": "THE FIRST RELEASE CUT THROUGH THE CORRECTED TWO-WORKFLOW PATH, and the first verified on SEVEN properties rather than six. Published by run 33318227812 from the exact tip of protected main (b182a99892067f26c0c1d03d958c5fcdc97c5869); that run neither verified itself nor tagged. INDEPENDENT verify run 33318433336 returned VERIFIED: both artifacts fetched from registry.dotmac.io by NAME and sha256-equal to the release build, provenance closed on the peeled commit, publisher read-back, a read-only consumer install WITH the real dependency graph, import, exactly one wheel and one sdist on the index, and — property 7, new here — all seven behavioural canaries passing against the wheel the REGISTRY served rather than against a source checkout. Only that run wrote the tag, on a VERIFIED verdict, through tag_once.py. Supersedes 0.1.0a4, which remains immutable, identity-verified and UNADOPTABLE."
     }
   ],
   "tags_remain_in_source_for": [

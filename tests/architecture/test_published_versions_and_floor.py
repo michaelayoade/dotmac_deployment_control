@@ -50,7 +50,13 @@ def _published() -> dict[str, Any]:
 
 def test_every_published_version_is_recorded() -> None:
     versions = [r["version"] for r in _published()["releases"]]
-    assert versions == ["0.1.0a1", "0.1.0a2", "0.1.0a3", "0.1.0a4"], versions
+    assert versions == [
+        "0.1.0a1",
+        "0.1.0a2",
+        "0.1.0a3",
+        "0.1.0a4",
+        "0.1.0a5",
+    ], versions
 
 
 @pytest.mark.parametrize("field", ["tag_object", "peeled_commit"])
@@ -113,7 +119,7 @@ def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
     """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
     floor that skipped it would let the next release collide with bytes that are
     permanently on the index."""
-    assert release_guard.published_floor() == "0.1.0a4"
+    assert release_guard.published_floor() == "0.1.0a5"
 
 
 def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
@@ -127,18 +133,17 @@ def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything.
 
-    a5, and it must STAY a5 until a5 is on the index. `0.1.0a5` is the version
-    this repository is publishing, so the guard is required to ADMIT it — a
-    control pointed at a6 here would be consistent with a guard that also
-    refuses the release it exists to allow.
+    a6 rather than a5, as of the change that recorded a5's coordinates. a5 is
+    now PUBLISHED, so the guard is required to refuse it; leaving the control on
+    a5 would assert that this repository may re-upload a name that already
+    exists — the exact hazard the floor is for.
 
-    The control moves to a6 in the same change that records a5's coordinates in
-    `docs/published-versions.json`. From that moment leaving it on a5 would
-    assert that this repository may re-upload an existing name, which is the
-    exact hazard the floor is for. The two moves are one change because the
-    floor is DERIVED from that file: neither can happen without the other.
+    The two moves are one change because the floor is DERIVED from
+    `docs/published-versions.json`: recording a5 there raises the floor, and a
+    control left behind the floor is a control asserting the opposite of what
+    the floor says.
     """
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a5") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a6") == []
 
 
 def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
@@ -251,7 +256,7 @@ def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNADOPTABLE" in problems[0], problems
-    assert any("not greater than 0.1.0a4" in p for p in problems), problems
+    assert any("not greater than 0.1.0a5" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -263,7 +268,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a4" in problems[0], problems
+    assert problems and "not greater than 0.1.0a5" in problems[0], problems
     assert not any("UNPINNABLE" in p for p in problems), (
         "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
         "unpinnable would be a different and wrong statement"
@@ -271,13 +276,14 @@ def test_attempting_the_inherited_version_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
-    "version", ["0.1.0a1", "0.1.0a2", "0.1.0a3", "0.1.0a4", "0.0.9a99", "0.1.0a0"]
+    "version",
+    ["0.1.0a1", "0.1.0a2", "0.1.0a3", "0.1.0a4", "0.1.0a5", "0.0.9a99", "0.1.0a0"],
 )
 def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a5", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a6", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
     """`0.1.0a10` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse the tenth alpha
@@ -292,12 +298,12 @@ def test_another_distribution_is_refused(distribution: str) -> None:
     """The credential will be owner-scoped on Forgejo and able to write any
     package under `dotmac`. This check is the only thing narrowing it to one
     name, so it is tested as a first-class refusal rather than a formality."""
-    problems = release_guard.refusals(distribution, "0.1.0a5")
+    problems = release_guard.refusals(distribution, "0.1.0a6")
     assert problems and "and nothing else" in problems[0], problems
 
 
 @pytest.mark.parametrize(
-    "version", ["0.1.0", "0.1.0b1", "0.1.0rc1", "1.0.0", "0.1.0a5+local", "", "latest"]
+    "version", ["0.1.0", "0.1.0b1", "0.1.0rc1", "1.0.0", "0.1.0a6+local", "", "latest"]
 )
 def test_a_shape_the_guard_cannot_order_is_refused_not_guessed(version: str) -> None:
     """Fail closed on the unfamiliar. A comparator that reasons about a version
@@ -380,3 +386,53 @@ def test_the_recorded_tag_coordinates_match_the_tag_that_exists() -> None:
         assert (
             peeled == release["peeled_commit"]
         ), f"{tag} peels to {peeled or 'nothing'}, not {release['peeled_commit']}"
+
+
+# ── a5: published, and the first verified on SEVEN properties ───────────────
+
+
+def test_a5_is_recorded_as_published_and_independently_verified() -> None:
+    """The first release cut through the corrected two-workflow path: the
+    publishing run neither verified itself nor tagged, and a separate run
+    gathered the evidence afresh and wrote the tag on a VERIFIED verdict."""
+    a5 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a5")
+    assert a5["pinnable"] is True
+    assert a5["status"] == "released"
+    assert a5["release_run"] == "33318227812"
+    assert a5["verify_run"] == "33318433336"
+    assert a5["verify_run"] != a5["release_run"]
+    assert a5["supersedes"] == "0.1.0a4"
+    assert a5["peeled_commit"] == "b182a99892067f26c0c1d03d958c5fcdc97c5869"
+
+
+def test_a5_records_the_exact_bytes_it_names() -> None:
+    a5 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a5")
+    digests = a5["sha256"]
+    assert set(digests) == {
+        "dotmac_deployment_control-0.1.0a5-py3-none-any.whl",
+        "dotmac_deployment_control-0.1.0a5.tar.gz",
+    }, sorted(digests)
+    for name, digest in digests.items():
+        assert re.fullmatch(r"[0-9a-f]{64}", digest), f"{name} = {digest!r}"
+
+
+def test_a5_is_the_version_a4_points_at() -> None:
+    """The two rows must agree about the supersession, in both directions. A
+    record that says a4 is unadoptable without naming its replacement sends a
+    consumer to work out for itself what to pin, and a5 claiming to supersede
+    something a4 does not acknowledge is the same gap from the other side."""
+    releases = {r["version"]: r for r in _published()["releases"]}
+    assert releases["0.1.0a4"]["superseded_by"] == "0.1.0a5"
+    assert releases["0.1.0a5"]["supersedes"] == "0.1.0a4"
+    assert releases["0.1.0a4"]["pinnable"] is False
+    assert releases["0.1.0a5"]["pinnable"] is True
+
+
+def test_the_ledger_row_that_declared_a5_is_gone() -> None:
+    """THE DISCIPLINE THE a4 ROW FAILED. Its `never-published` entry outlived
+    its own publication by six hours. The row is deleted in the change that
+    records the coordinates, not later."""
+    ledger = json.loads(
+        (REPO_ROOT / "docs" / "publication-ledger.json").read_text(encoding="utf-8")
+    )
+    assert ledger["unpublished"] == {}, ledger["unpublished"]
