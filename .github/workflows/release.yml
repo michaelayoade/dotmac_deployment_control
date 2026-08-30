@@ -243,7 +243,12 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
         run: |
           set -euo pipefail
-          python -m pip install --quiet twine
+          # PINNED. An unpinned install is how the credential interface moved
+          # under this workflow once already: twine dropped `.netrc` support
+          # between runs and `--non-interactive` began refusing. Env-var auth
+          # is stable across twine majors, but the pin is what makes a future
+          # interface change a deliberate bump rather than a surprise.
+          python -m pip install --quiet 'twine==6.1.0'
           # NO --skip-existing. It converts a conflicting upload into a silent
           # success, which is precisely the shape this repository refuses.
           python -m twine upload --non-interactive \

@@ -1,0 +1,184 @@
+name: Verify release
+
+# Closes the evidence chain for a version that is ALREADY on the index.
+#
+# It exists because `0.1.0a3` was published by a run cancelled during its own
+# verification: the bytes landed, the read-back, the consumer proof and the tag
+# did not. A broken verifier does not create new package bytes, so the repair is
+# to verify what exists — not to publish a tidier version.
+#
+# THIS WORKFLOW UPLOADS NOTHING. There is no twine, no build, no dist to push.
+# That is property 5 held structurally rather than promised, and
+# `test_release_workflow_structure.py` asserts it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The published version to authenticate.
+        required: true
+      release_run:
+        description: >-
+          The workflow run that published it. Provenance is anchored on this:
+          a matching hash proves the BYTES are somebody's build, and only the
+          run ties them to a workflow, a head commit and a declared version.
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  DISTRIBUTION: dotmac-deployment-control
+  INDEX_HOST: registry.dotmac.io
+  INDEX_SIMPLE: https://registry.dotmac.io/api/packages/dotmac/pypi/simple
+
+jobs:
+  verify:
+    name: verified or unprovable
+    runs-on: ubuntu-latest
+    environment: registry-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # PROPERTY 2, part one: what the run itself was.
+      - name: Gather the release run's provenance
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.release_run }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}" \
+            --jq '{id:.id, path:.path, event:.event, head_branch:.head_branch, head_sha:.head_sha}' \
+            > run.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs" \
+            --jq '[.jobs[] | select(.name | test("^publish")) | .conclusion] | first // "absent"' \
+            | tr -d '"' > publish-conclusion.txt
+          cat run.json
+          echo "publish job: $(cat publish-conclusion.txt)"
+
+      # PROPERTY 2, part two: that the head commit is on protected main and
+      # declares this distribution at this version.
+      - name: Resolve the head commit and what it declares
+        run: |
+          set -euo pipefail
+          HEAD_SHA=$(python3 -c "import json;print(json.load(open('run.json'))['head_sha'])")
+          if git merge-base --is-ancestor "${HEAD_SHA}" origin/main; then
+            echo "true" > head-on-main.txt
+          else
+            echo "false" > head-on-main.txt
+          fi
+          git show "${HEAD_SHA}:pyproject.toml" > pyproject-at-head.toml || true
+
+      # PROPERTY 1: the artifact that run produced.
+      - name: Download the release run's own artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "${{ inputs.release_run }}" --name release-dist --dir from-run \
+            || echo "::warning::the release run's artifact could not be downloaded"
+          ls -R from-run || true
+
+      # PROPERTY 3.
+      - name: Publisher-authenticated read-back
+        env:
+          TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o index.html -w '%{http_code}' \
+            -H "Authorization: token ${TOKEN}" "${INDEX_SIMPLE}/${DISTRIBUTION}/")
+          if [ "${code}" = "200" ] && grep -q -- "-${{ inputs.version }}[.-]" index.html; then
+            echo "true" > read-back.txt
+          else
+            echo "false" > read-back.txt
+          fi
+          echo "publisher read-back: $(cat read-back.txt) (HTTP ${code})"
+          # PROPERTY 5's input: every filename the index lists for this project.
+          python3 - <<'PY' > index-files.json
+          import json, re, pathlib
+          html = pathlib.Path("index.html").read_text(encoding="utf-8", errors="replace")
+          names = sorted(set(re.findall(r">([^<>]+\.(?:whl|tar\.gz))<", html)))
+          print(json.dumps(names))
+          PY
+          cat index-files.json
+
+      # PROPERTY 4, deliberately as ci-reader. A clean install performed with the
+      # PUBLISHING credential proves the publisher can read its own upload, which
+      # is not the claim.
+      - name: A clean read-only consumer retrieves the exact bytes
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf 'machine %s login %s password %s\n' \
+            "${INDEX_HOST}" "ci-reader" "${TOKEN}" > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          python -m venv /tmp/consumer
+          /tmp/consumer/bin/pip install --quiet --upgrade pip
+          mkdir -p downloaded
+          /tmp/consumer/bin/pip download --no-deps --no-binary :none: --dest downloaded \
+            --index-url "${INDEX_SIMPLE}" \
+            "${DISTRIBUTION}==${{ inputs.version }}" || \
+            echo "::warning::the read-only consumer could not retrieve the version"
+          rm -f "${HOME}/.netrc"
+          ls -l downloaded || true
+
+      - name: Decide — verified, or unprovable
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > observations.json
+          import hashlib, json, pathlib
+          def digests(directory):
+              d = pathlib.Path(directory)
+              return {
+                  p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in sorted(d.iterdir()) if p.is_file()
+              } if d.is_dir() else {}
+          manifest = pathlib.Path("from-run/artifact-hashes.txt")
+          built = {}
+          if manifest.is_file():
+              for line in manifest.read_text().splitlines():
+                  if line.strip():
+                      digest, _, name = line.partition(" ")
+                      built[name.strip().lstrip("*")] = digest.strip()
+          head = pathlib.Path("pyproject-at-head.toml")
+          print(json.dumps({
+              "version": "${{ inputs.version }}",
+              "run": json.loads(pathlib.Path("run.json").read_text()),
+              "publish_job_conclusion": pathlib.Path("publish-conclusion.txt").read_text().strip(),
+              "head_sha_on_main": pathlib.Path("head-on-main.txt").read_text().strip() == "true",
+              "pyproject_at_head": head.read_text() if head.is_file() and head.stat().st_size else None,
+              "built_hashes": built,
+              "downloaded": digests("downloaded"),
+              "read_back_ok": pathlib.Path("read-back.txt").read_text().strip() == "true",
+              "index_filenames": json.loads(pathlib.Path("index-files.json").read_text()),
+          }))
+          PY
+          python scripts/verify_release.py --observations observations.json
+
+      # Only a VERIFIED outcome reaches this step: the decision above exits
+      # non-zero on UNPROVABLE, so an unproven artifact cannot acquire a tag that
+      # asserts a verification which did not happen.
+      - name: Tag the verified release
+        run: |
+          set -euo pipefail
+          TAG="${DISTRIBUTION}-v${{ inputs.version }}"
+          HEAD_SHA=$(python3 -c "import json;print(json.load(open('run.json'))['head_sha'])")
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" \
+            -m "${DISTRIBUTION} ${{ inputs.version }} verified: registry bytes match release run ${{ inputs.release_run }}, read back as the publisher, installed by a read-only consumer" \
+            "${HEAD_SHA}"
+          git push origin "${TAG}"
+          echo "tagged ${TAG} on ${HEAD_SHA}"
+
+      - name: State what is now owed
+        run: |
+          echo "::notice::OWED: remove the ${{ inputs.version }} row from docs/publication-ledger.json."

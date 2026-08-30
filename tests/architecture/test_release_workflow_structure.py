@@ -294,3 +294,144 @@ def test_a_consumer_proof_using_the_publisher_is_caught() -> None:
     block = split_jobs(mutated)["verify"]
     consumer = block[block.index(marker) :]
     assert PUBLISH_TOKEN in consumer, "the swapped credential was not detected"
+
+
+# ── the publish path may not rely on a credential file, and uploads nowhere else
+#
+# Michael's two additions after the a3 incident. Scoped deliberately: the
+# CONSUMER download's `.netrc` is legitimate — pip still reads one and the only
+# alternative there is credentials in a URL — so the refusal is per-STEP, not
+# per-file.
+
+VERIFY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "verify-release.yml"
+
+_STEP = re.compile(r"^      - (?:name|uses):")
+
+
+def split_steps(block: str) -> list[str]:
+    """A job block -> its steps, by six-space `- name:`/`- uses:`."""
+    steps: list[str] = []
+    current: list[str] = []
+    for line in block.splitlines():
+        if _STEP.match(line):
+            if current:
+                steps.append("\n".join(current))
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        steps.append("\n".join(current))
+    return steps
+
+
+def test_no_step_uses_the_publish_credential_with_a_credential_file() -> None:
+    """The interface moved once under a `.netrc`. A step that both holds the
+    publish credential and writes a credential file is relying on a mechanism
+    that has already been removed from one of these tools."""
+    for name, block in _jobs().items():
+        for step in split_steps(block):
+            # Comment-blind, like every other check here. This file has now
+            # tripped its own guards FOUR times by explaining a forbidden thing
+            # in prose beside the code that forbids it. The prose is worth
+            # keeping — an unexplained guard is worse — so the checks read
+            # executable lines and the rule is uniform rather than per-case.
+            code = "\n".join(executable_lines(step))
+            if PUBLISH_TOKEN in code and ".netrc" in code:
+                pytest.fail(
+                    f"{name}: a step uses the publish credential through a "
+                    f".netrc:\n{code[:300]}"
+                )
+
+
+def step_named(block: str, fragment: str) -> str | None:
+    """The step whose NAME contains `fragment`.
+
+    Matching the whole step's text was wrong and picked the wrong step: the
+    phrase "ordinary consumer" appears three times in this workflow — in the
+    step name, in the comment ABOVE the preceding step, and inside the tag
+    message. The comment attaches to the previous step, so a text match selected
+    the read-back step and then asserted things about it that happened to be
+    false in a confusing way. The predicate is the step's identity, not a phrase
+    occurring anywhere inside it.
+    """
+    for step in split_steps(block):
+        first = step.splitlines()[0]
+        if fragment in first:
+            return step
+    return None
+
+
+def test_the_consumer_download_may_still_use_one() -> None:
+    """POSITIVE CONTROL for the scoping. If the check above were per-file rather
+    than per-step it would forbid the consumer's legitimate use, and someone
+    would 'fix' it by putting credentials in a URL."""
+    consumer = step_named(_jobs()["verify"], "An ordinary consumer can install")
+    assert consumer is not None
+    assert ".netrc" in consumer
+    assert READ_TOKEN in consumer
+    assert PUBLISH_TOKEN not in consumer
+
+
+def test_a_netrc_added_to_the_publish_step_is_caught() -> None:
+    """PLANTED VIOLATION."""
+    mutated = _mutate(
+        _text(),
+        "          python -m pip install --quiet 'twine==6.1.0'",
+        "          printf 'machine x' > \"${HOME}/.netrc\"\n"
+        "          python -m pip install --quiet 'twine==6.1.0'",
+    )
+    offending = [
+        step
+        for block in split_jobs(mutated).values()
+        for step in split_steps(block)
+        if PUBLISH_TOKEN in step and ".netrc" in step
+    ]
+    assert offending, "a .netrc in the publish step was not detected"
+
+
+def test_twine_is_pinned() -> None:
+    """An unpinned install is how the credential interface moved under this
+    workflow between two runs on the same day."""
+    installs = [
+        line.strip()
+        for line in executable_lines(_text())
+        if "pip install" in line and "twine" in line
+    ]
+    assert installs, "no twine install found"
+    for line in installs:
+        assert re.search(r"twine==\d+\.\d+", line), f"twine is not pinned: {line}"
+
+
+def test_an_unpinned_twine_is_caught() -> None:
+    mutated = _mutate(_text(), "'twine==6.1.0'", "twine")
+    installs = [
+        line
+        for line in executable_lines(mutated)
+        if "pip install" in line and "twine" in line
+    ]
+    assert installs and not re.search(r"twine==", installs[0])
+
+
+# ── the verify path publishes nothing, structurally ─────────────────────────
+
+
+def test_the_verify_workflow_uploads_nothing() -> None:
+    """Property 5 held by construction rather than promised. The verify path
+    exists because a publish already happened; it must not be able to cause a
+    second one."""
+    code = "\n".join(
+        executable_lines(VERIFY_WORKFLOW.read_text(encoding="utf-8"))
+    ).lower()
+    for forbidden in ("twine", "poetry build", "upload"):
+        assert forbidden not in code, (
+            f"the verify workflow mentions {forbidden!r}; it must be incapable "
+            "of publishing"
+        )
+
+
+def test_the_verify_workflow_tags_only_after_the_decision() -> None:
+    text = VERIFY_WORKFLOW.read_text(encoding="utf-8")
+    assert text.index("verify_release.py") < text.index("git tag -a"), (
+        "the tag must not be written before the verdict; an UNPROVABLE outcome "
+        "exits non-zero and must take the tag step with it"
+    )
