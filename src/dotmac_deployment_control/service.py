@@ -1838,6 +1838,101 @@ def drift(db: Session, target_id: UUID) -> facts.DriftReport | None:
 # ── Reads ───────────────────────────────────────────────────────────────────
 
 
+def list_targets(
+    db: Session, filter: facts.TargetFilter | None = None
+) -> facts.TargetPage:
+    """One page of targets matching a typed filter.
+
+    The list contract the fleet screen needs, and the reason it lives here: a
+    consuming assembly must never build this query itself. Platform CP owns the
+    operator workflow and this module owns its tables; the moment a consumer
+    writes `select(DeploymentTarget)` it has taken a second read authority over
+    a schema it does not own, and every future column rename becomes a
+    cross-repository break.
+
+    Ordering is by `target_ref`, not by insertion or by `id`. A pager over an
+    unstable order shows a row twice and skips another when the fleet changes
+    under it, which reads as data loss rather than as a sorting bug.
+    """
+    criteria = filter if filter is not None else facts.TargetFilter()
+    conditions = []
+    if criteria.product_code is not None:
+        conditions.append(DeploymentTarget.product_code == criteria.product_code)
+    if criteria.environment is not None:
+        conditions.append(DeploymentTarget.environment == criteria.environment)
+    if criteria.status is not None:
+        conditions.append(DeploymentTarget.status == criteria.status)
+    if criteria.never_observed is True:
+        conditions.append(DeploymentTarget.last_observed_at.is_(None))
+    elif criteria.never_observed is False:
+        conditions.append(DeploymentTarget.last_observed_at.is_not(None))
+
+    total = db.execute(
+        select(func.count()).select_from(DeploymentTarget).where(*conditions)
+    ).scalar_one()
+    rows = (
+        db.execute(
+            select(DeploymentTarget)
+            .where(*conditions)
+            .order_by(DeploymentTarget.target_ref)
+            .offset((criteria.page - 1) * criteria.page_size)
+            .limit(criteria.page_size)
+        )
+        .scalars()
+        .all()
+    )
+    return facts.TargetPage(
+        targets=tuple(_target_view(row) for row in rows),
+        total=int(total),
+        page=criteria.page,
+        page_size=criteria.page_size,
+    )
+
+
+def preview_plan_proposal(
+    db: Session, target_id: UUID
+) -> facts.PlanProposalPreview | None:
+    """What proposing a plan for this target would freeze — derived, never taken.
+
+    A read. It computes the canonical snapshot and its digest exactly as
+    `propose_plan` does, so an operator can see what they are about to approve
+    before they commit to it.
+
+    There is deliberately no way to pass a digest in. `ProposePlanCommand` has
+    no digest field and this function takes only a target id, so neither the
+    write path nor the read path can accept one from a client. The digest a plan
+    carries is always the one this module derived from state it owns.
+    """
+    target = db.get(DeploymentTarget, target_id)
+    if target is None:
+        return None
+
+    snapshot = plan_snapshot(target)
+    digest = plan_digest_of(snapshot).canonical
+
+    current = db.execute(
+        select(DeploymentPlan)
+        .where(
+            DeploymentPlan.target_id == target_id,
+            DeploymentPlan.status == PlanStatus.APPROVED.value,
+        )
+        .order_by(DeploymentPlan.sequence.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    return facts.PlanProposalPreview(
+        target_id=target.id,
+        target_ref=target.target_ref,
+        desired_revision=target.desired_revision,
+        canonical_plan=snapshot,
+        plan_digest=digest,
+        would_supersede_plan_id=current.id if current is not None else None,
+        digest_matches_current=(
+            current is None or current.plan_digest == digest
+        ),
+    )
+
+
 def get_target(db: Session, target_id: UUID) -> facts.TargetView | None:
     row = db.get(DeploymentTarget, target_id)
     return _target_view(row) if row is not None else None

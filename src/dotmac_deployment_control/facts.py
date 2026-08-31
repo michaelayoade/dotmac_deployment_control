@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 # ── Event types ─────────────────────────────────────────────────────────────
@@ -160,6 +160,84 @@ class RolloutView:
     reason: str | None = None
     completed_at: datetime | None = None
     attempts: tuple[AttemptView, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TargetFilter:
+    """What an operator may narrow a target list by.
+
+    A closed set of typed fields rather than free text. A browser surface that
+    accepted a predicate — a SQL fragment, a sort column, a raw `where` — would
+    make every future query the client's decision, and the module could no
+    longer say what its own read surface is.
+
+    Every field is optional and they AND together. `page_size` is bounded here
+    rather than by the caller, because an unbounded list is how a fleet screen
+    becomes a full-table scan the day the fleet grows.
+    """
+
+    product_code: str | None = None
+    environment: str | None = None
+    status: str | None = None
+    never_observed: bool | None = None
+    page: int = 1
+    page_size: int = 50
+
+    MAX_PAGE_SIZE: ClassVar[int] = 200
+
+    def __post_init__(self) -> None:
+        if self.page < 1:
+            raise ValueError("page is 1-based")
+        if not 1 <= self.page_size <= self.MAX_PAGE_SIZE:
+            raise ValueError(f"page_size must be 1..{self.MAX_PAGE_SIZE}")
+
+
+@dataclass(frozen=True, slots=True)
+class TargetPage:
+    """One page of targets, and enough to render a pager honestly.
+
+    `total` is the count matching the FILTER, not the page, so a surface can say
+    "showing 50 of 412" without a second query and without guessing.
+    """
+
+    targets: tuple[TargetView, ...]
+    total: int
+    page: int
+    page_size: int
+
+    @property
+    def has_more(self) -> bool:
+        return self.page * self.page_size < self.total
+
+
+@dataclass(frozen=True, slots=True)
+class PlanProposalPreview:
+    """What proposing a plan for this target WOULD freeze, computed server-side.
+
+    This exists so a browser can show an operator the canonical plan and its
+    digest before they commit to it — and it is a READ. The digest is derived
+    here from the target's current desired state, exactly as `propose_plan`
+    derives it, and there is nowhere for a caller to put one of their own.
+
+    That is the structural half of "the browser may never submit its own
+    PlanDigest". `ProposePlanCommand` carries no digest field, so the write path
+    cannot accept one; this type carries no input at all, so the read path
+    cannot either. A shape where the client COULD supply a digest is a shape
+    where someone eventually will, and an approval bound to a client-supplied
+    digest is an approval for whatever the client chose to describe.
+
+    `digest_matches_current` is why the preview is not just decoration: a plan
+    proposed after the desired state moved is a different plan, and an operator
+    looking at a stale preview should be told rather than left to notice.
+    """
+
+    target_id: UUID
+    target_ref: str
+    desired_revision: int
+    canonical_plan: Mapping[str, Any]
+    plan_digest: str
+    would_supersede_plan_id: UUID | None = None
+    digest_matches_current: bool = True
 
 
 @dataclass(frozen=True, slots=True)
