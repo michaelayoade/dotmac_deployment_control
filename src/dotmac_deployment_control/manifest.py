@@ -48,33 +48,49 @@ the requirement could lapse.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
+
 from dotmac_kernel.modules import ModuleManifest
 from dotmac_kernel.prerequisites import IDEMPOTENCY_LEDGER_V1, PLATFORM_AUDIT_LOG_V1
 
+#: The installed distribution's version, derived rather than declared — the same
+#: mechanism `__version__` adopted in `0.1.0a5`, applied to the field the module
+#: registry actually reports.
+#:
+#: The kernel calls this "the module's own release version" and puts it in
+#: exactly three places: a non-empty check, `ModuleInventoryEntry.version`, and
+#: the `as_dict()` diagnostics payload. `_check_contract_versions` reads
+#: `contract_version` and never this. So a literal here does not protect
+#: contract compatibility; it only decides what health and diagnostics REPORT.
+try:  # pragma: no cover - the artifact canary exercises this, not the tree
+    _INSTALLED_VERSION = _distribution_version("dotmac-deployment-control")
+except PackageNotFoundError:  # pragma: no cover
+    #: Same refusal shape as `__version__`: a source tree with no install has no
+    #: version to report, and guessing one from `pyproject.toml` would rebuild
+    #: the second authority a5 removed.
+    _INSTALLED_VERSION = "0.0.0+not-installed"
+
 module = ModuleManifest(
     code="deployment_control",
-    #: THE MODULE CONTRACT VERSION, and deliberately not the distribution's.
+    #: DERIVED from installed metadata, not declared. See `_INSTALLED_VERSION`.
     #:
-    #: A composing assembly reads this to decide contract compatibility, so it
-    #: moves when the module's declared surface — code, schema, tables,
-    #: prerequisites, audit actions — changes, and NOT when the distribution is
-    #: republished. `0.1.0a5` changes behaviour and a column width inside an
-    #: already-declared table; it declares no new table, prerequisite or audit
-    #: action, so this stays where it is. `0.1.0a6` changes ONLY the declared
-    #: `dotmac-kernel` floor and the CI lanes that keep it honest — no source
-    #: file under `src/` moved — so moving this would make a metadata repair
-    #: read as a contract change to every composing assembly.
+    #: This field was the literal `0.1.0a2` from a2 through a6, and the comment
+    #: that stood here defended it: moving it, it argued, "would make a metadata
+    #: repair read as a contract change to every composing assembly".
     #:
-    #: It is a literal, and it is not the second version authority `0.1.0a5`
-    #: removed. That one was `__version__`, which duplicated `pyproject.toml`'s
-    #: statement of the DISTRIBUTION version and drifted to `0.1.0a2` while the
-    #: tree said `0.1.0a4`. `__version__` is now derived from installed
-    #: metadata. This field states a different fact and has no other copy.
+    #: That premise does not hold, and the kernel is where it fails. Contract
+    #: compatibility is gated by `_check_contract_versions`, which reads
+    #: `contract_version` and NOTHING else — `version` reaches only the module
+    #: inventory and the diagnostics payload. So a stale literal here never
+    #: protected a composing assembly from anything; it just made every health
+    #: surface report `0.1.0a2` while `0.1.0a6` was the installed code.
     #:
-    #: Its equality with a4's `__version__` is a coincidence of history, not a
-    #: relationship — do not "fix" it by pointing it at the distribution
-    #: version, which would make every republication look like a contract change.
-    version="0.1.0a2",
+    #: `contract_version` below remains a literal and remains the thing that
+    #: moves when the declared surface changes. That separation is what the old
+    #: comment was reaching for, and it is already expressed by the field built
+    #: for it.
+    version=_INSTALLED_VERSION,
     core=False,
     short_code="deploy",
     migration_prefix="dc",
