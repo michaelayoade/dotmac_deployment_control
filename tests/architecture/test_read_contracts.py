@@ -108,9 +108,7 @@ class TestTheReadContractsAreTypedAndClosed:
     def test_the_page_reports_enough_to_render_a_pager(self) -> None:
         page = facts.TargetPage(targets=(), total=412, page=1, page_size=50)
         assert page.has_more
-        assert not facts.TargetPage(
-            targets=(), total=50, page=1, page_size=50
-        ).has_more
+        assert not facts.TargetPage(targets=(), total=50, page=1, page_size=50).has_more
 
 
 class TestQueryConstructionStaysInThisModule:
@@ -135,6 +133,6 @@ class TestQueryConstructionStaysInThisModule:
             for path in root.glob("*.py")
             if path.name != "service.py" and "select(" in path.read_text()
         ]
-        assert not offenders, (
-            f"query construction outside the service layer: {offenders}"
-        )
+        assert (
+            not offenders
+        ), f"query construction outside the service layer: {offenders}"
