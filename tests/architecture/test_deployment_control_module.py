@@ -148,42 +148,67 @@ class TestTheManifestMatchesTheLedger:
         assert schemas.count(module_schema("deploy")) == 1
 
 
-class TestTheContractVersionIsNotTheDistributionVersion:
-    """Two versions, two facts, and the confusion between them costs both ways.
+class TestTheReportedVersionIsDerivedAndTheContractIsPinned:
+    """Two facts, two fields — and the one that gates loading is not the one
+    health reports.
 
-    `manifest.version` is the MODULE CONTRACT version: a composing assembly
-    reads it to decide contract compatibility, so it moves when the declared
-    surface — code, schema, tables, prerequisites, audit actions — changes.
-    `pyproject.toml`'s version is the DISTRIBUTION version and moves on every
-    republication, including one that changes no source file at all.
+    This class previously locked `manifest.version` to the literal `0.1.0a2` on
+    the premise that "a composing assembly reads it to decide contract
+    compatibility". That premise is false, and the kernel is where it fails:
+    `ModuleRegistry._check_contract_versions` reads `contract_version` and
+    nothing else. `version` reaches exactly three places — a non-empty check,
+    `ModuleInventoryEntry.version`, and the `as_dict()` diagnostics payload.
 
-    `0.1.0a6` is exactly such a republication: the declared `dotmac-kernel`
-    floor moves from `>=0.1.0a77` to `>=0.1.0a98` and nothing under `src/`
-    changes. Pointing the manifest at the distribution version would make that
-    metadata repair announce a contract change to every consumer — and pointing
-    the distribution at the manifest would hide a real surface change behind a
-    version that had not moved.
+    So the literal never protected a consumer from a republication. It only made
+    every health surface report `0.1.0a2` while `0.1.0a6` was the installed
+    code — the same shape as the a4 `__version__` defect, in the field an
+    operator actually reads.
+
+    `version` is now derived from installed metadata. `contract_version` stays a
+    literal, keeps gating loading, and still pins the declared surface below.
     """
 
-    def test_the_two_versions_are_separate_literals(self) -> None:
+    def test_the_reported_version_is_the_installed_distribution(self) -> None:
+        """Derived, not declared — so they cannot disagree.
+
+        Under an editable install these AGREE, and that agreement is the point:
+        a diagnostics payload naming a version that is not installed is the
+        defect this replaced.
+        """
         declared = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text())["tool"][
             "poetry"
         ]["version"]
-        assert module.version != declared, (
-            f"the module contract version and the distribution version are both "
-            f"{declared!r}. They are different facts; equality here is how a "
-            "republication starts reading as a contract change."
+        assert module.version == declared, (
+            f"the module reports {module.version!r} while the installed "
+            f"distribution is {declared!r}; health and the module inventory "
+            "would report a version nobody is running"
         )
 
-    def test_the_manifest_declares_no_surface_this_release_added(self) -> None:
-        """The premise behind leaving it alone, checked rather than asserted.
+    def test_contract_compatibility_never_reads_the_reported_version(self) -> None:
+        """The measurement that retires the old premise, kept as a test.
+
+        If a future kernel starts gating on `version`, this fails and the
+        reasoning above stops being true silently.
+        """
+        import inspect
+
+        from dotmac_kernel.modules import ModuleRegistry
+
+        source = inspect.getsource(ModuleRegistry._check_contract_versions)
+        assert "contract_version" in source
+        assert re.search(r"\.version\b(?!_)", source) is None, (
+            "the kernel's compatibility check now reads `version`; the reported "
+            "version is derived and must not gate loading"
+        )
+
+    def test_the_contract_version_pins_the_declared_surface(self) -> None:
+        """The half of the old class worth keeping, hung off the right field.
 
         The contract version may stay put only because the declared surface
         did. If a later change adds a table, a prerequisite or an audit action
-        without moving `manifest.version`, this is the test that should have
-        stopped it — so the surface is pinned here, beside the reason.
+        without moving `contract_version`, this is the test that should stop it.
         """
-        assert module.version == "0.1.0a2"
+        assert module.contract_version == 2
         assert module.tables == ()
         assert {
             "deployment_targets",
