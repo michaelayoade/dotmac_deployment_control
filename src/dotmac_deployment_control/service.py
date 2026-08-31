@@ -1908,7 +1908,7 @@ def preview_plan_proposal(
         return None
 
     snapshot = plan_snapshot(target)
-    digest = plan_digest_of(snapshot).canonical
+    derived = plan_digest_of(snapshot)
 
     current = db.execute(
         select(DeploymentPlan)
@@ -1925,10 +1925,13 @@ def preview_plan_proposal(
         target_ref=target.target_ref,
         desired_revision=target.desired_revision,
         canonical_plan=snapshot,
-        plan_digest=digest,
+        plan_digest=derived.canonical,
         would_supersede_plan_id=current.id if current is not None else None,
+        # Typed values, never the stored TEXT. Comparing digest strings is the
+        # a4 defect exactly, and `_frozen_plan_digest` is the helper that reads
+        # a stored digest — including a4's bare-hex form — as a value.
         digest_matches_current=(
-            current is None or current.plan_digest == digest
+            current is None or _frozen_plan_digest(current) == derived
         ),
     )
 

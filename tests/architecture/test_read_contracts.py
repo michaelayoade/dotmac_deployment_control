@@ -135,4 +135,6 @@ class TestQueryConstructionStaysInThisModule:
             for path in root.glob("*.py")
             if path.name != "service.py" and "select(" in path.read_text()
         ]
-        assert not offenders, f"query construction outside the service layer: {offenders}"
+        assert not offenders, (
+            f"query construction outside the service layer: {offenders}"
+        )
