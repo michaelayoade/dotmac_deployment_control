@@ -5,6 +5,46 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — held for the kernel database-catalogue contract
+
+### Added
+
+- A source-owned `ModuleDatabaseCatalogContributionV1` binding the exact
+  post-`dc_0002_canonical_plan_digest` structure: seven `mod_deploy` platform
+  tables and 95 columns. It records PostgreSQL type identity and modifiers,
+  physical ordinals, nullability, server defaults and relation kinds. It is
+  authored from the frozen migration lineage, never from Platform CP production.
+- A typed release-build emission seam accepts composed lineage-head evidence and
+  produces the canonical `ModuleDatabaseCatalogSnapshot`. It records the
+  distribution coordinate, module release version and integer manifest-contract
+  generation as three explicit facts and makes no PostgreSQL-major or
+  all-product-completeness claim.
+- A clean-room PostgreSQL comparison checks the declaration in both directions
+  after applying the module lineage. A `VARCHAR(64)` declaration for
+  `deployment_plans.plan_digest` therefore fails against the `VARCHAR(128)`
+  result even though the table and column counts are unchanged.
+
+### Corrected
+
+- `ModuleManifest.version` stays DERIVED from installed metadata, as the
+  unreleased `ce9e44d0` made it. Publishing the module's database structure is orthogonal
+  to how the manifest reports its version, so this change reintroduces no
+  literal there and the catalogue tests read `module.version` rather than
+  restating `pyproject.toml`. Manifest compatibility remains the independent
+  integer `ModuleManifest.contract_version`; this held change allocates neither
+  a kernel version nor a Deployment Control distribution version.
+
+### Release blocker
+
+The new contract types are not present in published kernel `0.1.0a98`. This
+branch deliberately does not invent a future kernel or distribution version.
+After the kernel publishes the exact snapshot contract, this distribution must
+set its floor to the first version containing those symbols, prove that floor in
+both directions, allocate its next version through the release guard, and only
+then publish. Until then this change is a stacked, non-releasable source change.
+Its clean-room comparison is source-checked only when this branch is evaluated
+against that stacked kernel candidate; it is not published enforcement.
+
 ## 0.1.0a6 — RELEASED 2026-08-30, verified on seven properties with nine canaries
 
 Published by run `33322980430` from protected main `518711c3`; independently
@@ -26,8 +66,11 @@ Supersedes `0.1.0a5` for its DECLARED DEPENDENCY FLOOR. **a5's artifact identity
 and its behaviour are sound and are not withdrawn**; what failed is the
 declaration. Platform CP pins a6 with kernel a98, never a5.
 
-**No behaviour changes in this release.** The public surface, the models, the
-migrations and the module contract version are all untouched.
+**No behaviour changes in this release.** The public surface, models and
+migrations were untouched. The published a6 artifact also left
+`ModuleManifest.version` at `0.1.0a2`; that was based on the incorrect premise
+that this string named manifest compatibility rather than the module release.
+The held source correction is recorded above and cannot rewrite a6's bytes.
 
 ### Fixed
 
@@ -89,12 +132,13 @@ Adopting a6 obliges a **21-alpha kernel jump, a77 → a98**. That upgrade gets i
 own migration and compatibility run; it must not be chosen silently by a
 resolver.
 
-### Unchanged on purpose
+### Historical version declaration — corrected in the held source above
 
-- **The module contract version stays `0.1.0a2`.** `manifest.py`'s `version` is
-  the MODULE CONTRACT version and it moves when the declared surface changes,
-  not on every republication. Nothing in the manifest's declared surface moved
-  here, so bumping it would make a metadata repair look like a contract change.
+- a6 deliberately left `ModuleManifest.version` at `0.1.0a2`, but the premise
+  was wrong: the kernel contract defines that field as the module release
+  version. Manifest compatibility is the independent integer
+  `ModuleManifest.contract_version`. Published a6 is immutable; the next release
+  must carry the corrected semantics and its own properly allocated version.
 - **The replay path is untouched and stays out of scope.**
   `_replay_observation` compares `payload_digest` as text. It is a recorded
   unmonitored region with an enforceable premise

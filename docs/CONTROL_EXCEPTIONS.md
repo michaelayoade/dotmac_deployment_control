@@ -4,6 +4,41 @@ Controls this repository claims, where the claim is narrower than it sounds.
 Each entry states what is enforced, what is NOT, and by whom — so that a reader
 does not infer coverage that does not exist.
 
+## Database-catalogue publication is blocked on an unpublished kernel contract
+
+**Status:** open, dated 2026-08-31. No distribution release is authorised.
+
+This branch authors Deployment Control's exact post-`dc_0002` database
+contribution and binds it to the module manifest. The fully typed contract
+classes it consumes exist only in the Starter's candidate kernel source; the
+currently published and declared floor, `dotmac-kernel >=0.1.0a98`, does not
+contain them.
+
+The same held slice corrects a separate source declaration: published a6 carries
+`ModuleManifest.version = "0.1.0a2"`, although the kernel defines that field as
+the module release version and uses the integer `contract_version` for manifest
+compatibility. Published a6 is immutable. The candidate source uses the current
+source coordinate `0.1.0a6`; the release guard must replace it with the next
+properly allocated distribution version before any later artifact is published.
+
+The dependency is deliberately not assigned a guessed future version. This
+means the branch is stacked and expected to be non-releasable until the kernel
+owner publishes the contract. Closure requires all of the following in one
+release slice: name the first published kernel version containing
+`ModuleDatabaseCatalogContributionV1`; raise this distribution's floor to that
+version; run the existing floor and excluded-near-miss canaries; allocate the
+next Deployment Control distribution version through `release_guard`; and
+publish only after every required check is green.
+
+**What is source-checked on the stacked candidate:** the declaration has exact
+table and column sensitivity checks, including a clean-room PostgreSQL
+comparison, when this source is evaluated against the candidate kernel contract.
+That source check is not a control carried by any published artifact.
+
+**What is not enforced:** no published Deployment Control artifact carries the
+declaration, and Platform CP cannot yet bind it into a release catalogue. The
+checked-in source must not be cited as production adoption evidence.
+
 ## 0.1.0a3 is published, immutable, and must never be pinned
 
 **Status:** permanent. Not a gap to close — a fact to keep visible.

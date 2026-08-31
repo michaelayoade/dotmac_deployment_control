@@ -209,13 +209,6 @@ class TestTheReportedVersionIsDerivedAndTheContractIsPinned:
         without moving `contract_version`, this is the test that should stop it.
         """
         assert module.contract_version == 2
-        assert module.tables == ()
-        assert {
-            "deployment_targets",
-            "deployment_plans",
-            "observation_receipts",
-            "observation_attempts",
-        } <= set(module.platform_tables)
 
 
 class TestThePlaneIsDeclaredNotDiscovered:

@@ -54,6 +54,8 @@ from importlib.metadata import version as _distribution_version
 from dotmac_kernel.modules import ModuleManifest
 from dotmac_kernel.prerequisites import IDEMPOTENCY_LEDGER_V1, PLATFORM_AUDIT_LOG_V1
 
+from dotmac_deployment_control.database_catalog import database_catalog
+
 #: The installed distribution's version, derived rather than declared — the same
 #: mechanism `__version__` adopted in `0.1.0a5`, applied to the field the module
 #: registry actually reports.
@@ -112,6 +114,7 @@ module = ModuleManifest(
         "deployment.rollout.changed",
         "deployment.observation.recorded",
     ),
+    database_catalog=database_catalog,
 )
 
 __all__ = ["module"]

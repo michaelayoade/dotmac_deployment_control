@@ -36,7 +36,16 @@ from dotmac_kernel.audit_actions import (
     active_audit_actions,
     install_audit_actions,
 )
+from dotmac_kernel.database_catalog_comparator import (
+    observe_postgres_tables_columns,
+    verify_module_database_catalog,
+)
 from dotmac_kernel.migrations import versions_dir as kernel_versions_dir
+from dotmac_kernel.product_database_catalog import (
+    ComposedDatabaseLineageHeadV1,
+    DatabaseCatalogOwnerKind,
+    DatabaseCatalogOwnerV1,
+)
 from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
@@ -54,6 +63,7 @@ from dotmac_deployment_control import (
     RegisterTargetCommand,
     SignatureStatus,
     activate_credential,
+    build_database_catalog_snapshot,
     enrol_credential,
     module,
     record_observation,
@@ -237,6 +247,47 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     ), table
         finally:
             engine.dispose()
+
+    def test_source_owned_catalogue_equals_the_clean_room_migration_result(
+        self, migrated_scratch
+    ) -> None:
+        """The declaration is authored from migrations and checked against them.
+
+        This scratch catalogue is evidence about the checked-in lineage, never
+        an authoring input and never a substitute for the declaration.
+        """
+        admin_url, _, _ = migrated_scratch
+        engine = create_engine(admin_url)
+        try:
+            with engine.connect() as conn:
+                observation = observe_postgres_tables_columns(
+                    conn,
+                    schemas=(SCHEMA,),
+                )
+        finally:
+            engine.dispose()
+
+        snapshot = build_database_catalog_snapshot(
+            distribution_version=module.version,
+            composed_lineage_head=ComposedDatabaseLineageHeadV1(
+                owner=DatabaseCatalogOwnerV1(
+                    kind=DatabaseCatalogOwnerKind.MODULE,
+                    code=module.code,
+                ),
+                revision="dc_0002_canonical_plan_digest",
+            ),
+        )
+        comparison = verify_module_database_catalog(
+            declaration_bytes=snapshot.to_json_bytes(),
+            declaration_digest=snapshot.digest,
+            observation_bytes=observation.to_json_bytes(),
+            observation_digest=observation.digest,
+        )
+
+        assert comparison.matched
+        assert comparison.drifts == ()
+        assert comparison.declaration_digest == snapshot.digest
+        assert comparison.observation_digest == observation.digest
 
     def test_no_table_carries_a_tenant_column(self, migrated_scratch) -> None:
         admin_url, _, _ = migrated_scratch
