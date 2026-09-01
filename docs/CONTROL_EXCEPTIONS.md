@@ -225,6 +225,47 @@ existing set as coverage. `0.1.0a5` is the worked example: seven canaries passed
 against the wheel the registry served, and the entry below is what they could
 not see.
 
+## The module the floor is declared for was a second literal
+
+**Status:** closed for `0.1.0a7`; derived from the package's own imports.
+
+The floor lanes a6 introduced work, and one half of the mutation was written as
+a literal: `ci.yml` required the forced failure to mention
+`dotmac_kernel.transactions`, which is what stops "the canaries failed" standing
+in for "the canaries failed at the boundary the floor describes".
+
+That literal is correct exactly as long as the floor does not move. `0.1.0a7`
+moves it. `database_catalog.py` imports
+`dotmac_kernel.product_database_catalog`, absent from the published
+`dotmac_kernel-0.1.0a99` wheel and present in `dotmac_kernel-0.1.0a100`, so the
+floor rises to `>=0.1.0a100` and the excluded kernel becomes a99 — **which
+contains `dotmac_kernel.transactions` perfectly well**. The lane would have gone
+red demanding a failure that cannot happen, and the message would have pointed
+at a module with nothing wrong with it.
+
+The failure mode worth naming is not that: it is the near miss. Had the moved
+floor happened to keep the old module in the traceback for some unrelated
+reason, the lane would have gone GREEN while proving nothing about the new
+boundary. Two literals for one fact is the `0.1.0a4` defect, and it does not
+become safe for being in a workflow rather than in a source file.
+
+So `FIRST_SHIPPED_IN` and the import collector moved out of
+`tests/architecture/test_kernel_floor.py` and into `scripts/kernel_floor.py` —
+a test module is not importable from a workflow step, which is the whole reason
+the second copy existed — and `scripts/kernel_floor.py symbol` derives the one
+module whose recorded introduction equals the declared floor. `ci.yml` greps for
+that. It refuses rather than guessing when no recorded module introduced the
+floor, when more than one did, or when the package no longer imports the one
+that did; the last is the sensitivity half, because a row whose import was
+deleted leaves the lane requiring an impossible failure.
+
+**What is NOT claimed:** that the table is complete. It records the kernel
+submodules whose introduction has ever bounded this distribution, and a new
+import whose introducing alpha nobody records is invisible to it — the floor
+would then be under-constrained again, in the a5 shape, and the mutation lane
+would report the floor too high rather than naming the gap. The repair is a row
+in the same change that adds the import.
+
 ## Seven canaries could not see a dishonest dependency floor
 
 **Status:** closed for a6 by the floor and mutation lanes; **a5 is permanently

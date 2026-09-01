@@ -126,8 +126,12 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Pin `0.1.0a6` or later, with
-`dotmac-kernel >=0.1.0a98`.
+**Built and validated, not adopted.** Pin `0.1.0a6`, with `dotmac-kernel
+>=0.1.0a98`. That is the newest PUBLISHED version; `0.1.0a7` is declared in this
+tree, is not on the index, and is recorded in `docs/publication-ledger.json`
+until it is. When it publishes it will require `dotmac-kernel >=0.1.0a100` —
+`database_catalog.py` imports `dotmac_kernel.product_database_catalog`, which is
+absent from the published `0.1.0a99` wheel and present in `0.1.0a100`.
 
 Three published versions must never be pinned, and they failed three different
 questions — the distinction is the record, so the reason is named rather than
@@ -147,7 +151,9 @@ collapsed into "bad":
 `docs/CONTROL_EXCEPTIONS.md` carries each disposition in full. A hash comparison
 proves you got the published bytes; it cannot prove they import, which is why
 the declared floor is now proven in both directions by CI's floor and mutation
-lanes.
+lanes — and why the module that floor is declared for is DERIVED from the
+package's own imports (`scripts/kernel_floor.py symbol`) rather than written
+into the workflow, so that raising the floor moves the proof with it.
 
 Unlike its two siblings there is nothing to cut over *from*: the V6 slices were never merged. `EXTRACTION.toml` records the
 two proofs the composition still owes — the claim/proof CHECKs against raw SQL,

@@ -8,7 +8,7 @@ authored head was the head the build actually composed.
 
 from __future__ import annotations
 
-from dotmac_kernel import (
+from dotmac_kernel.product_database_catalog import (
     ComposedDatabaseLineageHeadV1,
     ModuleDatabaseCatalogSnapshot,
     ProductDatabaseCatalogError,

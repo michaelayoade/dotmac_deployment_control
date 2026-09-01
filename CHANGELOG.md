@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## Unreleased — held for the kernel database-catalogue contract
+## 0.1.0a7 — UNRELEASED, declared and awaiting a release run
 
 ### Added
 
@@ -31,19 +31,51 @@ changes, each called out here.
   to how the manifest reports its version, so this change reintroduces no
   literal there and the catalogue tests read `module.version` rather than
   restating `pyproject.toml`. Manifest compatibility remains the independent
-  integer `ModuleManifest.contract_version`; this held change allocates neither
-  a kernel version nor a Deployment Control distribution version.
+  integer `ModuleManifest.contract_version`, unchanged at `2`: the declared
+  surface a composing assembly is checked against did not move, only this
+  distribution's release coordinate did.
 
-### Release blocker
+### Changed
 
-The new contract types are not present in published kernel `0.1.0a98`. This
-branch deliberately does not invent a future kernel or distribution version.
-After the kernel publishes the exact snapshot contract, this distribution must
-set its floor to the first version containing those symbols, prove that floor in
-both directions, allocate its next version through the release guard, and only
-then publish. Until then this change is a stacked, non-releasable source change.
-Its clean-room comparison is source-checked only when this branch is evaluated
-against that stacked kernel candidate; it is not published enforcement.
+- **The declared `dotmac-kernel` floor is `>=0.1.0a100`, not `>=0.1.0a98`.**
+  `database_catalog.py` reads `from dotmac_kernel.product_database_catalog
+  import ...`, and `dotmac_kernel/product_database_catalog.py` is **absent**
+  from the published `dotmac_kernel-0.1.0a99` wheel and **present** in
+  `dotmac_kernel-0.1.0a100` — the same kind of observation that set the a98
+  floor, made against the wheels on either side of the boundary rather than
+  against a changelog entry about them. `dotmac_kernel.transactions` is still
+  imported and still a real lower bound; it is simply no longer the highest one.
+- The kernel contract is imported through its SUBMODULE rather than the
+  top-level re-export, matching how every other module in this package names a
+  kernel dependency. It is also what keeps the mutation lane honest: `from
+  dotmac_kernel.product_database_catalog import X` against a kernel that lacks
+  it raises `ModuleNotFoundError: No module named
+  'dotmac_kernel.product_database_catalog'`, which names the boundary, where
+  `from dotmac_kernel import X` raises an `ImportError` naming no module at all.
+- The module the mutation lane greps for is now DERIVED. `FIRST_SHIPPED_IN` and
+  the import collector moved from `tests/architecture/test_kernel_floor.py` into
+  `scripts/kernel_floor.py`, which grew a `symbol` subcommand, and `ci.yml`
+  calls it instead of holding `dotmac_kernel.transactions` as a literal. That
+  literal would have gone stale at exactly this change: the lane would have
+  demanded a failure naming a module that a99 contains perfectly well, and gone
+  red for a reason that says nothing about the floor. `floor_symbol()` refuses
+  three ways — no recorded module introduced the floor, more than one did, or
+  the package no longer imports the one that did.
+
+### Release blocker — CLEARED
+
+The contract types were absent from published kernel `0.1.0a98` and `0.1.0a99`.
+`dotmac-kernel 0.1.0a100` is published from `dotmac_starter_mt` protected main
+`917181b38dcc5954bac932b630909afdfb19012b`, tag `dotmac-kernel-v0.1.0a100`
+peeling to that same commit, wheel
+`sha256:60a9ba68e4f659ada1d38583e2e5a8d6c803f387a692496cb49e60019772b88c` and
+sdist `sha256:d7d6bd6e4ae9bddf90e1b473fdefd02277a20645561f57929d461ce4da0840ae`,
+and it carries `product_database_catalog`, `database_catalog_comparator` and
+`ModuleManifest.database_catalog`. The floor is moved to that version and
+proved in both directions by the floor and mutation lanes, and the release guard
+has allocated `0.1.0a7`. **Publication is still owed:** this version is declared,
+recorded in `docs/publication-ledger.json`, and not on the index. Nothing may pin
+it until a release run and an independent verify run record its coordinates.
 
 ## 0.1.0a6 — RELEASED 2026-08-30, verified on seven properties with nine canaries
 

@@ -271,13 +271,13 @@ wmi = ["wmi (>=1.5.1)"]
 
 [[package]]
 name = "dotmac-kernel"
-version = "0.1.0a98"
+version = "0.1.0a100"
 description = "DotMac platform kernel — multi-tenant FastAPI foundation (config, RLS db, identity/tenancy models, security, platform auth, middleware, settings, features registry, audit)"
 optional = false
 python-versions = ">=3.11,<3.14"
 files = [
-    {file = "dotmac_kernel-0.1.0a98-py3-none-any.whl", hash = "sha256:27405c57c4af395224cdd2f4366c0144207e9df2eab4ca8a8ed1142c1d0859fa"},
-    {file = "dotmac_kernel-0.1.0a98.tar.gz", hash = "sha256:597acda6b7d1046650aa17b5d847f581b05ee577e7893067762f3bb2790c38af"},
+    {file = "dotmac_kernel-0.1.0a100-py3-none-any.whl", hash = "sha256:60a9ba68e4f659ada1d38583e2e5a8d6c803f387a692496cb49e60019772b88c"},
+    {file = "dotmac_kernel-0.1.0a100.tar.gz", hash = "sha256:d7d6bd6e4ae9bddf90e1b473fdefd02277a20645561f57929d461ce4da0840ae"},
 ]
 
 [package.dependencies]
@@ -1352,4 +1352,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<3.14"
-content-hash = "3516f75f066ac744008e917ab3721e31c5faf993a78587f3276dda0ebd9a88ee"
+content-hash = "776ce21d4ca708caf744f90d5a3ab3916ac8a77f55e99f65552cf4c42d2e5158"

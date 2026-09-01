@@ -8,11 +8,21 @@ column whose final type differs from the root revision.
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
 cannot move a table or claim another module's namespace.
+
+Imported from ``dotmac_kernel.product_database_catalog`` rather than from the
+kernel's top-level re-export, which is how every other module in this package
+names a kernel dependency.  It is also what makes the floor legible: the floor
+is the SUBMODULE a kernel alpha first shipped, `scripts/kernel_floor.py` derives
+it from these import statements, and the mutation lane requires the failure it
+forces to name that submodule.  ``from dotmac_kernel import
+DatabaseColumnContractV1`` raises ``ImportError: cannot import name ...``, which
+names no module at all and would leave the mutation observing an unattributable
+failure.
 """
 
 from __future__ import annotations
 
-from dotmac_kernel import (
+from dotmac_kernel.product_database_catalog import (
     DatabaseColumnContractV1,
     DatabaseColumnGeneration,
     DatabaseRelationKind,

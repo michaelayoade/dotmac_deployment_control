@@ -608,23 +608,74 @@ def test_a6_records_the_exact_bytes_it_names() -> None:
         assert re.fullmatch(r"[0-9a-f]{64}", digest), f"{name} = {digest!r}"
 
 
-def test_a6_records_the_floor_it_declares_and_it_matches_the_tree() -> None:
+def test_a6_records_the_floor_it_declared_and_that_record_is_frozen() -> None:
     """THE FACT a5's ROW COULD NOT HAVE CARRIED, because nobody was recording it.
 
     A release record that names bytes and a commit answers "which artifact".
     a5 proved that is not enough: the question a consumer actually loses on is
-    "against which dependency floor", and that had no field. It has one now,
-    and it is checked against the declaration rather than transcribed beside it.
+    "against which dependency floor", and that had no field. It has one now.
+
+    a6's value is a PUBLISHED fact and never moves again. The tree has since
+    raised its own floor to `>=0.1.0a100` for `0.1.0a7`, and the a6 artifact on
+    the index still declares `>=0.1.0a98` — editing this row to agree with the
+    tree would make one published version name two contracts, which is the
+    shape this repository refuses everywhere else.
+
+    The LIVE half of the property — recorded rather than transcribed — moved to
+    the test below, which follows the version this tree actually declares.
     """
     a6 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a6")
     assert a6["declared_kernel_floor"] == ">=0.1.0a98"
-    declared = tomllib.loads(
-        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )["tool"]["poetry"]["dependencies"]["dotmac-kernel"]["version"]
-    assert a6["declared_kernel_floor"] == declared, (
-        "the recorded floor and the declared floor disagree. A record that "
-        "quotes a constraint the tree does not carry is the two-literals defect "
-        "a4 shipped, moved into the provenance file."
+
+
+def _declared(field: str) -> str:
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    poetry = data["tool"]["poetry"]
+    if field == "version":
+        return str(poetry["version"])
+    return str(poetry["dependencies"]["dotmac-kernel"]["version"])
+
+
+def test_the_declared_floor_is_recorded_for_the_version_this_tree_declares() -> None:
+    """CHECKED AGAINST THE DECLARATION, NOT TRANSCRIBED BESIDE IT — and stated
+    over whichever file currently holds the tree's version.
+
+    The first form of this compared a6's recorded floor with the tree's, which
+    was the right property while a6 WAS the tree and silently stopped being a
+    property the moment the version moved on. A published row is frozen; the
+    live coupling belongs to the version being prepared, and that one lives in
+    `docs/publication-ledger.json` until its coordinates are recorded.
+
+    So the rule is stated once over both files: wherever the version this tree
+    declares is recorded, the floor recorded there is the floor the tree
+    declares. A row that omits the field fails rather than passing over an
+    absent key — the a4 defect is two authorities for one fact, and "no
+    authority" is not the repair.
+    """
+    version = _declared("version")
+    floor = _declared("floor")
+    published = {r["version"]: r for r in _published()["releases"]}
+    ledger = json.loads(
+        (REPO_ROOT / "docs" / "publication-ledger.json").read_text(encoding="utf-8")
+    )["unpublished"]
+
+    row = published.get(version) or ledger.get(version)
+    assert row is not None, (
+        f"{version} is declared by this tree and recorded in neither "
+        "docs/published-versions.json nor docs/publication-ledger.json. "
+        "test_the_ledger_holds_the_declared_version_and_nothing_else says the "
+        "same thing about publication state; this one is about the floor."
+    )
+    assert "declared_kernel_floor" in row, (
+        f"the record for {version} carries no declared_kernel_floor. That field "
+        "is what makes the recorded floor a CHECK rather than a transcription, "
+        "and a row without it passes this test for the wrong reason."
+    )
+    assert row["declared_kernel_floor"] == floor, (
+        f"{version} is recorded against {row['declared_kernel_floor']!r} and "
+        f"the tree declares {floor!r}. A record that quotes a constraint the "
+        "tree does not carry is the two-literals defect a4 shipped, moved into "
+        "the provenance file."
     )
 
 

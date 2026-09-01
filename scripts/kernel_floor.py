@@ -8,9 +8,12 @@ install, and seven behavioural canaries, all against the artifact the registry
 served. It still could not run in its consuming assembly. `service.py` imports
 `dotmac_kernel.transactions`, first shipped in kernel `0.1.0a98`, while
 `pyproject.toml` declared `dotmac-kernel >=0.1.0a77`: **under-constrained by 21
-alphas**. Resolution succeeded, the lock wrote cleanly, the artifacts matched
-their published hashes byte-for-byte, and the failure surfaced at container
-boot in the Platform CP lane.
+alphas**. (The floor has since moved on to
+`dotmac_kernel.product_database_catalog`, first shipped in `0.1.0a100`; what is
+permanent here is the mechanism, not the particular row.) Resolution succeeded,
+the lock wrote cleanly, the artifacts matched their published hashes
+byte-for-byte, and the failure surfaced at container boot in the Platform CP
+lane.
 
 The lesson is narrow and worth stating exactly: **a hash comparison proves you
 got the published bytes; it cannot prove they import.** a5's verification did
@@ -27,6 +30,10 @@ declared floor.
 * `newest_excluded()` — the highest kernel actually on the index that is
   strictly below the floor. The mutation lane installs **that** and requires
   the same canaries to FAIL.
+* `floor_symbol()` — the one kernel submodule whose introduction sets the
+  declared floor, derived from the package's own imports. The mutation lane
+  requires its failure to NAME that module, so "the canaries failed" cannot
+  stand in for "the canaries failed at the boundary the floor describes".
 
 Together they make the floor falsifiable in both directions:
 
@@ -56,6 +63,7 @@ proves nothing, which is the failure mode this whole file was written against.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 import tomllib
@@ -63,14 +71,36 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
+PACKAGE = REPO_ROOT / "src" / "dotmac_deployment_control"
 
 DEPENDENCY = "dotmac-kernel"
 
-#: `0.1.0a98`, and nothing else — deliberately the same narrow shape
+#: The kernel SUBMODULE each alpha FIRST shipped, for the ones this package
+#: imports. Not a changelog reading and not a guess: each row was established by
+#: opening the published wheels on either side of the boundary.
+#:
+#: * `dotmac_kernel/transactions.py` is absent from `0.1.0a97` and present in
+#:   `0.1.0a98`. It set this floor from `0.1.0a6`.
+#: * `dotmac_kernel/product_database_catalog.py` is absent from `0.1.0a99` and
+#:   present in `0.1.0a100`. It sets the floor now.
+#:
+#: A SUBMODULE rather than a symbol, and that is load-bearing rather than
+#: stylistic. `from dotmac_kernel.product_database_catalog import X` against a
+#: kernel that lacks it raises `ModuleNotFoundError: No module named
+#: 'dotmac_kernel.product_database_catalog'`, which names the boundary; `from
+#: dotmac_kernel import X` raises `ImportError: cannot import name 'X' from
+#: 'dotmac_kernel'`, which names no module at all and would leave the mutation
+#: lane unable to tell its own proof from unrelated breakage.
+FIRST_SHIPPED_IN = {
+    "dotmac_kernel.transactions": "0.1.0a98",
+    "dotmac_kernel.product_database_catalog": "0.1.0a100",
+}
+
+#: `0.1.0a100`, and nothing else — deliberately the same narrow shape
 #: `release_guard.parse` accepts for this distribution's own version.
 _ALPHA = re.compile(r"\A(\d+)\.(\d+)\.(\d+)a(\d+)\Z")
 
-#: `>=0.1.0a98`. A lower bound, alone, with no upper bound and no second clause.
+#: `>=0.1.0a100`. A lower bound, alone, no upper bound and no second clause.
 _LOWER_BOUND = re.compile(r"\A>=\s*(\d+\.\d+\.\d+a\d+)\Z")
 
 #: How the private index renders a file link for this distribution. Both the
@@ -128,8 +158,8 @@ def declared_constraint(pyproject: Path = PYPROJECT) -> str:
 def declared_floor(pyproject: Path = PYPROJECT) -> str:
     """The exact minimum kernel this distribution says it needs.
 
-    A pure lower bound is required. `^0.1.0a98` would carry a caret's implicit
-    ceiling, `>=0.1.0a98,<0.2` would carry an explicit one, and either would
+    A pure lower bound is required. `^0.1.0a100` would carry a caret's implicit
+    ceiling, `>=0.1.0a100,<0.2` would carry an explicit one, and either would
     make "install exactly the floor" a different question from "install the
     minimum a consumer's resolver may choose". The floor lane's whole claim is
     that those are the same version.
@@ -148,6 +178,75 @@ def declared_floor(pyproject: Path = PYPROJECT) -> str:
     floor = match.group(1)
     parse(floor)  # refuse an unorderable floor here rather than downstream
     return floor
+
+
+def kernel_imports(package: Path = PACKAGE) -> set[str]:
+    """Every `dotmac_kernel.*` module the package imports, at any depth.
+
+    Parsed, never grepped: a substring scan over the source would be satisfied
+    by the prose in a docstring, and this repository has tripped over exactly
+    that four times.
+    """
+    found: set[str] = set()
+    for path in sorted(package.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0:
+                module = node.module or ""
+                if module.startswith("dotmac_kernel"):
+                    found.add(module)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("dotmac_kernel"):
+                        found.add(alias.name)
+    return found
+
+
+def floor_symbol(pyproject: Path = PYPROJECT, package: Path = PACKAGE) -> str:
+    """The one kernel submodule whose introduction SETS the declared floor.
+
+    The mutation lane needs this name, because "the canaries failed" is not the
+    proof — "the canaries failed for the reason the floor is declared" is. A
+    literal in `ci.yml` would be a second authority for it, drifting the moment
+    the floor moves, and the drift would be invisible: the lane would report the
+    boundary proven on a run that observed some other breakage.
+
+    So it is DERIVED, and it refuses rather than guessing in all three ways it
+    can be wrong:
+
+    * no recorded module introduced this floor — the floor names a version
+      nothing in the table justifies;
+    * more than one did — "the symbol the floor is set by" is not one name;
+    * the package no longer imports it — the row outlived its import, and the
+      grep would then require a failure that can never happen.
+    """
+    floor = declared_floor(pyproject)
+    candidates = sorted(m for m, v in FIRST_SHIPPED_IN.items() if v == floor)
+    if not candidates:
+        raise FloorError(
+            f"no recorded kernel submodule first shipped in {floor}, which is "
+            "the declared floor. Either the floor was raised without recording "
+            "the import that justifies it, or the row that justified it was "
+            "deleted. FIRST_SHIPPED_IN records "
+            f"{sorted(FIRST_SHIPPED_IN.items())}."
+        )
+    if len(candidates) > 1:
+        raise FloorError(
+            f"{candidates} all first shipped in {floor}, so 'the symbol the "
+            "floor is set by' is not one name. The mutation lane greps for a "
+            "single module; pick the one the floor is declared for and record "
+            "the others differently."
+        )
+    symbol = candidates[0]
+    imported = kernel_imports(package)
+    if symbol not in imported:
+        raise FloorError(
+            f"the declared floor {floor} is justified by {symbol}, which the "
+            f"package no longer imports (it imports {sorted(imported)}). The "
+            "mutation lane would then require a failure that cannot occur. "
+            "Lower the floor and remove the row in the same change."
+        )
+    return symbol
 
 
 def index_versions(html: str) -> list[str]:
@@ -187,11 +286,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "what",
-        choices=("declared", "excluded"),
+        choices=("declared", "excluded", "symbol"),
         help=(
             "`declared` prints the exact minimum kernel the distribution "
             "declares. `excluded` prints the newest kernel on the index that "
-            "the floor refuses, which is the mutation target."
+            "the floor refuses, which is the mutation target. `symbol` prints "
+            "the kernel submodule whose introduction sets that floor, which is "
+            "the name the mutation's failure must carry."
         ),
     )
     parser.add_argument("--pyproject", type=Path, default=PYPROJECT)
@@ -210,6 +311,9 @@ def main(argv: list[str] | None = None) -> int:
         floor = declared_floor(args.pyproject)
         if args.what == "declared":
             print(floor)
+            return 0
+        if args.what == "symbol":
+            print(floor_symbol(args.pyproject))
             return 0
         if args.index_html is None:
             raise FloorError("`excluded` requires --index-html")

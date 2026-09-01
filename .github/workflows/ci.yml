@@ -257,10 +257,13 @@ jobs:
       #   2. THE BEHAVIOUR. Half one alone is close to circular — it says pip
       #      honours the number in the metadata, not that the number is the
       #      right one. So the excluded kernel is FORCED into an otherwise
-      #      working environment and the canaries must fail, naming
-      #      `dotmac_kernel.transactions`. That is the symbol the floor exists
-      #      for, and requiring the failure to name it is what stops this
-      #      passing on some unrelated breakage.
+      #      working environment and the canaries must fail, naming the module
+      #      `scripts/kernel_floor.py symbol` derives from the package's own
+      #      imports. That is the module the floor exists for, and requiring the
+      #      failure to name it is what stops this passing on some unrelated
+      #      breakage. It is derived and not written here: the floor moved from
+      #      `transactions` to `product_database_catalog`, and a literal would
+      #      have gone stale silently.
       - name: The kernel below the floor must not satisfy those canaries
         env:
           CURL_CREDENTIAL_USER: ci-reader
@@ -279,6 +282,13 @@ jobs:
             "https://registry.dotmac.io/api/packages/dotmac/pypi/simple/dotmac-kernel/"
           EXCLUDED=$(python3 scripts/kernel_floor.py excluded --index-html kernel-index.html)
           echo "the newest kernel the declared floor excludes: ${EXCLUDED}"
+          # The module the floor is DECLARED FOR, derived from the package's own
+          # imports rather than written here. It was `dotmac_kernel.transactions`
+          # and it is now `dotmac_kernel.product_database_catalog`; a literal in
+          # this file would have gone stale at exactly that moment and the grep
+          # below would demand a failure that cannot happen.
+          SYMBOL=$(python3 scripts/kernel_floor.py symbol)
+          echo "the module that floor is declared for: ${SYMBOL}"
 
           # 1. THE METADATA
           python -m venv /tmp/resolver-check
@@ -332,15 +342,14 @@ jobs:
             exit 1
           fi
           cat mutation.txt
-          if ! grep -q "dotmac_kernel.transactions" mutation.txt; then
+          if ! grep -q -F -- "${SYMBOL}" mutation.txt; then
             echo "::error::the canaries failed with dotmac-kernel ${EXCLUDED}, but not"
             echo "for the reason the floor names. The floor is declared for"
-            echo "dotmac_kernel.transactions; a failure that never mentions it means"
-            echo "this mutation is observing some other breakage and the boundary is"
-            echo "still unproven."
+            echo "${SYMBOL}; a failure that never mentions it means this mutation is"
+            echo "observing some other breakage and the boundary is still unproven."
             exit 1
           fi
-          echo "dotmac-kernel ${EXCLUDED} cannot satisfy the canaries: dotmac_kernel.transactions is absent"
+          echo "dotmac-kernel ${EXCLUDED} cannot satisfy the canaries: ${SYMBOL} is absent"
 
   # ── The reason this repository has a PostgreSQL lane at all ───────────────
   #

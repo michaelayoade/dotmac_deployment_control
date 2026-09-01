@@ -63,8 +63,12 @@ DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
 
 * `declared_kernel_floor`  — the kernel in this environment satisfies the floor
                              the ARTIFACT'S OWN `Requires-Dist` declares, and
-                             `dotmac_kernel.transactions` resolves out of
-                             `site-packages`. With `--expect-kernel` the
+                             every kernel submodule that bounds this artifact
+                             resolves out of `site-packages`. The floor has
+                             since moved on to
+                             `dotmac_kernel.product_database_catalog` (kernel
+                             `a100`); `transactions` remains a real bound and
+                             both are checked. With `--expect-kernel` the
                              equality is exact, which is how `ci.yml`'s floor
                              lane pins the declared minimum literally rather
                              than accepting whatever the resolver chose.
@@ -103,14 +107,14 @@ KERNEL_DISTRIBUTION = "dotmac-kernel"
 KERNEL_IMPORT_NAME = "dotmac_kernel"
 CANONICAL_DIGEST = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 
-#: `0.1.0a98`, and nothing else. The same narrow shape `scripts/release_guard
+#: `0.1.0a100`, and nothing else. The same narrow shape `scripts/release_guard
 #: .py` and `scripts/kernel_floor.py` accept, repeated here rather than
 #: imported because this script runs in an environment that has the wheel
 #: installed and does NOT have this repository importable — importing a
 #: sibling script would be the one thing these canaries exist to refuse.
 _ALPHA = re.compile(r"\A(\d+)\.(\d+)\.(\d+)a(\d+)\Z")
 
-#: `dotmac-kernel (>=0.1.0a98)` and `dotmac-kernel>=0.1.0a98` are both seen in
+#: `dotmac-kernel (>=0.1.0a100)` and `dotmac-kernel>=0.1.0a100` are both seen in
 #: the wild depending on the build backend's metadata version.
 _REQUIRES_KERNEL = re.compile(
     r"\Adotmac[-_]kernel\s*\(?\s*>=\s*(\d+\.\d+\.\d+a\d+)\s*\)?\Z"
@@ -270,6 +274,29 @@ def _declared_kernel_floor() -> str:
     return matches[0]
 
 
+#: The kernel submodules whose availability BOUNDS this artifact from below,
+#: each with one name it must export. Ordered highest-alpha LAST, so the module
+#: that currently sets the floor is the last thing checked and the failure a
+#: below-floor environment produces here names it.
+#:
+#: A tuple rather than the single module the floor is set by, because a floor
+#: that moves does not retire the earlier bound: `dotmac_kernel.transactions`
+#: (kernel `a98`) is still imported by `service.py`, and
+#: `dotmac_kernel.product_database_catalog` (kernel `a100`) is what raised the
+#: declaration. Dropping the older row would leave the artifact free to lose an
+#: import nothing checks.
+#:
+#: Written here as literals ON PURPOSE. This script runs where the repository is
+#: NOT importable, so it cannot ask `scripts/kernel_floor.py` — and it must not:
+#: reading the source tree is the one thing these canaries exist to refuse.
+#: `tests/architecture/test_kernel_floor.py` is what keeps the two tables from
+#: drifting apart.
+_FLOOR_MODULES = (
+    ("transactions", "conflict_savepoint"),
+    ("product_database_catalog", "ModuleDatabaseCatalogContributionV1"),
+)
+
+
 def canary_declared_kernel_floor(expect_kernel: str | None = None) -> str:
     """THE DEFECT `0.1.0a6` WAS CUT FOR: the declared floor must be honest.
 
@@ -282,8 +309,11 @@ def canary_declared_kernel_floor(expect_kernel: str | None = None) -> str:
 
     1. the kernel installed here satisfies the floor the artifact declares —
        true in any lane, so the canary is never vacuous;
-    2. `dotmac_kernel.transactions` — the module whose availability SETS this
-       floor — resolves out of `site-packages`, not out of a checkout;
+    2. every kernel submodule whose availability BOUNDS this artifact resolves
+       out of `site-packages`, not out of a checkout, and exports the name it is
+       imported for. `product_database_catalog` (kernel `a100`) is the one that
+       sets the floor today; `transactions` (kernel `a98`) set it through
+       `0.1.0a6` and is still a real bound;
     3. with `--expect-kernel`, the installed kernel is EXACTLY that version.
        That is the floor lane's tightening, and it is the one statement a
        resolver free to pick a newer kernel can never make.
@@ -299,21 +329,23 @@ def canary_declared_kernel_floor(expect_kernel: str | None = None) -> str:
             "distribution's own metadata."
         )
 
-    transactions = __import__(f"{KERNEL_IMPORT_NAME}.transactions", fromlist=["x"])
-    origin = Path(transactions.__file__ or "").resolve()
     sites = _site_directories()
-    if not any(origin.is_relative_to(site) for site in sites):
-        raise CanaryFailure(
-            f"{KERNEL_IMPORT_NAME}.transactions was imported from {origin}, "
-            f"which is not inside any install directory ({sites}). The floor "
-            "is a statement about a PUBLISHED kernel; satisfying it from a "
-            "working tree would prove nothing about what a consumer resolves."
-        )
-    if not hasattr(transactions, "conflict_savepoint"):
-        raise CanaryFailure(
-            f"{KERNEL_IMPORT_NAME}.transactions exists but exports no "
-            "`conflict_savepoint`, which is the symbol this floor is set by"
-        )
+    for submodule, exported in _FLOOR_MODULES:
+        dotted = f"{KERNEL_IMPORT_NAME}.{submodule}"
+        module = __import__(dotted, fromlist=["x"])
+        origin = Path(module.__file__ or "").resolve()
+        if not any(origin.is_relative_to(site) for site in sites):
+            raise CanaryFailure(
+                f"{dotted} was imported from {origin}, which is not inside any "
+                f"install directory ({sites}). The floor is a statement about a "
+                "PUBLISHED kernel; satisfying it from a working tree would "
+                "prove nothing about what a consumer resolves."
+            )
+        if not hasattr(module, exported):
+            raise CanaryFailure(
+                f"{dotted} exists but exports no `{exported}`, which is a name "
+                "this floor is set by"
+            )
 
     if expect_kernel is not None:
         if installed != expect_kernel:
