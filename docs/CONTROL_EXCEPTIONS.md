@@ -4,9 +4,30 @@ Controls this repository claims, where the claim is narrower than it sounds.
 Each entry states what is enforced, what is NOT, and by whom — so that a reader
 does not infer coverage that does not exist.
 
-## Database-catalogue publication is blocked on an unpublished kernel contract
+## Database-catalogue publication was blocked on an unpublished kernel contract
 
-**Status:** open, dated 2026-08-31. No distribution release is authorised.
+**Status:** CLOSED by `0.1.0a7`, published 2026-09-01 by release run
+`33507951778` and independently VERIFIED by run `33508897684`. Every condition
+this entry set for closure was met in one release slice: the first published
+kernel carrying `ModuleDatabaseCatalogContributionV1` is `0.1.0a100`; the floor
+was raised to `>=0.1.0a100`; the floor and excluded-near-miss lanes ran in both
+directions on the release commit (CI run `33488407034`); the next distribution
+version was allocated through `release_guard`; and every required check was
+green before publication. The published `ModuleManifest.version` is now derived
+rather than declared, so the `0.1.0a2` self-report a6 carried is gone.
+
+**What did NOT change at closure, and is the reason this entry stays:** the
+declaration's exact table and column sensitivity checks, the clean-room
+PostgreSQL comparison included, are SOURCE checks. None of the nine artifact
+canaries drives the catalogue, and the set did not grow with the capability. No
+published artifact carries an artifact-level proof of the seven-table,
+95-column extent, and the checked-in source must still not be cited as
+production adoption evidence. Platform CP binding it into a release catalogue
+is a separate, undischarged step.
+
+The record below is the original entry, kept unchanged.
+
+---
 
 This branch authors Deployment Control's exact post-`dc_0002` database
 contribution and binds it to the module manifest. The fully typed contract
