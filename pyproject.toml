@@ -8,6 +8,16 @@ packages = [{ include = "dotmac_deployment_control", from = "src" }]
 include = [
     { path = "src/dotmac_deployment_control/py.typed", format = ["sdist", "wheel"] },
     { path = "src/dotmac_deployment_control/migrations/**/*", format = ["sdist", "wheel"] },
+    # The browser surface's templates, as PACKAGE DATA.
+    #
+    # Not optional and not decoration: `WebSurfaceContribution` declares a
+    # `TemplatePackage` whose root the kernel's registry checks with `is_dir()`
+    # at composition, so a wheel that shipped the Python and not this directory
+    # would import cleanly and then refuse to compose — the same class of
+    # failure as `0.1.0a5`'s floor, discovered at the consumer's container boot
+    # rather than here. `scripts/artifact_canaries.py` proves the directory is
+    # present in the BUILT artifact rather than in this tree.
+    { path = "src/dotmac_deployment_control/templates/**/*", format = ["sdist", "wheel"] },
 ]
 
 [tool.poetry.dependencies]
@@ -89,6 +99,19 @@ mypy = "^1.11"
 # The platform canary talks to a real PostgreSQL. psycopg is a DEV dependency
 # and must never become a runtime one: this module performs no I/O.
 psycopg = { version = "^3.2", extras = ["binary"] }
+# DEV ONLY, and the distinction is the contract — the same one the kernel draws.
+#
+# Starlette's `Request.form()` asserts `python-multipart` is importable BEFORE it
+# inspects the content type, so even a `application/x-www-form-urlencoded` body
+# needs it present. The browser surface reads forms exactly as the kernel's own
+# platform surface does, and the kernel deliberately does not depend on this
+# either: form parsing is an ASSEMBLY concern, and the composing assembly
+# supplies it (the vendor control plane pins `python-multipart` itself).
+#
+# It is here because this repository's own tests drive this module's surface
+# with real requests. A runtime dependency would make every consumer of a
+# module that performs no I/O carry a body parser it may never use.
+python-multipart = "^0.0.20"
 # DEV ONLY, and the distinction is the contract. A module's migration is
 # executed by the HOST's Alembic — the module declares the lineage and never
 # runs it — so `alembic` must not become a runtime dependency of this package.

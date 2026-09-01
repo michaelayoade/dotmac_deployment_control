@@ -1,0 +1,295 @@
+{#
+  One deployment target: what we asked for, what it reports, what was planned,
+  who authorized it, what was attempted, and what arrived.
+
+  Context, all frozen views built by `service.py`: `target` (TargetView),
+  `preview` (PlanProposalPreview | None), `plans`, `rollouts`, `drift`
+  (DriftReport | None), `receipts`, `arrivals`, `refusal` (str | None).
+
+  NOTHING here decides anything. `preview.can_propose`, `drift.drifted`,
+  `drift.never_observed` and `arrival.identity_is_proven` are all computed in
+  Python from module-owned state; this file renders them. Working any of them
+  out from two columns in Jinja would put a copy of a module decision on the
+  screen operators actually read, and the copy is the one nothing tests.
+#}
+{% extends "layouts/platform.html" %}
+{% import "deployment_control/_macros.html" as ui %}
+
+{% block platform_content %}
+
+{% if refusal %}
+{#
+  The module's own refusal text, verbatim. Paraphrasing it here would be a
+  second account of why a deployment was refused — and the module is the one
+  that knows.
+#}
+<div role="alert"
+     style="border:1px solid var(--dmui-status-negative-border);
+            background:var(--dmui-status-negative-surface);
+            color:var(--dmui-status-negative-foreground);
+            border-radius:var(--dmui-radius-md);
+            padding:var(--dmui-space-md);
+            margin-bottom:var(--dmui-space-lg);">
+  <strong>Refused.</strong> {{ refusal }}
+</div>
+{% endif %}
+
+{% call ui.panel("Intent and observation") %}
+<dl style="margin:0;">
+  {{ ui.field("Target", target.target_ref) }}
+  {{ ui.field("Subject", target.subject_ref) }}
+  {{ ui.field("Product", target.product_code) }}
+  {{ ui.field("Environment", target.environment) }}
+  {{ ui.field("Status", target.status) }}
+  {{ ui.field("Desired release", target.desired_release_ref) }}
+  {{ ui.field("Desired revision", target.desired_revision) }}
+  {{ ui.field("Licence", target.licence_ref) }}
+  {{ ui.field("Brand profile", target.brand_profile_ref) }}
+  {{ ui.field("Observed release", target.observed_release_ref) }}
+  {{ ui.field("Observed revision", target.observed_revision) }}
+  {{ ui.field("Last observed", moment(target.last_observed_at)) }}
+</dl>
+{% endcall %}
+
+{% call ui.panel("Reconciliation") %}
+{#
+  Drift is computed on demand and never stored, so this cannot be stale — and
+  "never observed" is deliberately a different answer from "drifted". A target
+  that has never reported is unknown, not wrong; collapsing the two would show
+  a freshly registered deployment as an incident.
+#}
+{% if drift is none %}
+  {{ ui.nothing_here("This target is no longer readable; nothing can be reconciled against it.") }}
+{% elif drift.never_observed %}
+  <p style="margin:0; color:var(--dmui-status-warning-foreground);">
+    <strong>Missing evidence.</strong> This target has never reported. Nothing is
+    known to be wrong, and nothing is known to be right.
+  </p>
+{% elif drift.drifted %}
+  <p style="margin:0 0 var(--dmui-space-sm) 0; color:var(--dmui-status-negative-foreground);">
+    <strong>Drifted.</strong> What was rolled out and what was last reported disagree.
+  </p>
+  <dl style="margin:0;">
+    {{ ui.field("Rolled out release", drift.rolled_out_release_ref) }}
+    {{ ui.field("Rolled out revision", drift.rolled_out_revision) }}
+    {{ ui.field("Observed release", drift.observed_release_ref) }}
+    {{ ui.field("Observed revision", drift.observed_revision) }}
+    {{ ui.field("Last observed", moment(drift.last_observed_at)) }}
+  </dl>
+{% else %}
+  <p style="margin:0; color:var(--dmui-status-positive-foreground);">
+    <strong>Converged.</strong> The last report matches what was rolled out
+    ({{ drift.rolled_out_release_ref }}, revision {{ drift.rolled_out_revision }}),
+    as of {{ moment(drift.last_observed_at) }}.
+  </p>
+{% endif %}
+{% endcall %}
+
+{% call ui.panel("Propose a plan") %}
+{% if preview is none %}
+  {{ ui.nothing_here("This target could not be previewed.") }}
+{% else %}
+  <p style="margin:0 0 var(--dmui-space-sm) 0; color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Below is exactly what proposing would freeze, and the digest the server
+    derived from it. The digest is never submitted by this page — it is
+    recomputed from the target when the plan is created.
+  </p>
+  <dl style="margin:0 0 var(--dmui-space-sm) 0;">
+    {{ ui.field("Desired revision", preview.desired_revision) }}
+    {{ ui.field("Plan digest (server-derived)", ui.digest(preview.plan_digest)) }}
+    {{ ui.field("Would supersede", preview.would_supersede_plan_id) }}
+    {{ ui.field("Matches the current approved plan", preview.digest_matches_current) }}
+  </dl>
+  <p style="margin:0 0 var(--dmui-space-3xs) 0; color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Canonical plan — the exact bytes the digest is taken over:
+  </p>
+  <pre style="margin:0 0 var(--dmui-space-md) 0; padding:var(--dmui-space-sm);
+              overflow-x:auto;
+              background:var(--dmui-surface-secondary);
+              border:1px solid var(--dmui-border-subtle);
+              border-radius:var(--dmui-radius-sm);
+              font-family:var(--dmui-font-mono);
+              font-size:var(--dmui-font-size-xs);
+              color:var(--dmui-text-primary);">{{ preview.canonical_plan_json }}</pre>
+
+  {% if preview.can_propose %}
+  {#
+    A native POST form, so it carries the hidden CSRF proof the kernel's
+    transport contract accepts. The only coordinate that crosses the wire is
+    `expected_desired_revision` — an integer this module issued, naming which
+    desired state was on the screen. There is no digest field, and the surface
+    refuses a request that carries one under any name.
+  #}
+  <form method="post" action="{{ surface_url('propose_plan', target_id=target.id) }}"
+        style="display:flex; flex-wrap:wrap; gap:var(--dmui-space-sm); align-items:flex-end;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="expected_desired_revision" value="{{ preview.desired_revision }}">
+    <label style="display:flex; align-items:center; gap:var(--dmui-space-2xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+      <input type="checkbox" name="requires_approval" value="on" checked>
+      Requires approval
+    </label>
+    <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+      Approval policy
+      <input type="text" name="approval_policy_code"
+             style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default);
+                    border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary);
+                    color:var(--dmui-text-primary);">
+    </label>
+    <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+      Policy version
+      <input type="number" name="approval_policy_version" min="1"
+             style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default);
+                    border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary);
+                    color:var(--dmui-text-primary);">
+    </label>
+    <button type="submit"
+            style="padding:var(--dmui-space-2xs) var(--dmui-space-sm);
+                   border:1px solid var(--dmui-action-primary-default);
+                   border-radius:var(--dmui-radius-sm);
+                   background:var(--dmui-action-primary-default);
+                   color:var(--dmui-action-primary-on); cursor:pointer;">Propose plan</button>
+  </form>
+  {% else %}
+  <p style="margin:0 0 var(--dmui-space-2xs) 0; color:var(--dmui-status-warning-foreground);">
+    This target cannot be planned for right now:
+  </p>
+  <ul style="margin:0; color:var(--dmui-text-primary);">
+    {% for reason in preview.blocking_reasons %}
+    <li>{{ reason }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+{% endif %}
+{% endcall %}
+
+{% call ui.panel("Plans, approval standing and authorization evidence") %}
+{#
+  A plan's authorization is evidence, not a flag: the policy it was decided
+  under, the immutable reference to that decision, when it happened, and the
+  digest the decision was bound to. `dotmac-approvals` owns the decision; this
+  module records what it was handed and this screen shows it.
+#}
+{% if plans %}
+  {{ ui.table_open(["#", "Status", "Desired rev", "Plan digest", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
+  {% for plan in plans %}
+  <tr>
+    {{ ui.cell(plan.sequence) }}
+    {{ ui.cell(plan.status) }}
+    {{ ui.cell(plan.desired_revision) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(plan.plan_digest) }}
+    </td>
+    {{ ui.cell(plan.requires_approval) }}
+    {{ ui.cell(plan.approval_policy_code) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(plan.approval_decision_ref) }}
+    </td>
+    {{ ui.cell(moment(plan.approved_at)) }}
+    {{ ui.cell(plan.superseded_by_id) }}
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+{% else %}
+  {{ ui.nothing_here("No plan has ever been proposed for this target.") }}
+{% endif %}
+{% endcall %}
+
+{% call ui.panel("Rollouts and attempt history") %}
+{#
+  Attempts are append-only and every one is shown, including the failures, the
+  timeouts and the cancellations. A rollback is not a separate object in this
+  module: reverting means proposing a plan that pins the earlier release and
+  rolling that out, so it appears below as its own rollout rather than as an
+  undo of another one.
+#}
+{% if rollouts %}
+  {% for rollout in rollouts %}
+  <div style="margin-bottom:var(--dmui-space-md);">
+    <dl style="margin:0 0 var(--dmui-space-2xs) 0;">
+      {{ ui.field("Rollout", rollout.rollout_ref) }}
+      {{ ui.field("Status", rollout.status) }}
+      {{ ui.field("Plan", rollout.plan_id) }}
+      {{ ui.field("Reason", rollout.reason) }}
+      {{ ui.field("Completed", moment(rollout.completed_at)) }}
+    </dl>
+    {% if rollout.attempts %}
+      {{ ui.table_open(["Attempt", "Outcome", "Integrator reference", "Error", "Detail", "Dispatched", "Settled"]) }}
+      {% for attempt in rollout.attempts %}
+      <tr>
+        {{ ui.cell(attempt.attempt_no) }}
+        {{ ui.cell(attempt.outcome) }}
+        {{ ui.cell(attempt.integrator_ref) }}
+        {{ ui.cell(attempt.error_code) }}
+        {{ ui.cell(attempt.detail) }}
+        {{ ui.cell(moment(attempt.dispatched_at)) }}
+        {{ ui.cell(moment(attempt.settled_at)) }}
+      </tr>
+      {% endfor %}
+      {{ ui.table_close() }}
+    {% else %}
+      {{ ui.nothing_here("Decided, never dispatched.") }}
+    {% endif %}
+  </div>
+  {% endfor %}
+{% else %}
+  {{ ui.nothing_here("No rollout has ever been requested for this target.") }}
+{% endif %}
+{% endcall %}
+
+{% call ui.panel("Observation receipts") %}
+{#
+  One canonical receipt per idempotency key, carrying the verdict that is
+  returned verbatim to every later replay. The signed payload itself is never
+  rendered — its digest is what makes the report checkable, and the bytes were
+  attacker-controlled when they were stored.
+#}
+{% if receipts %}
+  {{ ui.table_open(["Report", "Key", "First received", "Original verdict", "Observed release", "Observed spec digest", "Payload digest"]) }}
+  {% for receipt in receipts %}
+  <tr>
+    {{ ui.cell(receipt.report_id) }}
+    {{ ui.cell(receipt.key_id) }}
+    {{ ui.cell(moment(receipt.first_received_at)) }}
+    {{ ui.cell(receipt.original_verdict) }}
+    {{ ui.cell(receipt.observed_release_ref) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.observed_spec_digest) }}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.payload_digest) }}
+    </td>
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+{% else %}
+  {{ ui.nothing_here("This target has never produced a canonical receipt.") }}
+{% endif %}
+{% endcall %}
+
+{% call ui.panel("Arrivals attributed to this target") %}
+{#
+  Only arrivals whose identity was PROVEN can appear here, because an arrival
+  that authenticated nothing has no target to be attributed to. The ones that
+  proved nothing are on the fleet-wide arrivals screen — that is where the
+  missing-evidence cases live.
+#}
+{% if arrivals %}
+  {{ ui.table_open(["Received", "Disposition", "Signature", "Eligibility", "Key", "Claimed as", "Report"]) }}
+  {% for arrival in arrivals %}
+  <tr>
+    {{ ui.cell(moment(arrival.received_at)) }}
+    {{ ui.cell(arrival.disposition) }}
+    {{ ui.cell(arrival.signature_status) }}
+    {{ ui.cell(arrival.eligibility_at_receipt) }}
+    {{ ui.cell(arrival.key_id) }}
+    {{ ui.cell(arrival.claimed_target_ref) }}
+    {{ ui.cell(arrival.report_id) }}
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+{% else %}
+  {{ ui.nothing_here("Nothing has ever arrived under this target's proven identity.") }}
+{% endif %}
+{% endcall %}
+
+{% endblock %}

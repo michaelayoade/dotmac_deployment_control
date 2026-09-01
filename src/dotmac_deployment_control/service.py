@@ -76,7 +76,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
-from dotmac_deployment_control.digests import PlanDigestV1, SpecDigestV1
+from dotmac_deployment_control.digests import (
+    PlanDigestV1,
+    SpecDigestV1,
+    canonical_json,
+)
 from dotmac_deployment_control.models import (
     TERMINAL_ROLLOUT_STATUSES,
     AttemptOutcome,
@@ -206,13 +210,27 @@ class CredentialTransitionCommand:
 
 @dataclass(frozen=True, slots=True)
 class ProposePlanCommand:
-    """Freeze the target's CURRENT desired state into an immutable plan."""
+    """Freeze the target's CURRENT desired state into an immutable plan.
+
+    There is no digest field here, and there never may be. The digest a plan
+    carries is derived by this module from state it owns; a field for one would
+    let a caller name the thing its own approval is later bound to.
+
+    `expected_desired_revision` is the caller's evidence coordinate and is the
+    opposite kind of value: an integer this module issued, identifying WHICH
+    desired state the caller was looking at. Supplying it turns "freeze whatever
+    is current" into "freeze revision 7, and refuse if it has moved" — which is
+    what a human operator actually means when they click a button on a page
+    rendered some seconds ago. Optional, because a caller inside one transaction
+    has no such gap.
+    """
 
     command_id: str
     target_id: UUID
     requires_approval: bool = True
     approval_policy_code: str | None = None
     approval_policy_version: int | None = None
+    expected_desired_revision: int | None = None
     actor_ref: str | None = None
 
 
@@ -386,6 +404,36 @@ def _supplied_plan_digest(row: DeploymentPlan, value: str) -> PlanDigestV1:
         ) from exc
 
 
+def _plan_blockers(target: DeploymentTarget) -> tuple[str, ...]:
+    """Every reason THIS TARGET cannot be planned for, in operator language.
+
+    ONE owner for the target-state half of `propose_plan`'s refusals, because
+    two consumers now ask the same question for different purposes:
+    `propose_plan` asks it to refuse, and `preview_plan_proposal` asks it to
+    decide whether an interactive surface should offer the action at all.
+
+    Written as a list rather than as the first failure, so a screen can show an
+    operator everything that is wrong at once instead of one thing per attempt.
+    `propose_plan` still raises on the first, because a command has one outcome.
+
+    Deliberately NOT the whole refusal set: the approval-policy rule below is a
+    property of the COMMAND (did the caller name a policy?), not of the target,
+    and a preview computed before the command exists cannot answer it.
+    """
+    reasons: list[str] = []
+    if target.status != TargetStatus.ACTIVE.value:
+        reasons.append(
+            f"target {target.target_ref} is {target.status!r}; only an active "
+            "target can be planned for"
+        )
+    if not target.desired_release_ref:
+        reasons.append(
+            f"target {target.target_ref} has no desired release; a plan with "
+            "nothing to converge on is not a plan"
+        )
+    return tuple(reasons)
+
+
 def _load_target(session: Session, target_id: UUID) -> DeploymentTarget:
     row = session.get(DeploymentTarget, target_id)
     if row is None:
@@ -533,6 +581,39 @@ def _rollout_view(row: Rollout) -> facts.RolloutView:
             )
             for attempt in row.attempts
         ),
+    )
+
+
+def _observation_attempt_view(row: ObservationAttempt) -> facts.ObservationAttemptView:
+    """Project an arrival. The raw body never crosses this boundary."""
+    return facts.ObservationAttemptView(
+        id=row.id,
+        received_at=row.received_at,
+        disposition=row.disposition,
+        signature_status=row.signature_status,
+        eligibility_at_receipt=row.eligibility_at_receipt,
+        key_id=row.key_id,
+        authenticated_target_ref=row.authenticated_target_ref,
+        claimed_target_ref=row.claimed_target_ref,
+        report_id=row.report_id,
+        raw_body_digest=row.raw_body_digest,
+        raw_body_truncated=row.raw_body_truncated,
+        receipt_id=row.receipt_id,
+    )
+
+
+def _observation_receipt_view(row: ObservationReceipt) -> facts.ObservationReceiptView:
+    """Project a canonical receipt. The signed payload never crosses either."""
+    return facts.ObservationReceiptView(
+        id=row.id,
+        authenticated_target_ref=row.authenticated_target_ref,
+        report_id=row.report_id,
+        key_id=row.key_id,
+        first_received_at=row.first_received_at,
+        original_verdict=row.original_verdict,
+        observed_release_ref=row.observed_release_ref,
+        observed_spec_digest=row.observed_spec_digest,
+        payload_digest=row.payload_digest,
     )
 
 
@@ -919,15 +1000,26 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
 
     def handler(session: Session) -> Mapping[str, object]:
         target = _load_target(session, command.target_id)
-        if target.status != TargetStatus.ACTIVE.value:
+        blockers = _plan_blockers(target)
+        if blockers:
+            # One outcome per command, so the first is the one raised; the
+            # preview is where an operator sees all of them at once.
+            raise PlanRefusedError(blockers[0])
+        if (
+            command.expected_desired_revision is not None
+            and command.expected_desired_revision != target.desired_revision
+        ):
+            # The caller was looking at a different desired state. Freezing the
+            # current one instead would produce a plan nobody asked for and a
+            # digest nobody saw — and the approval that followed would be for
+            # that. Refusing here is what makes "created from the coordinates
+            # the operator was shown" a property rather than a hope.
             raise PlanRefusedError(
-                f"target {target.target_ref} is {target.status!r}; only an active "
-                "target can be planned for"
-            )
-        if not target.desired_release_ref:
-            raise PlanRefusedError(
-                f"target {target.target_ref} has no desired release; a plan with "
-                "nothing to converge on is not a plan"
+                f"target {target.target_ref} was at desired revision "
+                f"{command.expected_desired_revision} when this was requested "
+                f"and is now at {target.desired_revision}. The plan you were "
+                "shown is not the plan this would freeze; review the current "
+                "desired state and propose again."
             )
         if command.requires_approval and not command.approval_policy_code:
             raise PlanRefusedError(
@@ -1920,13 +2012,20 @@ def preview_plan_proposal(
         .limit(1)
     ).scalar_one_or_none()
 
+    blockers = _plan_blockers(target)
     return facts.PlanProposalPreview(
         target_id=target.id,
         target_ref=target.target_ref,
         desired_revision=target.desired_revision,
         canonical_plan=snapshot,
         plan_digest=derived.canonical,
+        # The bytes the digest is over, from the one function that produces
+        # them, so the preview cannot describe a different serialization than
+        # the one `PlanDigestV1.over_json` hashed a line earlier.
+        canonical_plan_json=canonical_json(snapshot).decode("utf-8"),
         would_supersede_plan_id=current.id if current is not None else None,
+        blocking_reasons=blockers,
+        can_propose=not blockers,
         # Typed values, never the stored TEXT. Comparing digest strings is the
         # a4 defect exactly, and `_frozen_plan_digest` is the helper that reads
         # a stored digest — including a4's bare-hex form — as a value.
@@ -1949,6 +2048,96 @@ def get_plan(db: Session, plan_id: UUID) -> facts.PlanView | None:
 def get_rollout(db: Session, rollout_id: UUID) -> facts.RolloutView | None:
     row = db.get(Rollout, rollout_id)
     return _rollout_view(row) if row is not None else None
+
+
+def plans_for_target(db: Session, target_id: UUID) -> tuple[facts.PlanView, ...]:
+    """Every plan for one target, newest sequence first.
+
+    Newest first because a plan's whole purpose is to be the thing currently
+    awaiting a decision or currently rolled out; the history below it is
+    context. Ordered by `sequence`, which this module issues, rather than by a
+    timestamp two rows can share.
+    """
+    rows = (
+        db.execute(
+            select(DeploymentPlan)
+            .where(DeploymentPlan.target_id == target_id)
+            .order_by(DeploymentPlan.sequence.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(_plan_view(row) for row in rows)
+
+
+def rollouts_for_target(db: Session, target_id: UUID) -> tuple[facts.RolloutView, ...]:
+    """Every rollout for one target, newest first, each with its attempts.
+
+    The attempt history comes with the rollout rather than as a second call,
+    because "what did we try, and what happened" is one question. A surface
+    that fetched them separately would render a rollout whose attempts belong
+    to a different read of the database.
+    """
+    rows = (
+        db.execute(
+            select(Rollout)
+            .where(Rollout.target_id == target_id)
+            # `rollout_ref` breaks the tie. Two rollouts created inside one
+            # transaction share a `created_at` to the database's resolution, and
+            # an unstable order is how a list shows a row twice.
+            .order_by(Rollout.created_at.desc(), Rollout.rollout_ref.desc())
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(_rollout_view(row) for row in rows)
+
+
+def observation_log(
+    db: Session, *, target_ref: str | None = None, limit: int = 100
+) -> tuple[facts.ObservationAttemptView, ...]:
+    """The append-only arrival log as VIEWS, newest first.
+
+    The projected sibling of `observation_attempts`, and both exist on purpose.
+    That one returns rows for a caller inside this module's transaction that
+    legitimately wants every column. This one is for a consumer outside it —
+    notably a presentation surface, which must never be handed a live ORM
+    object — and it is bounded, because the arrival log is the one table an
+    unauthenticated sender can grow.
+
+    Newest first, which is the opposite of `observation_attempts`: triage starts
+    at what just arrived, whereas a caller reconstructing a sequence starts at
+    the beginning.
+
+    An arrival that never resolved to an identity has no `target_ref` to filter
+    on and therefore appears only in the unfiltered log. That is not an
+    oversight — it is the missing-evidence case, and it is exactly the row a
+    per-target screen structurally cannot show.
+    """
+    statement = select(ObservationAttempt).order_by(
+        ObservationAttempt.received_at.desc()
+    )
+    if target_ref is not None:
+        statement = statement.where(
+            ObservationAttempt.authenticated_target_ref == target_ref
+        )
+    rows = db.execute(statement.limit(max(1, limit))).scalars().all()
+    return tuple(_observation_attempt_view(row) for row in rows)
+
+
+def observation_receipts(
+    db: Session, *, target_ref: str | None = None, limit: int = 100
+) -> tuple[facts.ObservationReceiptView, ...]:
+    """The canonical receipts as VIEWS, newest first, bounded the same way."""
+    statement = select(ObservationReceipt).order_by(
+        ObservationReceipt.first_received_at.desc()
+    )
+    if target_ref is not None:
+        statement = statement.where(
+            ObservationReceipt.authenticated_target_ref == target_ref
+        )
+    rows = db.execute(statement.limit(max(1, limit))).scalars().all()
+    return tuple(_observation_receipt_view(row) for row in rows)
 
 
 def observation_attempts(
@@ -2011,8 +2200,14 @@ __all__ = [
     "get_plan",
     "get_rollout",
     "get_target",
+    "list_targets",
     "observation_attempts",
+    "observation_log",
+    "observation_receipts",
     "plan_snapshot",
+    "plans_for_target",
+    "preview_plan_proposal",
+    "rollouts_for_target",
     "propose_plan",
     "record_observation",
     "register_target",

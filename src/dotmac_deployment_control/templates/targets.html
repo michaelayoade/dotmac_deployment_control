@@ -1,0 +1,91 @@
+{#
+  The fleet. One page of `TargetPage`, which the module's own `list_targets`
+  built from a typed `TargetFilter`.
+
+  Context: `page_title`, `result` (facts.TargetPage), `criteria`
+  (facts.TargetFilter). Every one of those is a frozen view; no ORM row reaches
+  this file, so nothing here can lazy-load or be mutated by a render.
+#}
+{% extends "layouts/platform.html" %}
+{% import "deployment_control/_macros.html" as ui %}
+
+{% block platform_content %}
+
+{% call ui.panel("Filter") %}
+{#
+  A GET form. The filter fields are exactly `TargetFilter`'s — there is no sort
+  column, no page-size box and no free-text predicate, because the module says
+  what its read surface is and a screen that widened it would be making every
+  future query the browser's decision.
+#}
+<form method="get" style="display:flex; flex-wrap:wrap; gap:var(--dmui-space-sm); align-items:flex-end;">
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Product
+    <input type="text" name="product_code" value="{{ criteria.product_code or '' }}"
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default);
+                  border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary);
+                  color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Environment
+    <input type="text" name="environment" value="{{ criteria.environment or '' }}"
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default);
+                  border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary);
+                  color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Status
+    <input type="text" name="target_status" value="{{ criteria.status or '' }}"
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default);
+                  border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary);
+                  color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; align-items:center; gap:var(--dmui-space-2xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    <input type="checkbox" name="never_observed" value="true"
+           {% if criteria.never_observed %}checked{% endif %}>
+    Never observed
+  </label>
+  <button type="submit"
+          style="padding:var(--dmui-space-2xs) var(--dmui-space-sm);
+                 border:1px solid var(--dmui-action-neutral-default);
+                 border-radius:var(--dmui-radius-sm);
+                 background:var(--dmui-action-neutral-default);
+                 color:var(--dmui-action-neutral-on); cursor:pointer;">Apply</button>
+</form>
+{% endcall %}
+
+{% call ui.panel("Deployment targets — showing " ~ result.targets|length ~ " of " ~ result.total) %}
+{% if result.targets %}
+  {{ ui.table_open(["Target", "Product", "Environment", "Status", "Desired release", "Desired rev", "Observed release", "Observed rev", "Last observed"]) }}
+  {% for target in result.targets %}
+  <tr>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      <a href="{{ surface_url('target_detail', target_id=target.id) }}"
+         style="color:var(--dmui-action-primary-default);">{{ target.target_ref }}</a>
+    </td>
+    {{ ui.cell(target.product_code) }}
+    {{ ui.cell(target.environment) }}
+    {{ ui.cell(target.status) }}
+    {{ ui.cell(target.desired_release_ref) }}
+    {{ ui.cell(target.desired_revision) }}
+    {{ ui.cell(target.observed_release_ref) }}
+    {{ ui.cell(target.observed_revision) }}
+    {{ ui.cell(moment(target.last_observed_at)) }}
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+
+  {#
+    `has_more` is a property of `TargetPage`, computed from the total the same
+    query returned. The pager states a fact the server established; it does not
+    work one out from a row count.
+  #}
+  <p style="margin-top:var(--dmui-space-sm); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Page {{ result.page }}{% if result.has_more %} — more targets match this filter{% endif %}
+  </p>
+{% else %}
+  {{ ui.nothing_here("No deployment target matches this filter.") }}
+{% endif %}
+{% endcall %}
+
+{% endblock %}

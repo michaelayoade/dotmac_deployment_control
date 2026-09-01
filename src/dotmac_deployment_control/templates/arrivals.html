@@ -1,0 +1,77 @@
+{#
+  Every inbound observation, whatever became of it.
+
+  This screen exists for the rows a per-target page structurally cannot show. An
+  arrival under an unknown key, a malformed envelope or a signature that did not
+  verify never resolves to a target, so it appears on no target's page — and
+  those are exactly the tripwires. A fail-closed system that only rendered the
+  arrivals it accepted would be closed AND blind.
+
+  Context: `arrivals` (ObservationAttemptView…), `receipts`
+  (ObservationReceiptView…). Frozen views; the raw bodies are not in them.
+#}
+{% extends "layouts/platform.html" %}
+{% import "deployment_control/_macros.html" as ui %}
+
+{% block platform_content %}
+
+{% call ui.panel("Arrivals — newest first") %}
+{#
+  `identity_is_proven` is derived on the view from the claim/proof split, not
+  worked out here: a row may carry an authenticated identity only when something
+  actually authenticated it, and what the report SAID about itself sits in a
+  different column on purpose.
+#}
+{% if arrivals %}
+  {{ ui.table_open(["Received", "Disposition", "Signature", "Eligibility", "Identity", "Proven as", "Claimed as", "Key", "Report", "Body digest"]) }}
+  {% for arrival in arrivals %}
+  <tr>
+    {{ ui.cell(moment(arrival.received_at)) }}
+    {{ ui.cell(arrival.disposition) }}
+    {{ ui.cell(arrival.signature_status) }}
+    {{ ui.cell(arrival.eligibility_at_receipt) }}
+    {% if arrival.identity_is_proven %}
+      {{ ui.cell("proven") }}
+    {% else %}
+      <td style="padding:var(--dmui-space-2xs);
+                 border-bottom:1px solid var(--dmui-border-subtle);
+                 color:var(--dmui-status-warning-foreground);">unproven</td>
+    {% endif %}
+    {{ ui.cell(arrival.authenticated_target_ref) }}
+    {{ ui.cell(arrival.claimed_target_ref) }}
+    {{ ui.cell(arrival.key_id) }}
+    {{ ui.cell(arrival.report_id) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(arrival.raw_body_digest) }}{% if arrival.raw_body_truncated %} (truncated){% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+{% else %}
+  {{ ui.nothing_here("Nothing has arrived yet.") }}
+{% endif %}
+{% endcall %}
+
+{% call ui.panel("Canonical receipts — newest first") %}
+{% if receipts %}
+  {{ ui.table_open(["Proven as", "Report", "Key", "First received", "Original verdict", "Observed release", "Payload digest"]) }}
+  {% for receipt in receipts %}
+  <tr>
+    {{ ui.cell(receipt.authenticated_target_ref) }}
+    {{ ui.cell(receipt.report_id) }}
+    {{ ui.cell(receipt.key_id) }}
+    {{ ui.cell(moment(receipt.first_received_at)) }}
+    {{ ui.cell(receipt.original_verdict) }}
+    {{ ui.cell(receipt.observed_release_ref) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.payload_digest) }}
+    </td>
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+{% else %}
+  {{ ui.nothing_here("No canonical receipt has been established yet.") }}
+{% endif %}
+{% endcall %}
+
+{% endblock %}

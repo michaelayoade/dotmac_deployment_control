@@ -236,8 +236,90 @@ class PlanProposalPreview:
     desired_revision: int
     canonical_plan: Mapping[str, Any]
     plan_digest: str
+    #: The EXACT bytes `plan_digest` is taken over, as text.
+    #:
+    #: Not a convenience rendering of `canonical_plan`. A screen that showed an
+    #: operator a pretty-printed mapping beside a digest would be showing them
+    #: two things and asking them to believe the second describes the first;
+    #: this is the serialization the digest is computed from, so what they read
+    #: and what was hashed are one artefact.
+    canonical_plan_json: str = ""
     would_supersede_plan_id: UUID | None = None
     digest_matches_current: bool = True
+    #: Why proposing would be refused RIGHT NOW, computed from the same
+    #: predicates `propose_plan` applies. Empty means the target-state half of
+    #: the refusal set is clear; it says nothing about the caller's own command.
+    #:
+    #: It exists because a browser surface has to decide whether to offer the
+    #: action, and that decision is this module's, not a template's. A screen
+    #: that worked it out from `status` and `desired_release_ref` in Jinja would
+    #: be a second, untested copy of `propose_plan`'s refusals — and the copy
+    #: would be the one operators see.
+    blocking_reasons: tuple[str, ...] = ()
+    #: The same fact as an answer rather than a collection, so no caller has to
+    #: turn "is this tuple empty" into an eligibility rule of its own.
+    can_propose: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationAttemptView:
+    """One ARRIVAL, projected for reading — never the row.
+
+    `observation_attempts` returns ORM rows on purpose: it is a triage helper for
+    a caller inside this module's transaction. A presentation surface is a
+    different consumer with a different rule — a live ORM object handed to a
+    template can lazy-load, can be mutated by a render, and ties the screen to a
+    schema it does not own — so the browser read path goes through this instead.
+
+    The raw body is deliberately ABSENT. It is attacker-controlled,
+    unauthenticated at the moment it was stored, and unbounded in kind; the
+    digest and the truncation flag are what an operator triaging an arrival
+    needs, and they are safe to render.
+    """
+
+    id: UUID
+    received_at: datetime
+    disposition: str
+    signature_status: str
+    eligibility_at_receipt: str
+    key_id: str | None
+    authenticated_target_ref: str | None
+    claimed_target_ref: str | None
+    report_id: str | None
+    raw_body_digest: str | None
+    raw_body_truncated: bool
+    receipt_id: UUID | None
+
+    @property
+    def identity_is_proven(self) -> bool:
+        """Derived from the fields rather than stored, so it cannot disagree
+        with them — and named for the claim/proof split rather than for the
+        column, because `authenticated_target_ref is not None` is the whole of
+        what "we know who this was" means here."""
+        return self.authenticated_target_ref is not None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationReceiptView:
+    """The canonical receipt for one idempotency key, projected for reading.
+
+    `original_verdict` is returned verbatim to every later replay, so this view
+    is the operator-visible half of the stable-verdict rule: what was decided
+    about these bytes, when, and under which proven identity.
+
+    Carries `payload_digest` and never `payload`, for the reason
+    `ObservationAttemptView` omits the body.
+    """
+
+    id: UUID
+    authenticated_target_ref: str
+    report_id: str
+    key_id: str
+    first_received_at: datetime
+    original_verdict: str
+    observed_release_ref: str | None
+    observed_spec_digest: str | None
+    payload_digest: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,8 +397,13 @@ __all__ = [
     "TARGET_SUSPENDED_V1",
     "AttemptView",
     "DriftReport",
+    "ObservationAttemptView",
+    "ObservationReceiptView",
     "ObservationVerdict",
+    "PlanProposalPreview",
     "PlanView",
     "RolloutView",
+    "TargetFilter",
+    "TargetPage",
     "TargetView",
 ]

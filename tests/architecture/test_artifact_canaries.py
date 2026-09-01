@@ -70,6 +70,13 @@ EXPECTED_CANARIES = (
     # release existed to ship.
     "database_catalogue_as_published",
     "catalogue_digest_binds",
+    # The browser surface ships templates as package data, and the kernel
+    # validates that directory when it builds the surface graph — at the
+    # CONSUMER's startup. A wheel missing it imports perfectly and composes
+    # nowhere, which no source-tree check can observe. Labelled by what it
+    # proves and NOT by a version: this was written as "0.1.0a7" while a7 was
+    # pending, and a7 shipped without it.
+    "web_surface_ships_its_templates",
 )
 
 #: Every virtualenv `ci.yml` may run the canaries with, and what each proves.

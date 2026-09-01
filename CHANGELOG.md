@@ -67,6 +67,83 @@ of one question read as a proof of another, which is the a4 shape one level up.
   directories. The absence of a checkout import is evidence, so it belongs in
   the run's own output rather than only inside a refusal that fires too late.
 
+### Added — the operator's browser surface
+
+**NOT in `0.1.0a7`.** These entries were authored while a7 was the pending
+version and a clean textual rebase filed them under a heading that had since
+become `RELEASED`. a7 was published, verified twice and tagged without the
+browser surface; a changelog claiming otherwise is a published release
+describing a feature it does not contain, which no amount of correct merging
+makes true. They belong to whatever version ships them, and no version is
+allocated yet.
+
+- **The operator's browser surface**, as a contract-v2 `WebSurfaceContribution`
+  targeting the kernel's existing `platform_admin` facet. Four facet-relative
+  routes and two navigation entries: the fleet list, one target's detail (desired
+  and observed state, reconciliation, the server-derived canonical plan and its
+  digest, plans with their approval standing and immutable decision reference,
+  rollouts with their full attempt history, and observation receipts), the plan
+  proposal itself, and a fleet-wide arrival log for the reports that proved
+  nothing and therefore belong to no target.
+- **A refusal that makes "the browser may never submit its own PlanDigest" a
+  property rather than a convention.** `ProposePlanCommand` still has no digest
+  field and `PlanProposalPreview` still takes no input, but both of those are
+  absences — nothing fails when somebody adds a field, and nothing has ever
+  watched them hold. `refuse_client_supplied_digest` is declared on the ROUTER,
+  so it covers every route in the surface, and it refuses in two directions: by
+  field NAME (`plan_digest`, `content_digest`, …) and by VALUE SHAPE (`sha256:`
+  canonical or `0.1.0a4` bare hex, in any field, including one the surface
+  legitimately reads). Planted requests in
+  `tests/unit/test_deployment_control_browser_surface.py` observe it firing on
+  all three routes a digest could arrive by, and a positive control shows the
+  same submission without a digest producing a plan whose digest the server
+  derived.
+- `ProposePlanCommand.expected_desired_revision` — the immutable evidence
+  coordinate plan creation now runs from. It is an integer THIS MODULE issued,
+  naming which desired state the operator was shown; if the desired state moved
+  between the render and the click, `propose_plan` refuses rather than freezing
+  a plan nobody read. It is the opposite kind of value from a digest: a
+  coordinate identifies WHICH state, a digest would name the thing the approval
+  is checked against.
+- Typed read contracts for everything the surface renders, all in the module's
+  own service layer so no consuming assembly builds a query over these tables:
+  `plans_for_target`, `rollouts_for_target`, `observation_log`,
+  `observation_receipts`, and the `ObservationAttemptView` /
+  `ObservationReceiptView` projections behind the last two. The projections
+  exist because a presentation surface must never be handed a live ORM row, and
+  they deliberately carry a body DIGEST and never the stored bytes.
+- `PlanProposalPreview` gained `canonical_plan_json` (the exact serialization the
+  digest is taken over, so the screen and the hash are one artefact),
+  `blocking_reasons` and `can_propose`. The last two come from `_plan_blockers`,
+  which is now the single owner of the target-state half of `propose_plan`'s
+  refusals: the write path raises the first and the preview shows all of them,
+  so a screen never works eligibility out for itself.
+- `python-multipart` as a DEV dependency only. Starlette's `Request.form()`
+  asserts the library is importable BEFORE it looks at the content type, so even
+  an `application/x-www-form-urlencoded` body needs it — and the kernel's own
+  platform surface reads forms the same way while deliberately not depending on
+  it, because form parsing is an assembly concern (the vendor control plane pins
+  it itself). It is in the dev group so this repository can drive its own surface
+  with real requests, and it must never become a runtime dependency of a
+  distribution whose defining property is that it performs no I/O.
+- A ninth artifact canary, `web_surface_ships_its_templates`. The templates ship
+  as package data and the kernel validates that directory with `is_dir()` while
+  building the surface graph — at the CONSUMER's startup. A wheel carrying
+  `web.py` and not `templates/` imports perfectly, passes every other canary,
+  and composes nowhere; that is the `0.1.0a5` failure shape in different
+  clothes, so it is proven against the built artifact rather than this tree.
+
+### Changed — the operator's browser surface
+
+- The surface renders timestamps as explicit UTC through its own `moment(...)`
+  context helper rather than the kernel's `local_datetime` / `local_date`
+  filters. Those resolve TENANT display settings and fall back to
+  `default_display()`, which reads the `display` setting specs — and this is the
+  platform plane, where there is no tenant and where an assembly that never
+  registered those specs (the vendor control plane has not) would get a
+  `KeyError` out of the fallback and a 500 out of every dated screen. A fleet
+  operator is also the reader least served by a localized stamp.
+
 ### Not covered
 
 The pre-merge lane runs against a wheel built on the runner. Until a
