@@ -848,9 +848,9 @@ def test_a7s_record_says_what_the_canaries_do_NOT_cover() -> None:
     """
     a7 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a7")
     note = a7["release_run_note"]
-    assert "SAME NINE" in note, (
-        "the record must say the canary set did not grow with the capability"
-    )
+    assert (
+        "SAME NINE" in note
+    ), "the record must say the canary set did not grow with the capability"
     for evidence in (
         "NO canary drives the database catalogue",
         "test_database_catalog.py",
