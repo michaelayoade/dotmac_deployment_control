@@ -8,6 +8,16 @@ packages = [{ include = "dotmac_deployment_control", from = "src" }]
 include = [
     { path = "src/dotmac_deployment_control/py.typed", format = ["sdist", "wheel"] },
     { path = "src/dotmac_deployment_control/migrations/**/*", format = ["sdist", "wheel"] },
+    # The browser surface's templates, as PACKAGE DATA.
+    #
+    # Not optional and not decoration: `WebSurfaceContribution` declares a
+    # `TemplatePackage` whose root the kernel's registry checks with `is_dir()`
+    # at composition, so a wheel that shipped the Python and not this directory
+    # would import cleanly and then refuse to compose — the same class of
+    # failure as `0.1.0a5`'s floor, discovered at the consumer's container boot
+    # rather than here. `scripts/artifact_canaries.py` proves the directory is
+    # present in the BUILT artifact rather than in this tree.
+    { path = "src/dotmac_deployment_control/templates/**/*", format = ["sdist", "wheel"] },
 ]
 
 [tool.poetry.dependencies]

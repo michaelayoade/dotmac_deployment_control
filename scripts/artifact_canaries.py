@@ -1547,6 +1547,77 @@ def canary_catalogue_digest_binds(expect_version: str) -> str:
     )
 
 
+def canary_web_surface_ships_its_templates() -> str:
+    """The composed browser surface's templates are INSIDE the installed wheel.
+
+    A different failure mode from every canary above, and the one a version
+    number cannot see. `WebSurfaceContribution` declares a `TemplatePackage`,
+    and the kernel's registry checks that package's root with `is_dir()` while
+    building the surface graph — at application startup, in the consuming
+    assembly. A wheel that shipped `web.py` and not `templates/` therefore
+    imports perfectly, passes every behavioural canary, resolves cleanly, and
+    dies at the consumer's container boot with a missing directory.
+
+    That is the shape of the `0.1.0a5` defect wearing different clothes: a
+    property nothing in this repository could observe, because the source tree
+    always has the directory. So this canary asks the INSTALLED distribution.
+
+    Three statements, because each catches a different way package data can go
+    missing:
+
+    * the declared root is a directory, which is the exact predicate the kernel
+      will apply;
+    * it sits inside the installed package rather than beside a checkout, so a
+      source tree on the path cannot answer for it;
+    * every template the surface renders is actually in it — a `MANIFEST`
+      pattern that matched the directory and none of its files would satisfy
+      the first two.
+    """
+    module = __import__(IMPORT_NAME)
+    surface = module.DEPLOYMENT_CONTROL_SURFACE
+    package_root = Path(module.__file__ or "").resolve().parent
+
+    templates = surface.templates
+    if templates is None:
+        raise CanaryFailure(
+            "the composed browser surface declares no template package at all, "
+            "so its screens have nothing to render from"
+        )
+    root = Path(templates.root).resolve()
+    if not root.is_dir():
+        raise CanaryFailure(
+            f"the surface declares templates at {root}, which is not a "
+            "directory in the installed distribution. The wheel shipped the "
+            "Python and not the package data; a consuming assembly would fail "
+            "at startup when the kernel validates the surface graph."
+        )
+    if not root.is_relative_to(package_root):
+        raise CanaryFailure(
+            f"the template root {root} is outside the installed package "
+            f"({package_root}). It is resolving against something other than "
+            "the artifact under test."
+        )
+
+    required = {
+        "targets.html",
+        "target_detail.html",
+        "arrivals.html",
+        "_macros.html",
+    }
+    present = {path.name for path in root.glob("*.html")}
+    missing = sorted(required - present)
+    if missing:
+        raise CanaryFailure(
+            f"the template directory shipped without {missing}. A package-data "
+            "pattern that matches the directory and not its files leaves every "
+            "screen a TemplateNotFound at first request."
+        )
+    return (
+        f"{len(present)} templates under namespace "
+        f"{templates.namespace!r} at {root}"
+    )
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 
@@ -1603,6 +1674,9 @@ def main(argv: list[str] | None = None) -> int:
             "catalogue_digest_binds",
             lambda: canary_catalogue_digest_binds(args.expect_version),
         ),
+        # The browser surface's package data, which only an installed
+        # artifact can be asked about.
+        ("web_surface_ships_its_templates", canary_web_surface_ships_its_templates),
     ]
 
     print(f"artifact canaries — {DISTRIBUTION} {args.expect_version}")

@@ -55,6 +55,7 @@ from dotmac_kernel.modules import ModuleManifest
 from dotmac_kernel.prerequisites import IDEMPOTENCY_LEDGER_V1, PLATFORM_AUDIT_LOG_V1
 
 from dotmac_deployment_control.database_catalog import database_catalog
+from dotmac_deployment_control.web import DEPLOYMENT_CONTROL_SURFACE
 
 #: The installed distribution's version, derived rather than declared — the same
 #: mechanism `__version__` adopted in `0.1.0a5`, applied to the field the module
@@ -108,6 +109,21 @@ module = ModuleManifest(
         "observation_attempts",
     ),
     requires=(IDEMPOTENCY_LEDGER_V1.name, PLATFORM_AUDIT_LOG_V1.name),
+    #: The operator's browser surface, on the kernel's CONTRACT-V2 shape.
+    #:
+    #: `web_surfaces` and not `web_routers`/`nav`: the manifest contract refuses
+    #: to hold both, and the legacy pair would drag in the compatibility adapter,
+    #: which requires a `staff_admin` facet carrying an `admission_permission` —
+    #: a thing a platform-plane assembly is simultaneously forbidden to declare,
+    #: because admission is evaluated against a tenant-scoped `Party` that does
+    #: not exist on this plane. A v2 contribution joins the existing
+    #: `platform_admin` facet instead and declares no admission at all.
+    #:
+    #: `contract_version` is unchanged. It is inferred as the kernel's current
+    #: manifest contract (2), which `web_surfaces` already requires, and the
+    #: declared surface a composing assembly is checked against — tables,
+    #: prerequisites, audit actions — did not move.
+    web_surfaces=(DEPLOYMENT_CONTROL_SURFACE,),
     audit_actions=(
         "deployment.target.changed",
         "deployment.credential.changed",

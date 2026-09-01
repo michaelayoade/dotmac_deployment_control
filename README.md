@@ -96,6 +96,49 @@ answers neither "how many times did we try?" nor "what did we decide?".
   stays a checkable dependency direction.
 - **Imports no sibling module** (ADR-0024).
 
+## The browser surface
+
+A contract-v2 `WebSurfaceContribution` (`DEPLOYMENT_CONTROL_SURFACE`) targeting
+the kernel's existing `platform_admin` facet. The facet owns the `/platform`
+prefix, the shell, the session policy and the authentication; this module
+supplies four facet-relative routes, two navigation entries and its own
+packaged templates, and authors none of those other things.
+
+- **The screens.** The fleet list; one target's detail — desired against
+  observed, reconciliation state, the server-derived canonical plan and its
+  digest, plans with their approval standing and immutable decision reference,
+  rollouts with their full attempt history, observation receipts; the plan
+  proposal; and a fleet-wide arrival log for the reports that proved nothing and
+  therefore belong to no target's page.
+- **It declares no authentication.** The facet already authenticated the
+  request. A second owner on the same route is not defence in depth — and the
+  obvious candidate, `require_platform_admin`, is the BEARER guard, which inside
+  a browser facet makes a valid cookie session fail the handler for want of an
+  `Authorization` header. The actor is read from
+  `dotmac_kernel.facet_principal`, the request-scoped projection of whoever the
+  facet authenticated, declaring the PLATFORM plane so a tenant identity can
+  never be attributed a fleet decision.
+- **It builds no query.** Every read is a typed contract in `service.py`. A
+  consuming assembly that wrote `select(DeploymentTarget)` would have taken a
+  second read authority over tables it does not own.
+- **The browser may never submit its own PlanDigest**, and that is a refusal
+  rather than a convention. `refuse_client_supplied_digest` is declared on the
+  router — so it covers every route in the surface, including the reads — and
+  refuses both a field NAMED for a digest and a digest-SHAPED value in any
+  field, in either encoding this module has ever issued. What the propose form
+  does submit is `expected_desired_revision`: an immutable evidence coordinate
+  this module issued, naming which desired state the operator was looking at.
+- **Nothing is decided in a template.** Eligibility comes from
+  `PlanProposalPreview.can_propose` and its `blocking_reasons`, both computed by
+  the same `_plan_blockers` that `propose_plan` refuses with; drift, "never
+  observed" and "identity proven" are all fields on frozen views. No ORM row
+  reaches Jinja.
+- **Design system.** Authored against `dotmac-ui`'s published `var(--dmui-*)`
+  role tokens only. This distribution does not import `dotmac_ui` — the sibling
+  guard forbids it — so the token vocabulary is declared in
+  `tests/architecture/test_browser_surface_contract.py` as a closed set that
+  ratchets in both directions, and no `.dmui-*` class is authored anywhere.
+
 ## A digest is a value, not a string
 
 A plan's identity is `PlanDigestV1` — an algorithm and its bytes — serialized

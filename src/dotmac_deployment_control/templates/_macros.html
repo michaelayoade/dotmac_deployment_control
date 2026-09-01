@@ -1,0 +1,74 @@
+{#
+  Shared presentation macros for the Deployment Control screens.
+
+  Presentation ONLY. Nothing here decides anything: every value a macro renders
+  was computed in Python and arrives as a field on a frozen view. A macro that
+  worked out an outcome from two columns would be a second, untested copy of a
+  module decision, and the copy would be the one operators read.
+
+  Styling is `var(--dmui-<role>)` role tokens throughout. No `.dmui-*` class is
+  authored here: the published component classes belong to `dotmac-ui`, and a
+  module inventing one would ship a name the design system does not define.
+#}
+
+{% macro panel(title) %}
+<section style="border:1px solid var(--dmui-border-subtle);
+                border-radius:var(--dmui-radius-md);
+                background:var(--dmui-surface-elevated);
+                padding:var(--dmui-space-md);
+                margin-bottom:var(--dmui-space-lg);">
+  <h2 style="font-size:var(--dmui-font-size-base);
+             font-weight:var(--dmui-font-weight-semibold);
+             color:var(--dmui-text-primary);
+             margin:0 0 var(--dmui-space-sm) 0;">{{ title }}</h2>
+  {{ caller() }}
+</section>
+{% endmacro %}
+
+{% macro field(label, value) %}
+<div style="display:flex; gap:var(--dmui-space-sm); padding:var(--dmui-space-3xs) 0;">
+  <dt style="min-width:14rem; color:var(--dmui-text-secondary);">{{ label }}</dt>
+  <dd style="margin:0; color:var(--dmui-text-primary);">{{ value if value is not none else "—" }}</dd>
+</div>
+{% endmacro %}
+
+{% macro table_open(headings) %}
+<div style="overflow-x:auto;">
+<table style="width:100%; border-collapse:collapse; font-size:var(--dmui-font-size-sm);">
+  <thead>
+    <tr>
+      {% for heading in headings %}
+      <th scope="col"
+          style="text-align:left; padding:var(--dmui-space-2xs);
+                 border-bottom:1px solid var(--dmui-border-strong);
+                 color:var(--dmui-text-secondary);
+                 font-weight:var(--dmui-font-weight-semibold);">{{ heading }}</th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+{% endmacro %}
+
+{% macro table_close() %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+{% macro cell(value) %}
+<td style="padding:var(--dmui-space-2xs);
+           border-bottom:1px solid var(--dmui-border-subtle);
+           color:var(--dmui-text-primary);
+           vertical-align:top;">{{ value if value is not none else "—" }}</td>
+{% endmacro %}
+
+{% macro nothing_here(message) %}
+<p style="color:var(--dmui-text-secondary); margin:0;">{{ message }}</p>
+{% endmacro %}
+
+{% macro digest(value) %}
+<code style="font-family:var(--dmui-font-mono);
+             font-size:var(--dmui-font-size-xs);
+             color:var(--dmui-text-primary);
+             word-break:break-all;">{{ value if value is not none else "—" }}</code>
+{% endmacro %}
