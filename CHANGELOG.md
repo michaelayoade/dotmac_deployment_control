@@ -7,6 +7,21 @@ changes, each called out here.
 
 ## Unreleased — the catalogue canary a7 shipped without
 
+**CLOSED for `0.1.0a7` by supplemental verify run `33517740717`** (2026-09-01),
+dispatched from main `61611da8` against the SAME published bytes. VERIFIED on
+all seven properties with ELEVEN canaries; `database_catalogue_as_published` and
+`catalogue_digest_binds` passed against the wheel the registry served, reporting
+`7 tables / 95 columns` and
+`sha256:92be901f92ec2a2861d2b44e3693bb7645e84d9d60c14d7caeb6c12051abb01e over
+21399 canonical bytes`. Nothing was published; the tag reached `tag_once`'s
+ALREADY notice and was not written. a7's original record is appended to, never
+rewritten — run `33508897684` still drove nine canaries and none of them the
+catalogue, and that stays true of that run.
+
+**One constraint a consumer must read before adopting by digest:** the digest
+moves with the resolved kernel, not with this wheel. See a7's
+`supplemental_verify_runs[0].adoption_constraint`.
+
 No published artifact changes here, and no version is allocated. `0.1.0a7` is
 published, tagged and VERIFIED, and stays exactly where it is.
 

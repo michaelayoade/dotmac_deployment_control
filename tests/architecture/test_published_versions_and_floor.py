@@ -892,3 +892,161 @@ def test_a7_supersedes_a6_without_withdrawing_anything_a6_proved() -> None:
     assert releases["0.1.0a6"]["pinnable"] is True
     assert "superseded_by" not in releases["0.1.0a6"]
     assert "unpinnable_reason" not in releases["0.1.0a6"]
+
+
+# ── the supplemental verification that closed a7's catalogue gap ────────────
+#
+# a7 was published, tagged and VERIFIED on seven properties and NINE canaries —
+# a6's exact set — while its headline was a database catalogue no canary drove.
+# The record said so honestly, and a documented gap is still a gap. Run
+# `33517740717` is the second verification that closes it, against the SAME
+# published bytes, and everything below exists to keep the two runs from being
+# read as one.
+
+SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _a7_supplemental() -> dict[str, Any]:
+    a7 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a7")
+    runs = a7["supplemental_verify_runs"]
+    assert isinstance(runs, list) and len(runs) == 1, runs
+    return runs[0]
+
+
+def test_a7s_supplemental_run_is_APPENDED_and_rewrites_nothing() -> None:
+    """THE PROPERTY THAT MATTERS MOST ABOUT THIS ROW, and the one a second
+    verification is most tempted to violate.
+
+    Verify run `33508897684` drove nine canaries and none of them touched the
+    catalogue. That is still TRUE OF THAT RUN, so `release_run_note` keeps
+    saying it word for word and `verify_run` keeps naming it. Editing either to
+    read as if the catalogue had been proven in June would destroy the only
+    worked example the fleet has of a release whose honest gap was closed later
+    — and would be false about the run it describes.
+    """
+    a7 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a7")
+    assert a7["verify_run"] == "33508897684", (
+        "the ORIGINAL verification is what `verify_run` names; a supplemental "
+        "run is appended beside it and never substituted for it"
+    )
+    for original in (
+        "SAME NINE",
+        "NO canary drives the database catalogue",
+        "must not be cited as artifact-level or production-adoption evidence",
+    ):
+        assert original in a7["release_run_note"], (
+            f"the original record has lost {original!r}. The gap that run left "
+            "is part of what it proved, and the repair is a second run — never "
+            "a rewrite of the first."
+        )
+    assert _a7_supplemental()["run"] != a7["verify_run"]
+    assert _a7_supplemental()["run"] != a7["release_run"], (
+        "a publishing run cannot witness its own upload, and that does not stop "
+        "being true for a supplemental verification"
+    )
+
+
+def test_a7s_supplemental_run_carries_immutable_coordinates() -> None:
+    """A run id and the commit it was dispatched from, both of which resolve to
+    something a reader can open. `dispatched_from` is the half that says WHICH
+    canary script ran: the workflow executes the checkout's `scripts/`, so a
+    supplemental verification is only identifiable together with the tree it
+    was dispatched from."""
+    supplemental = _a7_supplemental()
+    assert supplemental["run"].isdigit(), supplemental["run"]
+    assert COMMIT.fullmatch(supplemental["dispatched_from"]), supplemental
+    assert supplemental["verdict"] == "VERIFIED"
+    assert supplemental["canaries"] == 11, (
+        "the supplemental run's whole point is that the canary set GREW; "
+        "recording nine would say nothing happened"
+    )
+
+
+def test_a7s_supplemental_run_records_the_catalogue_digest_it_observed() -> None:
+    """The digest belongs HERE and deliberately not in the canary.
+
+    The canonical document carries the release version, so a literal digest
+    inside `scripts/artifact_canaries.py` would go stale at the next version and
+    would then be "repaired" by copying whatever the artifact said — a proof
+    turning into a tautology. An immutable record is the right home for a value
+    that is true of exactly one release.
+    """
+    supplemental = _a7_supplemental()
+    assert SHA256_DIGEST.fullmatch(supplemental["catalogue_digest"]), supplemental
+    assert isinstance(supplemental["catalogue_document_bytes"], int)
+    assert supplemental["catalogue_document_bytes"] > 0
+
+
+def test_a7s_supplemental_run_states_what_a_digest_ADOPTER_must_also_pin() -> None:
+    """THE FINDING THIS ROW EXISTS TO CARRY, and it is an adoption constraint
+    rather than a footnote.
+
+    The canonical module-catalogue document includes
+    `manifest_contract_version`, and this module declares none — the KERNEL
+    infers it from `KERNEL_MODULE_CONTRACT_VERSION` when the manifest is
+    constructed. So the digest is a coordinate of (artifact, kernel): a kernel
+    that raises its manifest generation moves this digest while the wheel's
+    bytes are untouched, and two correct parties holding the same artifact can
+    compute different values. A consumer told to "adopt by digest" without that
+    sentence will pin something it cannot reproduce.
+    """
+    supplemental = _a7_supplemental()
+    constraint = supplemental["adoption_constraint"]
+    for evidence in (
+        "manifest_contract_version",
+        "KERNEL_MODULE_CONTRACT_VERSION",
+        "DECLARES NONE",
+        "0.1.0a100",
+    ):
+        assert evidence in constraint, evidence
+    assert "STRUCTURE" in constraint, (
+        "the constraint must say what IS stable across kernels. A warning that "
+        "only says the digest moves reads as 'the catalogue is unreliable', "
+        "which is the opposite of what was proven."
+    )
+
+
+def test_the_digest_was_observed_with_the_kernel_this_version_declares() -> None:
+    """A digest observed against some OTHER kernel would be a real number about
+    an environment nobody adopts. Since the value moves with the kernel, the
+    record has to say which one produced it — and that one must be the floor
+    this version declares, which is the environment a consumer pinning a7 gets
+    at minimum."""
+    a7 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a7")
+    floor = a7["declared_kernel_floor"].removeprefix(">=")
+    assert _a7_supplemental()["catalogue_digest_observed_with_kernel"] == floor, (
+        "the recorded digest was observed against a kernel other than the "
+        "declared floor, so it describes an environment this row does not "
+        "promise"
+    )
+
+
+def test_the_supplemental_run_did_not_move_the_tag() -> None:
+    """A re-verification against an EXISTING tag is the one operation that could
+    make a version name two commits, which is unrepairable rather than
+    inconvenient. The coordinates recorded before and after the second run are
+    the same coordinates, and this test is what says so in the file rather than
+    in a run log that expires."""
+    a7 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a7")
+    assert a7["tag_object"] == "36af7451dc403c562fdd9312280b95b0ddf7ef41"
+    assert a7["peeled_commit"] == "6b1ce371b07220914696243647aeb0d3947b87cc"
+    assert "already exists" in _a7_supplemental()["note"], (
+        "the record does not say the tag step reached tag_once's ALREADY. "
+        "'the run was green' is not the same statement as 'the tag was not "
+        "written', and only the second one is the safety property."
+    )
+
+
+def test_a7s_adoption_note_points_at_the_new_constraint() -> None:
+    """A constraint recorded only in a nested object is a constraint the reader
+    who came for `adoption_note` never meets."""
+    a7 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a7")
+    note = a7["adoption_note"]
+    assert "supplemental_verify_runs[0].adoption_constraint" in note
+    assert "33517740717" in note
+    for original in ("api_documentation", "ADR-0016", "NOT a version bump"):
+        assert original in note, (
+            f"the appended paragraph has cost the note {original!r}; an "
+            "adoption obligation is added beside the existing ones, never over "
+            "them"
+        )
