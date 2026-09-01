@@ -488,8 +488,7 @@ def _observations(**overrides: object) -> dict[str, object]:
         "publish_job_conclusion": "success",
         "head_sha_on_main": True,
         "pyproject_at_head": (
-            '[tool.poetry]\nname = "dotmac-deployment-control"\n'
-            'version = "0.1.0a5"\n'
+            '[tool.poetry]\nname = "dotmac-deployment-control"\nversion = "0.1.0a5"\n'
         ),
         "built_hashes": {wheel: "a" * 64, sdist: "b" * 64},
         "fetched": {wheel: "a" * 64, sdist: "b" * 64},
@@ -604,11 +603,11 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Seven tables and 95 columns, held as the LITERAL's own shape. A future
+    """Seven tables and 99 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
     assert canaries.CATALOGUE_TABLE_COUNT == 7
-    assert canaries.CATALOGUE_COLUMN_COUNT == 95
+    assert canaries.CATALOGUE_COLUMN_COUNT == 99
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):

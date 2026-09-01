@@ -53,32 +53,51 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dotmac_deployment_control import (
     CredentialTransitionCommand,
+    DesiredDeployment,
     EnrolCredentialCommand,
     ObservationAttempt,
     ObservationDisposition,
     ObservationReceipt,
     ObservationVerdict,
     ObservedState,
+    ProposePlanCommand,
     RecordObservationCommand,
     RegisterTargetCommand,
+    RequestRolloutCommand,
+    SetDesiredStateCommand,
     SignatureStatus,
     activate_credential,
     build_database_catalog_snapshot,
     enrol_credential,
     module,
+    propose_plan,
     record_observation,
     register_target,
+    request_rollout,
+    set_desired_state,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# ── ADAPTED AT EXTRACTION, 2026-08-29 — the only change to this file ─────────
+# ── SECOND CHANGE, 2026-09-01 — `dc_0003`'s binding, recorded not absorbed ───
+#
+# `observation_race` now seeds a bound plan and rollout, and the two racing
+# reports carry `rollout_ref` / `operation` / `execution_plan_digest`. Not
+# cosmetic: since `dc_0003` an accepted observation must bind the same execution
+# plan and operation across proposal, authorization and report, so an unbound
+# report is quarantined BEFORE the canonical-receipt lookup — and this test's
+# `assert len(gate.thread_ids) == 2` is exactly the guard that catches a race
+# which stopped racing. It caught it. Recorded here rather than absorbed,
+# because this file's whole value is that its provenance is legible.
+#
+# ── ADAPTED AT EXTRACTION, 2026-08-29 — the first change to this file ────────
 #
 # In the repository this test came from, all three lineages were directories in
 # the same tree. Here the kernel and this module are INSTALLED packages, so the
 # paths are asked of the packages rather than assumed of the checkout. Every
-# other line of this 1,001-line canary is byte-identical to the source.
+# other line of this 1,001-line canary was byte-identical to the source at
+# extraction; the block above records the one later change.
 #
 # `ASSEMBLY_VERSIONS` is GONE, and its absence changes what this test proves:
 # the scratch database is now built from kernel + `mod_deploy` alone, with no
@@ -90,6 +109,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # preserved test surface and is recorded as one rather than absorbed silently.
 KERNEL_VERSIONS = Path(kernel_versions_dir())
 DEPLOY_VERSIONS = Path(deploy_versions_dir())
+
+#: A stand-in for the Deployment Foundation's `ExecutionPlanDigestV1`. Written
+#: out and never computed: an accepted observation now has to BIND to an
+#: authorization, and Control cannot derive this value — deriving it in a
+#: fixture would exercise a capability the module deliberately does not have.
+_EXECUTION_PLAN = "sha256:" + "1a" * 32
 
 SCHEMA = "mod_deploy"
 TABLES = (
@@ -274,7 +299,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0002_canonical_plan_digest",
+                revision="dc_0003_execution_plan_binding",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -598,8 +623,17 @@ def _module_audit_actions() -> Iterator[None]:
 def observation_race(
     migrated_scratch: tuple[str, str, str],
     _module_audit_actions: None,
-) -> Iterator[tuple[Engine, str, str]]:
-    """One target with an active public credential in the migrated schema."""
+) -> Iterator[tuple[Engine, str, str, str]]:
+    """One target with an active credential AND a bound, dispatchable rollout.
+
+    The rollout is new since `dc_0003`. An accepted observation is now a
+    three-party fact — proposal, authorization and report must bind the same
+    execution plan and operation — so a report with nothing to bind against is
+    quarantined `unbound_report` and never reaches the canonical-receipt lookup
+    this race exists to force. Without it the gate below observes zero absent
+    lookups and the concurrency obligation goes untested while the suite reports
+    green.
+    """
     admin_url, _, _ = migrated_scratch
     engine = create_engine(admin_url, future=True)
     suffix = uuid.uuid4().hex[:10]
@@ -635,9 +669,38 @@ def observation_race(
                 at=_OBSERVED_AT - timedelta(minutes=1),
             ),
         )
+        set_desired_state(
+            db,
+            SetDesiredStateCommand(
+                command_id=f"seed-desired-{suffix}",
+                target_id=target.id,
+                desired=DesiredDeployment(
+                    release_ref="dotmac_sub@1", spec={"replicas": 2}
+                ),
+            ),
+        )
+        plan = propose_plan(
+            db,
+            ProposePlanCommand(
+                command_id=f"seed-plan-{suffix}",
+                target_id=target.id,
+                operation="deploy",
+                execution_plan_digest=_EXECUTION_PLAN,
+                requires_approval=False,
+            ),
+        )
+        rollout_ref = f"race-rollout-{suffix}"
+        request_rollout(
+            db,
+            RequestRolloutCommand(
+                command_id=f"seed-rollout-{suffix}",
+                rollout_ref=rollout_ref,
+                plan_id=plan.id,
+            ),
+        )
         db.commit()
     try:
-        yield engine, target_ref, key_id
+        yield engine, target_ref, key_id, rollout_ref
     finally:
         engine.dispose()
 
@@ -654,7 +717,7 @@ def observation_race(
     ],
 )
 def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
-    observation_race: tuple[Engine, str, str],
+    observation_race: tuple[Engine, str, str, str],
     second_digest: str,
     loser_disposition: str,
 ) -> None:
@@ -665,7 +728,7 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
     receipt's original verdict instead of leaking an IntegrityError or deciding
     the observation again.
     """
-    engine, target_ref, key_id = observation_race
+    engine, target_ref, key_id, rollout_ref = observation_race
     sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     gate = _ReceiptLookupGate()
     event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
@@ -692,6 +755,9 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
                         raw_body=digest.encode(),
                         raw_body_digest=digest,
                         signature_status=SignatureStatus.VALID.value,
+                        rollout_ref=rollout_ref,
+                        operation="deploy",
+                        execution_plan_digest=_EXECUTION_PLAN,
                     ),
                 ),
             )

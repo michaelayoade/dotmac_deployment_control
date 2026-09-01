@@ -32,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
 from dotmac_kernel.models import Base
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dotmac_deployment_control import (
@@ -67,10 +67,16 @@ from dotmac_deployment_control import (
     settle_attempt,
     spec_digest,
 )
+from dotmac_deployment_control.models import DeploymentTarget, Rollout
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _SPEC = {"replicas": 2}
 _RELEASE = "dotmac_sub@7.187.1"
+
+#: A stand-in for the Deployment Foundation's `ExecutionPlanDigestV1`. Written
+#: out rather than computed: Control cannot compute one, and a fixture that
+#: derived it would be exercising a capability the module does not have.
+_EXECUTION_PLAN = "sha256:" + "1a" * 32
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +167,55 @@ def enrolled(db: Session):
     return target, credential_id
 
 
+def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
+    """The rollout an accepted report binds to — reused, or created on demand.
+
+    Step 8 makes an accepted report a THREE-party fact: a report is admitted
+    only when the plan Control froze, the approval that authorized it and the
+    report itself name the same execution plan and the same operation. So a
+    fixture that wants an ACCEPTED verdict has to supply something to bind
+    against, and this is it.
+
+    Reuses an existing rollout when the test already made one (the drift tests
+    do), so the report binds to the plan whose revision they are asserting about
+    rather than to a second plan that would supersede it.
+
+    Returns `None` for a target that does not exist — the unknown-target and
+    claim/proof tests pass a ref nothing was ever registered under, and they
+    quarantine before the binding is reached anyway.
+    """
+    target = db.execute(
+        select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)
+    ).scalar_one_or_none()
+    if target is None:
+        return None
+    rollout = (
+        db.execute(select(Rollout).where(Rollout.target_id == target.id))
+        .scalars()
+        .first()
+    )
+    if rollout is not None:
+        return rollout.rollout_ref
+    plan = propose_plan(
+        db,
+        ProposePlanCommand(
+            command_id=_cmd(),
+            target_id=target.id,
+            operation="deploy",
+            execution_plan_digest=_EXECUTION_PLAN,
+            requires_approval=False,
+        ),
+    )
+    return request_rollout(
+        db,
+        RequestRolloutCommand(
+            command_id=_cmd(),
+            rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
+            plan_id=plan.id,
+        ),
+    ).rollout_ref
+
+
 def _observe(db: Session, *, received_at: datetime | None = None, **overrides: object):
     fields: dict[str, object] = {
         "report_id": f"rep-{uuid.uuid4().hex[:8]}",
@@ -173,8 +228,14 @@ def _observe(db: Session, *, received_at: datetime | None = None, **overrides: o
         "raw_body": b"{}",
         "raw_body_digest": "sha256:beef",
         "signature_status": SignatureStatus.VALID.value,
+        "operation": "deploy",
+        "execution_plan_digest": _EXECUTION_PLAN,
     }
     fields.update(overrides)
+    if "rollout_ref" not in fields:
+        fields["rollout_ref"] = _bound_rollout_ref(
+            db, fields["authenticated_target_ref"]
+        )
     return record_observation(
         db,
         RecordObservationCommand(
@@ -522,6 +583,8 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
             ProposePlanCommand(
                 command_id=_cmd(),
                 target_id=target_id,
+                operation="deploy",
+                execution_plan_digest=_EXECUTION_PLAN,
                 requires_approval=False,
             ),
         )

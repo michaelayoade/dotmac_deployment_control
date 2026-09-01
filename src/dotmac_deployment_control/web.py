@@ -49,10 +49,28 @@ identity can never be attributed a fleet decision.
 approval is later bound to that digest. A caller that could supply one would be
 naming the thing its own authorization is checked against.
 
-`ProposePlanCommand` has no digest field, so the write path cannot accept one,
-and `PlanProposalPreview` takes no input, so the read path cannot either. Those
-are absences, and an absence is a convention: nothing fails if a later change
-adds a field, and nothing ever observed it holding.
+`ProposePlanCommand` carries no PLAN digest field, so the write path cannot
+accept one, and `PlanProposalPreview` takes no input, so the read path cannot
+either. Those are absences, and an absence is a convention: nothing fails if a
+later change adds a field, and nothing ever observed it holding.
+
+It does carry an `execution_plan_digest`, and that is not a loosening of this
+rule — it is the rule applied to a value of the opposite kind. A plan digest is
+DERIVED by Control, so a caller naming one would be choosing what its own
+approval binds to. An execution plan digest is the Deployment Foundation's,
+over bytes Control has no renderer for and cannot reach; a value this module
+cannot derive must be supplied or the binding cannot exist.
+
+**A browser still cannot supply one, and the consequence is deliberate.**
+`refuse_client_supplied_digest` refuses it by SHAPE whatever the field is
+called, which is right: a browser is not the Deployment Foundation and has
+rendered no execution plan. So `POST /deployments/{id}/plans` from this surface
+now refuses — the command cannot be constructed without a binding, and the route
+renders the module's own words at 400. That is the architecture and not a
+regression: a proposal that can produce a receipt is made by Platform CP's
+composition adapter, after the Foundation has rendered and digested the plan.
+An operator's part of the flow is upstream, in the desired state this surface
+already shows.
 
 `refuse_client_supplied_digest` is the same rule as a REFUSAL, and it is
 declared on the ROUTER so it covers every route in this surface rather than the
@@ -137,6 +155,12 @@ _PROPOSE_FIELDS: Final[frozenset[str]] = frozenset(
         "requires_approval",
         "approval_policy_code",
         "approval_policy_version",
+        # A WORD, not a digest, and therefore a thing a browser may legitimately
+        # send: `deploy` or `rollback`, declared by the operator. Michael's rule
+        # is that an operation is never inferred — not from a diff, not from a
+        # command name — so the surface that offers the action must name it, and
+        # a form with two buttons is exactly that declaration.
+        "operation",
     }
 )
 
@@ -456,16 +480,29 @@ async def propose_plan_submit(
         "yes",
         "1",
     }
-    command = service.ProposePlanCommand(
-        command_id=f"web.propose_plan:{target_id}:{expected}",
-        target_id=target_id,
-        requires_approval=requires_approval,
-        approval_policy_code=values.get("approval_policy_code", "").strip() or None,
-        approval_policy_version=_optional_int(values, "approval_policy_version"),
-        expected_desired_revision=expected,
-        actor_ref=actor,
-    )
+    # CONSTRUCTED INSIDE THE TRY, because the command now refuses on its own
+    # inputs: an operation outside the closed vocabulary, and — from this
+    # surface, always — the absence of an execution plan digest a browser is
+    # forbidden to send. Both are `DeploymentControlError`s the operator should
+    # read at 400 on the page they came from, not 500s from a construction that
+    # happened outside the handler.
     try:
+        command = service.ProposePlanCommand(
+            command_id=f"web.propose_plan:{target_id}:{expected}",
+            target_id=target_id,
+            operation=values.get("operation", "").strip(),
+            # THE ABSENCE, stated. There is no value this surface could put
+            # here: `refuse_client_supplied_digest` rejects a digest by shape
+            # whatever it is called, and it is right to — a browser has rendered
+            # no execution plan. The empty string is refused by the command, and
+            # the refusal explains where a bound proposal comes from instead.
+            execution_plan_digest="",
+            requires_approval=requires_approval,
+            approval_policy_code=values.get("approval_policy_code", "").strip() or None,
+            approval_policy_version=_optional_int(values, "approval_policy_version"),
+            expected_desired_revision=expected,
+            actor_ref=actor,
+        )
         service.propose_plan(db, command)
     except DeploymentControlError as exc:
         # The module refused. Re-render the page it was refused from, at 400,

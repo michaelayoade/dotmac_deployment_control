@@ -49,6 +49,16 @@ DIGEST_ATTRIBUTES = frozenset(
         "plan_digest",
         "content_digest",
         "observed_spec_digest",
+        # The FOUNDATION's execution plan digest, in all three of the places it
+        # is held: what was proposed, what was authorized, and what a report
+        # claims. This module does not compute it — which makes a string
+        # comparison MORE dangerous here, not less. A value Control cannot
+        # re-derive is a value it can only ever compare, so the comparison is
+        # the entire control, and comparing the text would make one digest's
+        # spellings disagree in the one place a disagreement is read as "the
+        # executor ran something nobody authorized".
+        "execution_plan_digest",
+        "authorized_execution_plan_digest",
     }
 )
 
@@ -314,6 +324,29 @@ def test_the_detector_catches_the_exact_a4_expressions(
     offenders = string_digest_comparisons(planted)
     assert offenders, "the a4 expression was not detected"
     assert any(expected in offender for offender in offenders), offenders
+
+
+def test_the_detector_catches_a_string_comparison_of_the_new_binding() -> None:
+    """SENSITIVITY for the columns `dc_0003` adds.
+
+    Widening `DIGEST_ATTRIBUTES` is a non-existence claim like every other one
+    in this file, so the a4 expression is reconstructed with the NEW names and
+    fed to the same detector. Both directions: the report against the proposal,
+    and the proposal against the authorization.
+    """
+    reported = string_digest_comparisons(
+        "if observed.execution_plan_digest != plan.execution_plan_digest:\n    pass\n"
+    )
+    assert reported, "a string comparison of the execution plan digest is invisible"
+
+    stored = string_digest_comparisons(
+        "if plan.execution_plan_digest != plan.authorized_execution_plan_digest:\n"
+        "    pass\n"
+    )
+    assert stored, (
+        "a string comparison between the proposal and authorization terms is "
+        "invisible, and those two are exactly what step 8 compares"
+    )
 
 
 def test_a_typed_comparison_is_not_flagged() -> None:

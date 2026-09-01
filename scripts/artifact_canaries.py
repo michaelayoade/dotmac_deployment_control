@@ -84,7 +84,10 @@ DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
 ## The two canaries `0.1.0a8` adds, and the gap they close
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
-publishing `mod_deploy`'s exact seven platform tables and 95 columns. It was
+publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
+extent below is the POST-`dc_0003` one, seven tables and 99 columns, because
+this literal describes the tree it ships with rather than the last release. It
+was
 published, tagged and VERIFIED on seven release properties and nine behavioural
 canaries — **a6's exact set**. a7 added none, so no canary drove the catalogue
 and the artifact proved nothing about the contract the artifact exists to ship.
@@ -95,12 +98,12 @@ carry it?). a7's own record says so, and
 
 * `database_catalogue_as_published` — the installed distribution publishes the
                              exact catalogue: module identity, all seven table
-                             identities, all 95 columns by name, ordinal, type
+                             identities, all 99 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
                              in this file, because `len(tables) == 7 and
-                             len(columns) == 95` passes on seven wrong tables.
+                             len(columns) == 99` passes on seven wrong tables.
 * `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
                              the artifact serialises, the bytes round-trip, and
                              a one-byte change is REFUSED against that digest.
@@ -445,6 +448,10 @@ _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
 _POLICY_VERSION = 4
 _RELEASE = "dotmac_sub@7.187.1"
+#: A stand-in for the Deployment Foundation's `ExecutionPlanDigestV1`. Written
+#: out and never computed, because Control cannot compute one — a canary that
+#: derived it would be exercising a capability the artifact must not have.
+_EXECUTION_PLAN = "sha256:" + "1a" * 32
 
 
 def _command_id() -> str:
@@ -491,6 +498,8 @@ def _proposed_plan(db: Any, *, replicas: int = 2) -> Any:
         ProposePlanCommand(
             command_id=_command_id(),
             target_id=target.id,
+            operation="deploy",
+            execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=True,
             approval_policy_code=_POLICY,
             approval_policy_version=_POLICY_VERSION,
@@ -508,6 +517,8 @@ def _evidence(digest: str) -> Any:
         decision_ref=f"apr-{uuid.uuid4().hex[:8]}",
         content_digest=digest,
         decided_at=_NOW,
+        operation="deploy",
+        execution_plan_digest=_EXECUTION_PLAN,
     )
 
 
@@ -522,8 +533,8 @@ def _approve(db: Any, plan_id: Any, digest: str) -> Any:
     )
 
 
-def _enrolled_target(db: Any) -> tuple[Any, str]:
-    """A registered target with an ACTIVE credential, ready to be reported to.
+def _enrolled_target(db: Any) -> tuple[Any, str, str]:
+    """A target with an ACTIVE credential AND a bound rollout to report against.
 
     Enrolment and activation are two steps because the module refuses to admit
     a key it has only been told about: the caller proves possession through the
@@ -531,16 +542,28 @@ def _enrolled_target(db: Any) -> tuple[Any, str]:
     would leave the credential PENDING, every observation would be recorded
     `not_eligible`, and the savepoint block would never be reached — a canary
     that passed while proving nothing.
+
+    The plan and rollout are the same failure one layer up, added for
+    `dc_0003`: an accepted observation must bind the same execution plan and
+    operation across proposal, authorization and report, so a report with
+    nothing to bind against is quarantined `unbound_report` and never reaches
+    the canonical receipt either. Approval-exempt, because approval is not what
+    this canary is about — a two-term binding is still a binding, and the module
+    is explicit that an exempt plan has no authorization term.
     """
     from dotmac_deployment_control import (
         CredentialTransitionCommand,
         DesiredDeployment,
         EnrolCredentialCommand,
+        ProposePlanCommand,
         RegisterTargetCommand,
+        RequestRolloutCommand,
         SetDesiredStateCommand,
         activate_credential,
         enrol_credential,
+        propose_plan,
         register_target,
+        request_rollout,
         set_desired_state,
     )
 
@@ -582,7 +605,25 @@ def _enrolled_target(db: Any) -> tuple[Any, str]:
             at=_NOW - timedelta(days=1),
         ),
     )
-    return target, key_id
+    plan = propose_plan(
+        db,
+        ProposePlanCommand(
+            command_id=_command_id(),
+            target_id=target.id,
+            operation="deploy",
+            execution_plan_digest=_EXECUTION_PLAN,
+            requires_approval=False,
+        ),
+    )
+    rollout = request_rollout(
+        db,
+        RequestRolloutCommand(
+            command_id=_command_id(),
+            rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
+            plan_id=plan.id,
+        ),
+    )
+    return target, key_id, rollout.rollout_ref
 
 
 # ── the behavioural canaries ────────────────────────────────────────────────
@@ -702,8 +743,7 @@ def canary_encoding_fault_is_not_a_mutation() -> str:
             ) from exc
         else:
             raise CanaryFailure(
-                f"an unreadable digest ({value!r}) was ACCEPTED and the plan "
-                "approved"
+                f"an unreadable digest ({value!r}) was ACCEPTED and the plan approved"
             )
     return f"{len(unreadable)} unreadable encodings refused, none as a mutation"
 
@@ -746,6 +786,8 @@ def canary_mutation_after_authorization_is_refused() -> str:
         ProposePlanCommand(
             command_id=_command_id(),
             target_id=target.id,
+            operation="deploy",
+            execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=True,
             approval_policy_code=_POLICY,
             approval_policy_version=_POLICY_VERSION,
@@ -837,9 +879,16 @@ def canary_conflict_savepoint_executes() -> str:
     )
 
     db = _session()
-    target, key_id = _enrolled_target(db)
+    target, key_id, rollout_ref = _enrolled_target(db)
     report_id = f"rep-{uuid.uuid4().hex[:8]}"
 
+    # THE BINDING IS PART OF REACHING THE SAVEPOINT. Since `dc_0003` an accepted
+    # observation must bind the same execution plan and operation across
+    # proposal, authorization and report; an unbound report is quarantined
+    # `unbound_report` before the canonical-receipt lookup, and this canary
+    # would then pass its own refusal check while never entering the `with
+    # conflict_savepoint(...)` block it exists to drive. The three fields below
+    # are what make the happy path actually happy.
     verdict = service.record_observation(
         db,
         RecordObservationCommand(
@@ -855,6 +904,9 @@ def canary_conflict_savepoint_executes() -> str:
                 raw_body=b"{}",
                 raw_body_digest="sha256:" + "b" * 64,
                 signature_status=SignatureStatus.VALID.value,
+                rollout_ref=rollout_ref,
+                operation="deploy",
+                execution_plan_digest=_EXECUTION_PLAN,
             ),
             received_at=_NOW,
         ),
@@ -939,7 +991,9 @@ def canary_conflict_savepoint_executes() -> str:
 # ── the published database catalogue ────────────────────────────────────────
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
-# publishing `mod_deploy`'s exact seven platform tables and 95 columns. It
+# publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
+# literal below is the POST-`dc_0003` extent, seven tables and 99 columns, and
+# it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
 # the a4 shape one level up — a proof of one question (does the source declare
@@ -948,7 +1002,7 @@ def canary_conflict_savepoint_executes() -> str:
 # `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
 #
 # THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 7 and
-# len(columns) == 95` passes against a catalogue holding seven wrong tables, and
+# len(columns) == 99` passes against a catalogue holding seven wrong tables, and
 # this programme keeps finding and repairing exactly that check. So the whole
 # canonical structure is written out below — every table name, every column
 # name, its physical ordinal, its PostgreSQL type identity AND rendered
@@ -988,7 +1042,7 @@ CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0002_canonical_plan_digest"
+CATALOGUE_LINEAGE_HEAD = "dc_0003_execution_plan_binding"
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
 #: single values rather than per-table, because "the module owns all seven and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
@@ -1023,6 +1077,11 @@ CATALOGUE_TABLES: tuple[
             ("record_version", 14, _INT, False, ""),
             ("created_at", 15, _TS, False, "now()"),
             ("updated_at", 16, _TS, False, "now()"),
+            # dc_0003, appended in ADD COLUMN order — see the declaration.
+            ("operation", 17, _V20, True, ""),
+            ("execution_plan_digest", 18, _V128, True, ""),
+            ("authorized_operation", 19, _V20, True, ""),
+            ("authorized_execution_plan_digest", 20, _V128, True, ""),
         ),
     ),
     (
@@ -1148,7 +1207,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 95: this module declares no domain,
+            # BASE and `pg_catalog` for all 99: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
@@ -1394,8 +1453,9 @@ def _published_catalogue(expect_version: str) -> Any:
 def canary_database_catalogue_as_published(expect_version: str) -> str:
     """THE PROOF `0.1.0a7` SHIPPED WITHOUT: the ARTIFACT carries the catalogue.
 
-    a7's headline is `mod_deploy`'s exact seven platform tables and 95 columns,
-    and not one of the nine canaries it published touched them. The extent was
+    a7's headline was `mod_deploy`'s exact seven platform tables and 95
+    columns — 99 after `dc_0003` — and not one of the nine canaries it published
+    touched them. The extent was
     proven by source tests on the release commit — a real proof of a different
     question, and `docs/CONTROL_EXCEPTIONS.md` already records that a source
     check is not a control carried by any published artifact.
@@ -1405,16 +1465,16 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * the catalogue modules resolve out of `site-packages`, with no checkout
       copy shadowing them, and the evidence is in this canary's own output;
     * module identity — document schema and scope, distribution name and
-      version, module code, release version, `mod_deploy`, and the `dc_0002`
+      version, module code, release version, `mod_deploy`, and the `dc_0003`
       lineage head;
     * all seven table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 95 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 99 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
 
-    The counts are the least of it. `len(tables) == 7 and len(columns) == 95`
+    The counts are the least of it. `len(tables) == 7 and len(columns) == 99`
     passes on seven wrong tables, and the whole structure is compared instead.
     """
     import json
@@ -1612,10 +1672,7 @@ def canary_web_surface_ships_its_templates() -> str:
             "pattern that matches the directory and not its files leaves every "
             "screen a TemplateNotFound at first request."
         )
-    return (
-        f"{len(present)} templates under namespace "
-        f"{templates.namespace!r} at {root}"
-    )
+    return f"{len(present)} templates under namespace {templates.namespace!r} at {root}"
 
 
 # ── runner ──────────────────────────────────────────────────────────────────

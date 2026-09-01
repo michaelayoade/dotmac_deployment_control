@@ -19,9 +19,22 @@ would leave the other two open:
 * in the query string of a safe method that never submits anything.
 
 And a POSITIVE CONTROL, which is the half that stops all of this being a guard
-that refuses everything: the same submission without a digest succeeds, and the
-plan it creates carries exactly the digest the server derived — a value the
-request never contained.
+that refuses everything.
+
+That control CHANGED with `dc_0003`, and the change is worth stating rather than
+absorbing. A plan is now bound to the Deployment Foundation's
+`ExecutionPlanDigestV1`, which this surface is forbidden to send — by SHAPE, so
+renaming the field does not help, and correctly, because a browser has rendered
+no execution plan. So a clean submission from here no longer creates a plan; it
+is refused for a DIFFERENT reason, in different words, having reached the
+handler. That difference is the positive control: it proves the digest guard
+fires specifically rather than the surface rejecting every form, and it is a
+stronger statement than the old one, because it distinguishes two refusals
+instead of distinguishing a refusal from a success.
+
+The property the old control asserted — the plan's digest is a function of
+module-owned state — is asserted directly against the service below, where it
+does not depend on a route that can no longer reach it.
 
 In-memory SQLite; logic only. Grants, triggers and the claim/proof CHECKs are
 proven against real PostgreSQL in
@@ -56,12 +69,14 @@ from dotmac_deployment_control import (
     DEPLOYMENT_CONTROL_SURFACE,
     DeploymentPlan,
     DesiredDeployment,
+    ProposePlanCommand,
     RegisterTargetCommand,
     SetDesiredStateCommand,
     module,
     plan_digest_of,
     plan_snapshot,
     preview_plan_proposal,
+    propose_plan,
     register_target,
     set_desired_state,
 )
@@ -74,6 +89,10 @@ from tests.asgi_driver import call
 #: careless client would have.
 _DIGEST = "sha256:" + "a1" * 32
 _BARE_HEX_DIGEST = "b2" * 32
+#: The Deployment Foundation's execution plan digest, as a fixture. It is
+#: canonical and well-formed; what matters here is that no request in this file
+#: can carry it, which is why every plan below is created through the service.
+_EXECUTION_PLAN = "sha256:" + "1a" * 32
 
 _PLATFORM_SUBJECT = uuid.uuid4()
 
@@ -231,6 +250,11 @@ def _propose_form(revision: int, **extra: str) -> dict[str, str]:
         "requires_approval": "on",
         "approval_policy_code": "deployment.production",
         "approval_policy_version": "4",
+        # A WORD, and one a browser may legitimately send. Every test that is
+        # about something else needs it present, or the command's own
+        # vocabulary refusal would fire first and every refusal in this file
+        # would read the same.
+        "operation": "deploy",
         **extra,
     }
 
@@ -310,16 +334,22 @@ class TestTheBrowserMayNotSupplyAPlanDigest:
         assert response.status == 400, response.text
         assert "in the query string" in response.text
 
-    def test_the_same_submission_without_a_digest_creates_the_derived_one(
+    def test_a_clean_submission_reaches_the_handler_and_is_refused_elsewhere(
         self, db: Session
     ) -> None:
-        """POSITIVE CONTROL, and the property itself.
+        """POSITIVE CONTROL — the half that stops all of the above being a guard
+        that refuses everything.
 
-        Without this, every refusal above is equally consistent with a surface
-        that rejects all form submissions. It also states the thing the refusal
-        is protecting: the digest the plan ends up carrying is the one the
-        SERVER derived from the target, byte for byte, and it was never in the
-        request.
+        The same submission WITHOUT a digest is not refused by
+        `refuse_client_supplied_digest`. It gets past it, reaches the handler,
+        and is refused there for a different reason and in different words: this
+        surface cannot bind a plan to an execution plan the Deployment
+        Foundation rendered, because it is forbidden to send a digest and has
+        rendered nothing.
+
+        Two refusals with two texts is what makes the three plants above
+        attributable. A single "400 for everything" surface would satisfy them
+        all and prove nothing.
         """
         target_id = _target(db)
         preview = preview_plan_proposal(db, target_id)
@@ -330,30 +360,64 @@ class TestTheBrowserMayNotSupplyAPlanDigest:
             app,
             "POST",
             f"/deployments/{target_id}/plans",
-            form=_propose_form(preview.desired_revision),
+            form=_propose_form(preview.desired_revision, operation="deploy"),
         )
 
-        assert response.status == 303, response.text
-        assert str(target_id) in (response.header("location") or "")
+        assert response.status == 400, response.text
+        # NOT the digest guard's words. That is the whole assertion.
+        assert "supplies a plan digest" not in response.text
+        assert "execution plan digest" in response.text
+        assert self._plans(db) == 0
 
-        plan = db.execute(select(DeploymentPlan)).scalars().one()
-        assert plan.plan_digest == preview.plan_digest
-        assert plan.plan_digest != _DIGEST
+    def test_an_operation_outside_the_closed_vocabulary_is_refused(
+        self, db: Session
+    ) -> None:
+        """The operation IS a thing a browser may send — it is a word, not a
+        digest — and the vocabulary is closed. `redeploy` is not coerced to
+        `deploy`, and neither is `Deploy`."""
+        target_id = _target(db)
+        app = _app(db, principal=_principal())
+
+        for word in ("redeploy", "Deploy", ""):
+            response = call(
+                app,
+                "POST",
+                f"/deployments/{target_id}/plans",
+                form=_propose_form(1, operation=word),
+            )
+            assert response.status == 400, response.text
+            assert "is not an operation" in response.text, word
+        assert self._plans(db) == 0
 
     def test_the_stored_digest_is_recomputable_from_the_target_alone(
         self, db: Session
     ) -> None:
-        """The strongest statement available: the plan's digest is a FUNCTION of
-        module-owned state, so it is reproducible without the request that
-        created it."""
-        target_id = _target(db)
-        app = _app(db, principal=_principal())
-        call(app, "POST", f"/deployments/{target_id}/plans", form=_propose_form(1))
+        """The property the old positive control carried, asserted where it can
+        still be reached: the plan's digest is a FUNCTION of module-owned state,
+        reproducible without the request that created it.
 
-        plan = db.execute(select(DeploymentPlan)).scalars().one()
+        Driven through the service rather than the surface, because the surface
+        can no longer create a plan — and stating the property against the
+        service is the honest place for it, since it was never a property of the
+        route.
+        """
+        target_id = _target(db)
+        plan = propose_plan(
+            db,
+            ProposePlanCommand(
+                command_id=str(uuid.uuid4()),
+                target_id=target_id,
+                operation="deploy",
+                execution_plan_digest=_EXECUTION_PLAN,
+                requires_approval=False,
+            ),
+        )
         target = db.get(DeploymentTarget, target_id)
         assert target is not None
         assert plan.plan_digest == plan_digest_of(plan_snapshot(target)).canonical
+        # And the value the browser could never have sent is stored EXACTLY as
+        # the caller supplied it — not re-rendered, not normalized.
+        assert plan.execution_plan_digest == _EXECUTION_PLAN
 
     @staticmethod
     def _plans(db: Session) -> int:
@@ -574,8 +638,17 @@ def test_timestamps_render_as_explicit_utc_and_never_as_a_python_repr(
     `2026-09-01 12:00:00+00:00`, which is both unlabelled and dialect-dependent.
     """
     target_id = _target(db)
+    propose_plan(
+        db,
+        ProposePlanCommand(
+            command_id=str(uuid.uuid4()),
+            target_id=target_id,
+            operation="deploy",
+            execution_plan_digest=_EXECUTION_PLAN,
+            requires_approval=False,
+        ),
+    )
     app = _app(db, principal=_principal())
-    call(app, "POST", f"/deployments/{target_id}/plans", form=_propose_form(1))
     response = call(app, "GET", f"/deployments/{target_id}")
 
     assert response.status == 200, response.text

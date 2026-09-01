@@ -77,6 +77,7 @@ from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
 from dotmac_deployment_control.digests import (
+    ExecutionPlanDigestV1,
     PlanDigestV1,
     SpecDigestV1,
     canonical_json,
@@ -99,15 +100,20 @@ from dotmac_deployment_control.models import (
     TargetCredential,
     TargetStatus,
 )
+from dotmac_deployment_control.operations import (
+    require_operation,
+)
 from dotmac_deployment_control.ports import (
     ApprovalEvidence,
     ApprovalRefusedError,
     DeliveryIntent,
     DesiredDeployment,
     DigestEncodingError,
+    ExecutionPlanBindingError,
     ExpectedStateError,
     ObservationRefusedError,
     ObservedState,
+    OperationRefusedError,
     PlanRefusedError,
     TransitionRefusedError,
 )
@@ -223,15 +229,74 @@ class ProposePlanCommand:
     what a human operator actually means when they click a button on a page
     rendered some seconds ago. Optional, because a caller inside one transaction
     has no such gap.
+
+    ## `execution_plan_digest` IS a digest field, and it is the exception the
+    ## paragraph above defines rather than a hole in it
+
+    The rule that no caller may name a digest is a rule about digests this
+    module DERIVES. `plan_digest` is derived from state Control owns, so a
+    caller naming one would be choosing what its own approval binds to.
+
+    `execution_plan_digest` is the opposite situation and admits the opposite
+    conclusion. It is `sha256(canonical FoundationExecutionPlanV1 bytes)` — over
+    a plan the Deployment Foundation renders from the immutable artifact and the
+    authorized environment inventory. Control has no renderer for it, no column
+    holding its bytes, and no way to reach either. A value this module cannot
+    derive must be supplied, or the binding cannot exist at all.
+
+    Both are REQUIRED, and neither has a default:
+
+    * a default `operation` would infer a deployment from a caller's silence,
+      and Michael's ruling is that DEPLOY and ROLLBACK are separately authorized
+      operations, never inferred;
+    * a default `execution_plan_digest` would be Control inventing the value it
+      exists not to invent.
+
+    ## What this means for a browser-originated proposal
+
+    It refuses, and the refusal is the architecture rather than a regression.
+    The admin surface's `refuse_client_supplied_digest` dependency rejects any
+    digest-shaped value in any browser request, by name AND by shape — correctly,
+    because a browser is not the Deployment Foundation and cannot have rendered
+    an execution plan. So a browser cannot construct this command, and the route
+    returns the module's own words at 400. A proposal that can produce a receipt
+    is made by Platform CP's composition adapter, after the Foundation has
+    rendered and digested the plan.
     """
 
     command_id: str
     target_id: UUID
+    #: The declared operation, from the closed vocabulary. Validated on
+    #: construction so the refusal happens at the caller, before any state is
+    #: read — the earliest point at which the absence is known.
+    operation: str
+    #: The Foundation's digest, canonical `sha256:<64 lowercase hex>`. Validated
+    #: on construction for ENCODING only: this refuses a value that cannot be
+    #: read, and it never rewrites one that can.
+    execution_plan_digest: str
     requires_approval: bool = True
     approval_policy_code: str | None = None
     approval_policy_version: int | None = None
     expected_desired_revision: int | None = None
     actor_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse an unusable OPERATION at construction.
+
+        Here rather than in the handler because it is a fault in the command
+        alone: no state has to be read to know that `redeploy` is not a member
+        of a two-member vocabulary, and a command that cannot be valid should
+        not survive long enough to have its refusal mixed with a target's.
+
+        The EXECUTION PLAN DIGEST is deliberately NOT validated here. It is
+        checked inside `propose_plan`, after the target-state blockers and the
+        evidence-coordinate check, so that the refusal an operator is most
+        likely to meet — "the desired state moved since the page you read" —
+        still reaches them first. Validating it here would make every stale
+        browser submission report the binding instead, which is true but is not
+        the finding they need.
+        """
+        require_operation(self.operation, where="ProposePlanCommand.operation")
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,6 +469,89 @@ def _supplied_plan_digest(row: DeploymentPlan, value: str) -> PlanDigestV1:
         ) from exc
 
 
+def _stored_execution_plan_digest(
+    row: DeploymentPlan, value: str | None, *, term: str
+) -> ExecutionPlanDigestV1 | None:
+    """Read back a value this module STORED but never computed.
+
+    `None` in, `None` out: an unbound plan is a real state (`0.1.0a7` rows
+    predate the columns) and is not a fault. A value that cannot be READ is a
+    data fault in the frozen plan, and it says so — the same three-way split
+    `_frozen_plan_digest` makes, for the same reason: the person who repairs an
+    unreadable stored value is not the person who repairs a caller's encoding
+    and is not the person who re-approves a moved plan.
+
+    Strict: no `parse_accepting_a4_bare_hex`. This value never existed in
+    `0.1.0a4`, so there is no legacy shape to tolerate, and tolerating one would
+    mean this module normalizing a digest it does not own.
+
+    This RAISES on the observation path too, and that is not a violation of
+    rule 3. Rule 3 is about ARRIVALS: a bad thing a remote party sent is
+    recorded rather than discarded. An unreadable value in this module's own
+    column is not something a remote party sent — nothing in this package can
+    write one — so it is a corruption of the binding the acceptance rule is
+    decided on, and deciding anything against it would be worse than failing
+    loudly. The sender's transport is at-least-once and will re-present the
+    report once the row is repaired.
+    """
+    if value is None:
+        return None
+    try:
+        return ExecutionPlanDigestV1.parse(value)
+    except DigestEncodingError as exc:
+        raise DigestEncodingError(
+            f"plan {row.id} holds a {term} this module cannot read: {exc} This "
+            "is a data fault in the stored binding, not a caller error. Control "
+            "receives this value and never recomputes it, so it cannot be "
+            "repaired by re-deriving one — investigate the row."
+        ) from exc
+
+
+def _supplied_execution_plan_digest_text(
+    value: object, *, where: str
+) -> ExecutionPlanDigestV1:
+    """Read a caller-supplied execution plan digest when there is no row yet.
+
+    `propose_plan` validates before a plan exists, so it cannot name one in the
+    refusal. Same parser, same strictness, same refusal-not-normalization rule.
+    """
+    try:
+        return ExecutionPlanDigestV1.parse(value)
+    except DigestEncodingError as exc:
+        raise DigestEncodingError(
+            f"{where} does not carry a readable execution plan digest: {exc} "
+            "Supply the Deployment Foundation's `ExecutionPlanDigestV1` exactly "
+            "as it issued it (`sha256:<64 lowercase hex>`); Deployment Control "
+            "refuses a value it cannot read rather than reshaping one, because "
+            "reshaping it here would make this module a second canonicalization "
+            "of a plan it does not own."
+        ) from exc
+
+
+def _supplied_execution_plan_digest(
+    row: DeploymentPlan, value: object, *, where: str
+) -> ExecutionPlanDigestV1:
+    """Read a value a CALLER supplied, and refuse rather than tidy it.
+
+    The parser is strict-canonical, so a non-canonical spelling is REFUSED. That
+    is deliberate and it is the point of the whole repair: normalizing here
+    would make Control a second canonicalizer of the Foundation's value, and two
+    canonicalizations that agree about serialization and disagree about payload
+    is exactly the defect this binding exists to remove. Refusing is not
+    normalizing.
+    """
+    try:
+        return ExecutionPlanDigestV1.parse(value)
+    except DigestEncodingError as exc:
+        raise DigestEncodingError(
+            f"{where} for plan {row.id} does not carry a readable execution "
+            f"plan digest: {exc} No comparison was made and no claim is made "
+            "about which execution was authorized — supply the Deployment "
+            "Foundation's `ExecutionPlanDigestV1` exactly as it issued it "
+            "(`sha256:<64 lowercase hex>`); Control will not reshape it."
+        ) from exc
+
+
 def _plan_blockers(target: DeploymentTarget) -> tuple[str, ...]:
     """Every reason THIS TARGET cannot be planned for, in operator language.
 
@@ -549,6 +697,10 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         desired_revision=row.desired_revision,
         record_version=row.record_version,
         plan_digest=row.plan_digest,
+        operation=row.operation,
+        execution_plan_digest=row.execution_plan_digest,
+        authorized_operation=row.authorized_operation,
+        authorized_execution_plan_digest=row.authorized_execution_plan_digest,
         requires_approval=row.requires_approval,
         approval_policy_code=row.approval_policy_code,
         approval_policy_version=row.approval_policy_version,
@@ -1027,6 +1179,22 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
                 "approved under, so the decision stays explainable after the "
                 "policy changes"
             )
+        if not command.execution_plan_digest:
+            raise ExecutionPlanBindingError(
+                "a plan must be bound to the execution plan digest the "
+                "Deployment Foundation rendered and computed; this proposal "
+                "carries none, and Deployment Control cannot supply one — it "
+                "has no renderer for a FoundationExecutionPlanV1 and no way to "
+                "reach its bytes. Submit the digest the Foundation issued, "
+                "through Platform CP's composition adapter."
+            )
+        # ENCODING ONLY, and a refusal rather than a repair. `parse` accepts the
+        # canonical spelling and nothing else, so a value that survives here is
+        # byte-identical to the one that arrives — which is what lets the row
+        # below store the caller's own text rather than a rendering of it.
+        _supplied_execution_plan_digest_text(
+            command.execution_plan_digest, where="this proposal"
+        )
 
         highest = session.execute(
             select(func.max(DeploymentPlan.sequence)).where(
@@ -1043,6 +1211,17 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
             snapshot=snapshot,
             desired_revision=target.desired_revision,
             plan_digest=plan_digest_of(snapshot).canonical,
+            # FROZEN AS RECEIVED. `command.operation` and
+            # `command.execution_plan_digest` are stored as the caller sent
+            # them, not as this module would render them: the command's
+            # `__post_init__` already refused anything that was not exactly a
+            # vocabulary member and exactly the canonical digest form, so
+            # "validated" and "unchanged" are the same bytes here. Writing
+            # `parsed.canonical` instead would be indistinguishable today and
+            # would quietly become a normalization the day the parser grew a
+            # tolerance.
+            operation=command.operation,
+            execution_plan_digest=command.execution_plan_digest,
             requires_approval=command.requires_approval,
             approval_policy_code=command.approval_policy_code,
             approval_policy_version=command.approval_policy_version,
@@ -1084,6 +1263,8 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
                 "target_ref": target.target_ref,
                 "sequence": row.sequence,
                 "plan_digest": row.plan_digest,
+                "operation": row.operation,
+                "execution_plan_digest": row.execution_plan_digest,
                 "desired_revision": row.desired_revision,
                 "requires_approval": row.requires_approval,
                 "superseded": [str(plan.id) for plan in stale],
@@ -1160,6 +1341,80 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
                 f"{command.evidence.policy_version} but plan {row.id} was proposed "
                 f"under {row.approval_policy_version}"
             )
+
+        # ── The AUTHORIZATION term of the three-term binding ────────────────
+        #
+        # Recorded here, in its own columns, and refused unless it equals what
+        # was proposed. Two separate refusals, because they are two findings:
+        # an approval over the wrong EXECUTION PLAN authorizes a different
+        # deployment, and an approval of the wrong OPERATION authorizes the
+        # right deployment as the wrong kind of act. A rollback signed under a
+        # deploy's approval is invisible to a digest-only check, which is why
+        # the operation is compared separately rather than folded into it.
+        frozen_execution = _stored_execution_plan_digest(
+            row, row.execution_plan_digest, term="execution plan digest"
+        )
+        if frozen_execution is None or row.operation is None:
+            # A `0.1.0a7` plan, proposed before the binding existed. Approving
+            # it would produce an authorization naming no execution, which no
+            # report could ever satisfy — so it is refused here rather than at
+            # the report, where the operator would be reading a receipt failure
+            # for a plan that was never bindable.
+            raise ExecutionPlanBindingError(
+                f"plan {row.id} carries no execution plan binding (operation="
+                f"{row.operation!r}); it was proposed before Deployment Control "
+                "held one, and an approval over it would authorize no execution "
+                "any executor could verify. Propose a new plan through the "
+                "Deployment Foundation's rendered execution plan."
+            )
+        if command.evidence.execution_plan_digest is None:
+            raise ExecutionPlanBindingError(
+                f"approval evidence for plan {row.id} names no execution plan "
+                "digest. The acceptance rule is a THREE-term one — proposal, "
+                "authorization, report — and an approval that binds no "
+                "execution reduces it to two terms while still reading as three."
+            )
+        supplied_execution = _supplied_execution_plan_digest(
+            row, command.evidence.execution_plan_digest, where="approval evidence"
+        )
+        if supplied_execution != frozen_execution:
+            raise ExecutionPlanBindingError(
+                f"approval evidence authorizes execution plan "
+                f"{supplied_execution.canonical} but plan {row.id} froze "
+                f"{frozen_execution.canonical}. Both were read as well-formed "
+                "digests and their bytes differ, so this is an approval of a "
+                "different execution — not an encoding difference. Deployment "
+                "Control never recomputes this value and cannot reconcile them; "
+                "the two must be made equal by whoever submitted them."
+            )
+        if command.evidence.operation is None:
+            raise ExecutionPlanBindingError(
+                f"approval evidence for plan {row.id} names no operation. DEPLOY "
+                "and ROLLBACK are separately authorized operations, so an "
+                "approval that does not say which one it authorizes authorizes "
+                "neither."
+            )
+        frozen_operation = require_operation(
+            row.operation, where=f"plan {row.id} frozen operation"
+        )
+        supplied_operation = require_operation(
+            command.evidence.operation, where="approval evidence operation"
+        )
+        if supplied_operation is not frozen_operation:
+            raise ExecutionPlanBindingError(
+                f"approval evidence authorizes {supplied_operation.value!r} but "
+                f"plan {row.id} was proposed as {frozen_operation.value!r}. These "
+                "are separately authorized operations: an approval of one is not "
+                "an approval of the other, and neither is inferred from the "
+                "other."
+            )
+        row.authorized_operation = supplied_operation.value
+        # STORED AS RECEIVED, like the proposal above. `supplied_execution
+        # .canonical` is provably the same text — the parser accepted only the
+        # canonical spelling — and writing it would still be Control rendering
+        # somebody else's value. Same bytes today, different property forever.
+        row.authorized_execution_plan_digest = command.evidence.execution_plan_digest
+
         row.approval_decision_ref = command.evidence.decision_ref
         row.approved_at = command.evidence.decided_at
         row.status = PlanStatus.APPROVED.value
@@ -1174,6 +1429,10 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
             actor_ref=command.actor_ref,
             details={
                 "plan_digest": row.plan_digest,
+                "authorized_operation": row.authorized_operation,
+                "authorized_execution_plan_digest": (
+                    row.authorized_execution_plan_digest
+                ),
                 "policy_code": command.evidence.policy_code,
                 "policy_version": command.evidence.policy_version,
                 "decision_ref": command.evidence.decision_ref,
@@ -1261,6 +1520,23 @@ def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.Rollou
             raise TransitionRefusedError(
                 f"plan {plan.id} is {plan.status!r} and cannot be rolled out"
             )
+        # NOTHING UNBOUND REACHES THE FLEET. A plan carrying no execution plan
+        # digest or no operation cannot produce a receipt: the executor
+        # recomputes the plan digest before running and carries it back, and a
+        # report Control cannot bind to an authorization is quarantined rather
+        # than accepted. Dispatching such a plan would put an execution into
+        # somebody's running system that this control plane could never
+        # acknowledge — the rollout would time out and read as a transport
+        # fault. This is where `0.1.0a7` plans stop.
+        if not plan.execution_plan_digest or not plan.operation:
+            raise ExecutionPlanBindingError(
+                f"plan {plan.id} carries no execution plan binding (operation="
+                f"{plan.operation!r}); it cannot be rolled out. An execution "
+                "nothing authorized cannot return a receipt this control plane "
+                "will accept, so it is refused here rather than dispatched and "
+                "left to time out. Propose a plan bound to the execution plan "
+                "the Deployment Foundation rendered."
+            )
         target = _load_target(session, plan.target_id)
         if target.status != TargetStatus.ACTIVE.value:
             raise TransitionRefusedError(
@@ -1289,6 +1565,8 @@ def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.Rollou
                 "target_ref": target.target_ref,
                 "plan_id": str(plan.id),
                 "plan_digest": plan.plan_digest,
+                "operation": plan.operation,
+                "execution_plan_digest": plan.execution_plan_digest,
             },
         )
         return {"id": str(row.id)}
@@ -1373,6 +1651,8 @@ def dispatch_attempt(
                 "target_ref": target.target_ref,
                 "attempt_no": attempt_no,
                 "plan_digest": plan.plan_digest,
+                "operation": plan.operation,
+                "execution_plan_digest": plan.execution_plan_digest,
                 "release_ref": (plan.snapshot or {}).get("release_ref"),
             },
         )
@@ -1390,6 +1670,12 @@ def dispatch_attempt(
         target_ref=target.target_ref,
         release_ref=str(snapshot.get("release_ref") or ""),
         plan_digest=plan.plan_digest or "",
+        # Echoed, never re-derived. These are the values `request_rollout`
+        # already refused to dispatch without, so they are present here by that
+        # gate rather than by a fallback — the `or ""` is for the type checker's
+        # `str | None`, not a state this line can actually be reached in.
+        operation=plan.operation or "",
+        execution_plan_digest=plan.execution_plan_digest or "",
         attempt_no=int(str(outcome.result["attempt_no"])),
         spec=dict(snapshot.get("spec") or {}),
         licence_ref=snapshot.get("licence_ref"),
@@ -1416,7 +1702,7 @@ def settle_attempt(db: Session, command: SettleAttemptCommand) -> facts.RolloutV
         ).scalar_one_or_none()
         if attempt is None:
             raise TransitionRefusedError(
-                f"rollout {rollout.rollout_ref} has no attempt " f"{command.attempt_no}"
+                f"rollout {rollout.rollout_ref} has no attempt {command.attempt_no}"
             )
         if attempt.outcome != AttemptOutcome.PENDING.value:
             raise TransitionRefusedError(
@@ -1591,6 +1877,13 @@ def record_observation(
     **A replay returns the ORIGINAL verdict verbatim.** Recomputing could yield a
     different answer against changed target state for bytes the deployment sent
     once, which would make an at-least-once transport look like a state change.
+
+    **A report is accepted only when proposal, authorization and report bind the
+    same execution plan and the same operation.** Step 8 of the flow, and the
+    reason this module holds an execution plan digest at all. Three separate
+    quarantines — `execution_plan_mismatch`, `operation_mismatch`,
+    `unbound_report` — because they are three findings with three readers; see
+    `_execution_binding_disposition`.
     """
     observed = command.observed
     if command.received_at.tzinfo is None:
@@ -1666,6 +1959,20 @@ def record_observation(
         ).scalar_one_or_none()
         if target is None or target.target_ref != credential_target:
             attempt.disposition = ObservationDisposition.UNKNOWN_TARGET.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(session, attempt, command, changed=False)
+
+        # ── The three-term binding. Step 8, and the reason any of this. ─────
+        #
+        # Placed HERE — after identity is proven and before the canonical
+        # receipt — for the same reason the claim/proof and unknown-target
+        # quarantines are: the question is about THIS arrival's contents, and
+        # answering it from a previous arrival's verdict would let a report bind
+        # to an authorization by being sent twice.
+        unbound = _execution_binding_disposition(session, target, observed)
+        if unbound is not None:
+            attempt.disposition = unbound
             session.add(attempt)
             session.flush()
             return _observation_result(session, attempt, command, changed=False)
@@ -1752,6 +2059,104 @@ def record_observation(
         ),
         verdict=(str(result["verdict"]) if result.get("verdict") else None),
     )
+
+
+def _execution_binding_disposition(
+    session: Session, target: DeploymentTarget, observed: ObservedState
+) -> str | None:
+    """Step 8: accept only when proposal, authorization and report agree.
+
+    Returns the DISPOSITION that quarantines the arrival, or `None` when the
+    binding holds. A disposition rather than an exception because rule 3 governs
+    here: every arrival is recorded, and a report that binds the wrong execution
+    is precisely the evidence an operator needs — raising would discard it.
+
+    ## Three terms, and each mismatch is its own finding
+
+    * **proposal** — `plan.operation` / `plan.execution_plan_digest`, frozen
+      when Platform CP submitted what the Foundation had rendered and digested.
+    * **authorization** — `plan.authorized_operation` /
+      `plan.authorized_execution_plan_digest`, written once at `approve_plan`.
+    * **report** — what the executor recomputed before running and carried back.
+
+    An approval-exempt plan has no authorization term, and this says so rather
+    than manufacturing one: a copy of the proposal in the authorization's
+    columns would make a two-term check read as a three-term one, which is the
+    exact weakening `require_same_digest` refuses on the Foundation's side. Such
+    a plan is compared on two terms, and its empty `authorized_*` columns —
+    carried on `PlanView` and rendered — are what say so, rather than a count
+    this function would have to be trusted to report honestly.
+
+    ## Why the digest is compared before the operation
+
+    A wrong digest means a DIFFERENT execution plan ran, and the operation of a
+    plan nobody authorized is not a meaningful comparison — reporting
+    `operation_mismatch` for it would send an operator to the approvals system
+    when the finding is in the executor. So the digest decides first, and the
+    operation is decided only among reports that named the right execution.
+    """
+    #: Nothing to bind against. An ABSENCE, not a contradiction — the sender
+    #: never said which authorization it was executing, so no plan was consulted
+    #: and none is named in the finding.
+    if not observed.rollout_ref:
+        return ObservationDisposition.UNBOUND_REPORT.value
+    if not observed.execution_plan_digest or not observed.operation:
+        return ObservationDisposition.UNBOUND_REPORT.value
+
+    rollout = session.execute(
+        select(Rollout).where(Rollout.rollout_ref == observed.rollout_ref)
+    ).scalar_one_or_none()
+    if rollout is None or rollout.target_id != target.id:
+        # A rollout that does not exist, or one belonging to somebody else.
+        # Both are "this report names no authorization of THIS target's", and
+        # the second is the interesting one: naming another target's rollout is
+        # how a report would try to satisfy a binding it was never issued.
+        return ObservationDisposition.UNBOUND_REPORT.value
+
+    plan = session.get(DeploymentPlan, rollout.plan_id)
+    if plan is None or not plan.execution_plan_digest or not plan.operation:
+        return ObservationDisposition.UNBOUND_REPORT.value
+
+    proposed = _stored_execution_plan_digest(
+        plan, plan.execution_plan_digest, term="execution plan digest"
+    )
+    authorized = _stored_execution_plan_digest(
+        plan, plan.authorized_execution_plan_digest, term="authorized execution plan"
+    )
+    try:
+        reported = ExecutionPlanDigestV1.parse(observed.execution_plan_digest)
+    except DigestEncodingError:
+        # NOT raised, and not a mismatch either. An unreadable digest is a
+        # finding about the REPORT's encoding; calling it a mismatch would say
+        # the executor ran the wrong plan, which nothing here established.
+        return ObservationDisposition.UNBOUND_REPORT.value
+
+    # EVERY stored term, not the first one that exists. If the proposal and the
+    # authorization ever disagreed — nothing in this module can write that, but
+    # a database edit can — a report matching whichever one it happened to match
+    # would be accepted on a coin toss. Comparing against all of them means a
+    # binding whose own terms disagree can satisfy nothing, which is the correct
+    # answer to a data fault and needs no branch of its own.
+    digests = [term for term in (proposed, authorized) if term is not None]
+    if any(reported != term for term in digests):
+        return ObservationDisposition.EXECUTION_PLAN_MISMATCH.value
+
+    try:
+        reported_operation = require_operation(
+            observed.operation, where="observation operation"
+        )
+    except OperationRefusedError:
+        # A word outside the closed vocabulary. Never coerced, and never read as
+        # the operation the plan happens to name.
+        return ObservationDisposition.OPERATION_MISMATCH.value
+    operations = [
+        require_operation(value, where=f"plan {plan.id}")
+        for value in (plan.operation, plan.authorized_operation)
+        if value is not None
+    ]
+    if any(reported_operation is not term for term in operations):
+        return ObservationDisposition.OPERATION_MISMATCH.value
+    return None
 
 
 def _replay_observation(
@@ -1846,6 +2251,13 @@ def _observation_result(
         "claimed_target_ref": attempt.claimed_target_ref,
         "key_id": attempt.key_id,
         "changed_state": changed,
+        # The report's OWN account of what it executed. Evidence, never
+        # authority — the same rule `claimed_target_ref` is held to — and
+        # recorded on every path so a quarantined arrival can be triaged
+        # without reaching for the signed body.
+        "reported_rollout_ref": command.observed.rollout_ref,
+        "reported_operation": command.observed.operation,
+        "reported_execution_plan_digest": command.observed.execution_plan_digest,
     }
     _audit_and_emit(
         session,
@@ -2204,17 +2616,17 @@ __all__ = [
     "observation_attempts",
     "observation_log",
     "observation_receipts",
+    "plan_digest_of",
     "plan_snapshot",
     "plans_for_target",
     "preview_plan_proposal",
-    "rollouts_for_target",
     "propose_plan",
     "record_observation",
     "register_target",
     "request_rollout",
     "require_manual_repair",
-    "plan_digest_of",
     "revoke_credential",
+    "rollouts_for_target",
     "set_desired_state",
     "settle_attempt",
     "snapshot_digest",

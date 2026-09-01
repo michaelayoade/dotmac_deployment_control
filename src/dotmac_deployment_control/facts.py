@@ -125,6 +125,18 @@ class PlanView:
     desired_revision: int
     record_version: int
     plan_digest: str | None = None
+    #: The execution binding, in two pairs: what was PROPOSED and what was
+    #: AUTHORIZED. Both are surfaced because they are the terms an operator
+    #: needs to read when a report is quarantined — "which execution did we
+    #: authorize, and as what kind of act?" — and a view that showed only one
+    #: pair would make a two-term check look like a three-term one on screen.
+    #:
+    #: `None` on a `0.1.0a7` plan, which is a bindable-never state rather than a
+    #: pending one; such a plan is refused a rollout.
+    operation: str | None = None
+    execution_plan_digest: str | None = None
+    authorized_operation: str | None = None
+    authorized_execution_plan_digest: str | None = None
     requires_approval: bool = True
     approval_policy_code: str | None = None
     approval_policy_version: int | None = None
@@ -220,11 +232,18 @@ class PlanProposalPreview:
     derives it, and there is nowhere for a caller to put one of their own.
 
     That is the structural half of "the browser may never submit its own
-    PlanDigest". `ProposePlanCommand` carries no digest field, so the write path
-    cannot accept one; this type carries no input at all, so the read path
+    PlanDigest". `ProposePlanCommand` carries no PLAN digest field, so the write
+    path cannot accept one; this type carries no input at all, so the read path
     cannot either. A shape where the client COULD supply a digest is a shape
     where someone eventually will, and an approval bound to a client-supplied
     digest is an approval for whatever the client chose to describe.
+
+    The rule is about digests Control DERIVES, and it is unchanged by
+    `ProposePlanCommand.execution_plan_digest`, which is the Deployment
+    Foundation's value over bytes Control cannot reach. A preview cannot show it
+    for exactly that reason: this module has nothing to compute it from, which
+    is the same absence that makes it safe to accept from the one caller that
+    does.
 
     `digest_matches_current` is why the preview is not just decoration: a plan
     proposed after the desired state moved is a different plan, and an operator

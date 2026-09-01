@@ -42,17 +42,58 @@ class TestTheClientCanNeverSupplyAPlanDigest:
     """
 
     def test_no_input_type_carries_a_plan_digest_field(self) -> None:
+        """A PLAN digest. `execution_plan_digest` is a different value and the
+        next test states, positively, why it is admissible."""
         offenders = [
             f"{cls.__name__}.{f.name}"
             for cls in INPUT_TYPES
             for f in dataclasses.fields(cls)
-            if "plan_digest" in f.name
+            if "plan_digest" in f.name and "execution_plan_digest" not in f.name
         ]
         assert not offenders, offenders
 
-    def test_the_propose_command_takes_no_digest_at_all(self) -> None:
-        names = {f.name for f in dataclasses.fields(api.ProposePlanCommand)}
-        assert not {n for n in names if "digest" in n}
+    def test_the_one_digest_an_input_may_carry_is_the_one_control_cannot_compute(
+        self,
+    ) -> None:
+        """THE NARROWING, stated as a property rather than as an exception.
+
+        Through `0.1.0a7` this said `ProposePlanCommand` carried no digest field
+        at all, on the premise that a caller naming a digest is a caller naming
+        what its own approval binds to. That premise holds for every digest this
+        module DERIVES and holds for none it cannot.
+
+        `ExecutionPlanDigestV1` is `sha256(canonical FoundationExecutionPlanV1
+        bytes)`. Control has no renderer for that plan, no column holding its
+        bytes, and — the load-bearing half — no constructor that turns a payload
+        into one of these values. A value this module is structurally unable to
+        compute must be supplied, or the binding cannot exist at all.
+
+        So the rule becomes: exactly ONE digest field on the whole input
+        surface, and it is exactly the one whose type cannot be computed here.
+        Both halves are asserted, because either alone is satisfiable by the
+        wrong shape — a second uncomputable digest field would pass the first,
+        and a computable `execution_plan_digest` would pass the second.
+        """
+        digest_fields = {
+            f"{cls.__name__}.{f.name}"
+            for cls in INPUT_TYPES
+            for f in dataclasses.fields(cls)
+            if "digest" in f.name
+        }
+        assert digest_fields == {"ProposePlanCommand.execution_plan_digest"}
+
+        assert not hasattr(api.ExecutionPlanDigestV1, "over_json"), (
+            "ExecutionPlanDigestV1 has grown a constructor that takes a "
+            "payload. That is a second canonicalization of the Foundation's "
+            "execution plan, and a second canonicalization agrees about "
+            "serialization while disagreeing about payload — which is the "
+            "defect this whole binding was cut for."
+        )
+        assert hasattr(api.PlanDigestV1, "over_json"), (
+            "the check above is only meaningful while a digest this module DOES "
+            "compute still carries the constructor; without this, "
+            "`not hasattr` would pass on a package that computes nothing"
+        )
 
     def test_the_approval_digest_is_the_approvers_not_the_plans(self) -> None:
         """`ApprovalEvidence.content_digest` is NOT an exception to the rule.
