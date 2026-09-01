@@ -304,10 +304,34 @@ def test_the_cli_prints_the_declared_floor(capsys: pytest.CaptureFixture[str]) -
 def test_the_cli_prints_the_mutation_target(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """POSITIVE CONTROL over the `excluded` interface `ci.yml` actually calls,
+    with a fixture BUILT FROM the declared floor rather than around it.
+
+    The first form of this pinned `0.1.0a97` beside a listing of a73/a97/a98,
+    which was the right answer only while the floor was a98. The CLI reads the
+    real declaration, so raising the floor to a100 made it correctly answer a98
+    and made the test wrong — a fixture that has to be re-edited every time the
+    floor moves is a second authority for the floor, which is the defect this
+    whole file exists to keep out of the workflow.
+
+    `newest_excluded` is exercised on hand-written literals by
+    `test_it_names_the_closest_near_miss_as_the_mutation_target` above; what is
+    unique here is the CLI reading the tree's own declaration, so the fixture
+    has to follow that declaration.
+    """
+    major, minor, patch, alpha = kernel_floor.parse(kernel_floor.declared_floor())
+    below = f"{major}.{minor}.{patch}a{alpha - 1}"
+    ancient = f"{major}.{minor}.{patch}a{alpha // 2}"
+    assert len({ancient, below, kernel_floor.declared_floor()}) == 3, (
+        "the fixture must name three distinct versions or it is not "
+        "distinguishing 'the closest below' from 'any below'"
+    )
     listing = tmp_path / "index.html"
-    listing.write_text(_listing("0.1.0a73", "0.1.0a97", "0.1.0a98"), encoding="utf-8")
+    listing.write_text(
+        _listing(ancient, below, kernel_floor.declared_floor()), encoding="utf-8"
+    )
     assert kernel_floor.main(["excluded", "--index-html", str(listing)]) == 0
-    assert capsys.readouterr().out.strip() == "0.1.0a97"
+    assert capsys.readouterr().out.strip() == below
 
 
 def test_the_helper_performs_no_network_io() -> None:
