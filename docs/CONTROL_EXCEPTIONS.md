@@ -39,15 +39,31 @@ contribution and the manifest, so the artifact stays internally coherent) and a
 column right by name and wrong by type (`deployment_plans.plan_digest` back to
 the `dc_0001` width), each in its own environment so each refusal is attributed.
 
-**What is still owed on THIS entry, and must not be read as discharged by the
-paragraph above:** `0.1.0a7`'s own verification, run `33508897684`, ran the nine
-canaries a6 shipped and none of these. Until a verify run of the published a7
-artifact reports these canaries passing — recorded on a7's row in
-`docs/published-versions.json` — a7 carries no artifact-level catalogue proof,
-and the pre-merge CI lane (which runs against a wheel built on the runner, not
-against the wheel the registry served) is not a substitute for one. Platform CP
-binding the catalogue into a release catalogue remains a separate, undischarged
-step either way.
+**DISCHARGED for a7 by supplemental verify run `33517740717`** (2026-09-01,
+dispatched from main `61611da8`). It fetched the SAME published bytes from
+registry.dotmac.io by name and returned VERIFIED on all seven properties with
+ELEVEN canaries. `database_catalogue_as_published` and `catalogue_digest_binds`
+both passed against the wheel the REGISTRY served, so a7 now carries an
+artifact-level proof of the seven-table, 95-column extent and the paragraph
+above is no longer the only thing standing behind it. The tag was not touched:
+the run reached `tag_once`'s ALREADY notice on
+`6b1ce371b07220914696243647aeb0d3947b87cc`. Nothing was published or rebuilt —
+`verify-release.yml` uploads nothing by construction.
+
+`0.1.0a7`'s ORIGINAL verification, run `33508897684`, still ran nine canaries
+and none of them the catalogue; that record is appended to, never rewritten, and
+the two runs must not be read as one.
+
+**What is still owed, and is NOT discharged by the run above:** the observed
+catalogue digest
+`sha256:92be901f92ec2a2861d2b44e3693bb7645e84d9d60c14d7caeb6c12051abb01e` is a
+coordinate of (artifact, kernel) rather than of the wheel alone — the canonical
+document carries `manifest_contract_version`, which this module declares none of
+and the kernel infers from `KERNEL_MODULE_CONTRACT_VERSION` — so a consumer
+adopting the STRUCTURE is safe across kernels and a consumer adopting the DIGEST
+must pin the kernel too. Recorded on a7's row as
+`supplemental_verify_runs[0].adoption_constraint`. And Platform CP binding the
+catalogue into a release catalogue remains a separate, undischarged step.
 
 The record below is the original entry, kept unchanged.
 
