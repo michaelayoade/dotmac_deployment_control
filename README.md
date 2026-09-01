@@ -126,12 +126,24 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Pin `0.1.0a6`, with `dotmac-kernel
->=0.1.0a98`. That is the newest PUBLISHED version; `0.1.0a7` is declared in this
-tree, is not on the index, and is recorded in `docs/publication-ledger.json`
-until it is. When it publishes it will require `dotmac-kernel >=0.1.0a100` —
-`database_catalog.py` imports `dotmac_kernel.product_database_catalog`, which is
-absent from the published `0.1.0a99` wheel and present in `0.1.0a100`.
+**Built and validated, not adopted.** Pin `0.1.0a7`, with `dotmac-kernel
+>=0.1.0a100`. That is the newest PUBLISHED version — release run `33507951778`,
+independently VERIFIED by run `33508897684` on 2026-09-01 — and it requires
+`dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
+`dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
+wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
+pinnable, against `dotmac-kernel >=0.1.0a98`.
+
+Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
+`a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is
+the ADR-0016 cutover. `docs/published-versions.json` carries that obligation on
+a7's row.
+
+The published artifact carries `mod_deploy`'s exact structure — seven platform
+tables, 95 columns — through a source-owned
+`ModuleDatabaseCatalogContributionV1`. That extent is proven by source tests,
+NOT by the nine artifact canaries, which are unchanged from a6 and drive none of
+it. It is not production-adoption evidence.
 
 Three published versions must never be pinned, and they failed three different
 questions — the distinction is the record, so the reason is named rather than

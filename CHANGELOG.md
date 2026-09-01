@@ -5,7 +5,28 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a7 — UNRELEASED, declared and awaiting a release run
+## 0.1.0a7 — RELEASED 2026-09-01, verified on seven properties with nine canaries
+
+Published by run `33507951778` from protected main `6b1ce371`; independently
+verified by run `33508897684`, which wrote the tag on a VERIFIED verdict.
+Wheel `b9534111a197ce818c3d0bac166f3a5a2857dc3ceb937cc9e53452e3d7ffcfb0`, sdist
+`d5ca7ae82469f57ae0b9443f579be5316dc3c31004a791a38c0bf5200f9e9b51`.
+
+**Both halves of the floor mutation are now derived, not written down.** On the
+release commit the lane derived `0.1.0a99` from the index as the newest kernel
+the floor excludes and `dotmac_kernel.product_database_catalog` as the module
+that exclusion must fail on, saw pip refuse the pairing (`ERROR: Cannot install
+dotmac-deployment-control==0.1.0a7 and dotmac-kernel==0.1.0a99 because these
+package versions have conflicting dependencies`), then forced a99 in with
+`--no-deps --force-reinstall` and saw all nine canaries fail with
+`ModuleNotFoundError: No module named 'dotmac_kernel.product_database_catalog'`.
+a6's literal would have demanded a failure naming `dotmac_kernel.transactions`,
+which a99 contains.
+
+**The nine canaries are the same nine a6 shipped.** None of them drives the
+database catalogue. Its seven-table, 95-column extent is proven by source tests
+on the release commit, not by the published artifact, and is not
+production-adoption evidence.
 
 ### Added
 
