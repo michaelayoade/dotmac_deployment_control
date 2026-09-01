@@ -239,6 +239,23 @@ class ObservationDisposition(StrEnum):
     NOT_ELIGIBLE = "not_eligible"
     TARGET_MISMATCH = "target_mismatch"
     UNKNOWN_TARGET = "unknown_target"
+    #: The three-term binding (proposal, authorization, report) did not hold.
+    #:
+    #: THREE members and not one, because they are three different findings
+    #: with three different readers. A digest mismatch says the executor ran a
+    #: plan nobody authorized. An operation mismatch says it ran the RIGHT plan
+    #: as the WRONG kind of act — a rollback executed under a deploy's approval
+    #: is the case this vocabulary exists for, and it is invisible to a
+    #: digest-only check. An unbound report says the arrival named no
+    #: authorization at all, which is an absence rather than a contradiction and
+    #: is triaged by looking at the sender, not at the plan.
+    #:
+    #: Collapsing any two of them would make the audit trail say "the report did
+    #: not bind" and leave the operator to work out which of three unrelated
+    #: systems to open.
+    EXECUTION_PLAN_MISMATCH = "execution_plan_mismatch"
+    OPERATION_MISMATCH = "operation_mismatch"
+    UNBOUND_REPORT = "unbound_report"
 
 
 class DeploymentTarget(Base, TimestampMixin):
@@ -391,6 +408,50 @@ class DeploymentPlan(Base, TimestampMixin):
     #: digest columns on this plane so the next algorithm does not need a third
     #: width.
     plan_digest: Mapped[str | None] = mapped_column(String(128))
+
+    # ── The execution binding: proposal, then authorization ─────────────────
+    #
+    # FOUR columns and not two, and the pairing is the whole design. Steps 3
+    # and 4 of the flow freeze what Platform CP submitted; step 8 accepts a
+    # report only when proposal, authorization AND report bind the same values.
+    # Two stored terms plus the report is a TWO-term gate wearing a three-term
+    # name, and a gate can always be weakened by quietly passing fewer terms
+    # than it names. So the approval records what it authorized in its own
+    # columns, written once at `approve_plan`, and the report is compared
+    # against both.
+    #
+    # `operation` is text with no CHECK, like every other vocabulary column
+    # here (ADR-0008) — but unlike them the vocabulary is CLOSED, and the
+    # closure lives in `operations.require_operation` where a refusal can
+    # explain itself. A database CHECK would put the same closed set in two
+    # places and make a coordinated change with the executor an `ALTER TABLE`
+    # on every deployment.
+    #
+    # NULLABLE, and no server default. Nullable because `0.1.0a7` rows exist
+    # and predate the contract; no default because a default IS an inference,
+    # and an operation is never inferred. A plan holding NULL here is refused a
+    # rollout rather than being treated as a deploy.
+
+    #: WHAT was proposed — frozen at `propose_plan`, from what Platform CP
+    #: submitted after the Foundation rendered and digested its execution plan.
+    operation: Mapped[str | None] = mapped_column(String(20))
+    #: `sha256:<64 lowercase hex>` — `ExecutionPlanDigestV1`, the FOUNDATION's
+    #: digest over its own canonical execution-plan bytes.
+    #:
+    #: Control never computes this and cannot: the type it is read back as does
+    #: not inherit a constructor that takes a payload, and the bytes it is over
+    #: are a `FoundationExecutionPlanV1` this module has no renderer for and no
+    #: column to hold. Stored verbatim as received — the parser refuses a
+    #: non-canonical spelling rather than rewriting it, so nothing here is a
+    #: second canonicalization of somebody else's value.
+    execution_plan_digest: Mapped[str | None] = mapped_column(String(128))
+
+    #: WHAT was authorized — written once at `approve_plan` from the approval
+    #: evidence, and refused unless it equals what was proposed. Redundant only
+    #: while nothing has gone wrong, which is the same thing that is true of
+    #: every independent term in every binding check.
+    authorized_operation: Mapped[str | None] = mapped_column(String(20))
+    authorized_execution_plan_digest: Mapped[str | None] = mapped_column(String(128))
 
     #: Whether this plan is a SENSITIVE operation requiring approval. Declared
     #: per plan rather than inferred, because sensitivity is a product policy

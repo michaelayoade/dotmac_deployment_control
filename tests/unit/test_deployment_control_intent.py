@@ -75,6 +75,15 @@ _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
 _POLICY_VERSION = 4
 
+#: A stand-in for the Deployment Foundation's `ExecutionPlanDigestV1`.
+#:
+#: WRITTEN OUT as canonical text rather than computed from anything, and that is
+#: the point rather than laziness: Control cannot compute one, so a fixture that
+#: derived it would be exercising a capability the module deliberately does not
+#: have — and would go on passing if somebody gave it one.
+_EXECUTION_PLAN = "sha256:" + "1a" * 32
+_OTHER_EXECUTION_PLAN = "sha256:" + "2b" * 32
+
 
 @pytest.fixture(autouse=True)
 def _installed_module_audit_actions() -> None:
@@ -157,6 +166,8 @@ def _plan(db: Session, target_id, **overrides: object):  # type: ignore[no-untyp
     fields: dict[str, object] = {
         "command_id": _cmd(),
         "target_id": target_id,
+        "operation": "deploy",
+        "execution_plan_digest": _EXECUTION_PLAN,
         "requires_approval": True,
         "approval_policy_code": _POLICY,
         "approval_policy_version": _POLICY_VERSION,
@@ -172,6 +183,8 @@ def _evidence(digest: str, **overrides: object) -> ApprovalEvidence:
         "decision_ref": f"apr-{uuid.uuid4().hex[:8]}",
         "content_digest": digest,
         "decided_at": _NOW,
+        "operation": "deploy",
+        "execution_plan_digest": _EXECUTION_PLAN,
     }
     fields.update(overrides)
     return ApprovalEvidence(**fields)  # type: ignore[arg-type]

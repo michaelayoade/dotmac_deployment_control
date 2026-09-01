@@ -308,7 +308,18 @@ class TestNoTransportCameAcross:
 
         fields = set(DeliveryIntent.__dataclass_fields__)
         assert not (fields & self._TRANSPORT_NAMES), fields & self._TRANSPORT_NAMES
-        assert {"release_ref", "plan_digest", "spec"} <= fields
+        # `operation` and `execution_plan_digest` are WHAT, not HOW: they name
+        # which execution was authorized and as what kind of act, the same kind
+        # of fact `plan_digest` already is. The executor recomputes the first
+        # and carries both back in its report, which is what makes a receipt
+        # bindable at all.
+        assert {
+            "release_ref",
+            "plan_digest",
+            "operation",
+            "execution_plan_digest",
+            "spec",
+        } <= fields
 
     def test_no_migration_column_is_transport_shaped(self) -> None:
         sql = MIGRATION.read_text()

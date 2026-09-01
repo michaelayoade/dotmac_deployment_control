@@ -2,8 +2,10 @@
 
 The declaration is authored from this module's frozen migration lineage, not
 from a running Platform CP database.  ``dc_0001_deployment_control`` creates the
-seven platform tables and ``dc_0002_canonical_plan_digest`` widens the one
-column whose final type differs from the root revision.
+seven platform tables, ``dc_0002_canonical_plan_digest`` widens the one column
+whose final type differs from the root revision, and
+``dc_0003_execution_plan_binding`` appends the four columns that bind a plan to
+the Foundation's execution plan and to a declared operation.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -91,7 +93,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0002_canonical_plan_digest",
+    lineage_head="dc_0003_execution_plan_binding",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -119,6 +121,21 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 ),
                 _column(
                     "updated_at", 16, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+                # dc_0003 APPENDS these four. PostgreSQL assigns `attnum` in
+                # ADD COLUMN order, so they sit after the timestamps rather
+                # than beside `plan_digest` where a reader would expect them —
+                # this declaration records the physical truth, not the tidy
+                # one, because the clean-room comparison is against a migrated
+                # database.
+                _column("operation", 17, _VARCHAR_20, nullable=True),
+                _column("execution_plan_digest", 18, _VARCHAR_128, nullable=True),
+                _column("authorized_operation", 19, _VARCHAR_20, nullable=True),
+                _column(
+                    "authorized_execution_plan_digest",
+                    20,
+                    _VARCHAR_128,
+                    nullable=True,
                 ),
             ),
         ),

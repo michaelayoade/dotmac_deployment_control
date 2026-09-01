@@ -274,7 +274,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0002_canonical_plan_digest",
+                revision="dc_0003_execution_plan_binding",
             ),
         )
         comparison = verify_module_database_catalog(

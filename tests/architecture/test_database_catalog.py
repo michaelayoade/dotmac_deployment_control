@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0002 structure declaration."""
+"""The module publishes one exact post-dc_0003 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,21 +32,27 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0002_canonical_plan_digest",
+            revision="dc_0003_execution_plan_binding",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0002_canonical_plan_digest"
+    assert database_catalog.lineage_head == "dc_0003_execution_plan_binding"
 
 
-def test_catalogue_has_the_exact_seven_table_ninety_five_column_extent() -> None:
+def test_catalogue_has_the_exact_seven_table_ninety_nine_column_extent() -> None:
+    """Seven tables and 99 columns after `dc_0003`.
+
+    a7 published 95. The four `dc_0003` adds are all on `deployment_plans`, and
+    the count is asserted PER TABLE as well as in total precisely so a future
+    change cannot keep the sum right by moving a column between tables.
+    """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
     assert counts == {
-        "deployment_plans": 16,
+        "deployment_plans": 20,
         "deployment_targets": 18,
         "observation_attempts": 15,
         "observation_receipts": 12,
@@ -54,7 +60,48 @@ def test_catalogue_has_the_exact_seven_table_ninety_five_column_extent() -> None
         "rollouts": 10,
         "target_credentials": 13,
     }
-    assert sum(counts.values()) == 95
+    assert sum(counts.values()) == 99
+
+
+def test_dc_0003_appends_the_execution_binding_in_add_column_order() -> None:
+    """The four new columns sit AFTER the timestamps, not beside `plan_digest`.
+
+    PostgreSQL assigns `attnum` in ADD COLUMN order, and the clean-room canary
+    compares this declaration against a migrated database. A declaration that
+    put them where a reader would expect them would be describing a database
+    that does not exist.
+    """
+    plans = next(
+        table for table in database_catalog.tables if table.name == "deployment_plans"
+    )
+    tail = {column.name: column for column in plans.columns if column.ordinal > 16}
+
+    assert sorted(tail) == [
+        "authorized_execution_plan_digest",
+        "authorized_operation",
+        "execution_plan_digest",
+        "operation",
+    ]
+    assert [
+        tail[name].ordinal
+        for name in (
+            "operation",
+            "execution_plan_digest",
+            "authorized_operation",
+            "authorized_execution_plan_digest",
+        )
+    ] == [
+        17,
+        18,
+        19,
+        20,
+    ]
+    # Every one nullable and with no generated default. A default would make a
+    # legacy row claim an operation nobody declared — the inference the closed
+    # vocabulary exists to refuse.
+    for column in tail.values():
+        assert column.nullable, column.name
+        assert column.expression == "", column.name
 
 
 def test_dc_0002_final_digest_width_is_declared_not_the_root_width() -> None:
@@ -94,7 +141,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0002_canonical_plan_digest",
+                revision="dc_0003_execution_plan_binding",
             ),
         )
 
@@ -110,5 +157,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 95
+    assert sum(len(table.columns) for table in restored.tables) == 99
     assert {table.plane.value for table in restored.tables} == {"platform"}

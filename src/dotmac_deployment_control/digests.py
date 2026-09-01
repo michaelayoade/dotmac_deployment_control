@@ -52,7 +52,7 @@ parser, it will disagree eventually, and the disagreement surfaces as a false
 "the plan changed". Platform CP and the deployment foundation must never
 normalize; they hand the value across as received.
 
-## Two types, not one
+## Three types, not one, and the third is the one this module cannot compute
 
 `PlanDigestV1` covers a frozen plan snapshot. `SpecDigestV1` covers a deployment
 spec alone — what a TARGET reports about itself, because a target knows what it
@@ -60,6 +60,14 @@ is running and cannot know which plan produced it. Same algorithm, same
 encoding, different subject, and a dataclass compares unequal across types, so a
 spec digest can never satisfy a plan-digest binding by arriving in the right
 shape. The a4 code, comparing strings, had no such protection.
+
+`ExecutionPlanDigestV1` is the third, and it is a different KIND of value.
+Both of the others are over payloads this module builds; that one is over a
+`FoundationExecutionPlanV1` the Deployment Foundation renders, canonicalizes and
+hashes. Control receives it, freezes it, signs it, and hands it back — and it is
+structurally unable to do anything else, because it does not inherit the
+constructor that turns bytes into a digest. See the class for why that absence
+is the point.
 """
 
 from __future__ import annotations
@@ -85,6 +93,7 @@ _CANONICAL = re.compile(r"\Asha256:([0-9a-f]{64})\Z")
 _BARE_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 _ANY_PREFIXED = re.compile(r"\A([A-Za-z0-9_-]+):(.*)\Z", re.DOTALL)
 
+_R = TypeVar("_R", bound="_ReceivedSha256Digest")
 _T = TypeVar("_T", bound="_Sha256Digest")
 
 
@@ -195,13 +204,23 @@ def _is_hexish(value: str) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class _Sha256Digest:
-    """Algorithm plus BYTES. The bytes are the identity; the text is a rendering.
+class _ReceivedSha256Digest:
+    """A digest this module can READ and RENDER, and cannot COMPUTE.
 
-    `algorithm` is carried explicitly rather than implied by the class, because a
-    value that travels needs to say what it is. It is validated on construction:
-    a value naming an algorithm this module cannot compute is refused at the
-    boundary rather than becoming a digest that never matches anything.
+    Algorithm plus BYTES. The bytes are the identity; the text is a rendering.
+    `algorithm` is carried explicitly rather than implied by the class, because
+    a value that travels needs to say what it is. It is validated on
+    construction: a value naming an algorithm this module cannot compute is
+    refused at the boundary rather than becoming a digest that never matches
+    anything.
+
+    ## The absence is the feature
+
+    There is no `over_json` here, and no other constructor that turns a payload
+    into a digest. The computing constructors live one level DOWN, on
+    `_Sha256Digest`, so a type that must never be recomputed simply does not
+    inherit them. That is a property of the class graph rather than a rule
+    somebody has to remember at each call site — see `ExecutionPlanDigestV1`.
     """
 
     algorithm: str
@@ -222,14 +241,43 @@ class _Sha256Digest:
     # ── construction ────────────────────────────────────────────────────────
 
     @classmethod
+    def parse(cls: type[_R], value: object) -> _R:
+        """STRICT. Canonical `sha256:<64 lowercase hex>` and nothing else.
+
+        VALIDATION, not normalization, and the difference is load-bearing for
+        `ExecutionPlanDigestV1`: a value that is not already canonical is
+        REFUSED rather than rewritten, so the text that reaches storage is
+        byte-identical to the text the caller sent. A parser that accepted bare
+        hex or uppercase and tidied it would be a second canonicalization of
+        somebody else's value, which is the whole defect class this repair
+        exists to close.
+        """
+        return cls(ALGORITHM, _parse_hex(cls.__name__, value, allow_bare=False))
+
+    # ── rendering ───────────────────────────────────────────────────────────
+
+    @property
+    def canonical(self) -> str:
+        """`sha256:<64 lowercase hex>` — the one serialization that leaves here."""
+        return f"{self.algorithm}:{self.digest.hex()}"
+
+    def __str__(self) -> str:
+        return self.canonical
+
+
+@dataclass(frozen=True, slots=True)
+class _Sha256Digest(_ReceivedSha256Digest):
+    """A received digest that this module can ALSO compute for itself.
+
+    Everything above plus `over_json` and the two `0.1.0a4` legacy parsers. A
+    digest whose subject this module owns — a plan snapshot, a deployment
+    spec — belongs here; one whose subject belongs to another system does not.
+    """
+
+    @classmethod
     def over_json(cls: type[_T], payload: Mapping[str, Any]) -> _T:
         """Compute over the canonical JSON encoding of `payload`."""
         return cls(ALGORITHM, hashlib.sha256(canonical_json(payload)).digest())
-
-    @classmethod
-    def parse(cls: type[_T], value: object) -> _T:
-        """STRICT. Canonical `sha256:<64 lowercase hex>` and nothing else."""
-        return cls(ALGORITHM, _parse_hex(cls.__name__, value, allow_bare=False))
 
     @classmethod
     def parse_a4_bare_hex(cls: type[_T], value: object) -> _T:
@@ -262,11 +310,6 @@ class _Sha256Digest:
     # ── rendering ───────────────────────────────────────────────────────────
 
     @property
-    def canonical(self) -> str:
-        """`sha256:<64 lowercase hex>` — the one serialization that leaves here."""
-        return f"{self.algorithm}:{self.digest.hex()}"
-
-    @property
     def a4_bare_hex(self) -> str:
         """The `0.1.0a4` rendering. For fixtures and compatibility proofs only.
 
@@ -275,9 +318,6 @@ class _Sha256Digest:
         make the compatibility proof a proof about the test.
         """
         return self.digest.hex()
-
-    def __str__(self) -> str:
-        return self.canonical
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,10 +345,49 @@ class SpecDigestV1(_Sha256Digest):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionPlanDigestV1(_ReceivedSha256Digest):
+    """`sha256(canonical FoundationExecutionPlanV1 bytes)` — the Foundation's.
+
+    The middle term binding an authorization to an execution. It is NOT the
+    descriptor digest, NOT the authorization-envelope digest, and NOT
+    `PlanDigestV1` — Control's own snapshot digest — which is why it is a third
+    type rather than a third use of one of them. A dataclass compares unequal
+    across types, so none of the three can satisfy another's binding by arriving
+    in the right shape.
+
+    ## Why this class inherits from the READ-ONLY base
+
+    The defect being repaired here is subtle and is worth naming, because it is
+    the reason a comment would not have been enough. Control's `plan_digest`
+    hashes the target's desired state wrapped in six sibling keys; the
+    Foundation hashes its execution plan alone. The two agree completely about
+    SERIALIZATION — canonical JSON, sorted keys, sha256 — and disagree about
+    PAYLOAD. So they can never be equal, and every line of either implementation
+    reads as correct.
+
+    That is what a second canonicalization always looks like from inside. The
+    only defence that does not depend on somebody noticing is to make the second
+    canonicalization impossible to write here: `ExecutionPlanDigestV1` does not
+    inherit `over_json`, and there is no other route from a payload to one of
+    these. `ExecutionPlanDigestV1.over_json(...)` is an `AttributeError`, not a
+    disagreement discovered in production.
+
+    The only constructor is `parse`, which is STRICT — canonical
+    `sha256:<64 lowercase hex>` and nothing else. Deliberately no
+    `parse_accepting_a4_bare_hex`: this value never existed in `0.1.0a4`, so
+    there is no legacy shape to be tolerant of, and tolerance would mean
+    rewriting a value Control does not own. A non-canonical spelling is REFUSED,
+    so the text Control stores is byte-identical to the text it was handed.
+    Refusing is not normalizing.
+    """
+
+
 __all__ = [
     "ALGORITHM",
     "DIGEST_BYTES",
     "DigestEncodingError",
+    "ExecutionPlanDigestV1",
     "PlanDigestV1",
     "SpecDigestV1",
     "canonical_json",

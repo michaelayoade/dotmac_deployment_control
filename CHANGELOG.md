@@ -5,6 +5,118 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — the execution plan binding, and the first receipt it makes possible
+
+No version is allocated and nothing is published here. `0.1.0a7` remains the
+published, tagged and VERIFIED release; the browser surface (#18) and this
+change both wait on the shared release-recorder hold.
+
+**Why this exists.** Platform CP authorizes a deployment and the Deployment
+Foundation executes it, and until now the two could not exchange a receipt at
+all. Three independent reasons, all measured:
+
+1. Platform CP's receipt carried 17 fields; the Foundation's parser required
+   exactly 9 and was strict about both unknown and missing keys.
+2. **The digests disagreed about what is hashed.** Control's `plan_digest`
+   hashes the desired-state snapshot WRAPPED IN SIX SIBLING KEYS; the Foundation
+   hashes its rendered execution plan ALONE. Both use canonical JSON with sorted
+   keys and sha256, so they agree completely about SERIALIZATION and disagree
+   about PAYLOAD — they can never be equal, and both implementations read as
+   correct in review.
+3. The Foundation refuses any receipt whose `operation` is not `deploy` or
+   `rollback`. At `0.1.0a7`, `operation` appeared in this package only as an
+   English word inside docstrings: no column, absent from the seven-table
+   catalogue, from all eight `StrEnum`s, from `DeliveryIntent` and from all 19
+   fact types.
+
+The middle term is `ExecutionPlanDigestV1 = sha256(canonical
+FoundationExecutionPlanV1 bytes)` — NOT the descriptor digest, NOT the
+authorization-envelope digest, and NOT Control's own `PlanDigestV1`. The
+Foundation owns that type and its canonicalization. Control owns the closed
+operation vocabulary and holds both values on its plan model, receiving,
+freezing and signing them.
+
+### Added
+
+- **A closed operation vocabulary** (`dotmac_deployment_control.operations`):
+  `deploy` and `rollback`. `require_operation` refuses anything else —
+  `None`, a non-string, the empty string, an unknown word, and a case variant of
+  a known one. Never defaulted, never coerced, never inferred from a diff or a
+  command name. Deliberately the one closed vocabulary in a module whose other
+  vocabularies are open by ADR-0008: this one is a word Control says to an
+  executor that has already published which words it accepts, so an open set
+  would let Control sign an authorization that can never produce a receipt.
+- **`ExecutionPlanDigestV1`** — a RECEIVED-ONLY digest type. It does not inherit
+  `over_json`, so `ExecutionPlanDigestV1.over_json(...)` is an `AttributeError`
+  rather than a second canonicalization discovered in production. Its only
+  constructor is a STRICT `parse`: a non-canonical spelling is REFUSED rather
+  than rewritten, so the text Control stores is byte-identical to the text it
+  was handed. Refusing is not normalizing. There is no `parse_a4_bare_hex`,
+  because this value never existed in `0.1.0a4` and tolerance would mean
+  reshaping somebody else's digest.
+- **Four columns on `deployment_plans`** (`dc_0003_execution_plan_binding`), in
+  two pairs: `operation` / `execution_plan_digest` are the PROPOSAL, frozen at
+  `propose_plan`; `authorized_operation` /
+  `authorized_execution_plan_digest` are the AUTHORIZATION, written once at
+  `approve_plan`. Two pairs because the acceptance rule is a THREE-term one, and
+  one stored pair plus the report is a two-term gate wearing a three-term name.
+  All four nullable with NO server default: nullable because `0.1.0a7` rows
+  predate the contract, no default because a default is an inference.
+- **Three new observation dispositions**, because a failed binding is three
+  findings with three readers: `execution_plan_mismatch` (the executor ran a
+  plan nobody authorized), `operation_mismatch` (the right plan as the wrong
+  kind of act — invisible to a digest-only check, which is why DEPLOY and
+  ROLLBACK are separately authorized), and `unbound_report` (the arrival named
+  no authorization at all — an absence, not a contradiction).
+- `ExecutionPlanBindingError` and `OperationRefusedError`, neither a subclass of
+  the other and neither an `ApprovalRefusedError`. Same discipline `0.1.0a5`
+  established for `DigestEncodingError`: "I cannot read what you sent", "you
+  authorized a different execution" and "the plan moved under your approval"
+  are three findings for three people.
+- `tests/architecture/test_control_cannot_recompute_the_execution_plan.py` —
+  the structural property, held as a fact about the class graph and the source
+  rather than as a convention, each non-existence claim paired with the positive
+  control that stops it passing over an empty set.
+
+### Changed
+
+- `ProposePlanCommand` requires `operation` and `execution_plan_digest`.
+  `ApprovalEvidence` and `ObservedState` carry the values they bind;
+  `DeliveryIntent` carries the authorized operation and execution plan so the
+  executor can recompute before running and report the same values back.
+  `PlanView` surfaces both pairs.
+- `request_rollout` REFUSES a plan carrying no execution plan binding. An
+  unbound plan cannot produce a receipt, and dispatching one would put an
+  execution into a running system that this control plane could never
+  acknowledge — the rollout would time out and read as a transport fault. This
+  is where `0.1.0a7` plans stop.
+- The published catalogue is now **seven tables and 99 columns** with lineage
+  head `dc_0003_execution_plan_binding`. The canary literal in
+  `scripts/artifact_canaries.py` moved with it; the two are held in sync in both
+  directions by `test_the_canary_literal_and_the_declaration_do_not_drift`.
+- The read-contract property narrowed rather than lapsed. It said
+  `ProposePlanCommand` carries no digest field at all; it now says exactly ONE
+  digest field exists on the whole input surface and it is exactly the one whose
+  type cannot be computed here. Both halves are asserted, because either alone
+  is satisfiable by the wrong shape.
+
+### Removed, in effect
+
+- **The admin surface can no longer propose a plan.** `POST
+  /deployments/{id}/plans` now returns 400 in the module's own words.
+  `refuse_client_supplied_digest` rejects a digest by SHAPE whatever the field
+  is called — correctly, because a browser is not the Deployment Foundation and
+  has rendered no execution plan — so this surface cannot construct a bound
+  proposal. That is the architecture rather than a regression: a proposal that
+  can produce a receipt is made by Platform CP's composition adapter, and an
+  operator's part of the flow is upstream in the desired state. The operator MAY
+  still declare the `operation`; it is a word, not a digest.
+- The old POSITIVE CONTROL for the digest refusal — "the same submission without
+  a digest succeeds" — is replaced by a stronger one: a clean submission is
+  refused with DIFFERENT words, having reached the handler. Distinguishing two
+  refusals proves the digest guard fires specifically, where distinguishing a
+  refusal from a success only proved the surface accepts something.
+
 ## Unreleased — the catalogue canary a7 shipped without
 
 **CLOSED for `0.1.0a7` by supplemental verify run `33517740717`** (2026-09-01),

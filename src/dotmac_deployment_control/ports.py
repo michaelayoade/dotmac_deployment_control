@@ -120,6 +120,32 @@ class ApprovalRefusedError(DeploymentControlError):
     """
 
 
+class OperationRefusedError(DeploymentControlError):
+    """The operation named is not one this control plane can authorize.
+
+    Separate from every other refusal here, because it is a VOCABULARY fault
+    and the reader is whoever wrote the caller. `deploy` and `rollback` are the
+    closed set (`dotmac_deployment_control.operations`); an unknown word is
+    refused rather than defaulted, coerced or inferred, and this exception is
+    what "refused" means.
+    """
+
+
+class ExecutionPlanBindingError(DeploymentControlError):
+    """Proposal, authorization and report do not bind the same execution.
+
+    Raised where an approval is being recorded. The report path does NOT raise
+    it — rule 3 says every arrival is recorded, so a report that binds the wrong
+    execution plan or the wrong operation becomes an attempt row with its own
+    disposition instead of an exception.
+
+    Distinct from `ApprovalRefusedError`, which is about Control's OWN plan
+    snapshot moving under an approval. This one is about the FOUNDATION's
+    execution plan: the two answer different questions and send the reader to
+    different systems.
+    """
+
+
 class DigestEncodingError(DeploymentControlError):
     """A digest could not be READ. Deliberately not an `ApprovalRefusedError`.
 
@@ -197,6 +223,22 @@ class ApprovalEvidence:
     content_digest: str
     decided_at: datetime
     approver_refs: tuple[str, ...] = ()
+    #: WHICH OPERATION was authorized, and over WHICH execution plan.
+    #:
+    #: Both, and both independent of `content_digest`, because a three-term
+    #: gate cannot be satisfied by two terms. `content_digest` says which of
+    #: Control's plan snapshots was approved; these say which Foundation
+    #: execution the approver was authorizing over it. An approval that named
+    #: only the snapshot would authorize a DEPLOY and a ROLLBACK of it
+    #: identically, and Michael's ruling is that those are separately
+    #: authorized operations.
+    #:
+    #: Optional in the dataclass and REQUIRED by `approve_plan` for any plan
+    #: that froze them, which is every plan proposed from `0.1.0a8`. The default
+    #: exists for the `0.1.0a7` rows that predate the columns, not as a way to
+    #: approve a modern plan without saying what is being approved.
+    operation: str | None = None
+    execution_plan_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +273,22 @@ class ObservedState:
     raw_body_truncated: bool = False
     #: `unresolved` | `invalid` | `valid` — the kernel verifier's outcome.
     signature_status: str = "unresolved"
+    #: WHAT THE REPORT BINDS ITSELF TO. Three fields, and none of them is
+    #: authority: like `claimed_target_ref`, they are the report's own account
+    #: of itself, compared against what Control froze and authorized.
+    #:
+    #: `rollout_ref` says which authorization this report claims to be executing
+    #: — without it there is nothing to compare against, because a target may
+    #: hold many plans. `operation` and `execution_plan_digest` are what the
+    #: executor recomputed before running (step 6 of the flow) and carried into
+    #: the report (step 7).
+    #:
+    #: All three default to `None` so a caller cannot be forced to invent one,
+    #: and a report that supplies none is quarantined as UNBOUND rather than
+    #: accepted — an absence is a finding, not a pass.
+    rollout_ref: str | None = None
+    operation: str | None = None
+    execution_plan_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +309,14 @@ class DeliveryIntent:
     target_ref: str
     release_ref: str
     plan_digest: str
+    #: The AUTHORIZED operation and the AUTHORIZED execution plan, carried out
+    #: so the executor can do steps 6 and 7 of the flow: recompute the plan
+    #: digest before executing, and carry the same two values back in its
+    #: report. Neither is a transport detail and neither says HOW — they say
+    #: WHICH execution was authorized, which is the same kind of fact
+    #: `plan_digest` already is.
+    operation: str
+    execution_plan_digest: str
     attempt_no: int
     spec: Mapping[str, Any] = field(default_factory=dict)
     licence_ref: str | None = None
@@ -264,9 +330,11 @@ __all__ = [
     "DeploymentControlError",
     "DesiredDeployment",
     "DigestEncodingError",
+    "ExecutionPlanBindingError",
     "ExpectedStateError",
     "ObservationRefusedError",
     "ObservedState",
+    "OperationRefusedError",
     "PlanRefusedError",
     "TransitionRefusedError",
 ]

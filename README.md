@@ -188,6 +188,10 @@ tables, 95 columns — through a source-owned
 NOT by the nine artifact canaries, which are unchanged from a6 and drive none of
 it. It is not production-adoption evidence.
 
+The tree has since moved past that: `dc_0003_execution_plan_binding` appends four
+columns to `deployment_plans`, so the CURRENT declaration is seven tables and 99
+columns. The 95 above is a fact about the published a7 wheel and stays as one.
+
 Three published versions must never be pinned, and they failed three different
 questions — the distinction is the record, so the reason is named rather than
 collapsed into "bad":
