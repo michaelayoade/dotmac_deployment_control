@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
@@ -64,6 +65,11 @@ EXPECTED_CANARIES = (
     # 21 alphas too low.
     "declared_kernel_floor",
     "conflict_savepoint_executes",
+    # The two that close a7's gap: its headline was a database catalogue and
+    # its canary set was a6's exact nine, so no canary drove the thing the
+    # release existed to ship.
+    "database_catalogue_as_published",
+    "catalogue_digest_binds",
 )
 
 #: Every virtualenv `ci.yml` may run the canaries with, and what each proves.
@@ -74,6 +80,10 @@ CI_CANARY_INTERPRETERS = {
     "/tmp/canary/bin/python": "the resolver's choice, which is what a consumer gets",
     "/tmp/floor/bin/python": "EXACTLY the declared minimum kernel",
     "/tmp/below-floor/bin/python": "the newest kernel the floor excludes — must FAIL",
+    "/tmp/mutated-table/bin/python": "a catalogue publishing a table nobody "
+    "declared — must FAIL",
+    "/tmp/mutated-column/bin/python": "a catalogue whose plan_digest is the "
+    "dc_0001 width — must FAIL",
 }
 
 
@@ -522,3 +532,286 @@ def test_an_observation_file_that_omits_the_canaries_fails_loudly() -> None:
     del incomplete["canaries_passed"]
     with pytest.raises(TypeError):
         verify.evaluate(**incomplete)
+
+
+# ── the catalogue canary's literal, and whether it can see a lie ────────────
+#
+# `scripts/artifact_canaries.py` writes `mod_deploy`'s whole published
+# structure out as literals, because it runs where this repository is not
+# importable and cannot ask `src/` what the answer should be. That is the right
+# design and it creates exactly one new failure mode: the literal and the
+# declaration drifting apart, in either direction. This section is the ratchet
+# that holds them together, and the sensitivity proof for the comparison that
+# reads them.
+
+_spec_plant = importlib.util.spec_from_file_location(
+    "plant_catalogue_mutation", REPO_ROOT / "scripts" / "plant_catalogue_mutation.py"
+)
+assert _spec_plant is not None and _spec_plant.loader is not None
+plant = importlib.util.module_from_spec(_spec_plant)
+sys.modules[_spec_plant.name] = plant
+_spec_plant.loader.exec_module(plant)
+
+REFUSAL_ASSERTION = REPO_ROOT / "scripts" / "assert_catalogue_refusal.sh"
+
+
+def _published_catalogue_document() -> dict:
+    """The catalogue document the SOURCE declaration produces.
+
+    Built through the same public entry point the canary calls, so the two are
+    reading one declaration rather than two descriptions of it.
+    """
+    from dotmac_kernel import (
+        ComposedDatabaseLineageHeadV1,
+        DatabaseCatalogOwnerKind,
+        DatabaseCatalogOwnerV1,
+    )
+
+    from dotmac_deployment_control import build_database_catalog_snapshot, module
+
+    snapshot = build_database_catalog_snapshot(
+        distribution_version=module.version,
+        composed_lineage_head=ComposedDatabaseLineageHeadV1(
+            owner=DatabaseCatalogOwnerV1(
+                kind=DatabaseCatalogOwnerKind.MODULE,
+                code=canaries.CATALOGUE_MODULE_CODE,
+            ),
+            revision=canaries.CATALOGUE_LINEAGE_HEAD,
+        ),
+    )
+    return json.loads(snapshot.to_json_bytes())
+
+
+def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
+    """THE RATCHET. A canary comparing an artifact against a stale expectation
+    is worse than no canary: it goes red on a correct release and is then
+    "fixed" by copying whatever the artifact said, which is how a proof becomes
+    a tautology. Run here, against the declaration itself, a drift fails the
+    pull request that caused it rather than the release that meets it."""
+    from dotmac_deployment_control import module
+
+    differences = canaries.catalogue_differences(
+        _published_catalogue_document(), module.version
+    )
+    assert differences == [], differences
+
+
+def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
+    """Seven tables and 95 columns, held as the LITERAL's own shape. A future
+    edit that trimmed the table to its table names — the `len() == 7` check
+    this canary exists to replace — would fail here rather than in a release."""
+    assert canaries.CATALOGUE_TABLE_COUNT == 7
+    assert canaries.CATALOGUE_COLUMN_COUNT == 95
+    for name, columns in canaries.CATALOGUE_TABLES:
+        assert columns, name
+        for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):
+            assert column[1] == ordinal, (name, column)
+            assert column[2][0] and column[2][1], (name, column)
+
+
+#: `(mutation, how one catalogue document tells that lie)`. Keyed by the plant
+#: script's own mutation names, and every one of them must appear: a plant CI
+#: performs and nothing here reasons about would leave the grep in
+#: `assert_catalogue_refusal.sh` demanding a string the comparator may not even
+#: be able to produce.
+def _rename_a_table(document: dict) -> dict:
+    for table in document["tables"]:
+        if table["name"] == "rollout_attempts":
+            table["name"] = "rollout_events"
+    return document
+
+
+def _narrow_the_plan_digest(document: dict) -> dict:
+    for table in document["tables"]:
+        if table["name"] != "deployment_plans":
+            continue
+        for column in table["columns"]:
+            if column["name"] == "plan_digest":
+                column["postgres_type"]["formatted"] = "character varying(64)"
+    return document
+
+
+DOCUMENT_MUTATIONS = {
+    "table": _rename_a_table,
+    "column": _narrow_the_plan_digest,
+}
+
+
+def test_every_planted_mutation_is_one_the_comparator_can_see() -> None:
+    """THE LOOP CLOSED WITHOUT A WHEEL.
+
+    CI plants each mutation into an installed copy and requires the canaries to
+    refuse it, naming what moved. Both halves of that — the plant and the grep —
+    are strings, and strings agree with each other far more easily than they
+    agree with a comparison. So the same lie is told to the comparator here, and
+    every string the lane will demand must actually be in the refusal.
+    """
+    assert set(DOCUMENT_MUTATIONS) == set(plant.MUTATIONS) == set(plant.EVIDENCE)
+    from dotmac_deployment_control import module
+
+    for mutation, tell_the_lie in DOCUMENT_MUTATIONS.items():
+        document = tell_the_lie(_published_catalogue_document())
+        differences = canaries.catalogue_differences(document, module.version)
+        assert differences, (
+            f"the `{mutation}` mutation produced NO difference. The comparator "
+            "cannot see it, so the CI lane that plants it would fail for some "
+            "other reason or not at all."
+        )
+        report = "\n".join(differences)
+        for evidence in plant.EVIDENCE[mutation]:
+            assert evidence in report, (
+                f"`assert_catalogue_refusal.sh` will demand {evidence!r} in the "
+                f"refusal for `{mutation}`, and the comparator's own output is:"
+                f"\n{report}"
+            )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("plane", "tenant"), ("schema", "public"), ("relation_kind", "partitioned_table")],
+)
+def test_the_comparator_sees_moved_plane_schema_and_relation_kind(
+    field: str, value: str
+) -> None:
+    """PLANE AND OWNERSHIP ARE NOT DECORATION. ADR-0023: a plane is DECLARED,
+    never inferred — so a catalogue that quietly moved a table to the tenant
+    plane, into another schema, or turned it into a partitioned parent, is
+    describing a different database while every name still matches."""
+    from dotmac_deployment_control import module
+
+    document = _published_catalogue_document()
+    document["tables"][0][field] = value
+    differences = canaries.catalogue_differences(document, module.version)
+    assert any(field in difference for difference in differences), differences
+
+
+def test_the_comparator_sees_a_stolen_table() -> None:
+    """The owner is what says this module's lineage created the table. A
+    fragment claiming another owner is another module's contract."""
+    from dotmac_deployment_control import module
+
+    document = _published_catalogue_document()
+    document["tables"][0]["owner"] = {"kind": "assembly", "code": "somebody_else"}
+    differences = canaries.catalogue_differences(document, module.version)
+    assert any("owner" in difference for difference in differences), differences
+
+
+def test_the_comparator_sees_an_identity_that_belongs_to_another_release() -> None:
+    """The version in the document is compared against `--expect-version`, which
+    is the external statement of what was built. a4 shipped a wheel whose
+    `__version__` was two releases stale; a catalogue can do the same."""
+    document = _published_catalogue_document()
+    differences = canaries.catalogue_differences(document, "0.1.0a999")
+    assert any("distribution_version" in d for d in differences), differences
+    assert any("module_release_version" in d for d in differences), differences
+
+
+def test_the_comparator_does_not_pin_the_kernels_manifest_generation() -> None:
+    """A DELIBERATE LIMIT, held so it cannot be tightened by accident.
+
+    `manifest_contract_version` is inferred by the KERNEL from
+    `KERNEL_MODULE_CONTRACT_VERSION`; this module declares none. It is therefore
+    a property of the kernel resolved into the environment, and pinning it would
+    turn a kernel bump into a red canary against an artifact that did not
+    change. What must still fail is a value that is not a generation at all.
+    """
+    from dotmac_deployment_control import module
+
+    document = _published_catalogue_document()
+    document["manifest_contract_version"] += 1
+    assert canaries.catalogue_differences(document, module.version) == []
+
+    document["manifest_contract_version"] = "2"
+    differences = canaries.catalogue_differences(document, module.version)
+    assert any("manifest_contract_version" in d for d in differences), differences
+
+
+# ── the mutation the canary has actually been seen to refuse ────────────────
+
+
+@pytest.mark.parametrize("mutation", sorted(plant.MUTATIONS))
+def test_the_plant_finds_its_target_exactly_once_in_the_source(mutation: str) -> None:
+    """A PLANT THAT SILENTLY DOES NOTHING IS THE WORST OUTCOME AVAILABLE: the
+    canaries pass, and the lane reads that as "the mutation was not refused" —
+    a red run chasing a defect that does not exist. The script refuses a pattern
+    it cannot place exactly once, and this is what stops a refactor discovering
+    that during a release."""
+    for filename, before, _ in plant.MUTATIONS[mutation]:
+        source = (REPO_ROOT / "src" / "dotmac_deployment_control" / filename).read_text(
+            encoding="utf-8"
+        )
+        assert source.count(before) == 1, (
+            f"{filename} contains {before!r} {source.count(before)} times, so "
+            f"the `{mutation}` plant cannot place it"
+        )
+
+
+def test_the_plant_refuses_to_edit_anything_outside_the_target_environment() -> None:
+    """It rewrites `.py` files in place. Pointed at a checkout it would corrupt
+    the working tree, and would prove nothing about a wheel either way."""
+    source = (REPO_ROOT / "scripts" / "plant_catalogue_mutation.py").read_text(
+        encoding="utf-8"
+    )
+    assert "is_relative_to" in source and "refusing to mutate" in source
+
+
+def test_both_catalogue_mutations_are_planted_and_their_refusal_asserted() -> None:
+    """Two plants, two lanes, and each has to be its own step: a loop would make
+    one failure hide the other, and this repository's whole argument is that two
+    facts which can only fail together are one fact wearing two names."""
+    job = _canary_job()
+    for mutation in sorted(plant.MUTATIONS):
+        assert f"--mutation {mutation}" in job, mutation
+        assert f"scripts/assert_catalogue_refusal.sh {mutation}" in job, mutation
+    assert "the canaries PASSED against an artifact publishing a" in job, (
+        "the table lane does not fail when the mutated artifact SATISFIES the "
+        "canaries, so a comparison that ignores table identity would pass"
+    )
+    assert "the canaries PASSED against an artifact declaring" in job, (
+        "the column lane does not fail when the mutated artifact satisfies the "
+        "canaries, so a names-and-counts comparison would pass"
+    )
+
+
+def test_the_refusal_assertion_is_not_satisfied_by_any_red_run() -> None:
+    """`grep -q` on a non-zero exit is the same substitution a `--fail`-less
+    curl made: a mutated package that no longer IMPORTS also exits non-zero, and
+    it says nothing about whether the comparison can see a renamed table. So the
+    assertion requires the catalogue canary BY NAME and requires the artifact to
+    still be healthy around it."""
+    text = REFUSAL_ASSERTION.read_text(encoding="utf-8")
+    assert "FAIL  database_catalogue_as_published" in text
+    for healthy in ("installed_not_source", "conflict_savepoint_executes"):
+        assert healthy in text, healthy
+    assert "--print-evidence" in text, (
+        "the strings the refusal must name are repeated in the shell instead of "
+        "coming from the plant, so the two can describe different mutations"
+    )
+
+
+def test_the_environment_proof_reaches_the_catalogue_modules_themselves() -> None:
+    """`installed_not_source` proves the top-level package came from an install.
+    It says nothing about `database_catalog`, which is a separate module and the
+    one under test here — and matching the EXISTING mechanism rather than
+    inventing a second is the point: two ways of asking "is this the artifact?"
+    are two answers waiting to disagree."""
+    source = _source()
+    assert "_installed_origin" in source
+    for dotted in ("database_catalog", "database_catalog_snapshot", "manifest"):
+        assert f'f"{{IMPORT_NAME}}.{dotted}"' in source, dotted
+    assert "_site_directories()" in source
+
+
+def test_the_runner_prints_the_environment_it_proved() -> None:
+    """The absence of a checkout import is EVIDENCE, so it belongs in the run's
+    own output where a reader of the verify log can check it — not only inside a
+    refusal that fires when it is already too late."""
+    tree = ast.parse(_source())
+    main = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    printed = ast.dump(main)
+    assert "sys.path" in _source()
+    assert "'sys.path:'" in printed or '"sys.path:"' in printed

@@ -5,6 +5,60 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — the catalogue canary a7 shipped without
+
+No published artifact changes here, and no version is allocated. `0.1.0a7` is
+published, tagged and VERIFIED, and stays exactly where it is.
+
+**The gap.** a7's headline is a source-owned
+`ModuleDatabaseCatalogContributionV1` publishing `mod_deploy`'s exact seven
+platform tables and 95 columns. It was verified on seven release properties and
+nine behavioural canaries — a6's exact set. **No canary drove the catalogue.**
+The extent was proven only by source tests on the release commit, so the
+artifact proved nothing about the contract the artifact exists to ship: a proof
+of one question read as a proof of another, which is the a4 shape one level up.
+
+### Added
+
+- `database_catalogue_as_published` — a verifier-only canary that drives the
+  INSTALLED distribution's catalogue: module identity (document schema and
+  scope, distribution name and version, module code and release version,
+  `mod_deploy`, the `dc_0002` lineage head), all seven table identities in
+  canonical order, all 95 columns by name, physical ordinal, PostgreSQL type
+  identity AND rendered spelling, nullability, generation and server default,
+  and every table's plane and owner. Compared element-by-element against
+  literals, because `len(tables) == 7 and len(columns) == 95` passes against a
+  catalogue holding seven wrong tables.
+- `catalogue_digest_binds` — the canonical digest is the sha256 of the document
+  the artifact serialises (recomputed with `hashlib`, not read back from the
+  property that produced it), the bytes round-trip through the kernel's strict
+  parser, and a one-byte change to a server default is REFUSED against that
+  digest. A digest a consumer adopts by has to bind. No literal digest is
+  pinned: the document carries the release version, so a literal would go stale
+  every release; the release's digest belongs in its record.
+- `scripts/plant_catalogue_mutation.py` and `scripts/assert_catalogue_refusal.sh`
+  — two planted mutations, in two environments, each with its own refusal. A
+  table nobody declared (`rollout_attempts` → `rollout_events`, edited in BOTH
+  the contribution and the manifest so the artifact stays internally coherent
+  rather than failing at import) and a column right by name and wrong by type
+  (`deployment_plans.plan_digest` back to the `dc_0001` width `character
+  varying(64)`). The assertion is not satisfied by any red run: it requires the
+  refusal to name what moved, requires `database_catalogue_as_published` to be
+  the canary that refused, and requires `installed_not_source` and
+  `conflict_savepoint_executes` to still PASS — which is how "the catalogue
+  canary refused a lie" is told apart from "the mutated package no longer
+  imports".
+- The canary runner now prints `sys.path` and this interpreter's install
+  directories. The absence of a checkout import is evidence, so it belongs in
+  the run's own output rather than only inside a refusal that fires too late.
+
+### Not covered
+
+The pre-merge lane runs against a wheel built on the runner. Until a
+`verify-release` run of the PUBLISHED `0.1.0a7` reports these canaries passing,
+a7 carries no artifact-level catalogue proof — see
+`docs/CONTROL_EXCEPTIONS.md`.
+
 ## 0.1.0a7 — RELEASED 2026-09-01, verified on seven properties with nine canaries
 
 Published by run `33507951778` from protected main `6b1ce371`; independently

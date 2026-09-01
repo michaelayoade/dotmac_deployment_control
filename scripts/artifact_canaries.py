@@ -81,6 +81,31 @@ DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
                              version that got this wrong, so it is a property
                              with a history rather than a hypothesis.
 
+## The two canaries `0.1.0a8` adds, and the gap they close
+
+`0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
+publishing `mod_deploy`'s exact seven platform tables and 95 columns. It was
+published, tagged and VERIFIED on seven release properties and nine behavioural
+canaries — **a6's exact set**. a7 added none, so no canary drove the catalogue
+and the artifact proved nothing about the contract the artifact exists to ship.
+That is the a4 shape one level up: a proof of one question (does the SOURCE
+declare the right structure?) read as a proof of another (does the ARTIFACT
+carry it?). a7's own record says so, and
+`test_a7s_record_says_what_the_canaries_do_NOT_cover` pins the sentence.
+
+* `database_catalogue_as_published` — the installed distribution publishes the
+                             exact catalogue: module identity, all seven table
+                             identities, all 95 columns by name, ordinal, type
+                             identity and rendered spelling, nullability,
+                             generation and default, and every table's plane and
+                             owner. Compared element-by-element against literals
+                             in this file, because `len(tables) == 7 and
+                             len(columns) == 95` passes on seven wrong tables.
+* `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
+                             the artifact serialises, the bytes round-trip, and
+                             a one-byte change is REFUSED against that digest.
+                             A digest a consumer adopts by has to bind.
+
 Deliberately NOT exercised: `_replay_observation`. Its text comparison of
 `payload_digest` is a recorded unmonitored region with its own enforceable
 premise (`tests/architecture/test_digest_comparison_is_typed.py`), and it is
@@ -911,6 +936,617 @@ def canary_conflict_savepoint_executes() -> str:
     )
 
 
+# ── the published database catalogue ────────────────────────────────────────
+#
+# `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
+# publishing `mod_deploy`'s exact seven platform tables and 95 columns. It
+# shipped with NO canary driving it: the nine canaries above are a6's exact set,
+# and the extent was proven only by source tests on the release commit. That is
+# the a4 shape one level up — a proof of one question (does the source declare
+# the right structure?) read as a proof of another (does the ARTIFACT carry it?)
+# — and a7's own record says so in the sentence
+# `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
+#
+# THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 7 and
+# len(columns) == 95` passes against a catalogue holding seven wrong tables, and
+# this programme keeps finding and repairing exactly that check. So the whole
+# canonical structure is written out below — every table name, every column
+# name, its physical ordinal, its PostgreSQL type identity AND rendered
+# spelling, its nullability and its server default — and the comparison is
+# element-by-element with an attributed difference for each.
+#
+# Written as LITERALS, and for the same reason `_FLOOR_MODULES` is: this script
+# runs in an environment that has the wheel installed and does NOT have this
+# repository importable, so it cannot ask `src/` what the answer should be. A
+# canary that derived its expectation from the artifact it is checking would be
+# comparing the artifact against itself, which is the tautology a4 shipped
+# inside. `tests/architecture/test_artifact_canaries.py` is what keeps this
+# table and the source declaration from drifting apart, in both directions.
+
+#: Type identity as `(pg_catalog name, rendered spelling)`. Both halves, because
+#: they answer different questions: `varchar` is the type a consumer's
+#: introspection reports and `character varying(128)` is the width `dc_0002`
+#: exists to establish. A catalogue authored from the ROOT revision would agree
+#: on the first and differ on the second.
+_UUID = ("uuid", "uuid")
+_INT = ("int4", "integer")
+_BOOL = ("bool", "boolean")
+_JSONB = ("jsonb", "jsonb")
+_TEXT = ("text", "text")
+_BYTEA = ("bytea", "bytea")
+_TS = ("timestamptz", "timestamp with time zone")
+_V20 = ("varchar", "character varying(20)")
+_V24 = ("varchar", "character varying(24)")
+_V40 = ("varchar", "character varying(40)")
+_V60 = ("varchar", "character varying(60)")
+_V120 = ("varchar", "character varying(120)")
+_V128 = ("varchar", "character varying(128)")
+_V200 = ("varchar", "character varying(200)")
+
+#: The catalogue document's own identity, independent of any release.
+CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
+CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
+CATALOGUE_MODULE_CODE = "deployment_control"
+CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
+CATALOGUE_LINEAGE_HEAD = "dc_0002_canonical_plan_digest"
+#: Every table is on the PLATFORM plane and owned by the module itself. Held as
+#: single values rather than per-table, because "the module owns all seven and
+#: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
+#: DECLARED, never inferred), and a per-table copy would let one row drift while
+#: reading as if it had been checked.
+CATALOGUE_PLANE = "platform"
+CATALOGUE_OWNER = {"kind": "module", "code": CATALOGUE_MODULE_CODE}
+CATALOGUE_RELATION_KIND = "table"
+
+#: `(table, ((column, ordinal, type, nullable, server default), ...))`, in the
+#: canonical table order the contract requires and the physical ordinal order
+#: inside each table.
+CATALOGUE_TABLES: tuple[
+    tuple[str, tuple[tuple[str, int, tuple[str, str], bool, str], ...]], ...
+] = (
+    (
+        "deployment_plans",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("target_id", 2, _UUID, False, ""),
+            ("sequence", 3, _INT, False, ""),
+            ("status", 4, _V24, False, ""),
+            ("snapshot", 5, _JSONB, True, ""),
+            ("desired_revision", 6, _INT, False, ""),
+            ("plan_digest", 7, _V128, True, ""),
+            ("requires_approval", 8, _BOOL, False, ""),
+            ("approval_policy_code", 9, _V120, True, ""),
+            ("approval_policy_version", 10, _INT, True, ""),
+            ("approval_decision_ref", 11, _V200, True, ""),
+            ("approved_at", 12, _TS, True, ""),
+            ("superseded_by_id", 13, _UUID, True, ""),
+            ("record_version", 14, _INT, False, ""),
+            ("created_at", 15, _TS, False, "now()"),
+            ("updated_at", 16, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "deployment_targets",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("target_ref", 2, _V200, False, ""),
+            ("subject_ref", 3, _V200, False, ""),
+            ("product_code", 4, _V120, False, ""),
+            ("environment", 5, _V60, False, ""),
+            ("status", 6, _V24, False, ""),
+            ("desired_release_ref", 7, _V200, True, ""),
+            ("desired_spec", 8, _JSONB, True, ""),
+            ("licence_ref", 9, _V200, True, ""),
+            ("brand_profile_ref", 10, _V200, True, ""),
+            ("desired_revision", 11, _INT, False, ""),
+            ("observed_release_ref", 12, _V200, True, ""),
+            ("observed_spec_digest", 13, _V128, True, ""),
+            ("observed_revision", 14, _INT, True, ""),
+            ("last_observed_at", 15, _TS, True, ""),
+            ("record_version", 16, _INT, False, ""),
+            ("created_at", 17, _TS, False, "now()"),
+            ("updated_at", 18, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "observation_attempts",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("received_at", 2, _TS, False, ""),
+            ("raw_body", 3, _BYTEA, True, ""),
+            ("raw_body_truncated", 4, _BOOL, False, ""),
+            ("raw_body_digest", 5, _V128, True, ""),
+            ("signature_status", 6, _V20, False, ""),
+            ("eligibility_at_receipt", 7, _V20, False, ""),
+            ("key_id", 8, _V200, True, ""),
+            ("authenticated_target_ref", 9, _V200, True, ""),
+            ("claimed_target_ref", 10, _V200, True, ""),
+            ("report_id", 11, _V200, True, ""),
+            ("disposition", 12, _V40, False, ""),
+            ("receipt_id", 13, _UUID, True, ""),
+            ("created_at", 14, _TS, False, "now()"),
+            ("updated_at", 15, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "observation_receipts",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("authenticated_target_ref", 2, _V200, False, ""),
+            ("report_id", 3, _V200, False, ""),
+            ("payload", 4, _BYTEA, True, ""),
+            ("payload_digest", 5, _V128, True, ""),
+            ("key_id", 6, _V200, False, ""),
+            ("first_received_at", 7, _TS, False, ""),
+            ("original_verdict", 8, _V40, False, ""),
+            ("observed_release_ref", 9, _V200, True, ""),
+            ("observed_spec_digest", 10, _V128, True, ""),
+            ("created_at", 11, _TS, False, "now()"),
+            ("updated_at", 12, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "rollout_attempts",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("rollout_id", 2, _UUID, False, ""),
+            ("attempt_no", 3, _INT, False, ""),
+            ("outcome", 4, _V20, False, ""),
+            ("integrator_ref", 5, _V200, True, ""),
+            ("error_code", 6, _V60, True, ""),
+            ("detail", 7, _TEXT, True, ""),
+            ("dispatched_at", 8, _TS, True, ""),
+            ("settled_at", 9, _TS, True, ""),
+            ("created_at", 10, _TS, False, "now()"),
+            ("updated_at", 11, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "rollouts",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("rollout_ref", 2, _V200, False, ""),
+            ("target_id", 3, _UUID, False, ""),
+            ("plan_id", 4, _UUID, False, ""),
+            ("status", 5, _V24, False, ""),
+            ("reason", 6, _TEXT, True, ""),
+            ("completed_at", 7, _TS, True, ""),
+            ("record_version", 8, _INT, False, ""),
+            ("created_at", 9, _TS, False, "now()"),
+            ("updated_at", 10, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "target_credentials",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("target_id", 2, _UUID, False, ""),
+            ("key_id", 3, _V200, False, ""),
+            ("public_key_b64", 4, _V200, False, ""),
+            ("public_key_fingerprint", 5, _V128, False, ""),
+            ("status", 6, _V20, False, ""),
+            ("activated_at", 7, _TS, True, ""),
+            ("retired_at", 8, _TS, True, ""),
+            ("revoked_at", 9, _TS, True, ""),
+            ("revocation_reason", 10, _V200, True, ""),
+            ("enrollment_authority", 11, _V60, False, ""),
+            ("created_at", 12, _TS, False, "now()"),
+            ("updated_at", 13, _TS, False, "now()"),
+        ),
+    ),
+)
+
+
+CATALOGUE_TABLE_COUNT = len(CATALOGUE_TABLES)
+CATALOGUE_COLUMN_COUNT = sum(len(columns) for _, columns in CATALOGUE_TABLES)
+
+
+def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dict:
+    """One column as the canonical document spells it."""
+    name, ordinal, (type_name, formatted), nullable, default = column
+    return {
+        "name": name,
+        "ordinal": ordinal,
+        "postgres_type": {
+            # BASE and `pg_catalog` for all 95: this module declares no domain,
+            # enum, composite, range or array column, and stating that here is
+            # what makes the absence a declaration rather than an oversight.
+            "kind": "base",
+            "schema": "pg_catalog",
+            "name": type_name,
+            "formatted": formatted,
+        },
+        "nullable": nullable,
+        "generation": "default" if default else "none",
+        "expression": default,
+        # No column carries a non-default collation, and a catalogue that
+        # started declaring one would be describing a different database.
+        "collation": None,
+    }
+
+
+def _difference(where: str, field: str, expected: object, actual: object) -> str:
+    return f"{where}: {field} is {actual!r}, the published contract says {expected!r}"
+
+
+def catalogue_differences(document: object, expect_version: str) -> list[str]:
+    """Every way one catalogue document differs from the declaration above.
+
+    PURE — a parsed JSON document in, a list of attributed English differences
+    out. No import, no environment, no filesystem. That is deliberate: it lets
+    `tests/architecture/test_artifact_canaries.py` drive this exact function
+    against the SOURCE tree's own declaration (which must produce no
+    differences) and against mutated copies of it (each of which must produce a
+    difference naming the thing that moved), so the comparator is proven
+    sensitive without ever being run from a checkout in a lane that claims to be
+    about an artifact.
+
+    Every difference is collected rather than raised on the first, because a
+    reader repairing a drifted catalogue needs the whole set; a first-failure
+    abort turns one review into seven.
+    """
+    if not isinstance(document, dict):
+        return [f"the catalogue document is {type(document).__name__}, not an object"]
+
+    differences: list[str] = []
+
+    def compare(where: str, field: str, expected: object, actual: object) -> None:
+        if actual != expected:
+            differences.append(_difference(where, field, expected, actual))
+
+    header = {
+        "schema": CATALOGUE_DOCUMENT_SCHEMA,
+        "scope": CATALOGUE_DOCUMENT_SCOPE,
+        "distribution_name": DISTRIBUTION,
+        # From `--expect-version`, so the identity the catalogue claims is
+        # compared against an EXTERNAL statement of what was built rather than
+        # against the artifact's own report of itself.
+        "distribution_version": expect_version,
+        "module_code": CATALOGUE_MODULE_CODE,
+        "module_release_version": expect_version,
+        "database_schema": CATALOGUE_DATABASE_SCHEMA,
+        "lineage_head": CATALOGUE_LINEAGE_HEAD,
+    }
+    for field, expected in header.items():
+        compare("the catalogue", field, expected, document.get(field))
+
+    # DELIBERATELY NOT PINNED TO A LITERAL. `manifest_contract_version` is the
+    # kernel's manifest GENERATION, and Deployment Control declares none — the
+    # kernel infers it from `KERNEL_MODULE_CONTRACT_VERSION` at manifest
+    # construction. It is therefore a property of the kernel resolved into the
+    # environment, not of this wheel, and a literal here would make the canary
+    # red on a kernel bump that changed nothing about this artifact. What IS
+    # checkable is that it is a real generation rather than a string or a
+    # sentinel.
+    generation = document.get("manifest_contract_version")
+    if type(generation) is not int or generation < 1:
+        differences.append(
+            "the catalogue: manifest_contract_version is "
+            f"{generation!r}, which is not a positive integer generation"
+        )
+
+    tables = document.get("tables")
+    if not isinstance(tables, list):
+        differences.append(
+            f"the catalogue: tables is {type(tables).__name__}, not an array"
+        )
+        return differences
+
+    observed_names = [
+        table.get("name") if isinstance(table, dict) else table for table in tables
+    ]
+    expected_names = [name for name, _ in CATALOGUE_TABLES]
+    if observed_names != expected_names:
+        observed_set = {str(name) for name in observed_names}
+        missing = sorted(set(expected_names) - observed_set)
+        unknown = sorted(observed_set - set(expected_names))
+        differences.append(
+            f"the catalogue publishes {len(observed_names)} tables "
+            f"{observed_names}, and the published contract is the "
+            f"{len(expected_names)} tables {expected_names}"
+            + (f"; missing={missing}" if missing else "")
+            + (f"; unknown={unknown}" if unknown else "")
+        )
+
+    by_name = {
+        table.get("name"): table
+        for table in tables
+        if isinstance(table, dict) and isinstance(table.get("name"), str)
+    }
+    for name, columns in CATALOGUE_TABLES:
+        table = by_name.get(name)
+        if table is None:
+            continue  # already reported by the extent difference above
+        where = f"{CATALOGUE_DATABASE_SCHEMA}.{name}"
+        compare(where, "schema", CATALOGUE_DATABASE_SCHEMA, table.get("schema"))
+        compare(where, "owner", CATALOGUE_OWNER, table.get("owner"))
+        compare(where, "plane", CATALOGUE_PLANE, table.get("plane"))
+        compare(
+            where,
+            "relation_kind",
+            CATALOGUE_RELATION_KIND,
+            table.get("relation_kind"),
+        )
+        observed_columns = table.get("columns")
+        if not isinstance(observed_columns, list):
+            differences.append(
+                f"{where}: columns is {type(observed_columns).__name__}, not an array"
+            )
+            continue
+        expected_columns = [_expected_column(column) for column in columns]
+        if len(observed_columns) != len(expected_columns):
+            observed_column_names = {
+                column.get("name")
+                for column in observed_columns
+                if isinstance(column, dict)
+            }
+            expected_column_names = {column["name"] for column in expected_columns}
+            unknown_columns = observed_column_names - expected_column_names
+            differences.append(
+                f"{where} publishes {len(observed_columns)} columns and the "
+                f"published contract is {len(expected_columns)}; "
+                f"missing={sorted(expected_column_names - observed_column_names)}, "
+                f"unknown={sorted(str(name) for name in unknown_columns)}"
+            )
+        for expected_column in expected_columns:
+            observed = next(
+                (
+                    column
+                    for column in observed_columns
+                    if isinstance(column, dict)
+                    and column.get("name") == expected_column["name"]
+                ),
+                None,
+            )
+            if observed is None:
+                differences.append(
+                    f"{where}: column {expected_column['name']!r} is not published "
+                    "at all"
+                )
+                continue
+            for field, expected_value in expected_column.items():
+                compare(
+                    f"{where}.{expected_column['name']}",
+                    field,
+                    expected_value,
+                    observed.get(field),
+                )
+    return differences
+
+
+def _installed_origin(dotted: str) -> Path:
+    """The file `dotted` resolved to, refusing anything outside an install.
+
+    The SAME MECHANISM `installed_not_source` uses, factored out rather than
+    reimplemented — a second way of asking "is this the artifact?" is a second
+    answer waiting to disagree with the first. Two of its three statements are
+    per-module and belong here (the origin is inside an install directory; no
+    checkout copy shadows it on `sys.path`); the third, discoverable
+    distribution METADATA, is a statement about the distribution rather than
+    about one module and stays where it is.
+    """
+    module = __import__(dotted, fromlist=["x"])
+    origin = Path(module.__file__ or "").resolve()
+    sites = _site_directories()
+    if not sites:
+        raise CanaryFailure("this interpreter reports no install directory at all")
+    if not any(origin.is_relative_to(site) for site in sites):
+        raise CanaryFailure(
+            f"{dotted} was imported from {origin}, which is not inside any of "
+            f"this interpreter's install directories ({sites}). sys.path is "
+            f"{sys.path}. This canary is a statement about a PUBLISHED "
+            "catalogue; satisfying it from a working tree would prove nothing "
+            "about what a consumer installs."
+        )
+    top_level = dotted.split(".")[0]
+    shadowing = [
+        entry
+        for entry in sys.path
+        if entry
+        and (Path(entry).resolve() / top_level / "__init__.py").is_file()
+        and not any(Path(entry).resolve().is_relative_to(site) for site in sites)
+    ]
+    if shadowing:
+        raise CanaryFailure(
+            f"a source copy of {top_level} is importable from {shadowing}, so a "
+            f"path ordering change would move {dotted} onto the checkout"
+        )
+    return origin
+
+
+def _published_catalogue(expect_version: str) -> Any:
+    """The installed artifact's own release snapshot of its database catalogue.
+
+    Built through the artifact's `build_database_catalog_snapshot`, which is the
+    entry point a release lane actually calls, and handed the lineage head and
+    owner from THIS FILE'S literals rather than from the artifact's own
+    contribution. That direction matters: `from_manifest` refuses when the
+    authored head disagrees with the supplied one, so passing the artifact its
+    own value back would turn the check into `x == x`.
+    """
+    from dotmac_kernel.product_database_catalog import (
+        ComposedDatabaseLineageHeadV1,
+        DatabaseCatalogOwnerKind,
+        DatabaseCatalogOwnerV1,
+    )
+
+    for dotted in (
+        f"{IMPORT_NAME}.database_catalog",
+        f"{IMPORT_NAME}.database_catalog_snapshot",
+        f"{IMPORT_NAME}.manifest",
+    ):
+        _installed_origin(dotted)
+
+    from dotmac_deployment_control import build_database_catalog_snapshot
+
+    return build_database_catalog_snapshot(
+        distribution_version=expect_version,
+        composed_lineage_head=ComposedDatabaseLineageHeadV1(
+            owner=DatabaseCatalogOwnerV1(
+                kind=DatabaseCatalogOwnerKind.MODULE,
+                code=CATALOGUE_MODULE_CODE,
+            ),
+            revision=CATALOGUE_LINEAGE_HEAD,
+        ),
+    )
+
+
+def canary_database_catalogue_as_published(expect_version: str) -> str:
+    """THE PROOF `0.1.0a7` SHIPPED WITHOUT: the ARTIFACT carries the catalogue.
+
+    a7's headline is `mod_deploy`'s exact seven platform tables and 95 columns,
+    and not one of the nine canaries it published touched them. The extent was
+    proven by source tests on the release commit — a real proof of a different
+    question, and `docs/CONTROL_EXCEPTIONS.md` already records that a source
+    check is not a control carried by any published artifact.
+
+    Everything asserted here is asserted about the INSTALLED distribution:
+
+    * the catalogue modules resolve out of `site-packages`, with no checkout
+      copy shadowing them, and the evidence is in this canary's own output;
+    * module identity — document schema and scope, distribution name and
+      version, module code, release version, `mod_deploy`, and the `dc_0002`
+      lineage head;
+    * all seven table identities, in canonical order, with nothing missing and
+      nothing extra;
+    * all 95 columns by name, physical ordinal, PostgreSQL type identity AND
+      rendered spelling, nullability, generation and server default;
+    * plane and ownership metadata on every table — `platform`, owned by
+      `module:deployment_control` (ADR-0023: a plane is DECLARED).
+
+    The counts are the least of it. `len(tables) == 7 and len(columns) == 95`
+    passes on seven wrong tables, and the whole structure is compared instead.
+    """
+    import json
+
+    snapshot = _published_catalogue(expect_version)
+    document = json.loads(snapshot.to_json_bytes())
+    differences = catalogue_differences(document, expect_version)
+    if differences:
+        raise CanaryFailure(
+            f"the installed artifact publishes a database catalogue that is not "
+            f"the published contract ({len(differences)} difference(s)):\n        - "
+            + "\n        - ".join(differences)
+        )
+
+    columns = sum(len(table["columns"]) for table in document["tables"])
+    if (len(document["tables"]), columns) != (
+        CATALOGUE_TABLE_COUNT,
+        CATALOGUE_COLUMN_COUNT,
+    ):  # pragma: no cover - unreachable once every table matched above
+        raise CanaryFailure(
+            f"{len(document['tables'])} tables / {columns} columns survived a "
+            "comparison that found no differences"
+        )
+    origin = _installed_origin(f"{IMPORT_NAME}.database_catalog")
+    return (
+        f"{CATALOGUE_TABLE_COUNT} tables / {CATALOGUE_COLUMN_COUNT} columns, "
+        f"every name, ordinal, type, nullability, default, plane and owner as "
+        f"published; declared by {origin}"
+    )
+
+
+def canary_catalogue_digest_binds(expect_version: str) -> str:
+    """The catalogue's canonical digest is over THAT structure, and it BINDS.
+
+    A digest is how a consumer adopts a structural contract, so three separate
+    things have to be true and each fails on its own:
+
+    1. the digest is canonical in shape and is the sha256 of the document the
+       artifact actually serialises — recomputed here with `hashlib`, not read
+       back from the same property that produced it;
+    2. the bytes round-trip: the kernel re-parses them, re-derives an equal
+       snapshot, and re-serialises the identical bytes, which is what "canonical"
+       means and is the only reason two parties can compare digests at all;
+    3. THE SENSITIVITY, without which 1 and 2 are a self-consistent nothing: a
+       one-byte change to the document is REFUSED against the same digest, and
+       the true document is refused against a different digest. A digest that
+       accepts either is not binding anything.
+
+    NO LITERAL DIGEST IS PINNED HERE, and that is a deliberate limit worth
+    stating. The document carries `distribution_version` and
+    `module_release_version`, so its digest changes with every release; a
+    literal would go stale at the next version and would then be silently
+    weakened into whatever the next author replaced it with. The external
+    statement this canary holds is the STRUCTURE, above, and the digest is
+    proven to be over exactly that. The digest VALUE for a given release belongs
+    in that release's record in `docs/published-versions.json`, where it is
+    immutable, rather than in a canary that has to keep moving.
+    """
+    import hashlib
+    import json
+
+    from dotmac_kernel.product_database_catalog import (
+        ModuleDatabaseCatalogSnapshot,
+        ProductDatabaseCatalogError,
+    )
+
+    snapshot = _published_catalogue(expect_version)
+    payload = snapshot.to_json_bytes()
+    digest = snapshot.digest
+
+    if not CANONICAL_DIGEST.fullmatch(digest):
+        raise CanaryFailure(
+            f"the catalogue digest is {digest!r}, which is not `sha256:<64 "
+            "lowercase hex>`. An adopting consumer cannot say which algorithm "
+            "produced it."
+        )
+    recomputed = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    if digest != recomputed:
+        raise CanaryFailure(
+            f"the catalogue reports {digest} and its own canonical bytes hash "
+            f"to {recomputed}"
+        )
+
+    # The digest covers the structure this file declares — stated here as well
+    # as in the canary above, because a digest over the wrong document is a
+    # perfectly valid digest.
+    differences = catalogue_differences(json.loads(payload), expect_version)
+    if differences:
+        raise CanaryFailure(
+            f"the digested document is not the published contract: {differences}"
+        )
+
+    restored = ModuleDatabaseCatalogSnapshot.from_json_bytes(
+        payload, expected_digest=digest
+    )
+    if restored != snapshot or restored.to_json_bytes() != payload:
+        raise CanaryFailure(
+            "the catalogue document does not round-trip to identical bytes, so "
+            "two parties comparing digests are comparing encodings"
+        )
+
+    # THE SENSITIVITY. `now()` appears as a server default on fourteen columns;
+    # changing one of them is the smallest edit that is still a real structural
+    # lie, and the digest must refuse it.
+    mutated = payload.replace(b'"expression":"now()"', b'"expression":"NOW()"', 1)
+    if mutated == payload:
+        raise CanaryFailure(
+            "the canonical document contains no server default to perturb, so "
+            "this sensitivity check would pass without testing anything"
+        )
+    for description, bytes_, expected_digest in (
+        ("a mutated document against the true digest", mutated, digest),
+        ("the true document against a foreign digest", payload, "sha256:" + "0" * 64),
+    ):
+        try:
+            ModuleDatabaseCatalogSnapshot.from_json_bytes(
+                bytes_, expected_digest=expected_digest
+            )
+        except ProductDatabaseCatalogError:
+            continue
+        raise CanaryFailure(
+            f"{description} was ACCEPTED. The digest does not bind the "
+            "catalogue, so adopting by digest proves nothing."
+        )
+
+    return (
+        f"{digest} over {len(payload)} canonical bytes "
+        f"({CATALOGUE_TABLE_COUNT} tables / {CATALOGUE_COLUMN_COUNT} columns); "
+        "round-trips, and a one-byte change is refused"
+    )
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 
@@ -959,10 +1595,30 @@ def main(argv: list[str] | None = None) -> int:
             lambda: canary_declared_kernel_floor(args.expect_kernel),
         ),
         ("conflict_savepoint_executes", canary_conflict_savepoint_executes),
+        (
+            "database_catalogue_as_published",
+            lambda: canary_database_catalogue_as_published(args.expect_version),
+        ),
+        (
+            "catalogue_digest_binds",
+            lambda: canary_catalogue_digest_binds(args.expect_version),
+        ),
     ]
 
     print(f"artifact canaries — {DISTRIBUTION} {args.expect_version}")
     print(f"interpreter: {sys.executable}")
+    # THE ENVIRONMENT, PRINTED RATHER THAN ASSUMED. Every canary below is a
+    # claim about an installed artifact, and the claim is only as good as the
+    # question "which files did this interpreter actually import?". The answer
+    # is evidence, so it belongs in the run's own output where a reader of the
+    # verify log can check it — not only inside a refusal that fires when it is
+    # already too late.
+    print("sys.path:")
+    for entry in sys.path:
+        print(f"  {entry or '(the current working directory)'}")
+    print("install directories:")
+    for site in _site_directories():
+        print(f"  {site}")
     if args.expect_kernel:
         print(f"kernel pinned to the declared floor: {args.expect_kernel}")
     failures: list[str] = []
