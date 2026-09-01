@@ -533,8 +533,8 @@ def _approve(db: Any, plan_id: Any, digest: str) -> Any:
     )
 
 
-def _enrolled_target(db: Any) -> tuple[Any, str]:
-    """A registered target with an ACTIVE credential, ready to be reported to.
+def _enrolled_target(db: Any) -> tuple[Any, str, str]:
+    """A target with an ACTIVE credential AND a bound rollout to report against.
 
     Enrolment and activation are two steps because the module refuses to admit
     a key it has only been told about: the caller proves possession through the
@@ -542,16 +542,28 @@ def _enrolled_target(db: Any) -> tuple[Any, str]:
     would leave the credential PENDING, every observation would be recorded
     `not_eligible`, and the savepoint block would never be reached — a canary
     that passed while proving nothing.
+
+    The plan and rollout are the same failure one layer up, added for
+    `dc_0003`: an accepted observation must bind the same execution plan and
+    operation across proposal, authorization and report, so a report with
+    nothing to bind against is quarantined `unbound_report` and never reaches
+    the canonical receipt either. Approval-exempt, because approval is not what
+    this canary is about — a two-term binding is still a binding, and the module
+    is explicit that an exempt plan has no authorization term.
     """
     from dotmac_deployment_control import (
         CredentialTransitionCommand,
         DesiredDeployment,
         EnrolCredentialCommand,
+        ProposePlanCommand,
         RegisterTargetCommand,
+        RequestRolloutCommand,
         SetDesiredStateCommand,
         activate_credential,
         enrol_credential,
+        propose_plan,
         register_target,
+        request_rollout,
         set_desired_state,
     )
 
@@ -593,7 +605,25 @@ def _enrolled_target(db: Any) -> tuple[Any, str]:
             at=_NOW - timedelta(days=1),
         ),
     )
-    return target, key_id
+    plan = propose_plan(
+        db,
+        ProposePlanCommand(
+            command_id=_command_id(),
+            target_id=target.id,
+            operation="deploy",
+            execution_plan_digest=_EXECUTION_PLAN,
+            requires_approval=False,
+        ),
+    )
+    rollout = request_rollout(
+        db,
+        RequestRolloutCommand(
+            command_id=_command_id(),
+            rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
+            plan_id=plan.id,
+        ),
+    )
+    return target, key_id, rollout.rollout_ref
 
 
 # ── the behavioural canaries ────────────────────────────────────────────────
@@ -849,9 +879,16 @@ def canary_conflict_savepoint_executes() -> str:
     )
 
     db = _session()
-    target, key_id = _enrolled_target(db)
+    target, key_id, rollout_ref = _enrolled_target(db)
     report_id = f"rep-{uuid.uuid4().hex[:8]}"
 
+    # THE BINDING IS PART OF REACHING THE SAVEPOINT. Since `dc_0003` an accepted
+    # observation must bind the same execution plan and operation across
+    # proposal, authorization and report; an unbound report is quarantined
+    # `unbound_report` before the canonical-receipt lookup, and this canary
+    # would then pass its own refusal check while never entering the `with
+    # conflict_savepoint(...)` block it exists to drive. The three fields below
+    # are what make the happy path actually happy.
     verdict = service.record_observation(
         db,
         RecordObservationCommand(
@@ -867,6 +904,9 @@ def canary_conflict_savepoint_executes() -> str:
                 raw_body=b"{}",
                 raw_body_digest="sha256:" + "b" * 64,
                 signature_status=SignatureStatus.VALID.value,
+                rollout_ref=rollout_ref,
+                operation="deploy",
+                execution_plan_digest=_EXECUTION_PLAN,
             ),
             received_at=_NOW,
         ),
