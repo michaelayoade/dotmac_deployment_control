@@ -4,6 +4,41 @@ Controls this repository claims, where the claim is narrower than it sounds.
 Each entry states what is enforced, what is NOT, and by whom — so that a reader
 does not infer coverage that does not exist.
 
+## Database-catalogue publication is blocked on an unpublished kernel contract
+
+**Status:** open, dated 2026-08-31. No distribution release is authorised.
+
+This branch authors Deployment Control's exact post-`dc_0002` database
+contribution and binds it to the module manifest. The fully typed contract
+classes it consumes exist only in the Starter's candidate kernel source; the
+currently published and declared floor, `dotmac-kernel >=0.1.0a98`, does not
+contain them.
+
+The same held slice corrects a separate source declaration: published a6 carries
+`ModuleManifest.version = "0.1.0a2"`, although the kernel defines that field as
+the module release version and uses the integer `contract_version` for manifest
+compatibility. Published a6 is immutable. The candidate source uses the current
+source coordinate `0.1.0a6`; the release guard must replace it with the next
+properly allocated distribution version before any later artifact is published.
+
+The dependency is deliberately not assigned a guessed future version. This
+means the branch is stacked and expected to be non-releasable until the kernel
+owner publishes the contract. Closure requires all of the following in one
+release slice: name the first published kernel version containing
+`ModuleDatabaseCatalogContributionV1`; raise this distribution's floor to that
+version; run the existing floor and excluded-near-miss canaries; allocate the
+next Deployment Control distribution version through `release_guard`; and
+publish only after every required check is green.
+
+**What is source-checked on the stacked candidate:** the declaration has exact
+table and column sensitivity checks, including a clean-room PostgreSQL
+comparison, when this source is evaluated against the candidate kernel contract.
+That source check is not a control carried by any published artifact.
+
+**What is not enforced:** no published Deployment Control artifact carries the
+declaration, and Platform CP cannot yet bind it into a release catalogue. The
+checked-in source must not be cited as production adoption evidence.
+
 ## 0.1.0a3 is published, immutable, and must never be pinned
 
 **Status:** permanent. Not a gap to close — a fact to keep visible.
@@ -189,6 +224,47 @@ answer is to add a canary in the change that finds one — never to describe the
 existing set as coverage. `0.1.0a5` is the worked example: seven canaries passed
 against the wheel the registry served, and the entry below is what they could
 not see.
+
+## The module the floor is declared for was a second literal
+
+**Status:** closed for `0.1.0a7`; derived from the package's own imports.
+
+The floor lanes a6 introduced work, and one half of the mutation was written as
+a literal: `ci.yml` required the forced failure to mention
+`dotmac_kernel.transactions`, which is what stops "the canaries failed" standing
+in for "the canaries failed at the boundary the floor describes".
+
+That literal is correct exactly as long as the floor does not move. `0.1.0a7`
+moves it. `database_catalog.py` imports
+`dotmac_kernel.product_database_catalog`, absent from the published
+`dotmac_kernel-0.1.0a99` wheel and present in `dotmac_kernel-0.1.0a100`, so the
+floor rises to `>=0.1.0a100` and the excluded kernel becomes a99 — **which
+contains `dotmac_kernel.transactions` perfectly well**. The lane would have gone
+red demanding a failure that cannot happen, and the message would have pointed
+at a module with nothing wrong with it.
+
+The failure mode worth naming is not that: it is the near miss. Had the moved
+floor happened to keep the old module in the traceback for some unrelated
+reason, the lane would have gone GREEN while proving nothing about the new
+boundary. Two literals for one fact is the `0.1.0a4` defect, and it does not
+become safe for being in a workflow rather than in a source file.
+
+So `FIRST_SHIPPED_IN` and the import collector moved out of
+`tests/architecture/test_kernel_floor.py` and into `scripts/kernel_floor.py` —
+a test module is not importable from a workflow step, which is the whole reason
+the second copy existed — and `scripts/kernel_floor.py symbol` derives the one
+module whose recorded introduction equals the declared floor. `ci.yml` greps for
+that. It refuses rather than guessing when no recorded module introduced the
+floor, when more than one did, or when the package no longer imports the one
+that did; the last is the sensitivity half, because a row whose import was
+deleted leaves the lane requiring an impossible failure.
+
+**What is NOT claimed:** that the table is complete. It records the kernel
+submodules whose introduction has ever bounded this distribution, and a new
+import whose introducing alpha nobody records is invisible to it — the floor
+would then be under-constrained again, in the a5 shape, and the mutation lane
+would report the floor too high rather than naming the gap. The repair is a row
+in the same change that adds the import.
 
 ## Seven canaries could not see a dishonest dependency floor
 

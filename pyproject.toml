@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-deployment-control"
-version = "0.1.0a6"
+version = "0.1.0a7"
 description = "DotMac Deployment Control — desired deployment intent, immutable plans, approval-gated rollouts, authenticated target acknowledgements and drift reconciliation for licensed deployments (ADR-0057 § 3)"
 authors = ["DotMac"]
 readme = "README.md"
@@ -27,31 +27,36 @@ python = ">=3.11,<3.14"
 # row, and no earlier kernel can register the module at all
 # (`NamespaceRegistry.from_manifests` raises `UnallocatedNamespaceError`) — plus
 # a one-alpha margin. The two declared request-time prerequisites are older
-# still (`idempotency_ledger.v1` in a66, `platform_audit_log.v1` in a68).
+# still (`idempotency_ledger.v1` in a66, `platform_audit_log.v1` in a68);
+# `dotmac_kernel.transactions`, which `service.py:73` imports, first shipped in
+# a98 and set this floor through `0.1.0a6`.
 #
-# Every one of those is a real lower bound and none of them is THE lower bound.
-# `service.py` line 73 reads `from dotmac_kernel.transactions import
-# conflict_savepoint`, and `dotmac_kernel/transactions.py` — the public,
-# engine-free re-export of `conflict_savepoint` that a module receiving a
-# caller-owned Session is meant to use instead of importing `dotmac_kernel.db`
-# — FIRST SHIPPED IN a98. a97 does not contain the module at all, so
-# `import dotmac_deployment_control` raises `ModuleNotFoundError` there.
+# Every one of those is a real lower bound and none of them is THE lower bound
+# any more. `database_catalog.py` reads `from
+# dotmac_kernel.product_database_catalog import ...`, and
+# `dotmac_kernel/product_database_catalog.py` — the contract a module uses to
+# publish the exact tables and columns it owns, so that a descriptor can attest
+# to structure rather than only to a migration head — FIRST SHIPPED IN a100.
+# a99 does not contain the module at all, so `import dotmac_deployment_control`
+# raises `ModuleNotFoundError` there.
 #
-# `0.1.0a5` therefore declared a floor 21 alphas below the one it needed. The
-# artifact was byte-perfect and independently verified on seven properties, and
-# it still could not be composed: the Platform CP lane resolved a kernel inside
-# the declared range, wrote a clean lock, matched the published hashes exactly,
-# and died at container boot. A hash proves you got the published bytes. It
-# cannot prove they import.
+# `0.1.0a5` declared a floor 21 alphas below the one it needed. The artifact was
+# byte-perfect and independently verified on seven properties, and it still
+# could not be composed: the Platform CP lane resolved a kernel inside the
+# declared range, wrote a clean lock, matched the published hashes exactly, and
+# died at container boot. A hash proves you got the published bytes. It cannot
+# prove they import.
 #
-# So the floor is now the import, and it is FALSIFIABLE IN BOTH DIRECTIONS
-# rather than argued: `ci.yml`'s floor lane installs the built wheel with
-# EXACTLY this version of the kernel and runs the canaries, which fails if the
-# floor is too low; and the mutation lane installs the newest kernel this floor
-# EXCLUDES and requires the same canaries to fail, which fails if the floor is
-# too high. Raising or lowering this literal without moving the symbol it
-# tracks turns one of those two lanes red.
-dotmac-kernel = { version = ">=0.1.0a98", source = "forgejo" }
+# So the floor is the import, and it is FALSIFIABLE IN BOTH DIRECTIONS rather
+# than argued: `ci.yml`'s floor lane installs the built wheel with EXACTLY this
+# version of the kernel and runs the canaries, which fails if the floor is too
+# low; and the mutation lane installs the newest kernel this floor EXCLUDES —
+# a99 — and requires the same canaries to fail NAMING the submodule
+# `scripts/kernel_floor.py symbol` derives from these imports, which fails if
+# the floor is too high or if some unrelated breakage stood in for the proof.
+# Raising or lowering this literal without moving the symbol it tracks turns one
+# of those two lanes red.
+dotmac-kernel = { version = ">=0.1.0a100", source = "forgejo" }
 sqlalchemy = "^2.0"
 
 # ── Resolution only: this does NOT enter the published wheel ────────────────
@@ -66,7 +71,7 @@ sqlalchemy = "^2.0"
 # means "only the dependencies that name this source come from it".
 #
 # What Poetry writes into the built wheel is the version constraint alone —
-# `Requires-Dist: dotmac-kernel (>=0.1.0a98)`. A source is a resolution
+# `Requires-Dist: dotmac-kernel (>=0.1.0a100)`. A source is a resolution
 # instruction, not package metadata, so adding it does not change the published
 # contract and does not require a version bump.
 [[tool.poetry.source]]

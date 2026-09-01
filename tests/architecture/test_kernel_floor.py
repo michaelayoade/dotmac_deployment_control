@@ -7,9 +7,11 @@ independent read-only consumer install, seven behavioural canaries against the
 wheel the registry served — and it could not run in its consuming assembly. It
 imports `dotmac_kernel.transactions` (`service.py:73`), first shipped in kernel
 `0.1.0a98`, while declaring `dotmac-kernel >=0.1.0a77`. **Under-constrained by
-21 alphas.** Resolution succeeded, the lock wrote cleanly, the artifacts matched
-their published hashes byte-for-byte, and the failure appeared at container
-boot.
+21 alphas.** The floor has since moved to
+`dotmac_kernel.product_database_catalog` (`0.1.0a100`); what is permanent here
+is the mechanism, not the row. Resolution succeeded, the lock wrote cleanly, the
+artifacts matched their published hashes byte-for-byte, and the failure appeared
+at container boot.
 
 **A hash comparison proves you got the published bytes; it cannot prove they
 import.** And an import performed where a compatible kernel happens to be
@@ -41,7 +43,6 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE = REPO_ROOT / "src" / "dotmac_deployment_control"
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 _spec = importlib.util.spec_from_file_location(
@@ -51,30 +52,17 @@ assert _spec is not None and _spec.loader is not None
 kernel_floor = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(kernel_floor)
 
-#: The kernel submodule each alpha FIRST shipped, for the ones this package
-#: imports. Not a guess: `dotmac_kernel/transactions.py` is absent from the
-#: published `0.1.0a97` wheel and present in `0.1.0a98`, and the floor is
-#: derived from that fact rather than from a changelog entry about it.
-FIRST_SHIPPED_IN = {
-    "dotmac_kernel.transactions": "0.1.0a98",
-}
+#: The recorded introductions and the collector both live in
+#: `scripts/kernel_floor.py` now, not here. They moved in the change that raised
+#: the floor to `0.1.0a100`, because `ci.yml`'s mutation lane has to grep for the
+#: module the floor is set by and a test file is not importable from a workflow
+#: step. A table in one place and a literal in the workflow would be two
+#: authorities for one fact — the `0.1.0a4` defect, relocated.
+FIRST_SHIPPED_IN = kernel_floor.FIRST_SHIPPED_IN
 
 
 def _kernel_imports() -> set[str]:
-    """Every `dotmac_kernel.*` module the package imports, at any depth."""
-    found: set[str] = set()
-    for path in sorted(PACKAGE.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.level == 0:
-                module = node.module or ""
-                if module.startswith("dotmac_kernel"):
-                    found.add(module)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith("dotmac_kernel"):
-                        found.add(alias.name)
-    return found
+    return kernel_floor.kernel_imports()
 
 
 # ── the floor is the highest symbol the package actually imports ────────────
@@ -139,6 +127,63 @@ def test_the_floor_is_not_higher_than_anything_the_package_needs() -> None:
     )
 
 
+# ── the module the mutation must name is derived, not remembered ────────────
+
+
+def test_the_floor_symbol_is_the_module_that_introduced_the_declared_floor() -> None:
+    """POSITIVE CONTROL over the interface `ci.yml` greps with.
+
+    The mutation lane's second half requires the forced failure to NAME the
+    module the floor exists for; without that it is satisfied by any breakage at
+    all, which is the substitution this repository keeps finding. The name has
+    to come from the same table the floor is checked against, or it becomes a
+    second authority that drifts the moment the floor moves — which it just did,
+    from `dotmac_kernel.transactions` to
+    `dotmac_kernel.product_database_catalog`.
+    """
+    symbol = kernel_floor.floor_symbol()
+    assert FIRST_SHIPPED_IN[symbol] == kernel_floor.declared_floor()
+    assert symbol in _kernel_imports()
+
+
+def test_a_floor_no_recorded_import_justifies_is_refused(tmp_path: Path) -> None:
+    """PLANTED VIOLATION: the floor is raised and the import that would justify
+    it is not recorded. Answering with some nearby module would send the
+    mutation lane grepping for a name the failure cannot contain, and the lane
+    would then go red for a reason nobody can act on — or, worse, the name would
+    happen to appear and the boundary would read as proven."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[tool.poetry]\nname = 'x'\nversion = '0.1.0a7'\n\n"
+        "[tool.poetry.dependencies]\n"
+        'dotmac-kernel = { version = ">=9.9.9a1" }\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(kernel_floor.FloorError, match="no recorded kernel submodule"):
+        kernel_floor.floor_symbol(pyproject)
+
+
+def test_a_symbol_the_package_no_longer_imports_is_refused(tmp_path: Path) -> None:
+    """THE SENSITIVITY HALF, again, and at the point it actually bites.
+
+    A recorded row whose import has been deleted leaves the mutation lane
+    requiring a failure that can never occur: the excluded kernel would import
+    the package perfectly well and the lane would report the floor too high, at
+    a place that says nothing about the row. Refusing here names the row."""
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "only.py").write_text(
+        "from dotmac_kernel.transactions import conflict_savepoint\n", encoding="utf-8"
+    )
+    with pytest.raises(kernel_floor.FloorError, match="no longer imports"):
+        kernel_floor.floor_symbol(package=package)
+
+
+def test_the_cli_prints_the_floor_symbol(capsys: pytest.CaptureFixture[str]) -> None:
+    assert kernel_floor.main(["symbol"]) == 0
+    assert capsys.readouterr().out.strip() == kernel_floor.floor_symbol()
+
+
 # ── the helper answers correctly, and refuses rather than guessing ──────────
 
 
@@ -150,7 +195,7 @@ def test_it_reads_the_floor_out_of_the_real_declaration() -> None:
 
 @pytest.mark.parametrize(
     "constraint",
-    ["^0.1.0a98", ">=0.1.0a98,<0.2", "<=0.1.0a98", "0.1.0a98", "*", ">= 0.1.0b1"],
+    ["^0.1.0a100", ">=0.1.0a100,<0.2", "<=0.1.0a100", "0.1.0a100", "*", ">= 0.1.0b1"],
 )
 def test_a_constraint_shape_it_cannot_read_is_refused(
     constraint: str, tmp_path: Path
@@ -259,10 +304,34 @@ def test_the_cli_prints_the_declared_floor(capsys: pytest.CaptureFixture[str]) -
 def test_the_cli_prints_the_mutation_target(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """POSITIVE CONTROL over the `excluded` interface `ci.yml` actually calls,
+    with a fixture BUILT FROM the declared floor rather than around it.
+
+    The first form of this pinned `0.1.0a97` beside a listing of a73/a97/a98,
+    which was the right answer only while the floor was a98. The CLI reads the
+    real declaration, so raising the floor to a100 made it correctly answer a98
+    and made the test wrong — a fixture that has to be re-edited every time the
+    floor moves is a second authority for the floor, which is the defect this
+    whole file exists to keep out of the workflow.
+
+    `newest_excluded` is exercised on hand-written literals by
+    `test_it_names_the_closest_near_miss_as_the_mutation_target` above; what is
+    unique here is the CLI reading the tree's own declaration, so the fixture
+    has to follow that declaration.
+    """
+    major, minor, patch, alpha = kernel_floor.parse(kernel_floor.declared_floor())
+    below = f"{major}.{minor}.{patch}a{alpha - 1}"
+    ancient = f"{major}.{minor}.{patch}a{alpha // 2}"
+    assert len({ancient, below, kernel_floor.declared_floor()}) == 3, (
+        "the fixture must name three distinct versions or it is not "
+        "distinguishing 'the closest below' from 'any below'"
+    )
     listing = tmp_path / "index.html"
-    listing.write_text(_listing("0.1.0a73", "0.1.0a97", "0.1.0a98"), encoding="utf-8")
+    listing.write_text(
+        _listing(ancient, below, kernel_floor.declared_floor()), encoding="utf-8"
+    )
     assert kernel_floor.main(["excluded", "--index-html", str(listing)]) == 0
-    assert capsys.readouterr().out.strip() == "0.1.0a97"
+    assert capsys.readouterr().out.strip() == below
 
 
 def test_the_helper_performs_no_network_io() -> None:
@@ -298,9 +367,23 @@ def test_the_workflow_derives_both_versions_rather_than_hard_coding_them() -> No
     )
     assert "kernel_floor.py declared" in executable
     assert "kernel_floor.py excluded" in executable
+    assert "kernel_floor.py symbol" in executable, (
+        "the workflow does not ask for the module the floor is set by, so the "
+        "name it greps the mutation's failure for is a literal. That literal "
+        "was `dotmac_kernel.transactions` and the floor has since moved to "
+        "`dotmac_kernel.product_database_catalog`; a stale one would make the "
+        "lane demand a failure that cannot happen, or accept one that proves "
+        "nothing."
+    )
     hard_coded = re.findall(r"dotmac-kernel==0\.1\.0a\d+", executable)
     assert not hard_coded, (
         f"the workflow pins {hard_coded} literally. Both versions must be "
         "derived — the floor from the declaration, the mutation target from "
         "the index — or the lanes stop tracking what they claim to test."
+    )
+    named = sorted(set(re.findall(r"dotmac_kernel\.[a-z_]+", executable)))
+    assert not named, (
+        f"the workflow names {named} literally. The module the mutation's "
+        "failure must carry is the third derived fact, for the same reason as "
+        "the other two."
     )

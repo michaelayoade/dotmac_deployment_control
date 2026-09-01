@@ -68,6 +68,10 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
+from dotmac_deployment_control.database_catalog import database_catalog
+from dotmac_deployment_control.database_catalog_snapshot import (
+    build_database_catalog_snapshot,
+)
 from dotmac_deployment_control.digests import (
     ALGORITHM,
     PlanDigestV1,
@@ -288,9 +292,11 @@ __all__ = [
     "__version__",
     "activate_credential",
     "approve_plan",
+    "build_database_catalog_snapshot",
     "cancel_plan",
     "cancel_rollout",
     "credential_is_eligible",
+    "database_catalog",
     "decommission_target",
     "dispatch_attempt",
     "drift",

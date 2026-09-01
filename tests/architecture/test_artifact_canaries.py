@@ -345,10 +345,13 @@ def test_the_mutation_proves_the_excluded_kernel_cannot_satisfy_the_canaries() -
         "typo'd index would report the floor proven on a run that resolved "
         "nothing"
     )
-    assert "dotmac_kernel.transactions" in job, (
-        "the mutation accepts any failure. The floor exists for one symbol; a "
-        "failure that never names it is some other breakage standing in for the "
-        "proof"
+    assert "kernel_floor.py symbol" in job, (
+        "the mutation accepts any failure. The floor exists for one module and "
+        "the forced failure must name it; a failure that never does is some "
+        "other breakage standing in for the proof. Derived, not written here: "
+        "the name was `dotmac_kernel.transactions` and is now "
+        "`dotmac_kernel.product_database_catalog`, and a literal would have "
+        "gone stale at exactly the moment the boundary moved."
     )
 
 
