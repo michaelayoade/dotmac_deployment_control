@@ -351,6 +351,105 @@ jobs:
           fi
           echo "dotmac-kernel ${EXCLUDED} cannot satisfy the canaries: ${SYMBOL} is absent"
 
+      # ── THE CATALOGUE MUTATION — two plants, two separate refusals ────────
+      #
+      # `database_catalogue_as_published` compares a 95-row table against a
+      # 95-row table. That is the single easiest check in this repository to
+      # write with a hole in it, and a comparison with a hole passes exactly as
+      # loudly as one without. A canary nobody has seen refuse is a step name
+      # (ADR-0018), so the wheel's own `site-packages` copy is edited to tell a
+      # structural lie and the same script must refuse it.
+      #
+      # TWO plants, in two environments, because they fail for different reasons
+      # and either one alone would leave the other unproven:
+      #
+      #   1. A TABLE that nobody agreed to. `rollout_attempts` becomes
+      #      `rollout_events` in BOTH the contribution and the manifest's
+      #      `platform_tables` — both, because a one-sided edit is refused by
+      #      `ModuleManifest` at import and every canary would fail with a
+      #      registry error that says nothing about the catalogue. Edited on
+      #      both sides the artifact is internally coherent and publishes the
+      #      wrong extent, which is the shape a consumer would actually meet.
+      #   2. A COLUMN TYPE that is right by name and wrong by width.
+      #      `deployment_plans.plan_digest` goes back to the `dc_0001` width
+      #      `character varying(64)`. Every table name and every column name is
+      #      still correct; only a check that compares TYPES can see it. This is
+      #      the half a `len(tables) == 7 and len(columns) == 95` canary — the
+      #      check this programme keeps finding and repairing — passes straight
+      #      through.
+      #
+      # Each lane requires four things, and the last two are what stop the
+      # refusal being someone else's:
+      #   * the canaries exit non-zero;
+      #   * the failure NAMES what moved, from `--print-evidence` rather than
+      #     from a literal repeated here, so the strings cannot drift apart;
+      #   * the failing canary is `database_catalogue_as_published` itself;
+      #   * `installed_not_source` and `conflict_savepoint_executes` still PASS,
+      #     which is how the lane distinguishes "the catalogue canary refused a
+      #     lie" from "the mutated package no longer imports".
+      - name: A published table nobody agreed to must not satisfy those canaries
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f -- "${HOME}/.netrc"' EXIT HUP INT TERM
+          umask 077
+          : > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          printf 'machine %s login %s password %s\n' \
+            "registry.dotmac.io" "ci-reader" "${TOKEN}" >> "${HOME}/.netrc"
+          python -m venv /tmp/mutated-table
+          /tmp/mutated-table/bin/pip install --quiet --upgrade pip
+          /tmp/mutated-table/bin/pip install --quiet \
+            --index-url "https://pypi.org/simple" \
+            --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+            dist/*.whl
+          python3 scripts/plant_catalogue_mutation.py \
+            --venv /tmp/mutated-table --mutation table
+          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['poetry']['version'])")
+          if /tmp/mutated-table/bin/python scripts/artifact_canaries.py \
+               --expect-version "${VERSION}" > catalogue-table.txt 2>&1; then
+            cat catalogue-table.txt
+            echo "::error::the canaries PASSED against an artifact publishing a"
+            echo "table nobody declared. The catalogue canary is not comparing"
+            echo "table identities, so its seven-table claim means nothing."
+            exit 1
+          fi
+          cat catalogue-table.txt
+          bash scripts/assert_catalogue_refusal.sh table catalogue-table.txt
+
+      - name: A column right by name and wrong by type must not satisfy them
+        env:
+          TOKEN: ${{ secrets.FORGEJO_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f -- "${HOME}/.netrc"' EXIT HUP INT TERM
+          umask 077
+          : > "${HOME}/.netrc"
+          chmod 600 "${HOME}/.netrc"
+          printf 'machine %s login %s password %s\n' \
+            "registry.dotmac.io" "ci-reader" "${TOKEN}" >> "${HOME}/.netrc"
+          python -m venv /tmp/mutated-column
+          /tmp/mutated-column/bin/pip install --quiet --upgrade pip
+          /tmp/mutated-column/bin/pip install --quiet \
+            --index-url "https://pypi.org/simple" \
+            --extra-index-url "https://registry.dotmac.io/api/packages/dotmac/pypi/simple" \
+            dist/*.whl
+          python3 scripts/plant_catalogue_mutation.py \
+            --venv /tmp/mutated-column --mutation column
+          VERSION=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['tool']['poetry']['version'])")
+          if /tmp/mutated-column/bin/python scripts/artifact_canaries.py \
+               --expect-version "${VERSION}" > catalogue-column.txt 2>&1; then
+            cat catalogue-column.txt
+            echo "::error::the canaries PASSED against an artifact declaring"
+            echo "deployment_plans.plan_digest at the dc_0001 width. The catalogue"
+            echo "canary is not comparing column TYPES, so its 95-column claim is"
+            echo "a count and not a contract."
+            exit 1
+          fi
+          cat catalogue-column.txt
+          bash scripts/assert_catalogue_refusal.sh column catalogue-column.txt
+
   # ── The reason this repository has a PostgreSQL lane at all ───────────────
   #
   # `tests/test_deployment_control_platform_isolation.py` is 1,001 lines proving

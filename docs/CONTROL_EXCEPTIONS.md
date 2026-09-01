@@ -25,6 +25,30 @@ published artifact carries an artifact-level proof of the seven-table,
 production adoption evidence. Platform CP binding it into a release catalogue
 is a separate, undischarged step.
 
+**The artifact-level half, added after a7 and NOT part of what a7 published.**
+Two canaries now drive the catalogue against an INSTALLED distribution —
+`database_catalogue_as_published` and `catalogue_digest_binds`. They compare the
+whole canonical structure against literals in `scripts/artifact_canaries.py`:
+module identity, all seven table identities, all 95 columns by name, physical
+ordinal, PostgreSQL type identity and rendered spelling, nullability, generation
+and server default, and every table's plane and owner. Counts are deliberately
+not the check — `len(tables) == 7 and len(columns) == 95` passes on seven wrong
+tables. Two planted mutations in `ci.yml` require the refusal to be observable:
+a table nobody declared (`rollout_attempts` → `rollout_events`, in both the
+contribution and the manifest, so the artifact stays internally coherent) and a
+column right by name and wrong by type (`deployment_plans.plan_digest` back to
+the `dc_0001` width), each in its own environment so each refusal is attributed.
+
+**What is still owed on THIS entry, and must not be read as discharged by the
+paragraph above:** `0.1.0a7`'s own verification, run `33508897684`, ran the nine
+canaries a6 shipped and none of these. Until a verify run of the published a7
+artifact reports these canaries passing — recorded on a7's row in
+`docs/published-versions.json` — a7 carries no artifact-level catalogue proof,
+and the pre-merge CI lane (which runs against a wheel built on the runner, not
+against the wheel the registry served) is not a substitute for one. Platform CP
+binding the catalogue into a release catalogue remains a separate, undischarged
+step either way.
+
 The record below is the original entry, kept unchanged.
 
 ---
