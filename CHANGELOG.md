@@ -118,6 +118,14 @@ allocated yet.
   which is now the single owner of the target-state half of `propose_plan`'s
   refusals: the write path raises the first and the preview shows all of them,
   so a screen never works eligibility out for itself.
+- `python-multipart` as a DEV dependency only. Starlette's `Request.form()`
+  asserts the library is importable BEFORE it looks at the content type, so even
+  an `application/x-www-form-urlencoded` body needs it — and the kernel's own
+  platform surface reads forms the same way while deliberately not depending on
+  it, because form parsing is an assembly concern (the vendor control plane pins
+  it itself). It is in the dev group so this repository can drive its own surface
+  with real requests, and it must never become a runtime dependency of a
+  distribution whose defining property is that it performs no I/O.
 - A ninth artifact canary, `web_surface_ships_its_templates`. The templates ship
   as package data and the kernel validates that directory with `is_dir()` while
   building the surface graph — at the CONSUMER's startup. A wheel carrying

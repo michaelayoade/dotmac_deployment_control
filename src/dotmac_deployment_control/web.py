@@ -13,11 +13,18 @@ policy and the authentication.
 
 An adapter. It validates the request, asks the module's own service layer, and
 renders. It builds no query, holds no state and reimplements no command — every
-`select(...)` for these screens lives in `service.py`, where the module's read
-contracts already are (`list_targets`, `preview_plan_proposal`,
-`plans_for_target`, `rollouts_for_target`, `observation_log`,
-`observation_receipts`, `drift`). A consuming assembly building those queries
-itself would be a second read authority over tables it does not own.
+statement these screens need is a typed read contract in `service.py`
+(`list_targets`, `preview_plan_proposal`, `plans_for_target`,
+`rollouts_for_target`, `observation_log`, `observation_receipts`, `drift`). A
+consuming assembly building those queries itself would be a second read
+authority over tables it does not own.
+
+The prose here deliberately does not spell the SQLAlchemy statement
+constructor. `test_read_contracts.py`'s query-construction guard is a substring
+scan over every module beside `service.py`, and a docstring explaining that this
+file contains none would trip it — the exact false positive
+`TestNoTransportCameAcross` moved to an AST for. The guard is right to stay
+strict; the sentence is what changes.
 
 ## It declares no authentication, and that is deliberate
 

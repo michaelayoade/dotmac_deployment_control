@@ -50,6 +50,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from dotmac_deployment_control import (
     DEPLOYMENT_CONTROL_SURFACE,
@@ -100,7 +101,26 @@ def _composed_templates() -> Generator[None, None, None]:
 
 @pytest.fixture
 def db() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite://", future=True)
+    """One in-memory database, on ONE connection, reachable from any thread.
+
+    Both halves are needed here and neither is needed by the module's other
+    suites, which is why this fixture is not the one they use.
+
+    Starlette runs a `def` endpoint in a worker threadpool — the correct
+    production shape for a route that makes blocking database calls, and the
+    shape the kernel's own platform surface uses. So the handler executes on a
+    different thread from the one this fixture ran on. `check_same_thread=False`
+    lifts pysqlite's affinity assertion, and `StaticPool` keeps it to a SINGLE
+    connection: the default pool would hand the worker thread a NEW connection,
+    which for `sqlite://` is a brand-new empty database, and every screen would
+    fail with `no such table: mod_deploy.deployment_targets`.
+    """
+    engine = create_engine(
+        "sqlite://",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
     @event.listens_for(engine, "connect")
     def _attach(dbapi_connection, _record):  # type: ignore[no-untyped-def]

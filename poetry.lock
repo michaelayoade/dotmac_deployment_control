@@ -1179,6 +1179,17 @@ files = [
 cli = ["click (>=5.0)"]
 
 [[package]]
+name = "python-multipart"
+version = "0.0.20"
+description = "A streaming multipart parser for Python"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "python_multipart-0.0.20-py3-none-any.whl", hash = "sha256:8a62d3a8335e06589fe01f2a3e178cdcc632f3fbe0d492ad9ee0ec35aab1f104"},
+    {file = "python_multipart-0.0.20.tar.gz", hash = "sha256:8dd0cab45b8e23064ae09147625994d090fa46f5b0d1e13af944c331a7fa9d13"},
+]
+
+[[package]]
 name = "ruff"
 version = "0.6.9"
 description = "An extremely fast Python linter and code formatter, written in Rust."
@@ -1352,4 +1363,4 @@ files = [
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<3.14"
-content-hash = "776ce21d4ca708caf744f90d5a3ab3916ac8a77f55e99f65552cf4c42d2e5158"
+content-hash = "77d2419466cd875b9db838ae829f58ac13d06b52cd06f25f91d9fc86576d8c28"
