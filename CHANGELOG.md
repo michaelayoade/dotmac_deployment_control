@@ -5,6 +5,125 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — a verifiable approved plan: the image set, and a read API
+
+No version is allocated and nothing is published here. `0.1.0a7` remains the
+published, tagged and VERIFIED release; the browser surface (#18), the execution
+plan binding (#22) and this change all wait on the shared release-recorder hold.
+
+**Why this exists.** Two gaps, both established by the Observability lane
+reading this package's code rather than by supposition, and both of which made
+a promotion receipt unverifiable:
+
+1. **This module's plan record carried no image field.** The images a deployment
+   runs sat inside `desired_spec`, which this module declares OPAQUE and never
+   interprets. So a consumer checking that what ran was what was approved had to
+   be TOLD the authorized set by whoever was asking it — its `authorized_images`
+   was caller-supplied, and the comparison proved a caller consistent with
+   itself.
+2. **There was no read API for an approved plan.** No fetch-by-digest, no
+   verify-approved: only the write path, which compares an expected digest while
+   an approval is being recorded. A promotion was HANDED an authorization and
+   could not confirm one.
+
+**The property that carries the repair: the authorized image set is INSIDE the
+plan digest, never beside it.** An approval binds `plan_digest`; a set stored in
+a sibling column is a set an `UPDATE` can change while the digest — and the
+approval, and every screen — sit still. So there is deliberately no
+`deployment_plans.authorized_images` column, and
+`tests/unit/test_authorized_image_set.py` plants an image change, requires the
+digest to move, and then reconstructs the rejected "beside the digest" shape to
+show the same plant moving nothing — which is the only way to know the first
+assertion is testing anything.
+
+### Added
+
+- **`AuthorizedImage` and the canonical image set**
+  (`dotmac_deployment_control.images`): three typed terms — `service`,
+  `repository`, `digest` — matching what a consumer's receipt actually compares.
+  Pinned by DIGEST and never by tag, because a tag is a mutable pointer and a
+  tag-pinned set authorizes whatever the tag names later under an approval
+  nobody re-ran. Canonically ordered (a set has no order, and two orderings must
+  not be two authorizations) and duplicate-refusing (two digests for one service
+  is a question with two answers, and choosing either would be inferring an
+  authorization).
+- **`ImageDigestV1`** — a fourth digest type, added deliberately and NOT a
+  fourth plan digest: its subject is an OCI image manifest, so it takes part in
+  no plan/spec/execution comparison and being a distinct dataclass is what makes
+  that structural. It inherits the READ-ONLY base for the plainest reason
+  available — Control does not build images and holds none of the bytes — so
+  `ImageDigestV1.over_json(...)` is an `AttributeError`.
+- **`find_approved_plan` / `require_approved_plan`** — the read-only lookup. It
+  writes nothing, derives nothing, and returns what was frozen; in particular it
+  hands back the Foundation's `execution_plan_digest` without re-deriving it,
+  which remains structurally impossible.
+  - `find_approved_plan` is TOTAL: every path returns an `ApprovedPlanLookup`
+    carrying exactly one of an authorization or a typed refusal. It is FALSY for
+    every refusal, so `if find_approved_plan(...)` cannot pass on a no — a plain
+    dataclass would have been truthy for all of them.
+  - `require_approved_plan` raises `ApprovedPlanRefusedError` carrying the same
+    typed refusal, for a caller that must not proceed without an authorization.
+    One decision, one function, no second copy of the rules.
+- **Eight typed refusal codes** (`ApprovedPlanRefusalCode`), each a different
+  finding with a different reader, each observed on its own in
+  `tests/unit/test_approved_plan_lookup.py`: `digest_unreadable` (an encoding
+  fault in the caller, naming no plan — the `0.1.0a4` lesson applied to the read
+  path), `digest_unresolved` (a statement about this database),
+  `not_approved`, `approval_revoked`, `approval_standing_unrecorded`,
+  `execution_binding_absent`, `image_set_undeclared` and
+  `execution_plan_mismatch`.
+- **`revoke_plan_approval`** and `deployment.plan.approval_revoked.v1`.
+  Revocation is answered by the LOOKUP a consumer already calls, not by a
+  separate query it has to remember: a consumer told "yes" for a revoked plan is
+  worse off than one with no API, because the one with no API asks a person.
+- **`ApprovalDecisionStatus`** (`dotmac_deployment_control.approvals`) — a closed
+  `granted` / `revoked` vocabulary. Deliberately not a second copy of the
+  approvals lifecycle: Control holds the standing of a decision it was handed,
+  and every other state belongs to the system that owns it.
+- **Five columns** (`dc_0004_authorized_image_set`): `deployment_targets
+  .desired_images`, and `deployment_plans.approval_decision_status` /
+  `approval_revoked_at` / `approval_revocation_ref` /
+  `approval_revocation_reason`. All nullable with NO server default — `'[]'`
+  would make every existing target claim to authorize no images (a declaration,
+  not an absence) and `'granted'` would make every previously approved plan
+  assert a standing decision nobody recorded.
+
+### Changed
+
+- `DesiredDeployment` carries `images`; `ApprovalEvidence` carries
+  `decision_status`, which `approve_plan` now REQUIRES. Reaching `approve_plan`
+  is not evidence that a decision granted anything — that is the same inference
+  a defaulted `operation` makes — and a revoked decision replayed there is
+  refused rather than recorded as an approval.
+- `request_rollout` refuses a plan whose approval was revoked. A second gate and
+  not a redundant one: the plan's `status` still reads `approved` after a
+  revocation, deliberately, because it WAS approved and that is history.
+  `PlanStatus` gains no member, so the standing has exactly one writer.
+- `plan_snapshot` carries `authorized_images`, unconditionally — present as
+  `null` when nothing was declared, so "predates the field" and "declared
+  nothing" are one state rather than two encodings of one absence.
+- `PlanView` surfaces the approval's standing and its withdrawal, and projects
+  the frozen image set out of the snapshot. A surface showing only `status`
+  would render a revoked authorization as an approved plan.
+- The published catalogue is now **seven tables and 104 columns** with lineage
+  head `dc_0004_authorized_image_set`. The canary literal in
+  `scripts/artifact_canaries.py` moved with it; the two are held in sync in both
+  directions by `test_the_canary_literal_and_the_declaration_do_not_drift`.
+
+### Not changed, and stated because it is the property most easily lost
+
+`ExecutionPlanDigestV1` still inherits `_ReceivedSha256Digest`, so
+`over_json` is still an `AttributeError`. The new lookup RETURNS that value,
+which is exactly the point at which somebody would be tempted to re-derive it;
+`test_the_lookup_returns_the_frozen_digest_and_still_cannot_compute_one` asserts
+both halves together.
+
+Revocation deliberately does not reach an already-dispatched rollout, and does
+not quarantine a report that arrives after it. Rule 3 stands: every arrival is
+recorded, and what actually ran is evidence regardless of what happened to the
+authorization afterwards.
+
+
 ## Unreleased — the execution plan binding, and the first receipt it makes possible
 
 No version is allocated and nothing is published here. `0.1.0a7` remains the

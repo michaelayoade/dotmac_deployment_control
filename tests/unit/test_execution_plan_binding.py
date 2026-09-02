@@ -225,6 +225,7 @@ def _evidence(plan, **overrides: object) -> ApprovalEvidence:  # type: ignore[no
         "decided_at": _NOW,
         "operation": "deploy",
         "execution_plan_digest": _PLAN_A,
+        "decision_status": "granted",
     }
     fields.update(overrides)
     return ApprovalEvidence(**fields)  # type: ignore[arg-type]

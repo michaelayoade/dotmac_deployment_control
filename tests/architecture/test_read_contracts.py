@@ -28,6 +28,15 @@ INPUT_TYPES = (
     api.RequestRolloutCommand,
     api.RegisterTargetCommand,
     api.SetDesiredStateCommand,
+    api.RevokePlanApprovalCommand,
+    #: The desired state a caller hands in, listed because it now carries the
+    #: authorized IMAGE set. Those images are pinned by digest, and the rule
+    #: below still holds for the reason it always did: `ImageDigestV1` is over
+    #: an OCI manifest Control cannot compute, so it is supplied rather than
+    #: derived — the same admissibility `ExecutionPlanDigestV1` has. It is in
+    #: this tuple so that a future field named `..._digest` appearing here is
+    #: caught rather than unwatched.
+    api.DesiredDeployment,
     api.TargetFilter,
 )
 

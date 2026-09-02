@@ -168,13 +168,36 @@
   under, the immutable reference to that decision, when it happened, and the
   digest the decision was bound to. `dotmac-approvals` owns the decision; this
   module records what it was handed and this screen shows it.
+
+  "Standing" is a SEPARATE column from "Status", and the separation is the
+  point rather than a nicety. A plan's status stays `approved` after its
+  approval is revoked — deliberately, because it WAS approved and that is
+  history — so a screen showing only the status renders a withdrawn
+  authorization as an approved plan. That is the same false success the
+  read-only lookup refuses, and an operator reading this table is exactly the
+  reader it would mislead.
 #}
 {% if plans %}
-  {{ ui.table_open(["#", "Status", "Desired rev", "Plan digest", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
+  {{ ui.table_open(["#", "Status", "Standing", "Desired rev", "Plan digest", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
   {% for plan in plans %}
   <tr>
     {{ ui.cell(plan.sequence) }}
     {{ ui.cell(plan.status) }}
+    {#
+      An em dash for a plan that was never approved, so "no approval happened"
+      and "an approval was withdrawn" are never the same cell. A blank would
+      read as the first for both.
+    #}
+    {% if plan.approval_decision_status == "revoked" %}
+    <td style="padding:var(--dmui-space-2xs);
+               border-bottom:1px solid var(--dmui-border-subtle);
+               color:var(--dmui-status-negative-foreground);">
+      revoked{% if plan.approval_revocation_ref %}
+      ({{ plan.approval_revocation_ref }}){% endif %}
+    </td>
+    {% else %}
+    {{ ui.cell(plan.approval_decision_status) }}
+    {% endif %}
     {{ ui.cell(plan.desired_revision) }}
     <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
       {{ ui.digest(plan.plan_digest) }}

@@ -68,6 +68,11 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
+from dotmac_deployment_control.approvals import (
+    APPROVAL_DECISION_STATUSES,
+    ApprovalDecisionStatus,
+    require_decision_status,
+)
 from dotmac_deployment_control.database_catalog import database_catalog
 from dotmac_deployment_control.database_catalog_snapshot import (
     build_database_catalog_snapshot,
@@ -75,6 +80,7 @@ from dotmac_deployment_control.database_catalog_snapshot import (
 from dotmac_deployment_control.digests import (
     ALGORITHM,
     ExecutionPlanDigestV1,
+    ImageDigestV1,
     PlanDigestV1,
     SpecDigestV1,
 )
@@ -85,6 +91,7 @@ from dotmac_deployment_control.facts import (
     DRIFT_DETECTED_V1,
     INTENT_DISPATCHED_V1,
     OBSERVATION_RECORDED_V1,
+    PLAN_APPROVAL_REVOKED_V1,
     PLAN_APPROVED_V1,
     PLAN_CANCELLED_V1,
     PLAN_PROPOSED_V1,
@@ -99,6 +106,10 @@ from dotmac_deployment_control.facts import (
     TARGET_DESIRED_STATE_SET_V1,
     TARGET_REGISTERED_V1,
     TARGET_SUSPENDED_V1,
+    ApprovedPlanAuthorization,
+    ApprovedPlanLookup,
+    ApprovedPlanRefusal,
+    ApprovedPlanRefusalCode,
     AttemptView,
     DriftReport,
     ObservationAttemptView,
@@ -110,6 +121,10 @@ from dotmac_deployment_control.facts import (
     TargetFilter,
     TargetPage,
     TargetView,
+)
+from dotmac_deployment_control.images import (
+    AuthorizedImage,
+    authorized_image_set,
 )
 from dotmac_deployment_control.manifest import module
 from dotmac_deployment_control.migrations import versions_dir
@@ -140,12 +155,14 @@ from dotmac_deployment_control.operations import (
 from dotmac_deployment_control.ports import (
     ApprovalEvidence,
     ApprovalRefusedError,
+    ApprovedPlanRefusedError,
     DeliveryIntent,
     DeploymentControlError,
     DesiredDeployment,
     DigestEncodingError,
     ExecutionPlanBindingError,
     ExpectedStateError,
+    ImageSetRefusedError,
     ObservationRefusedError,
     ObservedState,
     OperationRefusedError,
@@ -164,6 +181,7 @@ from dotmac_deployment_control.service import (
     RecordObservationCommand,
     RegisterTargetCommand,
     RequestRolloutCommand,
+    RevokePlanApprovalCommand,
     RolloutTransitionCommand,
     SetDesiredStateCommand,
     SettleAttemptCommand,
@@ -177,6 +195,7 @@ from dotmac_deployment_control.service import (
     dispatch_attempt,
     drift,
     enrol_credential,
+    find_approved_plan,
     get_plan,
     get_rollout,
     get_target,
@@ -192,8 +211,10 @@ from dotmac_deployment_control.service import (
     record_observation,
     register_target,
     request_rollout,
+    require_approved_plan,
     require_manual_repair,
     revoke_credential,
+    revoke_plan_approval,
     rollouts_for_target,
     set_desired_state,
     settle_attempt,
@@ -237,6 +258,7 @@ except PackageNotFoundError:  # pragma: no cover
 
 __all__ = [
     "ALGORITHM",
+    "APPROVAL_DECISION_STATUSES",
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
     "AUDIT_ACTION_ROLLOUT",
@@ -249,6 +271,7 @@ __all__ = [
     "INTENT_DISPATCHED_V1",
     "OBSERVATION_RECORDED_V1",
     "OPERATIONS",
+    "PLAN_APPROVAL_REVOKED_V1",
     "PLAN_APPROVED_V1",
     "PLAN_CANCELLED_V1",
     "PLAN_PROPOSED_V1",
@@ -267,11 +290,18 @@ __all__ = [
     "TARGET_SUSPENDED_V1",
     "TEMPLATE_NAMESPACE",
     "TERMINAL_ROLLOUT_STATUSES",
+    "ApprovalDecisionStatus",
     "ApprovalEvidence",
     "ApprovalRefusedError",
     "ApprovePlanCommand",
+    "ApprovedPlanAuthorization",
+    "ApprovedPlanLookup",
+    "ApprovedPlanRefusal",
+    "ApprovedPlanRefusalCode",
+    "ApprovedPlanRefusedError",
     "AttemptOutcome",
     "AttemptView",
+    "AuthorizedImage",
     "BrowserFieldError",
     "BrowserSuppliedDigestError",
     "CredentialStatus",
@@ -289,6 +319,8 @@ __all__ = [
     "ExecutionPlanBindingError",
     "ExecutionPlanDigestV1",
     "ExpectedStateError",
+    "ImageDigestV1",
+    "ImageSetRefusedError",
     "ObservationAttempt",
     "ObservationAttemptView",
     "ObservationDisposition",
@@ -307,6 +339,7 @@ __all__ = [
     "RecordObservationCommand",
     "RegisterTargetCommand",
     "RequestRolloutCommand",
+    "RevokePlanApprovalCommand",
     "Rollout",
     "RolloutAttempt",
     "RolloutStatus",
@@ -325,6 +358,7 @@ __all__ = [
     "TransitionRefusedError",
     "__version__",
     "activate_credential",
+    "authorized_image_set",
     "approve_plan",
     "build_database_catalog_snapshot",
     "cancel_plan",
@@ -335,6 +369,7 @@ __all__ = [
     "dispatch_attempt",
     "drift",
     "enrol_credential",
+    "find_approved_plan",
     "get_plan",
     "get_rollout",
     "get_target",
@@ -352,9 +387,12 @@ __all__ = [
     "refuse_client_supplied_digest",
     "register_target",
     "request_rollout",
+    "require_approved_plan",
+    "require_decision_status",
     "require_manual_repair",
     "require_operation",
     "revoke_credential",
+    "revoke_plan_approval",
     "rollouts_for_target",
     "set_desired_state",
     "settle_attempt",

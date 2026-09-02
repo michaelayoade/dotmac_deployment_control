@@ -189,8 +189,15 @@ NOT by the nine artifact canaries, which are unchanged from a6 and drive none of
 it. It is not production-adoption evidence.
 
 The tree has since moved past that: `dc_0003_execution_plan_binding` appends four
-columns to `deployment_plans`, so the CURRENT declaration is seven tables and 99
-columns. The 95 above is a fact about the published a7 wheel and stays as one.
+columns to `deployment_plans`, and `dc_0004_authorized_image_set` appends four
+more there plus one on `deployment_targets`, so the CURRENT declaration is seven
+tables and 104 columns. The 95 above is a fact about the published a7 wheel and
+stays as one.
+
+`dc_0004` adds no image column to `deployment_plans`, deliberately. A plan's
+authorized image set lives inside `snapshot` — the exact document `plan_digest`
+is computed over — because a sibling column is a value an `UPDATE` can move
+while the digest sits still, and an approval binds the digest.
 
 Three published versions must never be pinned, and they failed three different
 questions — the distinction is the record, so the reason is named rather than

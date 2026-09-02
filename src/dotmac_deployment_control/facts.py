@@ -30,8 +30,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, ClassVar, Final
 from uuid import UUID
+
+from dotmac_deployment_control.images import AuthorizedImage
 
 # ── Event types ─────────────────────────────────────────────────────────────
 
@@ -44,6 +47,11 @@ CREDENTIAL_ACTIVATED_V1: Final[str] = "deployment.credential.activated.v1"
 CREDENTIAL_REVOKED_V1: Final[str] = "deployment.credential.revoked.v1"
 PLAN_PROPOSED_V1: Final[str] = "deployment.plan.proposed.v1"
 PLAN_APPROVED_V1: Final[str] = "deployment.plan.approved.v1"
+#: An approval WITHDRAWN. Its own fact rather than a second
+#: `plan.cancelled`: a cancelled plan is not wanted, a plan whose approval
+#: was revoked is still wanted and is no longer authorized, and a consumer
+#: that has already dispatched needs to tell those apart.
+PLAN_APPROVAL_REVOKED_V1: Final[str] = "deployment.plan.approval_revoked.v1"
 PLAN_CANCELLED_V1: Final[str] = "deployment.plan.cancelled.v1"
 ROLLOUT_REQUESTED_V1: Final[str] = "deployment.rollout.requested.v1"
 INTENT_DISPATCHED_V1: Final[str] = "deployment.intent.dispatched.v1"
@@ -69,6 +77,7 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         CREDENTIAL_REVOKED_V1,
         PLAN_PROPOSED_V1,
         PLAN_APPROVED_V1,
+        PLAN_APPROVAL_REVOKED_V1,
         PLAN_CANCELLED_V1,
         ROLLOUT_REQUESTED_V1,
         INTENT_DISPATCHED_V1,
@@ -142,8 +151,202 @@ class PlanView:
     approval_policy_version: int | None = None
     approval_decision_ref: str | None = None
     approved_at: datetime | None = None
+    #: WHETHER THE APPROVAL STILL STANDS, and under what. `status` above says
+    #: the plan WAS approved and keeps saying so forever; these four say
+    #: whether that decision is still good. A surface that showed only `status`
+    #: would render a revoked authorization as an approved plan.
+    approval_decision_status: str | None = None
+    approval_revoked_at: datetime | None = None
+    approval_revocation_ref: str | None = None
+    approval_revocation_reason: str | None = None
     superseded_by_id: UUID | None = None
     snapshot: Mapping[str, Any] = field(default_factory=dict)
+    #: The frozen image set, projected out of `snapshot` rather than stored
+    #: beside it — the snapshot is where it lives, because that is the document
+    #: `plan_digest` covers.
+    #:
+    #: `None` means this plan froze no image set: either it predates the field,
+    #: or its target never declared one. A caller must not read that as an
+    #: empty set, which is why the lookup refuses it rather than answering.
+    authorized_images: tuple[AuthorizedImage, ...] | None = None
+
+
+# ── The approved-plan lookup ────────────────────────────────────────────────
+#
+# THE DEFECT THIS ANSWERS, measured rather than supposed. There was no read API
+# for an approved plan here: no fetch-by-digest and no verify-approved. Only a
+# WRITE path existed, comparing an expected digest while an approval was being
+# recorded. So a promotion in another system was HANDED an authorization and
+# could not confirm one — it verified a receipt against terms its own caller
+# had supplied, which proves a caller consistent with itself and nothing else.
+
+
+class ApprovedPlanRefusalCode(StrEnum):
+    """WHY the lookup did not return an authorization. Eight, not one.
+
+    Eight members because they have eight different readers, and a lookup that
+    answered "no" would leave every one of them opening the wrong system.
+
+    The first two are the a4 lesson applied to the read path, and they are the
+    pair most worth keeping apart: *I could not read the digest you sent* is a
+    fault in the caller's encoding and says nothing about any plan, while
+    *nothing holds that digest* is a statement about this database. Collapsing
+    them would hand an operator a security-shaped answer for a formatting bug.
+    """
+
+    #: The supplied plan digest is not readable as a `PlanDigestV1`. NOTHING
+    #: was looked up and no claim is made about any plan.
+    DIGEST_UNREADABLE = "digest_unreadable"
+    #: Well-formed, and no plan in this control plane holds it.
+    DIGEST_UNRESOLVED = "digest_unresolved"
+    #: A plan holds it and it is not approved. `detail` names the actual status,
+    #: because "draft", "superseded" and "cancelled" send an operator three
+    #: different places.
+    NOT_APPROVED = "not_approved"
+    #: It WAS approved and the decision has since been revoked. Deliberately
+    #: not folded into `NOT_APPROVED`: a plan that was never approved is a
+    #: process that has not happened, and a revoked one is a decision somebody
+    #: took — and if a rollout is already in flight, that difference is the
+    #: whole of what an operator needs to know.
+    APPROVAL_REVOKED = "approval_revoked"
+    #: It reads approved and the STANDING of its decision was never recorded —
+    #: an approval taken before Control held the column.
+    #:
+    #: Its own member rather than a shade of `NOT_APPROVED`, because the two
+    #: send an operator to opposite conclusions: `NOT_APPROVED` means no
+    #: approval happened, and this means one did and Control cannot say whether
+    #: it still stands. Answering it as `granted` would be reading an
+    #: authorization out of a blank column, which is the exact inference the
+    #: column exists to remove.
+    APPROVAL_STANDING_UNRECORDED = "approval_standing_unrecorded"
+    #: Approved, but carrying no execution-plan binding — a `0.1.0a7` plan. An
+    #: authorization no executor can verify, so it is refused here rather than
+    #: returned for something to fail against later.
+    EXECUTION_BINDING_ABSENT = "execution_binding_absent"
+    #: Approved and bound, and its frozen snapshot declares no authorized image
+    #: set. THIS IS THE ORIGINAL DEFECT, refused rather than answered: an
+    #: authorization that cannot say which images it covers is one a consumer
+    #: would have to fill in from its own caller, which is the thing this whole
+    #: surface exists to stop. Absent is not empty — a plan authorizing NO
+    #: images resolves normally, with `()`.
+    IMAGE_SET_UNDECLARED = "image_set_undeclared"
+    #: The caller named an expected execution-plan digest and the authorization
+    #: binds a different one. Only reachable when the caller supplied one; the
+    #: lookup never invents a term to compare.
+    EXECUTION_PLAN_MISMATCH = "execution_plan_mismatch"
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovedPlanRefusal:
+    """A typed NO, which a caller cannot read as a yes.
+
+    `code` is the member; `detail` is the sentence for a human. A caller
+    branching on the code never has to parse the sentence, and a sentence that
+    changes never breaks a caller.
+    """
+
+    code: ApprovedPlanRefusalCode
+    detail: str
+    #: The plan the digest resolved to, when it resolved to one. `None` for the
+    #: two digest refusals, where naming a plan would be inventing one.
+    plan_id: UUID | None = None
+    #: The plan's own status at the moment of the refusal, for the codes where
+    #: it is the finding. Never a substitute for `code`.
+    plan_status: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovedPlanAuthorization:
+    """A STANDING authorization, read from the frozen plan and nothing else.
+
+    Every field here was frozen at proposal or written at approval. Nothing is
+    re-derived: notably `execution_plan_digest`, which Control receives from
+    the Deployment Foundation and is structurally unable to recompute (its type
+    does not inherit a constructor that takes a payload). This view hands back
+    what was frozen; it does not reconstruct a Foundation plan.
+
+    `authorized_images` is a tuple and never `None`. A plan with no declared
+    image set is REFUSED by the lookup rather than returned with a blank, so no
+    consumer can write `for image in auth.authorized_images or ():` and promote
+    with nothing checked.
+    """
+
+    plan_id: UUID
+    target_id: UUID
+    target_ref: str
+    sequence: int
+    desired_revision: int
+    #: WHICH approved plan record this is — Control's own snapshot digest, and
+    #: the key the lookup was made by.
+    plan_digest: str
+    #: WHAT THE FOUNDATION RENDERED, as authorized. A third value, distinct
+    #: from `plan_digest` and from a spec digest; see `digests`.
+    execution_plan_digest: str
+    #: DEPLOY or ROLLBACK — separately authorized operations, never inferred
+    #: from one another.
+    operation: str
+    #: UNDER WHICH POLICY, and which version of it. Both, because a decision
+    #: stays explainable only if the policy it was taken under is identified;
+    #: a policy code alone reads as current when the policy has since moved.
+    approval_policy_code: str | None
+    approval_policy_version: int | None
+    #: WHICH DECISION, and its STANDING. The standing is always `granted` here
+    #: — a revoked one is refused — and it is carried anyway so a receipt can
+    #: record what was read rather than what the reader assumed.
+    approval_decision_ref: str | None
+    approval_decision_status: str
+    approved_at: datetime | None
+    #: WHAT MAY RUN. Inside `plan_digest` above, not beside it: the set is part
+    #: of the document the digest is taken over, so an approval that binds the
+    #: digest binds these images, and an image cannot change without the digest
+    #: changing.
+    authorized_images: tuple[AuthorizedImage, ...]
+    release_ref: str | None = None
+    licence_ref: str | None = None
+    brand_profile_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovedPlanLookup:
+    """The lookup's answer: EXACTLY one of an authorization or a refusal.
+
+    ## Why this type has a `__bool__`
+
+    A dataclass is always truthy. `if lookup:` on a plain result object is
+    therefore `True` for a refusal, and that is the precise shape of the false
+    success this whole surface exists to remove — a consumer asking "is this
+    plan approved?" and proceeding because the answer object existed.
+
+    So truthiness IS approval here. `if lookup:` and `if lookup.is_authorized:`
+    are the same question, and there is no way to write the check that passes
+    on a refusal.
+
+    ## Why absent and negative cannot be confused
+
+    `authorization is None` never stands alone: a lookup with no authorization
+    always carries a `refusal` with a typed code, enforced on construction. So
+    there is no "empty" answer to mistake for a negative one, and no negative
+    one that fails to say why.
+    """
+
+    authorization: ApprovedPlanAuthorization | None = None
+    refusal: ApprovedPlanRefusal | None = None
+
+    def __post_init__(self) -> None:
+        if (self.authorization is None) == (self.refusal is None):
+            raise ValueError(
+                "an ApprovedPlanLookup carries exactly one of an authorization "
+                "or a refusal: both would be a contradiction and neither would "
+                "be an empty answer a caller could read as either."
+            )
+
+    @property
+    def is_authorized(self) -> bool:
+        return self.authorization is not None
+
+    def __bool__(self) -> bool:
+        """Truthy ONLY for a standing authorization — see the class docstring."""
+        return self.is_authorized
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +603,7 @@ __all__ = [
     "DRIFT_DETECTED_V1",
     "INTENT_DISPATCHED_V1",
     "OBSERVATION_RECORDED_V1",
+    "PLAN_APPROVAL_REVOKED_V1",
     "PLAN_APPROVED_V1",
     "PLAN_CANCELLED_V1",
     "PLAN_PROPOSED_V1",
@@ -414,7 +618,12 @@ __all__ = [
     "TARGET_DESIRED_STATE_SET_V1",
     "TARGET_REGISTERED_V1",
     "TARGET_SUSPENDED_V1",
+    "ApprovedPlanAuthorization",
+    "ApprovedPlanLookup",
+    "ApprovedPlanRefusal",
+    "ApprovedPlanRefusalCode",
     "AttemptView",
+    "AuthorizedImage",
     "DriftReport",
     "ObservationAttemptView",
     "ObservationReceiptView",

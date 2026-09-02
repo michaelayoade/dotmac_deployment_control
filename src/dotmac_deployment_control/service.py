@@ -76,11 +76,21 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
+from dotmac_deployment_control.approvals import (
+    ApprovalDecisionStatus,
+    require_decision_status,
+)
 from dotmac_deployment_control.digests import (
     ExecutionPlanDigestV1,
     PlanDigestV1,
     SpecDigestV1,
     canonical_json,
+)
+from dotmac_deployment_control.images import (
+    AuthorizedImage,
+    authorized_image_set,
+    image_set_from_payload,
+    image_set_payload,
 )
 from dotmac_deployment_control.models import (
     TERMINAL_ROLLOUT_STATUSES,
@@ -106,6 +116,7 @@ from dotmac_deployment_control.operations import (
 from dotmac_deployment_control.ports import (
     ApprovalEvidence,
     ApprovalRefusedError,
+    ApprovedPlanRefusedError,
     DeliveryIntent,
     DesiredDeployment,
     DigestEncodingError,
@@ -138,6 +149,7 @@ SCOPE_ACTIVATE_CREDENTIAL = "deployment.activate_credential"
 SCOPE_REVOKE_CREDENTIAL = "deployment.revoke_credential"
 SCOPE_PROPOSE_PLAN = "deployment.propose_plan"
 SCOPE_APPROVE_PLAN = "deployment.approve_plan"
+SCOPE_REVOKE_PLAN_APPROVAL = "deployment.revoke_plan_approval"
 SCOPE_CANCEL_PLAN = "deployment.cancel_plan"
 SCOPE_REQUEST_ROLLOUT = "deployment.request_rollout"
 SCOPE_DISPATCH = "deployment.dispatch_attempt"
@@ -309,6 +321,32 @@ class ApprovePlanCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RevokePlanApprovalCommand:
+    """Withdraw an approval that was recorded, without erasing that it was.
+
+    The plan's own `status` stays `approved` — it WAS, on evidence, at a
+    recorded time, and that is history. What moves is
+    `approval_decision_status`, which owns whether the approval still stands.
+
+    `revocation_ref` is REQUIRED and has no default. A revocation is a decision
+    somebody took in the approvals authority, and one arriving here with
+    nothing to resolve it back to would make an authorization disappear with no
+    decision behind it — which reads to an operator exactly like a bug, and
+    would be indistinguishable from one afterwards.
+
+    `reason` is optional and is for the human. It is never parsed.
+    """
+
+    command_id: str
+    plan_id: UUID
+    revocation_ref: str
+    reason: str | None = None
+    revoked_at: datetime | None = None
+    expected_version: int | None = None
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RequestRolloutCommand:
     """Decide to converge a target on an APPROVED (or approval-exempt) plan."""
 
@@ -368,10 +406,39 @@ def plan_snapshot(target: DeploymentTarget) -> dict[str, Any]:
     """The canonical frozen snapshot of a target's desired state.
 
     Deterministic by construction: `json.dumps(sort_keys=True)` at digest time,
-    and every value here is either a scalar or the caller's own spec mapping. A
-    digest over a dict whose iteration order is insertion order would change when
-    the same plan was rebuilt in a different order, silently invalidating an
-    approval nobody changed.
+    and every value here is either a scalar, the caller's own spec mapping, or
+    the canonically ordered image set below. A digest over a dict whose
+    iteration order is insertion order would change when the same plan was
+    rebuilt in a different order, silently invalidating an approval nobody
+    changed.
+
+    ## `authorized_images` is HERE, and that placement is the point
+
+    This document is the exact payload `PlanDigestV1` is taken over. Putting
+    the authorized image set inside it means an approval, which binds the
+    digest, binds the images — change an image and the digest moves, so a prior
+    approval goes stale rather than silently covering a different set.
+
+    A sibling `deployment_plans.authorized_images` column would have been the
+    tidier-looking design and it is the one that fails: a column is a value an
+    `UPDATE` can move while the digest sits still, and "approved" would stop
+    meaning what it says with every screen still reading correctly. So there is
+    no such column, and `tests/unit/test_authorized_image_set.py` plants an
+    image change and requires the digest to move.
+
+    ## Three states for the key, and `None` is not `[]`
+
+    `None` — the target declared no image set; the plan freezes that absence
+    honestly and `find_approved_plan` refuses it rather than answering. `[]` —
+    it authorizes no images. A list — the set, already canonically ordered by
+    `set_desired_state`, re-ordered here anyway because this function's output
+    is a digest input and must not depend on a sibling's discipline.
+
+    ## The key is present unconditionally
+
+    Even when the value is `None`, so that "this plan predates the field" and
+    "this plan declared nothing" are one state rather than two. Two encodings
+    of one absence would be two digests for one plan.
     """
     return {
         "target_ref": target.target_ref,
@@ -382,6 +449,12 @@ def plan_snapshot(target: DeploymentTarget) -> dict[str, Any]:
         "brand_profile_ref": target.brand_profile_ref,
         "desired_revision": target.desired_revision,
         "spec": dict(target.desired_spec or {}),
+        "authorized_images": image_set_payload(
+            image_set_from_payload(
+                target.desired_images,
+                where=f"target {target.target_ref} desired image set",
+            )
+        ),
     }
 
 
@@ -552,6 +625,27 @@ def _supplied_execution_plan_digest(
         ) from exc
 
 
+def _frozen_image_set(row: DeploymentPlan) -> tuple[AuthorizedImage, ...] | None:
+    """The image set THIS PLAN froze, read back out of its own snapshot.
+
+    Out of the SNAPSHOT and never out of a column, because the snapshot is the
+    document `plan_digest` was taken over. Reading a sibling column would mean
+    the answer a consumer acts on and the bytes the approval covers were two
+    different things — which is exactly the shape this change exists to
+    remove, rebuilt one layer up.
+
+    `None` means the plan froze no set: it predates the field, or its target
+    declared none. Never `()` for that case; the two are different facts and
+    `find_approved_plan` treats them differently.
+    """
+    snapshot = row.snapshot or {}
+    if "authorized_images" not in snapshot:
+        return None
+    return image_set_from_payload(
+        snapshot.get("authorized_images"), where=f"plan {row.id} frozen snapshot"
+    )
+
+
 def _plan_blockers(target: DeploymentTarget) -> tuple[str, ...]:
     """Every reason THIS TARGET cannot be planned for, in operator language.
 
@@ -706,8 +800,13 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         approval_policy_version=row.approval_policy_version,
         approval_decision_ref=row.approval_decision_ref,
         approved_at=row.approved_at,
+        approval_decision_status=row.approval_decision_status,
+        approval_revoked_at=row.approval_revoked_at,
+        approval_revocation_ref=row.approval_revocation_ref,
+        approval_revocation_reason=row.approval_revocation_reason,
         superseded_by_id=row.superseded_by_id,
         snapshot=dict(row.snapshot or {}),
+        authorized_images=_frozen_image_set(row),
     )
 
 
@@ -846,6 +945,19 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
         row.desired_spec = dict(command.desired.spec)
         row.licence_ref = command.desired.licence_ref
         row.brand_profile_ref = command.desired.brand_profile_ref
+        # CANONICALIZED ON THE WAY IN, refused if it is not a set. Ordering and
+        # duplicate-checking here rather than at proposal means the refusal
+        # reaches whoever declared the images, at the moment they declared
+        # them — not an operator three screens later who cannot fix it.
+        #
+        # `None` passes through as `None`: no image set declared is a real
+        # state and is not an empty set (see `DesiredDeployment.images`).
+        row.desired_images = image_set_payload(
+            authorized_image_set(
+                command.desired.images,
+                where=f"desired state for target {row.target_ref}",
+            )
+        )
         row.desired_revision += 1
         if row.status == TargetStatus.REGISTERED.value:
             row.status = TargetStatus.ACTIVE.value
@@ -864,6 +976,14 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
                 "licence_ref": row.licence_ref,
                 "brand_profile_ref": row.brand_profile_ref,
                 "desired_revision": row.desired_revision,
+                # The COUNT, never the set. An audit detail is read far more
+                # often than it is needed in full, and the images are already
+                # recoverable from the row and from every plan frozen after
+                # this. `None` here is the declared absence, and it stays
+                # distinguishable from `0`.
+                "authorized_image_count": (
+                    None if row.desired_images is None else len(row.desired_images)
+                ),
             },
         )
         return {"id": str(row.id)}
@@ -1330,6 +1450,36 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
                 "encoding difference: the plan changed after approval, and a "
                 "new approval is required."
             )
+        # ── The DECISION term ───────────────────────────────────────────────
+        #
+        # Checked BEFORE the policy and binding terms below, because it is the
+        # cheapest question with the largest answer: if the decision does not
+        # stand, nothing about which policy or which execution it named
+        # matters. A revoked decision replayed here is the arrival this refusal
+        # exists for — far more likely than a mistyped word, and the one that
+        # would otherwise be recorded as a live approval.
+        if command.evidence.decision_status is None:
+            raise ApprovalRefusedError(
+                f"approval evidence for plan {row.id} does not say what the "
+                "decision was. Reaching this function is not evidence that a "
+                "decision granted anything — that inference is the same shape "
+                "as a defaulted operation, a caller's silence deciding an "
+                "authorization. State the standing "
+                f"({sorted(ApprovalDecisionStatus)!r} spelled exactly)."
+            )
+        decision_status = require_decision_status(
+            command.evidence.decision_status,
+            where=f"approval evidence for plan {row.id}",
+        )
+        if decision_status is not ApprovalDecisionStatus.GRANTED:
+            raise ApprovalRefusedError(
+                f"approval evidence for plan {row.id} carries decision "
+                f"{command.evidence.decision_ref!r} with standing "
+                f"{decision_status.value!r}. A decision that does not grant "
+                "authorizes nothing, and recording it as an approval would put "
+                "a withdrawn authorization behind a rollout."
+            )
+
         if command.evidence.policy_code != (row.approval_policy_code or ""):
             raise ApprovalRefusedError(
                 f"approval evidence names policy {command.evidence.policy_code!r} "
@@ -1416,6 +1566,12 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
         row.authorized_execution_plan_digest = command.evidence.execution_plan_digest
 
         row.approval_decision_ref = command.evidence.decision_ref
+        # The STANDING, written from the validated member rather than from the
+        # caller's text: this one IS Control's own column about Control's own
+        # record, so writing the canonical spelling is not reshaping somebody
+        # else's value — contrast the two digest columns above, which are
+        # stored exactly as received.
+        row.approval_decision_status = decision_status.value
         row.approved_at = command.evidence.decided_at
         row.status = PlanStatus.APPROVED.value
         row.record_version += 1
@@ -1436,6 +1592,7 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
                 "policy_code": command.evidence.policy_code,
                 "policy_version": command.evidence.policy_version,
                 "decision_ref": command.evidence.decision_ref,
+                "decision_status": row.approval_decision_status,
             },
         )
         return {"id": str(row.id)}
@@ -1444,6 +1601,99 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
         db,
         command_id=command.command_id,
         command_type=SCOPE_APPROVE_PLAN,
+        handler=handler,
+    )
+    return _plan_view(_load_plan(db, command.plan_id))
+
+
+def revoke_plan_approval(
+    db: Session, command: RevokePlanApprovalCommand
+) -> facts.PlanView:
+    """Withdraw a recorded approval, so nothing downstream still reads it as one.
+
+    ## Why this is not `cancel_plan`
+
+    A cancelled plan is not wanted. A plan whose approval was revoked is still
+    wanted and is no longer authorized — often because the approval was given
+    against information that has since changed, and the plan itself is fine.
+    Collapsing them would make an operator's queue unable to say which of the
+    two happened, and would throw away a plan somebody may re-approve.
+
+    ## What it reaches
+
+    `request_rollout` refuses a plan whose approval does not stand, and
+    `find_approved_plan` refuses it with `APPROVAL_REVOKED`. That second one is
+    the important half: revocation is reachable from the LOOKUP a consumer
+    already calls, not from a separate query it has to remember. A consumer
+    asking "is this approved?" and being told yes for a revoked plan is worse
+    than having no lookup at all, because a consumer with no lookup goes and
+    asks a person.
+
+    ## What it cannot reach
+
+    A rollout already dispatched. Revoking an approval does not un-deploy
+    anything and this function does not pretend otherwise — it moves the
+    authorization, and converging the fleet back is a new plan and a new
+    decision. Saying so here rather than leaving a reader to assume the
+    stronger thing.
+    """
+
+    def handler(session: Session) -> Mapping[str, object]:
+        row = _load_plan(session, command.plan_id)
+        _require_expected(
+            f"plan {row.id}",
+            status=row.status,
+            version=row.record_version,
+            expected_status=PlanStatus.APPROVED.value,
+            expected_version=command.expected_version,
+        )
+        if row.approval_decision_status == ApprovalDecisionStatus.REVOKED.value:
+            raise TransitionRefusedError(
+                f"plan {row.id}'s approval was already revoked at "
+                f"{row.approval_revoked_at} under "
+                f"{row.approval_revocation_ref!r}. Recording a second "
+                "revocation would overwrite which decision withdrew the "
+                "authorization, and that first one is the one an incident "
+                "review needs."
+            )
+        if not command.revocation_ref:
+            raise ApprovalRefusedError(
+                f"revoking plan {row.id}'s approval requires the reference of "
+                "the decision that withdrew it. An authorization that "
+                "disappears with no decision behind it is indistinguishable "
+                "from a defect afterwards."
+            )
+        row.approval_decision_status = ApprovalDecisionStatus.REVOKED.value
+        row.approval_revoked_at = _as_utc(command.revoked_at or datetime.now(UTC))
+        row.approval_revocation_ref = command.revocation_ref
+        row.approval_revocation_reason = command.reason
+        row.record_version += 1
+        session.flush()
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.PLAN_APPROVAL_REVOKED_V1,
+            entity_type=_ENTITY_PLAN,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "plan_digest": row.plan_digest,
+                # BOTH decisions. The one that granted and the one that
+                # withdrew, because an incident review reading this event needs
+                # to reach either, and a detail carrying only the second makes
+                # the first a second query nobody makes.
+                "decision_ref": row.approval_decision_ref,
+                "revocation_ref": row.approval_revocation_ref,
+                "reason": row.approval_revocation_reason,
+                "revoked_at": row.approval_revoked_at.isoformat(),
+            },
+        )
+        return {"id": str(row.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_REVOKE_PLAN_APPROVAL,
         handler=handler,
     )
     return _plan_view(_load_plan(db, command.plan_id))
@@ -1512,6 +1762,19 @@ def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.Rollou
                 f"plan {plan.id} is {plan.status!r} and requires approval; a "
                 "rollout of an unapproved sensitive plan is the one thing the "
                 "approval gate exists to prevent"
+            )
+        # A SECOND GATE, and it is not redundant with the one above. `status`
+        # says the plan WAS approved and keeps saying so after the decision is
+        # withdrawn — deliberately, because that is history. So the standing is
+        # checked separately, and a plan whose approval no longer stands is
+        # refused a rollout even though it still reads `approved`.
+        if plan.approval_decision_status == ApprovalDecisionStatus.REVOKED.value:
+            raise ApprovalRefusedError(
+                f"plan {plan.id} reads {plan.status!r}, and the decision that "
+                f"approved it was revoked at {plan.approval_revoked_at} under "
+                f"{plan.approval_revocation_ref!r}. The status records that it "
+                "was approved once; it is not an authorization now. Roll out a "
+                "plan with a standing approval."
             )
         if not plan.requires_approval and plan.status not in {
             PlanStatus.PROPOSED.value,
@@ -2447,6 +2710,303 @@ def preview_plan_proposal(
     )
 
 
+# ── The approved-plan lookup: READ-ONLY, and it refuses rather than guesses ──
+#
+# The gap this closes was measured by the Observability lane, not supposed:
+# there was no read API for an approved plan here. No fetch-by-digest, no
+# verify-approved — only the WRITE path, which compares an expected digest
+# while an approval is being recorded. A promotion in another system was
+# therefore HANDED an authorization and could not confirm one, so its receipt
+# compared what ran against terms its own caller had supplied. That proves a
+# caller consistent with itself, which is not a verification.
+
+
+def _lookup_refusal(
+    code: facts.ApprovedPlanRefusalCode,
+    detail: str,
+    *,
+    plan: DeploymentPlan | None = None,
+) -> facts.ApprovedPlanLookup:
+    """One place that builds a refusal, so every one carries the same terms."""
+    return facts.ApprovedPlanLookup(
+        refusal=facts.ApprovedPlanRefusal(
+            code=code,
+            detail=detail,
+            plan_id=None if plan is None else plan.id,
+            plan_status=None if plan is None else plan.status,
+        )
+    )
+
+
+def find_approved_plan(
+    db: Session,
+    *,
+    plan_digest: str,
+    expected_execution_plan_digest: str | None = None,
+) -> facts.ApprovedPlanLookup:
+    """Resolve a plan digest to a STANDING authorization, or to a typed refusal.
+
+    A READ. It opens no transaction of its own, writes nothing, and derives
+    nothing: every term it returns was frozen at proposal or written at
+    approval. In particular it does NOT reconstruct or re-hash anything —
+    `execution_plan_digest` is handed back exactly as the Deployment Foundation
+    issued it and Control froze it, because Control is structurally unable to
+    recompute that value and this function does not become the place it starts
+    trying.
+
+    ## Total, and never ambiguous
+
+    Every path returns an `ApprovedPlanLookup` carrying EXACTLY one of an
+    authorization or a typed refusal — never an empty answer, and never a bare
+    `None` that a caller could read as either "not approved" or "nothing came
+    back". The result is falsy for every refusal (see
+    `ApprovedPlanLookup.__bool__`), so `if find_approved_plan(...)` cannot pass
+    on a no.
+
+    ## Revocation is answered HERE
+
+    A consumer asking "is this plan approved?" gets `APPROVAL_REVOKED` for a
+    plan whose decision was withdrawn — from this one call, not from a second
+    query it has to remember to make. That is the whole reason revocation is
+    reachable from the lookup: a consumer that gets a yes for a revoked plan is
+    worse off than one with no API, because the one with no API asks a person.
+
+    ## `expected_execution_plan_digest` is optional and is compared as a VALUE
+
+    Supply it and the lookup confirms the authorization binds that exact
+    Foundation execution; omit it and no such claim is made. The comparison is
+    between two `ExecutionPlanDigestV1` values, never between two strings —
+    see `digests` for what a string comparison of these costs.
+
+    Raises `DigestEncodingError` for nothing and `ApprovalRefusedError` for
+    nothing: this function has no failure mode that is not a refusal. The
+    raising entry point is `require_approved_plan`.
+    """
+    # ── 1. Can the caller's digest be READ at all? ──────────────────────────
+    #
+    # Its own outcome, separate from "no plan holds it", and the separation is
+    # the `0.1.0a4` lesson applied to the read path. "I cannot read what you
+    # sent" is a fault in the caller's encoding and says nothing about any
+    # plan; "nothing holds that digest" is a statement about this database.
+    # Collapsing them would hand an operator a security-shaped answer for a
+    # formatting bug — the failure shape that looks exactly like the system
+    # working.
+    try:
+        wanted = PlanDigestV1.parse_accepting_a4_bare_hex(plan_digest)
+    except DigestEncodingError as exc:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
+            f"the plan digest supplied to this lookup cannot be read: {exc} "
+            "NOTHING was looked up and no claim is made about any plan — this "
+            "is an encoding fault in the caller, not a statement that the plan "
+            "is unapproved or missing.",
+        )
+
+    # A VALUE lookup, expressed as the two encodings that value can be stored
+    # in. `0.1.0a4` wrote bare hex and everything since writes canonical, so a
+    # single equality against the caller's text would silently miss half the
+    # rows — and would be a string comparison of a digest, which is the defect
+    # `test_digest_comparison_is_typed.py` exists to keep out. Both renderings
+    # come from the parsed VALUE, so neither is the caller's spelling.
+    row = (
+        db.execute(
+            select(DeploymentPlan).where(
+                DeploymentPlan.plan_digest.in_((wanted.canonical, wanted.a4_bare_hex))
+            )
+        )
+        .scalars()
+        .one_or_none()
+    )
+    if row is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.DIGEST_UNRESOLVED,
+            f"no plan in this control plane holds digest {wanted.canonical}. "
+            "The value was read as a well-formed digest, so this is an answer "
+            "about this database and not about the caller's encoding.",
+        )
+
+    # ── 2. Is it approved? ─────────────────────────────────────────────────
+    if row.status != PlanStatus.APPROVED.value:
+        exempt = (
+            " This plan is approval-EXEMPT (`requires_approval` is false), so "
+            "it will never reach `approved`: it may be rolled out without an "
+            "approval, and there is correspondingly no authorization for this "
+            "lookup to return."
+            if not row.requires_approval
+            else ""
+        )
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.NOT_APPROVED,
+            f"plan {row.id} holds digest {wanted.canonical} and its status is "
+            f"{row.status!r}, not {PlanStatus.APPROVED.value!r}.{exempt}",
+            plan=row,
+        )
+
+    # ── 3. Does the approval still STAND? ──────────────────────────────────
+    #
+    # Before the binding and image terms, because if the decision does not
+    # stand then nothing it named matters, and an operator triaging a live
+    # rollout needs this answer first.
+    #
+    # Read ONCE into a local, here, and used for both the refusals below and
+    # the value returned at the end. Not a style preference: what a consumer is
+    # told must be the value these refusals were decided against, and a second
+    # read of the attribute is a second chance for the two to differ.
+    decision_status = row.approval_decision_status
+    if decision_status == ApprovalDecisionStatus.REVOKED.value:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.APPROVAL_REVOKED,
+            f"plan {row.id} was approved under decision "
+            f"{row.approval_decision_ref!r} and that decision was REVOKED at "
+            f"{row.approval_revoked_at} under "
+            f"{row.approval_revocation_ref!r}"
+            + (
+                f" ({row.approval_revocation_reason})"
+                if row.approval_revocation_reason
+                else ""
+            )
+            + ". The plan's status still reads 'approved' because it was — "
+            "that is history — but there is no standing authorization here.",
+            plan=row,
+        )
+    if decision_status is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.APPROVAL_STANDING_UNRECORDED,
+            f"plan {row.id} reads 'approved' and the standing of decision "
+            f"{row.approval_decision_ref!r} was never recorded — it was "
+            "approved before Deployment Control held the column. Control "
+            "cannot confirm the approval still stands, and reading 'granted' "
+            "out of a blank would be inferring an authorization from an "
+            "absence. Re-approve the plan, or propose a new one.",
+            plan=row,
+        )
+
+    # ── 4. Is there an execution to authorize? ─────────────────────────────
+    authorized_execution = _stored_execution_plan_digest(
+        row,
+        row.authorized_execution_plan_digest,
+        term="authorized execution plan digest",
+    )
+    # Same rule as the decision standing above: read once, use everywhere.
+    authorized_operation = row.authorized_operation
+    if authorized_execution is None or authorized_operation is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.EXECUTION_BINDING_ABSENT,
+            f"plan {row.id} is approved and carries no execution binding "
+            f"(authorized_operation={authorized_operation!r}); it was "
+            "approved before Deployment Control held one. An authorization "
+            "naming no execution is one no executor could verify, so it is "
+            "refused here rather than returned for a receipt to fail against "
+            "later.",
+            plan=row,
+        )
+
+    # ── 5. Which images does it authorize? ─────────────────────────────────
+    #
+    # THE ORIGINAL DEFECT, refused rather than answered around. An
+    # authorization that cannot say which images it covers is one a consumer
+    # would have to fill in from its own caller — the thing this whole surface
+    # exists to stop. Note `()` is NOT this case: a plan authorizing no images
+    # resolves normally, and a receipt recording any image contradicts it.
+    images = _frozen_image_set(row)
+    if images is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.IMAGE_SET_UNDECLARED,
+            f"plan {row.id} is approved and its frozen snapshot declares no "
+            "authorized image set, so this control plane cannot say which "
+            "images the approval covers. That is an ABSENCE and not an empty "
+            "set: a plan authorizing no images resolves normally. Declare the "
+            "image set on the target's desired state and propose again — "
+            "answering this with a blank is what let a consumer verify a "
+            "receipt against images it had supplied to itself.",
+            plan=row,
+        )
+
+    # ── 6. Optionally, is it the execution the caller expected? ────────────
+    if expected_execution_plan_digest is not None:
+        try:
+            expected = ExecutionPlanDigestV1.parse(expected_execution_plan_digest)
+        except DigestEncodingError as exc:
+            return _lookup_refusal(
+                facts.ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
+                "the expected execution plan digest supplied to this lookup "
+                f"cannot be read: {exc} NO comparison was made against plan "
+                f"{row.id}, and no claim is made about which execution it "
+                "authorizes.",
+                plan=row,
+            )
+        # TYPED. Two `ExecutionPlanDigestV1` values are equal when the
+        # algorithm and the raw bytes are, which no encoding can change.
+        if expected != authorized_execution:
+            return _lookup_refusal(
+                facts.ApprovedPlanRefusalCode.EXECUTION_PLAN_MISMATCH,
+                f"plan {row.id} authorizes execution plan "
+                f"{authorized_execution.canonical} and the caller expected "
+                f"{expected.canonical}. Both were read as well-formed digests "
+                "and their bytes differ, so this is a different execution and "
+                "not an encoding difference. Deployment Control never "
+                "recomputes this value and cannot reconcile the two.",
+                plan=row,
+            )
+
+    snapshot = row.snapshot or {}
+    return facts.ApprovedPlanLookup(
+        authorization=facts.ApprovedPlanAuthorization(
+            plan_id=row.id,
+            target_id=row.target_id,
+            target_ref=str(snapshot.get("target_ref") or ""),
+            sequence=row.sequence,
+            desired_revision=row.desired_revision,
+            # RENDERED FROM THE VALUE, not echoed from the caller's text and
+            # not read back out of the column: a `0.1.0a4` row holds bare hex,
+            # and a consumer must receive one spelling of one digest whichever
+            # version wrote the row.
+            plan_digest=wanted.canonical,
+            # Handed back AS FROZEN. Control received this from the Foundation
+            # and has no constructor that could rebuild it.
+            execution_plan_digest=authorized_execution.canonical,
+            operation=authorized_operation,
+            approval_policy_code=row.approval_policy_code,
+            approval_policy_version=row.approval_policy_version,
+            approval_decision_ref=row.approval_decision_ref,
+            approval_decision_status=decision_status,
+            approved_at=row.approved_at,
+            authorized_images=images,
+            release_ref=snapshot.get("release_ref"),
+            licence_ref=snapshot.get("licence_ref"),
+            brand_profile_ref=snapshot.get("brand_profile_ref"),
+        )
+    )
+
+
+def require_approved_plan(
+    db: Session,
+    *,
+    plan_digest: str,
+    expected_execution_plan_digest: str | None = None,
+) -> facts.ApprovedPlanAuthorization:
+    """`find_approved_plan`, for a caller that must not proceed without one.
+
+    Same decision, one function, no second copy of the rules: this calls
+    `find_approved_plan` and raises its refusal. A promotion that would deploy
+    into somebody's running system cannot be handed a falsy object it might
+    forget to check, and the only way past this function is a standing
+    `ApprovedPlanAuthorization`.
+
+    `ApprovedPlanRefusedError` carries the typed `refusal`, so a caller that
+    must distinguish "revoked" from "never approved" branches on
+    `exc.refusal.code` rather than reading a sentence.
+    """
+    lookup = find_approved_plan(
+        db,
+        plan_digest=plan_digest,
+        expected_execution_plan_digest=expected_execution_plan_digest,
+    )
+    if lookup.authorization is None:
+        raise ApprovedPlanRefusedError(lookup.refusal)
+    return lookup.authorization
+
+
 def get_target(db: Session, target_id: UUID) -> facts.TargetView | None:
     row = db.get(DeploymentTarget, target_id)
     return _target_view(row) if row is not None else None
@@ -2586,6 +3146,7 @@ __all__ = [
     "SCOPE_REGISTER_TARGET",
     "SCOPE_REQUEST_ROLLOUT",
     "SCOPE_REVOKE_CREDENTIAL",
+    "SCOPE_REVOKE_PLAN_APPROVAL",
     "SCOPE_SETTLE",
     "SCOPE_SET_DESIRED",
     "SCOPE_SUSPEND_TARGET",
@@ -2596,6 +3157,7 @@ __all__ = [
     "RecordObservationCommand",
     "RegisterTargetCommand",
     "RequestRolloutCommand",
+    "RevokePlanApprovalCommand",
     "RolloutTransitionCommand",
     "SetDesiredStateCommand",
     "SettleAttemptCommand",
@@ -2609,6 +3171,7 @@ __all__ = [
     "dispatch_attempt",
     "drift",
     "enrol_credential",
+    "find_approved_plan",
     "get_plan",
     "get_rollout",
     "get_target",
@@ -2624,8 +3187,10 @@ __all__ = [
     "record_observation",
     "register_target",
     "request_rollout",
+    "require_approved_plan",
     "require_manual_repair",
     "revoke_credential",
+    "revoke_plan_approval",
     "rollouts_for_target",
     "set_desired_state",
     "settle_attempt",

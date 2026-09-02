@@ -607,7 +607,7 @@ def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
     assert canaries.CATALOGUE_TABLE_COUNT == 7
-    assert canaries.CATALOGUE_COLUMN_COUNT == 99
+    assert canaries.CATALOGUE_COLUMN_COUNT == 104
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):

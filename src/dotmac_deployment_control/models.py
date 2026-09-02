@@ -296,6 +296,23 @@ class DeploymentTarget(Base, TimestampMixin):
     desired_spec: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
     licence_ref: Mapped[str | None] = mapped_column(String(200))
     brand_profile_ref: Mapped[str | None] = mapped_column(String(200))
+    #: THE DECLARED AUTHORIZED IMAGE SET — a list of
+    #: `{"service", "repository", "digest"}` objects, canonically ordered by
+    #: `images.authorized_image_set` before it is written.
+    #:
+    #: Separate from `desired_spec` on purpose, and the separation IS the
+    #: repair. `desired_spec` is opaque and this module interprets nothing in
+    #: it, so images living there could never be an authorization — a consumer
+    #: needing to know which images an approval covered had to be told by
+    #: whoever was asking. This column is a declared, validated, Control-owned
+    #: term, and `plan_snapshot` freezes it INSIDE the document the plan digest
+    #: is taken over.
+    #:
+    #: NULL is not an empty set. NULL means no image set has been declared for
+    #: this target; `[]` means it authorizes none. `find_approved_plan` refuses
+    #: the first rather than answering it, so a consumer cannot promote a plan
+    #: whose image set nobody wrote down.
+    desired_images: Mapped[list[dict[str, Any]] | None] = mapped_column(_JSON_DOC)
     #: Bumped every time the desired state changes. A plan freezes ONE revision,
     #: and an observation is compared against the revision that was rolled out
     #: rather than the newest — otherwise every desired-state edit would make
@@ -464,6 +481,38 @@ class DeploymentPlan(Base, TimestampMixin):
     approval_policy_version: Mapped[int | None] = mapped_column(Integer)
     approval_decision_ref: Mapped[str | None] = mapped_column(String(200))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Does the approval still STAND? ──────────────────────────────────────
+    #
+    # `approval_decision_ref` says WHICH decision approved this plan and
+    # `approved_at` says when. Neither says whether that decision has since
+    # been withdrawn, and before these columns nothing did: a consumer asking
+    # "is this plan approved?" read `status`, which stays `approved` forever,
+    # and got a yes for a revoked authorization.
+    #
+    # The plan's own `status` deliberately does NOT move on revocation. It was
+    # approved; that is history and rewriting it would delete the record. This
+    # column owns the standing, `request_rollout` refuses a plan whose approval
+    # no longer stands, and `find_approved_plan` refuses it with its own typed
+    # code. A `PlanStatus.REVOKED` member would be a second writer for one
+    # fact.
+    #
+    # Text with no CHECK, like every other vocabulary column here (ADR-0008),
+    # and the closure lives in `dotmac_deployment_control.approvals` where a
+    # refusal can explain itself. NULL for a plan that was never approved and
+    # for the `0.1.0a7`-era rows that predate the column.
+
+    #: `granted` | `revoked` — `approvals.ApprovalDecisionStatus`.
+    approval_decision_status: Mapped[str | None] = mapped_column(String(24))
+    approval_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: The REVOKING decision's opaque reference, resolvable in the approvals
+    #: authority. Required by `revoke_plan_approval`: a revocation nobody can
+    #: attribute is an authorization disappearing with no decision behind it,
+    #: which reads to an operator exactly like a bug.
+    approval_revocation_ref: Mapped[str | None] = mapped_column(String(200))
+    approval_revocation_reason: Mapped[str | None] = mapped_column(String(200))
 
     superseded_by_id: Mapped[UUID | None] = mapped_column(
         ForeignKey(f"{SCHEMA}.{_PLANS}.id", ondelete="RESTRICT")

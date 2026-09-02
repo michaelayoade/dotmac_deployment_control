@@ -93,7 +93,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0003_execution_plan_binding",
+    lineage_head="dc_0004_authorized_image_set",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -137,6 +137,14 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                     _VARCHAR_128,
                     nullable=True,
                 ),
+                # dc_0004 APPENDS these four, after dc_0003's, for the same
+                # physical reason. Deliberately NO image column here: the
+                # authorized image set lives inside `snapshot` (ordinal 5),
+                # which is the document `plan_digest` covers.
+                _column("approval_decision_status", 21, _VARCHAR_24, nullable=True),
+                _column("approval_revoked_at", 22, _TIMESTAMPTZ, nullable=True),
+                _column("approval_revocation_ref", 23, _VARCHAR_200, nullable=True),
+                _column("approval_revocation_reason", 24, _VARCHAR_200, nullable=True),
             ),
         ),
         _table(
@@ -164,6 +172,9 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "updated_at", 18, _TIMESTAMPTZ, nullable=False, default="now()"
                 ),
+                # dc_0004 appends the declared authorized image set here, on
+                # the TARGET, where desired state is mutable and revisioned.
+                _column("desired_images", 19, _JSONB, nullable=True),
             ),
         ),
         _table(
