@@ -1,0 +1,174 @@
+name: Recorder identity proofs
+
+# The three things about the recorder App that must be OBSERVED rather than
+# inferred from configuration.
+#
+# WHY THIS IS A WORKFLOW AND NOT A COMMAND SOMEBODY RUNS
+#
+# The App's private key is OpenBao-custodied and reaches this repository only as
+# an Actions secret. A short-lived installation token therefore exists only
+# inside a run, so a proof about that identity can only be made from inside one.
+#
+# WHY IT EXISTS AT ALL, WHEN THE CONFIGURATION ALREADY SAYS SO
+#
+# `enforce_admins: true`, no push-restriction allowlist, force-pushes disabled,
+# seven required strict contexts, and `can_approve_pull_request_reviews: false`
+# together IMPLY that the recorder cannot bypass protected main. Configuration
+# implying a property is not the same as observing it, and the gap between those
+# two is what this programme keeps finding. An identity that CAN bypass
+# protection is a different risk from the one that was granted, and the only way
+# to know which one you have is to try.
+#
+# Run ONCE after the App is installed, and again after any change to the App's
+# permissions or to main's protection. It publishes nothing, tags nothing and
+# records nothing.
+
+on:
+  workflow_dispatch:
+
+# The WORKFLOW's own token gets nothing. Every observation below is made with
+# the App's installation token, or it is not a statement about the App.
+permissions: {}
+
+env:
+  PROOF_BRANCH: proof/recorder-capability-${{ github.run_id }}
+
+jobs:
+  proofs:
+    name: the recorder can record, and cannot bypass
+    runs-on: ubuntu-latest
+    environment: registry-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Mint the narrow release-recorder App token
+        id: recorder-token
+        uses: ./.github/actions/release-recorder-token
+        with:
+          client-id: ${{ vars.RELEASE_RECORDER_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_RECORDER_PRIVATE_KEY }}
+
+      # ── PROOF 1 ──────────────────────────────────────────────────────────
+      #
+      # Access, not installation. An App can be installed on an ACCOUNT and
+      # still not reach a given repository, because the installation carries a
+      # repository selection — which is exactly the state this repository was
+      # in while the App was installed on the Starter alone.
+      - name: PROOF 1 — the installation resolves THIS repository
+        env:
+          GH_TOKEN: ${{ steps.recorder-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::no App token was minted. The identity is absent, and"
+            echo "::error::this job fails rather than falling back — the bridge"
+            echo "::error::is refused."
+            exit 1
+          fi
+          gh api /installation/repositories --jq '.repositories[].full_name' > reachable.txt
+          cat reachable.txt
+          if ! grep -qx "${GITHUB_REPOSITORY}" reachable.txt; then
+            echo "::error::the App token does not reach ${GITHUB_REPOSITORY}."
+            echo "::error::Add this repository to the installation's selection."
+            exit 1
+          fi
+          echo "PROOF 1 HELD: the App reaches ${GITHUB_REPOSITORY}"
+
+      # ── PROOF 2 ──────────────────────────────────────────────────────────
+      #
+      # The affirmative capability, demonstrated end to end rather than read
+      # off a permission list: a branch it pushed, and a pull request it
+      # opened. This is the whole of what the recorder needs to do.
+      - name: PROOF 2 — it can create a branch and open a pull request
+        env:
+          GH_TOKEN: ${{ steps.recorder-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${PROOF_BRANCH}" origin/main
+          git commit --quiet --allow-empty \
+            -m "proof: the recorder can push a branch (empty on purpose)"
+          git push --quiet origin "${PROOF_BRANCH}"
+          echo "  branch pushed: ${PROOF_BRANCH}"
+          gh pr create --base main --head "${PROOF_BRANCH}" \
+            --title "proof: recorder identity capability (run ${GITHUB_RUN_ID})" \
+            --body "Opened by the release-recorder App to demonstrate it can open a pull request. Empty commit, closed automatically by the same run. Records nothing."
+          echo "PROOF 2 HELD: branch created and pull request opened by the App"
+
+      # ── PROOF 3 ──────────────────────────────────────────────────────────
+      #
+      # THE NEGATIVE, and it is the one that is easy to skip because everything
+      # already works without it.
+      #
+      # Two attempts, because "cannot bypass" has two shapes: it must not be
+      # able to put a commit on main outside a pull request, and it must not be
+      # able to WEAKEN the protection that stops it. An identity that could do
+      # the second could grant itself the first.
+      #
+      # The push attempt is deliberately a FAST-FORWARD of an EMPTY commit. If
+      # protection somehow admits it, main gains a commit with no content
+      # change — loud, trivially revertable, and itself the finding. Rewinding
+      # main or pushing real content to test this would be a worse experiment
+      # than the property is worth.
+      - name: PROOF 3a — it cannot put a commit on protected main
+        env:
+          GH_TOKEN: ${{ steps.recorder-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          if git push origin "HEAD:main" 2>push.log; then
+            echo "::error::THE RECORDER PUSHED DIRECTLY TO PROTECTED MAIN."
+            echo "::error::main now carries an empty commit from ${PROOF_BRANCH};"
+            echo "::error::revert it and narrow the App or main's protection"
+            echo "::error::before any release. The identity is not the one that"
+            echo "::error::was granted."
+            exit 1
+          fi
+          cat push.log
+          echo "PROOF 3a HELD: the push to main was refused"
+
+      - name: PROOF 3b — it holds no administration authority over main
+        env:
+          GH_TOKEN: ${{ steps.recorder-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          # A READ of branch protection, and the choice is deliberate.
+          #
+          # The obvious probe is a PUT that tries to weaken protection, and it
+          # is the wrong one: a malformed body returns 422 and a well-formed
+          # one that SUCCEEDS has just disabled protection on main. The first
+          # proves nothing about authority and the second is a worse experiment
+          # than the property is worth.
+          #
+          # Reading protection requires administration rights. An identity
+          # refused the read cannot possibly perform the write, so the safe
+          # probe is the strictly stronger one — and it cannot damage anything
+          # whichever way it answers.
+          if gh api "repos/${GITHUB_REPOSITORY}/branches/main/protection" \
+               > protection.json 2> admin.log; then
+            echo "::error::THE RECORDER CAN READ MAIN'S PROTECTION, so it holds"
+            echo "::error::administration authority it was never granted — and"
+            echo "::error::an identity that can read protection can rewrite it,"
+            echo "::error::granting itself the push proof 3a just refused."
+            echo "::error::Narrow the App to contents and pull requests."
+            exit 1
+          fi
+          cat admin.log
+          echo "PROOF 3b HELD: administration is refused, so protection is"
+          echo "               beyond this identity's reach entirely"
+
+      # Always, including after a failed proof: a capability demonstration must
+      # not leave a branch or an open pull request behind for somebody to find
+      # later and wonder about.
+      - name: Withdraw the demonstration
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.recorder-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          gh pr close "${PROOF_BRANCH}" --delete-branch --comment \
+            "Capability demonstrated; withdrawing. This pull request recorded nothing." \
+            || git push origin --delete "${PROOF_BRANCH}" || true
+          echo "demonstration withdrawn"
