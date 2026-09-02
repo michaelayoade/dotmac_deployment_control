@@ -153,32 +153,117 @@ def test_a_cryptographically_valid_revoked_decision_is_still_refused() -> None:
     assert issuance.value.code is AuthorizationEnvelopeRefusalCode.APPROVAL_NOT_STANDING
 
 
-@pytest.mark.parametrize(
-    ("field", "replacement"),
-    [
-        ("authorization_id", "3810cb66-a430-44b0-abf9-c8105d3b648c"),
-        ("rollout_ref", "rollout-2"),
-        ("plan_id", "2b0de647-2542-4e89-b9f9-dfba2f453722"),
-        ("target_id", "daf3a34b-6b5f-4823-9b12-d6dc33e1044e"),
-        ("target_ref", "vendor-cp-stage"),
-        ("product_code", "dotmac_sub"),
-        ("environment", "staging"),
-        ("operation", "rollback"),
-        ("release_ref", "release-2"),
-        ("plan_digest", "sha256:" + "44" * 32),
-        ("descriptor_digest", "sha256:" + "55" * 32),
-        ("execution_plan_digest", "sha256:" + "66" * 32),
-        ("approval_policy_code", "deployment.emergency"),
-        ("approval_policy_version", 5),
-        ("approval_decision_ref", "approval-89"),
-        ("approval_decision_status", "revoked"),
-        ("approved_at", "2026-09-02T10:00:00Z"),
-        ("issued_at", "2026-09-02T11:59:00Z"),
-        ("expires_at", "2026-09-02T12:31:00Z"),
-        ("key_id", "another-key"),
-        ("algorithm", "another-algorithm"),
-    ],
-)
+#: Every signed key that a single scalar replacement can prove, and the value
+#: it is replaced with. Read by the ratchet below as well as by the test.
+_MUTATIONS: list[tuple[str, object]] = [
+    # `schema` and `version` identify WHICH contract these bytes are, and a
+    # reader that accepted either under a different name would be verifying
+    # a statement it had not agreed to. `version` was already moved
+    # elsewhere; `schema` was the one signed key nothing in this file
+    # touched, which made it a field asserted rather than proven.
+    ("schema", "dotmac.authorization-other"),
+    ("authorization_id", "3810cb66-a430-44b0-abf9-c8105d3b648c"),
+    ("rollout_ref", "rollout-2"),
+    ("plan_id", "2b0de647-2542-4e89-b9f9-dfba2f453722"),
+    ("target_id", "daf3a34b-6b5f-4823-9b12-d6dc33e1044e"),
+    ("target_ref", "vendor-cp-stage"),
+    ("product_code", "dotmac_sub"),
+    ("environment", "staging"),
+    ("operation", "rollback"),
+    ("release_ref", "release-2"),
+    ("plan_digest", "sha256:" + "44" * 32),
+    ("descriptor_digest", "sha256:" + "55" * 32),
+    ("execution_plan_digest", "sha256:" + "66" * 32),
+    ("approval_policy_code", "deployment.emergency"),
+    ("approval_policy_version", 5),
+    ("approval_decision_ref", "approval-89"),
+    ("approval_decision_status", "revoked"),
+    ("approved_at", "2026-09-02T10:00:00Z"),
+    ("issued_at", "2026-09-02T11:59:00Z"),
+    ("expires_at", "2026-09-02T12:31:00Z"),
+    ("key_id", "another-key"),
+    ("algorithm", "another-algorithm"),
+]
+
+#: Signed keys proven by a DEDICATED test rather than by scalar replacement.
+#: Named individually, with the reason, because an unexplained exemption list is
+#: how a field stops being proven without anyone deciding that it should.
+#:
+#: `authorized_images` needs membership, ordering and value cases that one
+#: scalar replacement cannot express — see the ordering test.
+#:
+#: `version` is refused EARLIER than the signature, with its own
+#: UNSUPPORTED_VERSION code, because a reader must reject a contract it does not
+#: implement before it tries to interpret the bytes under it. Adding it to the
+#: parametrize list would assert the wrong refusal.
+_COVERED_ELSEWHERE = {"authorized_images", "version"}
+
+
+def test_a_clean_envelope_verifies_and_returns_its_statement() -> None:
+    """THE POSITIVE CONTROL, and without it this whole file proves nothing.
+
+    Every other `verify_authorization_envelope` call in this module is inside a
+    `pytest.raises`. A suite shaped like that passes unchanged against a
+    verifier that refuses EVERYTHING — twenty-three mutation tests all reporting
+    SIGNATURE_INVALID, all green, none of them evidence that a correct
+    authorization is accepted. That is the same shape as a guard whose negative
+    control could not fail, and it is the one this repository keeps finding.
+
+    So: an untouched envelope verifies, and the statement it returns is the one
+    that was signed. Every refusal below is a difference from THIS.
+    """
+    envelope = _issued()
+    statement = verify_authorization_envelope(envelope, verifier=VERIFIER, at=_NOW)
+
+    assert statement.authorization_id == _fields()["authorization_id"]
+    assert statement.plan_digest == _D1
+    assert statement.descriptor_digest == _D2
+    assert statement.execution_plan_digest == _D3
+    # The three digests are distinct VALUES in the signed bytes and stay
+    # distinct through a round trip. Foundation is being repaired in parallel to
+    # refuse when one is substituted for another; this is Control's half of
+    # that boundary.
+    assert (
+        len(
+            {
+                statement.plan_digest,
+                statement.descriptor_digest,
+                statement.execution_plan_digest,
+            }
+        )
+        == 3
+    )
+
+
+def test_every_signed_key_has_a_mutation_and_no_mutation_is_orphaned() -> None:
+    """THE RATCHET, in both directions.
+
+    A field listed in the signed bytes and never mutated is a field this suite
+    has ASSERTED rather than proven, and it would be added silently — the
+    parametrize list below is hand-kept, so nothing about adding a signed field
+    forces a proof for it.
+
+    This derives the signed key set from the statement itself and requires the
+    two sets to be equal. A new signed field fails here until it is mutated; a
+    mutation naming a field that no longer exists fails here too, rather than
+    passing over a key the statement stopped carrying.
+
+    `authorized_images` is covered by its own test rather than the parametrize
+    list, because a list needs membership, ordering and value cases that a
+    single scalar replacement cannot express — so it is named here explicitly
+    instead of being quietly exempt.
+    """
+    signed_keys = set(_issued().statement.as_mapping())
+    mutated = {field for field, _ in _MUTATIONS} | _COVERED_ELSEWHERE
+
+    assert signed_keys == mutated, (
+        "signed keys and proven keys disagree:\n"
+        f"  signed but never mutated: {sorted(signed_keys - mutated)}\n"
+        f"  mutated but not signed  : {sorted(mutated - signed_keys)}"
+    )
+
+
+@pytest.mark.parametrize(("field", "replacement"), _MUTATIONS)
 def test_every_bound_field_mutation_invalidates_the_signature(
     field: str, replacement: object
 ) -> None:

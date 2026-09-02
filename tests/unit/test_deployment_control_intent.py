@@ -44,6 +44,7 @@ from dotmac_deployment_control import (
     ProposePlanCommand,
     RegisterTargetCommand,
     RequestRolloutCommand,
+    RevokePlanApprovalCommand,
     RolloutStatus,
     RolloutTransitionCommand,
     SetDesiredStateCommand,
@@ -66,6 +67,7 @@ from dotmac_deployment_control import (
     register_target,
     request_rollout,
     require_manual_repair,
+    revoke_plan_approval,
     set_desired_state,
     settle_attempt,
     snapshot_digest,
@@ -734,6 +736,55 @@ class TestSettlingAnAttempt:
         db.refresh(stored)
         assert stored.authorization_envelope == before
         assert "authorization_envelope" not in SettleAttemptCommand.__dataclass_fields__
+
+    def test_revoking_the_approval_does_not_rewrite_an_issued_authorization(
+        self, db
+    ) -> None:
+        """AN ISSUED AUTHORIZATION IS HISTORY, and revocation is not a rewrite.
+
+        The two facts are easy to collapse and must not be. Revoking an approval
+        withdraws the authority to issue anything NEW; it cannot reach backwards
+        into a statement that was already signed and handed to an executor. The
+        bytes were true when they were signed, something acted on them, and a
+        record that edited itself afterwards would destroy the only evidence of
+        what was actually authorized.
+
+        The opposite error is just as bad, so both halves are asserted here: the
+        stored envelope is byte-identical afterwards, AND the revoked plan can no
+        longer produce a new one.
+        """
+        rollout = self._dispatched(db)
+        stored = db.get(Rollout, rollout.id)
+        assert stored is not None
+        before = copy.deepcopy(stored.authorization_envelope)
+        assert before, "the fixture did not actually issue an authorization"
+
+        revoke_plan_approval(
+            db,
+            RevokePlanApprovalCommand(
+                command_id=_cmd(),
+                plan_id=stored.plan_id,
+                revocation_ref="apr-rev-after-issue",
+                reason="withdrawn after the authorization was already issued",
+            ),
+        )
+
+        db.refresh(stored)
+        assert stored.authorization_envelope == before, (
+            "revoking the approval rewrote an authorization that had already "
+            "been issued and acted on"
+        )
+
+        # And the forward half: the withdrawal is what it is for.
+        with pytest.raises(ApprovalRefusedError):
+            request_rollout(
+                db,
+                RequestRolloutCommand(
+                    command_id=_cmd(),
+                    rollout_ref=f"rol-after-revoke-{uuid.uuid4().hex[:8]}",
+                    plan_id=stored.plan_id,
+                ),
+            )
 
     def test_a_failed_attempt_leaves_the_rollout_retryable(self, db) -> None:
         """One transport error is not a deployment decision. Treating it as one
