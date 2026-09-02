@@ -21,7 +21,7 @@ import copy
 import re
 import uuid
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
@@ -783,6 +783,7 @@ class TestSettlingAnAttempt:
                     command_id=_cmd(),
                     rollout_ref=f"rol-after-revoke-{uuid.uuid4().hex[:8]}",
                     plan_id=stored.plan_id,
+                    authorization_expires_at=_NOW + timedelta(minutes=30),
                 ),
             )
 

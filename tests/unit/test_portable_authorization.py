@@ -156,12 +156,6 @@ def test_a_cryptographically_valid_revoked_decision_is_still_refused() -> None:
 #: Every signed key that a single scalar replacement can prove, and the value
 #: it is replaced with. Read by the ratchet below as well as by the test.
 _MUTATIONS: list[tuple[str, object]] = [
-    # `schema` and `version` identify WHICH contract these bytes are, and a
-    # reader that accepted either under a different name would be verifying
-    # a statement it had not agreed to. `version` was already moved
-    # elsewhere; `schema` was the one signed key nothing in this file
-    # touched, which made it a field asserted rather than proven.
-    ("schema", "dotmac.authorization-other"),
     ("authorization_id", "3810cb66-a430-44b0-abf9-c8105d3b648c"),
     ("rollout_ref", "rollout-2"),
     ("plan_id", "2b0de647-2542-4e89-b9f9-dfba2f453722"),
@@ -192,11 +186,13 @@ _MUTATIONS: list[tuple[str, object]] = [
 #: `authorized_images` needs membership, ordering and value cases that one
 #: scalar replacement cannot express — see the ordering test.
 #:
-#: `version` is refused EARLIER than the signature, with its own
+#: `version` and `schema` are refused EARLIER than the signature, with their own
 #: UNSUPPORTED_VERSION code, because a reader must reject a contract it does not
-#: implement before it tries to interpret the bytes under it. Adding it to the
-#: parametrize list would assert the wrong refusal.
-_COVERED_ELSEWHERE = {"authorized_images", "version"}
+#: implement before it tries to interpret the bytes under it. Listing either as a
+#: scalar mutation asserts the wrong refusal — which is exactly what happened on
+#: the first attempt at this file, and is why they are named here with the
+#: reason rather than left out.
+_COVERED_ELSEWHERE = {"authorized_images", "version", "schema"}
 
 
 def test_a_clean_envelope_verifies_and_returns_its_statement() -> None:
@@ -212,8 +208,8 @@ def test_a_clean_envelope_verifies_and_returns_its_statement() -> None:
     So: an untouched envelope verifies, and the statement it returns is the one
     that was signed. Every refusal below is a difference from THIS.
     """
-    envelope = _issued()
-    statement = verify_authorization_envelope(envelope, verifier=VERIFIER, at=_NOW)
+    verified = verify_authorization_envelope(_issued(), verifier=VERIFIER, at=_NOW)
+    statement = verified.statement
 
     assert statement.authorization_id == _fields()["authorization_id"]
     assert statement.plan_digest == _D1
@@ -233,6 +229,23 @@ def test_a_clean_envelope_verifies_and_returns_its_statement() -> None:
         )
         == 3
     )
+
+
+def test_the_schema_name_is_signed_and_refused_before_the_signature() -> None:
+    """`schema` says WHICH contract these bytes are, and moving it is refused.
+
+    Its own test rather than a row in the scalar list, because the refusal is
+    genuinely different: a reader must reject a contract it does not implement
+    BEFORE it tries to interpret the bytes under it, so a foreign schema is
+    UNSUPPORTED_VERSION and never SIGNATURE_INVALID. The first version of this
+    file asserted the latter and CI caught it — which is the distinction worth
+    keeping, not a detail to smooth over.
+    """
+    payload = _issued().as_mapping()
+    payload["statement"]["schema"] = "dotmac.authorization-other"  # type: ignore[index]
+    with pytest.raises(AuthorizationEnvelopeRefusedError) as caught:
+        verify_authorization_envelope(payload, verifier=VERIFIER, at=_NOW)
+    assert caught.value.code is AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION
 
 
 def test_every_signed_key_has_a_mutation_and_no_mutation_is_orphaned() -> None:
@@ -255,6 +268,17 @@ def test_every_signed_key_has_a_mutation_and_no_mutation_is_orphaned() -> None:
     """
     signed_keys = set(_issued().statement.as_mapping())
     mutated = {field for field, _ in _MUTATIONS} | _COVERED_ELSEWHERE
+
+    # A key in BOTH lists is the bug CI caught on the first attempt at this
+    # file: `schema` was given a scalar mutation asserting SIGNATURE_INVALID
+    # while it is actually refused earlier, as UNSUPPORTED_VERSION. The union
+    # still reconciled, so equality alone did not notice. Disjointness does.
+    both = {field for field, _ in _MUTATIONS} & _COVERED_ELSEWHERE
+    assert not both, (
+        f"{sorted(both)} appear as scalar mutations AND as dedicated cases. A "
+        "key needs one proof asserting one refusal; two proofs asserting "
+        "different ones means at least one is asserting the wrong thing."
+    )
 
     assert signed_keys == mutated, (
         "signed keys and proven keys disagree:\n"
