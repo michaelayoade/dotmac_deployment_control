@@ -234,6 +234,23 @@
       "pinnable": true,
       "release_run_note": "THE FIRST RELEASE WHOSE POST-RELEASE RECORD WAS WRITTEN BY THE RUN THAT EARNED IT. Published by run 33624369841 from the exact tip of protected main (474faf60aee492a4776cdb581f467b11ffcd4964); that run neither verified itself nor tagged. INDEPENDENT verify run 33624502557 returned VERIFIED, and only that run wrote the tag, on a VERIFIED verdict, through tag_once.py. WHAT a8 CARRIES: #23's approved-plan read API. The authorized image set is frozen INSIDE the document plan_digest is taken over, so an approval that binds the digest binds the images and an image cannot change without the digest changing — there is deliberately no sibling column, because a column is a value an UPDATE can move while the digest sits still. find_approved_plan is total and falsy for every refusal; require_approved_plan raises. Eight typed refusal codes, each observed on its own, including approval_revoked — so a consumer asking 'is this approved?' learns about a withdrawn decision from the call it already makes, never from a second query it could forget. ExecutionPlanDigestV1 still inherits the read-only base, so Control returns the Foundation's digest and remains structurally unable to recompute it. AND THE RECORD ITSELF: verify-release.yml no longer ends by printing ::notice::OWED, a notice nothing reads. It opens a coordinates-only pull request straight after tagging. a4's ledger row outlived its own publication by six hours and a7's absence turned protected main red for every open pull request; this is the release that stops that being a thing anyone has to remember.",
       "adoption_note": "PIN a8, not a7. a7 remains published, verified and pinnable, and does not contain find_approved_plan — the read API is a8-only. Platform CP pins a8 and resolves the approved plan THROUGH Control rather than from caller-supplied evidence; Observability's promotion can now verify an approved plan instead of trusting a caller-supplied authorized_images. Neither could do so against any earlier version, because no earlier version has a read API at all."
+    },
+    {
+      "version": "0.1.0a9",
+      "tag": "dotmac-deployment-control-v0.1.0a9",
+      "tag_object": "74d839817f55144ee1c338a5a07e976f66c4a0e5",
+      "peeled_commit": "b8427af26101bde5e9b09aecebe3c9176dd18b36",
+      "release_run": "33686171205",
+      "verify_run": "33686335734",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a9-py3-none-any.whl": "e9b1d14efa61fe8bed942fdf91db34c8eac5584e4f86f4222130bdb178c1824b",
+        "dotmac_deployment_control-0.1.0a9.tar.gz": "a2afddd7753cfc72c1d7fd5939f317188d28fda360e56d3efee9da7b277bed70"
+      },
+      "supersedes": "0.1.0a8",
+      "declared_kernel_floor": ">=0.1.0a100"
     }
   ],
   "tags_remain_in_source_for": [
