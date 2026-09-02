@@ -5,6 +5,63 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a8 (declared, not yet published) — the record stops being remembered
+
+`0.1.0a7` remains the published, tagged and VERIFIED release. `0.1.0a8` is
+DECLARED by this change and carries everything under "Unreleased" below.
+
+### Added
+
+- **The release recorder**, ported from `dotmac_starter_mt` without redesign:
+  `.github/actions/release-recorder-token` (byte-identical to the Starter's) and
+  `scripts/open_release_record_pr.sh`, plus `scripts/write_release_record.py`
+  for this repository's two record files.
+
+  `verify-release.yml` already computed every mechanical field into
+  `observations.json`, already wrote the tag on a VERIFIED verdict — and ended
+  by printing `::notice::OWED`, **a notice nothing reads**. The follow-up was
+  missed twice: `0.1.0a4`'s ledger row said `never-published` and outlived its
+  own publication by six hours, and `0.1.0a7`'s absence turned protected `main`
+  red for every open pull request. a4 failed silently; a7 failed loudly at
+  innocent people. The verify run now opens the record itself, straight after
+  tagging, with `if: always()` so a later failure cannot leave a tag with no
+  record.
+
+- **COORDINATES ONLY, and it is checked.** The writer opens exactly
+  `docs/publication-ledger.json` and `docs/published-versions.json`; the opener
+  compares the real `git diff --name-only` against the same two BEFORE staging
+  and refuses anything else. Machine-owned and written: version, tag, tag
+  object, peeled commit, release and verify run ids, source repository, index,
+  status, per-filename sha256, supersedes, declared kernel floor. Human-owned
+  and never written: `pinnable`, `superseded_by`, `unpinnable_reason`, the
+  release notes — and the release floor's own literals, because a bot writing
+  the guard's positive control is a bot editing the constraint that binds it.
+
+- `tests/architecture/test_every_release_tags_a_record.py`, ported and trimmed:
+  a tag writer is DISCOVERED rather than listed, must open a record after the
+  tag with `if: always()`, and the App token must declare exactly
+  `permission-contents: write` and `permission-pull-requests: write`.
+
+### Changed
+
+- The record is written from the REGISTRY's bytes rather than the build's — the
+  same values, since verification already proved exact equality in both
+  directions, but the stronger of two identical statements: it is what a
+  consumer will fetch. The writer refuses if they disagree.
+- `observations.json` is copied to `${RUNNER_TEMP}` before the recorder runs.
+  The recorder rebinds git with a second `actions/checkout`, whose default
+  clean removes untracked files — the evidence the record is written from must
+  outlive that checkout.
+
+### Not automated, and recorded rather than implied
+
+Two entries in `docs/CONTROL_EXCEPTIONS.md`: the recorder App is not yet
+installed on this repository (so the loud `GITHUB_TOKEN` fallback is in force),
+and a coordinates-only pull request is RED until a human adds the floor
+literals and the disposition. The recorder removes the bookkeeping that was
+forgotten twice; it does not remove the judgement.
+
+
 ## Unreleased — a verifiable approved plan: the image set, and a read API
 
 No version is allocated and nothing is published here. `0.1.0a7` remains the
