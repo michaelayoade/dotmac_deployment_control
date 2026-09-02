@@ -53,6 +53,25 @@ DECLARED by this change and carries everything under "Unreleased" below.
   clean removes untracked files — the evidence the record is written from must
   outlive that checkout.
 
+### One deliberate divergence from the Starter
+
+The Starter's script ends `gh pr merge --auto --squash`; this one does not, and
+the reason is specific to this repository. A coordinates-only record is a
+correct record of what was published and an **incomplete** record of what it
+means: recording a version raises the derived release floor, and the floor's own
+literals — its positive control, its refusal strings, two parametrize lists —
+plus the disposition are human-owned and land on the same branch afterwards.
+
+Auto-merge would then do the wrong thing at the worst moment. It stays dormant
+while the branch is red for the missing literals and fires the instant somebody
+pushes them, merging the disposition in the same breath as the coordinates with
+nobody having read either. `required_approving_review_count` on this repository
+is 0, so nothing else would have stopped it.
+
+The recorder opens the record and never merges it, and
+`test_the_recorder_opens_the_record_and_never_merges_it` asserts the absence so
+the divergence stays deliberate rather than becoming drift.
+
 ### Not automated, and recorded rather than implied
 
 Two entries in `docs/CONTROL_EXCEPTIONS.md`: the recorder App is not yet

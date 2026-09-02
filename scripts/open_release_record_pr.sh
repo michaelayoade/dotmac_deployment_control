@@ -175,7 +175,31 @@ else
   echo "a pull request for ${BRANCH} already exists — updated it"
 fi
 
-gh pr merge "${BRANCH}" --auto --squash \
-  || give_up "could not enable auto-merge for ${BRANCH}"
-
-echo "post-release record opened with auto-merge enabled for ${TAG}"
+# NO AUTO-MERGE, and this is the one place this port DIVERGES from the Starter.
+#
+# The Starter's script ends `gh pr merge --auto --squash`, on the reasoning that
+# protected main keeps required CI as the merge authority so the redundant human
+# bookkeeping gesture can go. That reasoning holds there and does not hold here,
+# for a reason specific to this repository: a coordinates-only record is not a
+# COMPLETE record. Recording a version raises the derived release floor, and the
+# floor's guard holds its positive control, its refusal strings and two
+# parametrize lists as literals that a recorder must never write. Those edits,
+# and the disposition — `pinnable`, the release notes — go onto this branch
+# afterwards, by a human.
+#
+# Auto-merge would therefore do exactly the wrong thing at exactly the wrong
+# moment: it stays dormant while the branch is red for the missing floor
+# literals, and fires the instant somebody pushes them — merging the disposition
+# in the same breath as the coordinates, with no one having read either.
+# `required_approving_review_count` on this repository is 0, so nothing else
+# would have stopped it.
+#
+# Michael's ruling: the recorder opens the record and never merges it.
+echo "::notice::${TAG} record opened at ${BRANCH} — NOT merged, and not set to."
+echo "::notice::OWED on that branch, by a human, before it can go green:"
+echo "::notice::  1. the release floor's literals in"
+echo "::notice::     tests/architecture/test_published_versions_and_floor.py"
+echo "::notice::  2. the disposition on the new row: pinnable, and the notes"
+echo "::notice::Then merge it deliberately. A coordinates-only record is a"
+echo "::notice::correct record of what was published and an incomplete record of"
+echo "::notice::what it means."

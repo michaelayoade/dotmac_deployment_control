@@ -301,9 +301,50 @@ def test_the_only_successful_exit_is_a_record_opened_or_already_complete() -> No
     assert OPENER.read_text(encoding="utf-8").count("exit 0") == 1
 
 
-def test_the_record_auto_merges_only_after_protected_ci_is_green() -> None:
-    """`--auto` waits for branch protection. The App can enable auto-merge and
-    cannot waive a check, which is what keeps required CI the merge authority."""
+def test_the_recorder_opens_the_record_and_never_merges_it() -> None:
+    """THE ONE PLACE THIS PORT DIVERGES FROM THE STARTER, asserted so the
+    divergence is deliberate rather than drift.
+
+    The Starter ends its script with `gh pr merge --auto --squash`: protected
+    main keeps required CI as the merge authority, so the redundant human
+    bookkeeping gesture goes. That holds there. It does not hold here, because
+    a coordinates-only record is not a COMPLETE record — recording a version
+    raises the derived floor, and the floor's own literals plus the disposition
+    are human-owned and land on the same branch afterwards.
+
+    Auto-merge would then do the wrong thing at the worst moment: dormant while
+    the branch is red for the missing literals, firing the instant somebody
+    pushes them — merging the disposition in the same breath as the
+    coordinates, unread. `required_approving_review_count` here is 0, so
+    nothing else would have caught it.
+
+    Michael's ruling: the recorder opens the record and never merges it.
+    """
     text = OPENER.read_text(encoding="utf-8")
-    assert 'gh pr merge "${BRANCH}" --auto --squash' in text
-    assert text.index("gh pr create") < text.index("gh pr merge")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "gh pr create" in code, "the recorder no longer opens the record at all"
+    assert "gh pr merge" not in code, (
+        "the recorder merges its own record. A coordinates-only record is "
+        "incomplete: the release floor's literals and the disposition are "
+        "human-owned and land on that branch afterwards, so a merge here lands "
+        "them unread — or lands the record without them."
+    )
+    assert "--auto" not in code, code
+
+
+def test_the_recorder_says_what_is_still_owed_on_the_branch() -> None:
+    """An unmerged record that does not say WHY is a branch somebody deletes.
+
+    The notice names both halves, because "finish the record" is not actionable
+    and "push the floor literals and the disposition" is.
+    """
+    code = "\n".join(
+        line
+        for line in OPENER.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "OWED" in code
+    assert "test_published_versions_and_floor.py" in code
+    assert "pinnable" in code
