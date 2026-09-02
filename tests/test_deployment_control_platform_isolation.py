@@ -299,7 +299,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0003_execution_plan_binding",
+                revision="dc_0004_authorized_image_set",
             ),
         )
         comparison = verify_module_database_catalog(

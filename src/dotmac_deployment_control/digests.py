@@ -68,6 +68,13 @@ hashes. Control receives it, freezes it, signs it, and hands it back — and it 
 structurally unable to do anything else, because it does not inherit the
 constructor that turns bytes into a digest. See the class for why that absence
 is the point.
+
+`ImageDigestV1` is a FOURTH, added deliberately rather than by accident, and it
+is not a fourth plan digest. Its subject is an OCI image manifest — a
+registry's value, not a plan's — so it takes part in no plan/spec/execution
+comparison at all, and being a distinct dataclass is what makes that
+structural. It inherits the read-only base for the plainest possible reason:
+Control does not build images and holds none of the bytes.
 """
 
 from __future__ import annotations
@@ -346,6 +353,46 @@ class SpecDigestV1(_Sha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class ImageDigestV1(_ReceivedSha256Digest):
+    """The identity of ONE CONTAINER IMAGE MANIFEST. A registry's value.
+
+    ## This is a fourth type and it is not a fourth plan digest
+
+    The three above are all about a PLAN: Control's frozen snapshot, a target's
+    running spec, and the Foundation's rendered execution. Adding a fourth of
+    those by accident is how a binding ends up comparing two values that
+    describe different things while reading as correct, and it is exactly what
+    `ExecutionPlanDigestV1`'s docstring warns about.
+
+    This one has a different SUBJECT entirely. It is `sha256` over an OCI image
+    manifest — the value a registry publishes and a runtime resolves — and it
+    never participates in a plan-digest, spec-digest or execution-plan-digest
+    comparison. A dataclass compares unequal across types, so it structurally
+    cannot: an `ImageDigestV1` can never satisfy any of the three bindings by
+    arriving in the right shape, and none of them can satisfy an image
+    comparison.
+
+    ## Why it inherits the READ-ONLY base
+
+    Same reason, and it is even more clear-cut here than for the execution
+    plan: Control does not build container images, does not talk to a registry,
+    and holds none of the bytes an image manifest is hashed over. A value it
+    cannot possibly compute must not have a constructor that pretends
+    otherwise, so `ImageDigestV1.over_json(...)` is an `AttributeError` rather
+    than a plausible-looking number.
+
+    ## Why a digest and never a tag
+
+    A tag is a mutable pointer. An "authorized image set" pinned by tag
+    authorizes whatever that tag names at the moment something looks — which is
+    a different set tomorrow, under the same approval, with the same plan
+    digest. Only the constructor `parse` exists and it accepts only
+    `sha256:<64 lowercase hex>`, so a tag cannot become an authorized image by
+    any route through this module.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionPlanDigestV1(_ReceivedSha256Digest):
     """`sha256(canonical FoundationExecutionPlanV1 bytes)` — the Foundation's.
 
@@ -388,6 +435,7 @@ __all__ = [
     "DIGEST_BYTES",
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
+    "ImageDigestV1",
     "PlanDigestV1",
     "SpecDigestV1",
     "canonical_json",

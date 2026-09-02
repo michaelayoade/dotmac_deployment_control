@@ -85,7 +85,7 @@ DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0003` one, seven tables and 99 columns, because
+extent below is the POST-`dc_0004` one, seven tables and 104 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -98,12 +98,12 @@ carry it?). a7's own record says so, and
 
 * `database_catalogue_as_published` — the installed distribution publishes the
                              exact catalogue: module identity, all seven table
-                             identities, all 99 columns by name, ordinal, type
+                             identities, all 104 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
                              in this file, because `len(tables) == 7 and
-                             len(columns) == 99` passes on seven wrong tables.
+                             len(columns) == 104` passes on seven wrong tables.
 * `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
                              the artifact serialises, the bytes round-trip, and
                              a one-byte change is REFUSED against that digest.
@@ -519,6 +519,7 @@ def _evidence(digest: str) -> Any:
         decided_at=_NOW,
         operation="deploy",
         execution_plan_digest=_EXECUTION_PLAN,
+        decision_status="granted",
     )
 
 
@@ -992,7 +993,7 @@ def canary_conflict_savepoint_executes() -> str:
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0003` extent, seven tables and 99 columns, and
+# literal below is the POST-`dc_0004` extent, seven tables and 104 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1002,7 +1003,7 @@ def canary_conflict_savepoint_executes() -> str:
 # `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
 #
 # THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 7 and
-# len(columns) == 99` passes against a catalogue holding seven wrong tables, and
+# len(columns) == 104` passes against a catalogue holding seven wrong tables, and
 # this programme keeps finding and repairing exactly that check. So the whole
 # canonical structure is written out below — every table name, every column
 # name, its physical ordinal, its PostgreSQL type identity AND rendered
@@ -1042,7 +1043,7 @@ CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0003_execution_plan_binding"
+CATALOGUE_LINEAGE_HEAD = "dc_0004_authorized_image_set"
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
 #: single values rather than per-table, because "the module owns all seven and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
@@ -1082,6 +1083,13 @@ CATALOGUE_TABLES: tuple[
             ("execution_plan_digest", 18, _V128, True, ""),
             ("authorized_operation", 19, _V20, True, ""),
             ("authorized_execution_plan_digest", 20, _V128, True, ""),
+            # dc_0004, appended after dc_0003's for the same physical reason.
+            # There is deliberately NO image column here — a plan's authorized
+            # image set is inside `snapshot`, the document `plan_digest` covers.
+            ("approval_decision_status", 21, _V24, True, ""),
+            ("approval_revoked_at", 22, _TS, True, ""),
+            ("approval_revocation_ref", 23, _V200, True, ""),
+            ("approval_revocation_reason", 24, _V200, True, ""),
         ),
     ),
     (
@@ -1105,6 +1113,8 @@ CATALOGUE_TABLES: tuple[
             ("record_version", 16, _INT, False, ""),
             ("created_at", 17, _TS, False, "now()"),
             ("updated_at", 18, _TS, False, "now()"),
+            # dc_0004: the declared authorized image set, on the TARGET.
+            ("desired_images", 19, _JSONB, True, ""),
         ),
     ),
     (
@@ -1207,7 +1217,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 99: this module declares no domain,
+            # BASE and `pg_catalog` for all 104: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
@@ -1454,7 +1464,7 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     """THE PROOF `0.1.0a7` SHIPPED WITHOUT: the ARTIFACT carries the catalogue.
 
     a7's headline was `mod_deploy`'s exact seven platform tables and 95
-    columns — 99 after `dc_0003` — and not one of the nine canaries it published
+    columns — 104 after `dc_0004` — and not one of the nine canaries it published
     touched them. The extent was
     proven by source tests on the release commit — a real proof of a different
     question, and `docs/CONTROL_EXCEPTIONS.md` already records that a source
@@ -1465,16 +1475,16 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * the catalogue modules resolve out of `site-packages`, with no checkout
       copy shadowing them, and the evidence is in this canary's own output;
     * module identity — document schema and scope, distribution name and
-      version, module code, release version, `mod_deploy`, and the `dc_0003`
+      version, module code, release version, `mod_deploy`, and the `dc_0004`
       lineage head;
     * all seven table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 99 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 104 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
 
-    The counts are the least of it. `len(tables) == 7 and len(columns) == 99`
+    The counts are the least of it. `len(tables) == 7 and len(columns) == 104`
     passes on seven wrong tables, and the whole structure is compared instead.
     """
     import json

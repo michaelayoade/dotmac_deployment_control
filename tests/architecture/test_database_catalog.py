@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0003 structure declaration."""
+"""The module publishes one exact post-dc_0004 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,35 +32,107 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0003_execution_plan_binding",
+            revision="dc_0004_authorized_image_set",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0003_execution_plan_binding"
+    assert database_catalog.lineage_head == "dc_0004_authorized_image_set"
 
 
-def test_catalogue_has_the_exact_seven_table_ninety_nine_column_extent() -> None:
-    """Seven tables and 99 columns after `dc_0003`.
+def test_catalogue_has_the_exact_seven_table_hundred_and_four_column_extent() -> None:
+    """Seven tables and 104 columns after `dc_0004`.
 
-    a7 published 95. The four `dc_0003` adds are all on `deployment_plans`, and
-    the count is asserted PER TABLE as well as in total precisely so a future
-    change cannot keep the sum right by moving a column between tables.
+    a7 published 95, `dc_0003` took it to 99. `dc_0004` adds four to
+    `deployment_plans` (the approval's standing and its withdrawal) and ONE to
+    `deployment_targets` (the declared authorized image set), and the count is
+    asserted PER TABLE as well as in total precisely so a future change cannot
+    keep the sum right by moving a column between tables.
+
+    The split across two tables is the load-bearing part here and not an
+    accident of tidiness: the image set is declared on the TARGET, where
+    desired state is mutable and revisioned, and a plan's frozen set lives
+    inside `snapshot` rather than in a column of its own. A `deployment_plans`
+    count of 25 would mean somebody had added the sibling image column that
+    lets an image change without the plan digest moving.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
     assert counts == {
-        "deployment_plans": 20,
-        "deployment_targets": 18,
+        "deployment_plans": 24,
+        "deployment_targets": 19,
         "observation_attempts": 15,
         "observation_receipts": 12,
         "rollout_attempts": 11,
         "rollouts": 10,
         "target_credentials": 13,
     }
-    assert sum(counts.values()) == 99
+    assert sum(counts.values()) == 104
+
+
+def test_no_plan_column_holds_the_authorized_image_set() -> None:
+    """The image set is INSIDE the digest, so it is not beside it.
+
+    Stated as a property of the published structure rather than left to the
+    migration's prose, because this is the one shape that would quietly undo
+    the whole change: a `deployment_plans.authorized_images` column is a value
+    an `UPDATE` can move while `plan_digest` sits still, so an image could
+    change under a live approval with the digest, the evidence and every screen
+    still agreeing.
+
+    `snapshot` is where a plan's frozen set lives, and `snapshot` is the exact
+    document `plan_digest` is computed over.
+    """
+    plans = next(
+        table for table in database_catalog.tables if table.name == "deployment_plans"
+    )
+    names = {column.name for column in plans.columns}
+
+    assert not [name for name in names if "image" in name], sorted(names)
+    assert "snapshot" in names
+
+
+def test_dc_0004_appends_the_approval_standing_and_the_target_image_set() -> None:
+    """Five columns, in ADD COLUMN order, across the two tables they belong on."""
+    plans = next(
+        table for table in database_catalog.tables if table.name == "deployment_plans"
+    )
+    targets = next(
+        table for table in database_catalog.tables if table.name == "deployment_targets"
+    )
+    tail = {column.name: column for column in plans.columns if column.ordinal > 20}
+
+    assert [
+        (name, tail[name].ordinal)
+        for name in (
+            "approval_decision_status",
+            "approval_revoked_at",
+            "approval_revocation_ref",
+            "approval_revocation_reason",
+        )
+    ] == [
+        ("approval_decision_status", 21),
+        ("approval_revoked_at", 22),
+        ("approval_revocation_ref", 23),
+        ("approval_revocation_reason", 24),
+    ]
+
+    images = next(
+        column for column in targets.columns if column.name == "desired_images"
+    )
+    assert images.ordinal == 19
+    assert images.postgres_type.formatted == "jsonb"
+
+    # Every one nullable and with NO generated default, and the two defaults
+    # that would have been tempting are the two that would lie: `'[]'` would
+    # make every existing target claim to authorize no images (a declaration,
+    # not an absence), and `'granted'` would make every plan approved before
+    # this revision assert a standing decision nobody recorded.
+    for column in (*tail.values(), images):
+        assert column.nullable, column.name
+        assert column.expression == "", column.name
 
 
 def test_dc_0003_appends_the_execution_binding_in_add_column_order() -> None:
@@ -141,7 +213,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0003_execution_plan_binding",
+                revision="dc_0004_authorized_image_set",
             ),
         )
 
@@ -157,5 +229,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 99
+    assert sum(len(table.columns) for table in restored.tables) == 104
     assert {table.plane.value for table in restored.tables} == {"platform"}

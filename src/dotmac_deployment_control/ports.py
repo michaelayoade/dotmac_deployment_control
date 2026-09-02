@@ -61,7 +61,7 @@ So: an append-only log of ATTEMPTS, and one canonical REPORT per idempotency key
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -129,6 +129,41 @@ class OperationRefusedError(DeploymentControlError):
     refused rather than defaulted, coerced or inferred, and this exception is
     what "refused" means.
     """
+
+
+class ImageSetRefusedError(DeploymentControlError):
+    """An authorized image set cannot be read, or is not a set.
+
+    Its own exception rather than a `PlanRefusedError`, because the reader is
+    whoever composed the image set and the repair is in their declaration —
+    a tag where a digest belongs, two digests for one service, a missing term.
+    None of those is a statement about a target's state or a plan's standing,
+    and reporting one as a plan refusal would send an operator to look at a
+    deployment when the fault is in a manifest.
+    """
+
+
+class ApprovedPlanRefusedError(DeploymentControlError):
+    """`require_approved_plan` did not find a standing authorization.
+
+    Carries the typed `ApprovedPlanRefusalCode` that
+    `service.find_approved_plan` decided, so a caller that must distinguish
+    "revoked" from "never approved" reads a member rather than a message.
+
+    An exception rather than a return value on that entry point ON PURPOSE. A
+    promotion that must not proceed without an authorization cannot be handed
+    a falsy object it might forget to check; the only way past this function is
+    an `ApprovedPlanAuthorization`. `find_approved_plan` is the total sibling
+    for callers that genuinely want to ASK rather than to require.
+    """
+
+    def __init__(self, refusal: object) -> None:
+        #: The `facts.ApprovedPlanRefusal`. Typed as `object` here because
+        #: `facts` imports nothing from this module and this module must not
+        #: import `facts` — the refusal travels as its own value and callers
+        #: read `.code`.
+        self.refusal = refusal
+        super().__init__(str(getattr(refusal, "detail", refusal)))
 
 
 class ExecutionPlanBindingError(DeploymentControlError):
@@ -205,6 +240,27 @@ class DesiredDeployment:
     spec: Mapping[str, Any] = field(default_factory=dict)
     licence_ref: str | None = None
     brand_profile_ref: str | None = None
+    #: THE AUTHORIZED IMAGE SET, declared rather than buried in `spec`.
+    #:
+    #: `spec` above stays opaque and Control still interprets nothing inside
+    #: it. This is the separate, typed term that a plan freezes INSIDE the
+    #: document its digest is taken over, so an approval covers which images
+    #: may run — the gap that made a consumer's `authorized_images` a value the
+    #: consumer supplied to itself.
+    #:
+    #: THREE STATES, and the middle one is the one a caller loses by accident:
+    #:
+    #: * `None` — no image set has been declared for this target. A consumer
+    #:   must not read it as "no images"; `find_approved_plan` refuses rather
+    #:   than answering, so the absence cannot be silently promoted.
+    #: * `()` — this target authorizes NO images, declared deliberately.
+    #: * a sequence — the set, canonicalized and duplicate-checked by
+    #:   `images.authorized_image_set` before it is frozen.
+    #:
+    #: Accepts either `AuthorizedImage` values or the three-key mappings they
+    #: parse from, so an assembly deserializing JSON does not have to construct
+    #: the type before this module can refuse a bad one.
+    images: Sequence[Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +279,24 @@ class ApprovalEvidence:
     content_digest: str
     decided_at: datetime
     approver_refs: tuple[str, ...] = ()
+    #: WHAT THE DECISION SAID, in the approvals authority's own vocabulary.
+    #:
+    #: `decision_ref` says WHICH decision; this says what that decision's
+    #: standing was when the evidence was assembled. Two facts, and the second
+    #: was previously inferred from the first — reaching `approve_plan` at all
+    #: was treated as meaning "granted". That inference is the same shape as a
+    #: defaulted `operation`: a caller's silence deciding an authorization.
+    #:
+    #: Optional in the dataclass and REQUIRED by `approve_plan`, exactly like
+    #: `operation` and `execution_plan_digest` above. The default exists for
+    #: the `0.1.0a7` shape, not as a way to approve without saying what the
+    #: decision was.
+    #:
+    #: The vocabulary is `approvals.ApprovalDecisionStatus` and it is closed.
+    #: `approve_plan` accepts only `granted`: a decision that has been REVOKED
+    #: authorizes nothing, and replaying its evidence is precisely the arrival
+    #: that must be refused rather than recorded as an approval.
+    decision_status: str | None = None
     #: WHICH OPERATION was authorized, and over WHICH execution plan.
     #:
     #: Both, and both independent of `content_digest`, because a three-term
@@ -326,12 +400,14 @@ class DeliveryIntent:
 __all__ = [
     "ApprovalEvidence",
     "ApprovalRefusedError",
+    "ApprovedPlanRefusedError",
     "DeliveryIntent",
     "DeploymentControlError",
     "DesiredDeployment",
     "DigestEncodingError",
     "ExecutionPlanBindingError",
     "ExpectedStateError",
+    "ImageSetRefusedError",
     "ObservationRefusedError",
     "ObservedState",
     "OperationRefusedError",
