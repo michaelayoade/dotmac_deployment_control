@@ -5,12 +5,14 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a9 (declared, not yet published) — portable authorization
+## 0.1.0a9 (published 2026-09-02) — portable authorization
 
-`0.1.0a8` remains published, tagged, independently VERIFIED and pinnable.
-`0.1.0a9` is declared by this change and must not be treated as published until
-the recorder removes its row from `docs/publication-ledger.json` and appends its
-registry coordinates to `docs/published-versions.json`.
+Published by run `33686171205` from protected main `b8427af26101`; independent
+verify run `33686335734` fetched both artifacts by name from the registry,
+installed the wheel with its dependency graph, ran the behavioral canaries and
+only then wrote the annotated tag. Exact package digests and the human adoption
+disposition are recorded in `docs/published-versions.json`. `0.1.0a8` remains
+published, verified and pinnable; it simply lacks this release's contracts.
 
 ### Added
 
