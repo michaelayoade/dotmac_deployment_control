@@ -346,16 +346,20 @@ class TestNoTransportCameAcross:
         )
 
 
-class TestItVerifiesNothingItself:
-    """ADR-0007: signature and possession checking are the KERNEL's. A second
-    verifier here could disagree with the first, and the disagreement would be
-    invisible until it mattered."""
+class TestTargetObservationVerificationStaysExternal:
+    """ADR-0007 keeps target signature/possession verification in the kernel.
+
+    a9 also issues portable deployment authorizations.  Control owns those
+    canonical statement bytes but injects the cryptographic signer/verifier;
+    that outbound seam must not be confused with reimplementing the target's
+    inbound observation verifier.
+    """
 
     _VERIFY_NAMES = frozenset(
-        {"verify_signature", "check_signature", "ed25519", "sign", "signing_key"}
+        {"verify_signature", "check_signature", "ed25519", "signing_key"}
     )
 
-    def test_no_source_file_implements_verification(self) -> None:
+    def test_no_source_file_implements_target_observation_verification(self) -> None:
         offenders: list[str] = []
         for path in _sources():
             for bad in sorted(_identifiers(path.read_text()) & self._VERIFY_NAMES):
@@ -374,6 +378,12 @@ class TestItVerifiesNothingItself:
         assert (
             not _identifiers("status = observed.signature_status") & self._VERIFY_NAMES
         )
+
+    def test_portable_authorization_crypto_is_an_injected_protocol(self) -> None:
+        from dotmac_deployment_control import AuthorizationSigner, AuthorizationVerifier
+
+        assert getattr(AuthorizationSigner, "_is_protocol", False)
+        assert getattr(AuthorizationVerifier, "_is_protocol", False)
 
 
 class TestNoHealthStatusIsHeld:

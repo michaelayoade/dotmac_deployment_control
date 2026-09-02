@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0004 structure declaration."""
+"""The module publishes one exact post-dc_0005 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,18 +32,18 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0004_authorized_image_set",
+            revision="dc_0005_portable_authorization",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0004_authorized_image_set"
+    assert database_catalog.lineage_head == "dc_0005_portable_authorization"
 
 
-def test_catalogue_has_the_exact_seven_table_hundred_and_four_column_extent() -> None:
-    """Seven tables and 104 columns after `dc_0004`.
+def test_catalogue_has_the_exact_seven_table_hundred_and_five_column_extent() -> None:
+    """Seven tables and 105 columns after `dc_0005`.
 
     a7 published 95, `dc_0003` took it to 99. `dc_0004` adds four to
     `deployment_plans` (the approval's standing and its withdrawal) and ONE to
@@ -66,10 +66,30 @@ def test_catalogue_has_the_exact_seven_table_hundred_and_four_column_extent() ->
         "observation_attempts": 15,
         "observation_receipts": 12,
         "rollout_attempts": 11,
-        "rollouts": 10,
+        "rollouts": 11,
         "target_credentials": 13,
     }
-    assert sum(counts.values()) == 104
+    assert sum(counts.values()) == 105
+
+
+def test_dc_0005_appends_the_portable_authorization_to_the_rollout() -> None:
+    """The envelope is an immutable issuance fact, not mutable plan standing.
+
+    Approval revocation changes whether dispatch is allowed.  It does not
+    rewrite the bytes that were issued when the rollout was requested, so the
+    portable envelope belongs on the rollout and nowhere else.
+    """
+    rollouts = next(
+        table for table in database_catalog.tables if table.name == "rollouts"
+    )
+    envelope = next(
+        column for column in rollouts.columns if column.name == "authorization_envelope"
+    )
+
+    assert envelope.ordinal == 11
+    assert envelope.postgres_type.formatted == "jsonb"
+    assert envelope.nullable
+    assert envelope.expression == ""
 
 
 def test_no_plan_column_holds_the_authorized_image_set() -> None:
@@ -220,7 +240,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0004_authorized_image_set",
+                revision="dc_0005_portable_authorization",
             ),
         )
 
@@ -236,5 +256,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 104
+    assert sum(len(table.columns) for table in restored.tables) == 105
     assert {table.plane.value for table in restored.tables} == {"platform"}

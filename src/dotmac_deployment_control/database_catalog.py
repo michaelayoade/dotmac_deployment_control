@@ -93,7 +93,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0004_authorized_image_set",
+    lineage_head="dc_0005_portable_authorization",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -257,6 +257,8 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "updated_at", 10, _TIMESTAMPTZ, nullable=False, default="now()"
                 ),
+                # dc_0005 appends the immutable portable authorization.
+                _column("authorization_envelope", 11, _JSONB, nullable=True),
             ),
         ),
         _table(

@@ -17,6 +17,7 @@ CHECKs and migration-from-empty are proven against real Postgres in
 
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from collections.abc import Generator
@@ -70,6 +71,8 @@ from dotmac_deployment_control import (
     snapshot_digest,
     suspend_target,
 )
+from dotmac_deployment_control.models import Rollout
+from tests.authorization_support import SIGNER, VERIFIER
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
@@ -83,6 +86,7 @@ _POLICY_VERSION = 4
 #: have — and would go on passing if somebody gave it one.
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
 _OTHER_EXECUTION_PLAN = "sha256:" + "2b" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 
 @pytest.fixture(autouse=True)
@@ -150,6 +154,7 @@ def _desired(db: Session, target_id, **overrides: object):  # type: ignore[no-un
         "spec": {"replicas": 2},
         "licence_ref": "lic-1",
         "brand_profile_ref": "brand-acme",
+        "images": [],
     }
     fields.update(overrides)
     return set_desired_state(
@@ -167,6 +172,7 @@ def _plan(db: Session, target_id, **overrides: object):  # type: ignore[no-untyp
         "command_id": _cmd(),
         "target_id": target_id,
         "operation": "deploy",
+        "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _EXECUTION_PLAN,
         "requires_approval": True,
         "approval_policy_code": _POLICY,
@@ -210,7 +216,10 @@ def _rollout(db: Session, plan_id):  # type: ignore[no-untyped-def]
             command_id=_cmd(),
             rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan_id,
+            authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            authorization_issued_at=_NOW,
         ),
+        signer=SIGNER,
     )
 
 
@@ -576,8 +585,20 @@ class TestRolloutsOnlyRunApprovedPlans:
         target = _desired(db, _target(db).id)
         plan = _approved_plan(db, target.id)
         ref = f"rol-{uuid.uuid4().hex[:8]}"
-        first = request_rollout(db, RequestRolloutCommand(_cmd(), ref, plan.id))
-        second = request_rollout(db, RequestRolloutCommand(_cmd(), ref, plan.id))
+        first = request_rollout(
+            db,
+            RequestRolloutCommand(
+                _cmd(), ref, plan.id, datetime(2099, 1, 1, tzinfo=UTC), _NOW
+            ),
+            signer=SIGNER,
+        )
+        second = request_rollout(
+            db,
+            RequestRolloutCommand(
+                _cmd(), ref, plan.id, datetime(2099, 1, 1, tzinfo=UTC), _NOW
+            ),
+            signer=SIGNER,
+        )
         assert first.id == second.id
 
 
@@ -592,7 +613,9 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         # The desired state moves on AFTER approval.
         _desired(db, target.id, release_ref="dotmac_sub@9.0.0", spec={"replicas": 99})
 
-        intent = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        intent = dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         assert (
             intent.release_ref == "dotmac_sub@7.187.1"
         ), "dispatch must carry the APPROVED plan, not the newest desired state"
@@ -605,7 +628,9 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         those are the Integrator's (ADR-0024)."""
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
-        intent = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        intent = dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         fields = set(intent.__dataclass_fields__)
         for forbidden in (
             "endpoint",
@@ -623,9 +648,13 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         prevents."""
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
-        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         with pytest.raises(TransitionRefusedError, match="already has attempt"):
-            dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+            dispatch_attempt(
+                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            )
 
     def test_retry_is_the_same_operation_as_dispatch(self, db) -> None:
         """There is no separate `retry()` with different rules, because a retry
@@ -633,7 +662,9 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         tested."""
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
-        first = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        first = dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         settle_attempt(
             db,
             SettleAttemptCommand(
@@ -644,7 +675,9 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
                 error_code="unreachable",
             ),
         )
-        second = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        second = dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         assert second.attempt_no == 2
         assert second.plan_digest == first.plan_digest
 
@@ -653,7 +686,9 @@ class TestSettlingAnAttempt:
     def _dispatched(self, db):  # type: ignore[no-untyped-def]
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
-        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         return rollout
 
     def test_a_succeeded_attempt_succeeds_the_rollout(self, db) -> None:
@@ -670,6 +705,35 @@ class TestSettlingAnAttempt:
         )
         assert view.status == RolloutStatus.SUCCEEDED.value
         assert view.completed_at is not None
+
+    def test_transport_settlement_does_not_rewrite_signed_authorization(
+        self, db
+    ) -> None:
+        """Transport outcome and authorization issuance are different facts.
+
+        Settling an Integrator attempt may move rollout state. It cannot edit
+        the portable statement that authorized the attempt, and the settlement
+        command has no field through which a transport could supply one.
+        """
+        rollout = self._dispatched(db)
+        stored = db.get(Rollout, rollout.id)
+        assert stored is not None
+        before = copy.deepcopy(stored.authorization_envelope)
+
+        settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=1,
+                outcome=AttemptOutcome.SUCCEEDED.value,
+                integrator_ref="ig-settlement-only",
+            ),
+        )
+
+        db.refresh(stored)
+        assert stored.authorization_envelope == before
+        assert "authorization_envelope" not in SettleAttemptCommand.__dataclass_fields__
 
     def test_a_failed_attempt_leaves_the_rollout_retryable(self, db) -> None:
         """One transport error is not a deployment decision. Treating it as one
@@ -688,7 +752,9 @@ class TestSettlingAnAttempt:
         assert view.status == RolloutStatus.FAILED.value
         assert view.completed_at is None, "a failed rollout is not settled"
         # And it can still be dispatched again.
-        assert dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        assert dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
 
     def test_timed_out_is_a_distinct_state_from_failed(self, db) -> None:
         """A failure means something reported an error; a timeout means nothing
@@ -755,7 +821,9 @@ class TestCancelIsNotManualRepair:
     def _dispatched(self, db):  # type: ignore[no-untyped-def]
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
-        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         return rollout
 
     def test_cancelling_settles_the_rollout_and_its_in_flight_attempt(self, db) -> None:
@@ -798,7 +866,9 @@ class TestCancelIsNotManualRepair:
         rollout = self._dispatched(db)
         cancel_rollout(db, RolloutTransitionCommand(_cmd(), rollout.id))
         with pytest.raises(TransitionRefusedError, match="not retried"):
-            dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+            dispatch_attempt(
+                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            )
 
 
 # ── Drift, before anything has been observed ────────────────────────────────

@@ -551,6 +551,9 @@ class Rollout(Base, TimestampMixin):
     reason: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     record_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: Immutable issuance fact. NULL is reserved for rollouts created before
+    #: the portable authorization contract; they are refused, never inferred.
+    authorization_envelope: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
 
     attempts: Mapped[list[RolloutAttempt]] = relationship(
         lambda: RolloutAttempt,

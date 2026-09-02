@@ -70,6 +70,9 @@ EXPECTED_CANARIES = (
     # release existed to ship.
     "database_catalogue_as_published",
     "catalogue_digest_binds",
+    # a9's portable authorization must be driven from the installed wheel,
+    # including its canonical image-set and descriptor signature binding.
+    "portable_authorization_binds",
     # The browser surface ships templates as package data, and the kernel
     # validates that directory when it builds the surface graph — at the
     # CONSUMER's startup. A wheel missing it imports perfectly and composes
@@ -607,7 +610,7 @@ def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
     assert canaries.CATALOGUE_TABLE_COUNT == 7
-    assert canaries.CATALOGUE_COLUMN_COUNT == 104
+    assert canaries.CATALOGUE_COLUMN_COUNT == 105
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):

@@ -72,6 +72,7 @@ from dotmac_deployment_control import (
     ApprovePlanCommand,
     CredentialTransitionCommand,
     DeploymentOperation,
+    DescriptorBindingError,
     DesiredDeployment,
     DigestEncodingError,
     EnrolCredentialCommand,
@@ -100,6 +101,7 @@ from dotmac_deployment_control import (
     spec_digest,
 )
 from dotmac_deployment_control.models import DeploymentPlan
+from tests.authorization_support import SIGNER, VERIFIER
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
@@ -113,6 +115,7 @@ _RELEASE = "dotmac_sub@7.187.1"
 #: deliberately does not have — and would keep passing if somebody gave it one.
 _PLAN_A = "sha256:" + "1a" * 32
 _PLAN_B = "sha256:" + "2b" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 
 @pytest.fixture(autouse=True)
@@ -177,7 +180,7 @@ def _ready_target(db: Session, *, target_ref: str = "tgt-1", key_id: str = "key-
         SetDesiredStateCommand(
             command_id=_cmd(),
             target_id=view.id,
-            desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC),
+            desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC, images=[]),
         ),
     )
     credential_id = enrol_credential(
@@ -207,6 +210,7 @@ def _propose(db: Session, target_id, **overrides: object):  # type: ignore[no-un
         "command_id": _cmd(),
         "target_id": target_id,
         "operation": "deploy",
+        "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _PLAN_A,
         "requires_approval": True,
         "approval_policy_code": _POLICY,
@@ -247,7 +251,10 @@ def _rollout(db: Session, plan_id, ref: str | None = None):  # type: ignore[no-u
             command_id=_cmd(),
             rollout_ref=ref or f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan_id,
+            authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            authorization_issued_at=_NOW,
         ),
+        signer=SIGNER,
     )
 
 
@@ -336,6 +343,7 @@ class TestTheOperationVocabularyIsClosed:
             ProposePlanCommand(  # type: ignore[call-arg]
                 command_id=_cmd(),
                 target_id=uuid.uuid4(),
+                descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_PLAN_A,
             )
 
@@ -345,6 +353,7 @@ class TestTheOperationVocabularyIsClosed:
                 command_id=_cmd(),
                 target_id=uuid.uuid4(),
                 operation="redeploy",
+                descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_PLAN_A,
             )
 
@@ -361,8 +370,27 @@ class TestControlReceivesTheDigestAndNeverReshapesIt:
         # BYTE-IDENTICAL to what was submitted. Not `parsed.canonical`, which
         # would be the same text today and a normalization forever.
         assert plan.execution_plan_digest == _PLAN_A
+        assert plan.descriptor_digest == _DESCRIPTOR
         assert plan.authorized_operation is None
         assert plan.authorized_execution_plan_digest is None
+
+    def test_a_descriptor_only_mutation_moves_controls_plan_digest(self, db) -> None:
+        """The descriptor is inside Control's snapshot, never beside its hash."""
+        target = _ready_target(db)
+        first = _propose(db, target.id)
+        second_descriptor = "sha256:" + "4d" * 32
+        second = _propose(db, target.id, descriptor_digest=second_descriptor)
+
+        assert first.execution_plan_digest == second.execution_plan_digest
+        assert first.descriptor_digest != second.descriptor_digest
+        assert first.plan_digest != second.plan_digest
+
+    def test_a_missing_descriptor_binding_is_refused_before_state_is_written(
+        self, db
+    ) -> None:
+        target = _ready_target(db)
+        with pytest.raises(DescriptorBindingError, match="no descriptor digest"):
+            _propose(db, target.id, descriptor_digest="")
 
     @pytest.mark.parametrize(
         "spelling",
@@ -500,9 +528,12 @@ class TestAnUnboundPlanCannotBeRolledOut:
         target = _ready_target(db)
         plan = _propose(db, target.id, operation="rollback", requires_approval=False)
         rollout = _rollout(db, plan.id)
-        intent = dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        intent = dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
 
         assert intent.operation == "rollback"
+        assert intent.descriptor_digest == _DESCRIPTOR
         assert intent.execution_plan_digest == _PLAN_A
         # And the two digests stay distinct values, not one reused.
         assert intent.plan_digest != intent.execution_plan_digest

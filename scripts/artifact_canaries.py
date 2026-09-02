@@ -81,11 +81,11 @@ DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
                              version that got this wrong, so it is a property
                              with a history rather than a hypothesis.
 
-## The two canaries `0.1.0a8` adds, and the gap they close
+## The catalogue canaries `0.1.0a8` added, and the portable a9 canary
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0004` one, seven tables and 104 columns, because
+extent below is the POST-`dc_0005` one, seven tables and 105 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -98,12 +98,12 @@ carry it?). a7's own record says so, and
 
 * `database_catalogue_as_published` — the installed distribution publishes the
                              exact catalogue: module identity, all seven table
-                             identities, all 104 columns by name, ordinal, type
+                             identities, all 105 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
                              in this file, because `len(tables) == 7 and
-                             len(columns) == 104` passes on seven wrong tables.
+                             len(columns) == 105` passes on seven wrong tables.
 * `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
                              the artifact serialises, the bytes round-trip, and
                              a one-byte change is REFUSED against that digest.
@@ -452,6 +452,37 @@ _RELEASE = "dotmac_sub@7.187.1"
 #: out and never computed, because Control cannot compute one — a canary that
 #: derived it would be exercising a capability the artifact must not have.
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
+#: A stand-in for the Foundation's canonical descriptor identity. Distinct
+#: bytes from the execution plan on purpose: equality would make a swapped
+#: field look correct.
+_DESCRIPTOR = "sha256:" + "2b" * 32
+
+
+def _authorization_signer() -> Any:
+    """A deterministic TEST provider for rollout canaries, never package policy."""
+    import hashlib
+    import hmac
+
+    from dotmac_deployment_control import (
+        AuthorizationSignature,
+        AuthorizationSignerIdentity,
+    )
+
+    key = b"artifact-canary-key-not-production-material"
+
+    class CanarySigner:
+        identity = AuthorizationSignerIdentity(
+            key_id="artifact-canary", algorithm="hmac-sha256-test-only"
+        )
+
+        def sign(self, canonical_bytes: bytes) -> AuthorizationSignature:
+            return AuthorizationSignature(
+                key_id=self.identity.key_id,
+                algorithm=self.identity.algorithm,
+                signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
+            )
+
+    return CanarySigner()
 
 
 def _command_id() -> str:
@@ -499,6 +530,7 @@ def _proposed_plan(db: Any, *, replicas: int = 2) -> Any:
             command_id=_command_id(),
             target_id=target.id,
             operation="deploy",
+            descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=True,
             approval_policy_code=_POLICY,
@@ -548,9 +580,9 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
     `dc_0003`: an accepted observation must bind the same execution plan and
     operation across proposal, authorization and report, so a report with
     nothing to bind against is quarantined `unbound_report` and never reaches
-    the canonical receipt either. Approval-exempt, because approval is not what
-    this canary is about — a two-term binding is still a binding, and the module
-    is explicit that an exempt plan has no authorization term.
+    the canonical receipt either. Approval-exempt, because an external approval
+    is not what this canary is about; the rollout still receives a signed
+    portable authorization whose standing says `approval_exempt` explicitly.
     """
     from dotmac_deployment_control import (
         CredentialTransitionCommand,
@@ -583,7 +615,9 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
         SetDesiredStateCommand(
             command_id=_command_id(),
             target_id=target.id,
-            desired=DesiredDeployment(release_ref=_RELEASE, spec={"replicas": 2}),
+            desired=DesiredDeployment(
+                release_ref=_RELEASE, spec={"replicas": 2}, images=[]
+            ),
         ),
     )
     key_id = f"key-{uuid.uuid4().hex[:8]}"
@@ -612,6 +646,7 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
             command_id=_command_id(),
             target_id=target.id,
             operation="deploy",
+            descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=False,
         ),
@@ -622,7 +657,10 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
             command_id=_command_id(),
             rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan.id,
+            authorization_expires_at=_NOW + timedelta(days=1),
+            authorization_issued_at=_NOW,
         ),
+        signer=_authorization_signer(),
     )
     return target, key_id, rollout.rollout_ref
 
@@ -788,6 +826,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
             command_id=_command_id(),
             target_id=target.id,
             operation="deploy",
+            descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=True,
             approval_policy_code=_POLICY,
@@ -993,7 +1032,7 @@ def canary_conflict_savepoint_executes() -> str:
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0004` extent, seven tables and 104 columns, and
+# literal below is the POST-`dc_0005` extent, seven tables and 105 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1003,7 +1042,7 @@ def canary_conflict_savepoint_executes() -> str:
 # `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
 #
 # THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 7 and
-# len(columns) == 104` passes against a catalogue holding seven wrong tables, and
+# len(columns) == 105` passes against a catalogue holding seven wrong tables, and
 # this programme keeps finding and repairing exactly that check. So the whole
 # canonical structure is written out below — every table name, every column
 # name, its physical ordinal, its PostgreSQL type identity AND rendered
@@ -1043,7 +1082,7 @@ CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0004_authorized_image_set"
+CATALOGUE_LINEAGE_HEAD = "dc_0005_portable_authorization"
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
 #: single values rather than per-table, because "the module owns all seven and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
@@ -1183,6 +1222,8 @@ CATALOGUE_TABLES: tuple[
             ("record_version", 8, _INT, False, ""),
             ("created_at", 9, _TS, False, "now()"),
             ("updated_at", 10, _TS, False, "now()"),
+            # dc_0005: immutable issuance fact, nullable only for legacy rows.
+            ("authorization_envelope", 11, _JSONB, True, ""),
         ),
     ),
     (
@@ -1217,7 +1258,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 104: this module declares no domain,
+            # BASE and `pg_catalog` for all 105: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
@@ -1464,7 +1505,7 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     """THE PROOF `0.1.0a7` SHIPPED WITHOUT: the ARTIFACT carries the catalogue.
 
     a7's headline was `mod_deploy`'s exact seven platform tables and 95
-    columns — 104 after `dc_0004` — and not one of the nine canaries it published
+    columns — 105 after `dc_0005` — and not one of the nine canaries it published
     touched them. The extent was
     proven by source tests on the release commit — a real proof of a different
     question, and `docs/CONTROL_EXCEPTIONS.md` already records that a source
@@ -1475,16 +1516,16 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * the catalogue modules resolve out of `site-packages`, with no checkout
       copy shadowing them, and the evidence is in this canary's own output;
     * module identity — document schema and scope, distribution name and
-      version, module code, release version, `mod_deploy`, and the `dc_0004`
+      version, module code, release version, `mod_deploy`, and the `dc_0005`
       lineage head;
     * all seven table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 104 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 105 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
 
-    The counts are the least of it. `len(tables) == 7 and len(columns) == 104`
+    The counts are the least of it. `len(tables) == 7 and len(columns) == 105`
     passes on seven wrong tables, and the whole structure is compared instead.
     """
     import json
@@ -1617,6 +1658,126 @@ def canary_catalogue_digest_binds(expect_version: str) -> str:
     )
 
 
+def canary_portable_authorization_binds() -> str:
+    """The installed artifact can issue and independently verify the envelope.
+
+    The local HMAC is a canary provider, not package policy.  Its only job is
+    to drive the provider-neutral protocols from the installed wheel and prove
+    that a Foundation descriptor mutation invalidates the same signature.
+    """
+    import hashlib
+    import hmac
+    import json
+
+    from dotmac_deployment_control import (
+        AuthorizationEnvelopeRefusedError,
+        AuthorizationSignature,
+        AuthorizationSignerIdentity,
+        issue_authorization_envelope,
+        verify_authorization_envelope,
+    )
+
+    _installed_origin(f"{IMPORT_NAME}.authorization")
+    key = b"artifact-canary-key-not-production-material"
+
+    class CanarySigner:
+        identity = AuthorizationSignerIdentity(
+            key_id="artifact-canary", algorithm="hmac-sha256-test-only"
+        )
+
+        def sign(self, canonical_bytes: bytes) -> AuthorizationSignature:
+            return AuthorizationSignature(
+                key_id=self.identity.key_id,
+                algorithm=self.identity.algorithm,
+                signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
+            )
+
+    class CanaryVerifier:
+        def verify(
+            self,
+            *,
+            key_id: str,
+            algorithm: str,
+            canonical_bytes: bytes,
+            signature: str,
+        ) -> bool:
+            expected = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()
+            return (
+                key_id == "artifact-canary"
+                and algorithm == "hmac-sha256-test-only"
+                and hmac.compare_digest(signature, expected)
+            )
+
+    issued = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
+    fields = {
+        "authorization_id": "auth-artifact-canary",
+        "rollout_ref": "rollout-artifact-canary",
+        "plan_id": "plan-artifact-canary",
+        "target_id": "target-artifact-canary",
+        "target_ref": "target/reference",
+        "product_code": "artifact-canary",
+        "environment": "test",
+        "operation": "deploy",
+        "release_ref": "artifact-canary@1",
+        # Deliberately reverse lexical service order. Issuance must produce the
+        # same bytes as the forward order because this is a set.
+        "authorized_images": [
+            {
+                "service": "worker",
+                "repository": "registry.invalid/worker",
+                "digest": "sha256:" + "22" * 32,
+            },
+            {
+                "service": "api",
+                "repository": "registry.invalid/api",
+                "digest": "sha256:" + "11" * 32,
+            },
+        ],
+        "plan_digest": "sha256:" + "33" * 32,
+        "descriptor_digest": "sha256:" + "44" * 32,
+        "execution_plan_digest": "sha256:" + "55" * 32,
+        "approval_policy_code": "deployment.test",
+        "approval_policy_version": 1,
+        "approval_decision_ref": "approval-artifact-canary",
+        "approval_decision_status": "granted",
+        "approved_at": issued,
+        "issued_at": issued,
+        "expires_at": issued.replace(year=2027),
+    }
+    signer = CanarySigner()
+    verifier = CanaryVerifier()
+    envelope = issue_authorization_envelope(fields, signer=signer)
+    verify_authorization_envelope(envelope, verifier=verifier, at=issued)
+
+    reordered = dict(fields)
+    reordered["authorized_images"] = list(reversed(fields["authorized_images"]))
+    second = issue_authorization_envelope(reordered, signer=signer)
+    if second.as_mapping() != envelope.as_mapping():
+        raise CanaryFailure("image order changed portable authorization meaning")
+
+    mutated = json.loads(json.dumps(envelope.as_mapping()))
+    mutated["statement"]["descriptor_digest"] = "sha256:" + "66" * 32
+    try:
+        verify_authorization_envelope(mutated, verifier=verifier, at=issued)
+    except AuthorizationEnvelopeRefusedError:
+        pass
+    else:
+        raise CanaryFailure("a descriptor-only mutation kept a valid signature")
+
+    fewer = dict(fields)
+    fewer["authorized_images"] = fields["authorized_images"][1:]
+    if (
+        issue_authorization_envelope(fewer, signer=signer).signature
+        == envelope.signature
+    ):
+        raise CanaryFailure("image membership did not change portable authorization")
+
+    return (
+        "provider-neutral envelope verified; image reorder was identical and "
+        "descriptor mutation was refused, and image membership changed the signature"
+    )
+
+
 def canary_web_surface_ships_its_templates() -> str:
     """The composed browser surface's templates are INSIDE the installed wheel.
 
@@ -1741,6 +1902,7 @@ def main(argv: list[str] | None = None) -> int:
             "catalogue_digest_binds",
             lambda: canary_catalogue_digest_binds(args.expect_version),
         ),
+        ("portable_authorization_binds", canary_portable_authorization_binds),
         # The browser surface's package data, which only an installed
         # artifact can be asked about.
         ("web_surface_ships_its_templates", canary_web_surface_ships_its_templates),

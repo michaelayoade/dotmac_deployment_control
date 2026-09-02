@@ -93,6 +93,7 @@ _BARE_HEX_DIGEST = "b2" * 32
 #: canonical and well-formed; what matters here is that no request in this file
 #: can carry it, which is why every plan below is created through the service.
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 _PLATFORM_SUBJECT = uuid.uuid4()
 
@@ -408,13 +409,19 @@ class TestTheBrowserMayNotSupplyAPlanDigest:
                 command_id=str(uuid.uuid4()),
                 target_id=target_id,
                 operation="deploy",
+                descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
                 requires_approval=False,
             ),
         )
         target = db.get(DeploymentTarget, target_id)
         assert target is not None
-        assert plan.plan_digest == plan_digest_of(plan_snapshot(target)).canonical
+        assert (
+            plan.plan_digest
+            == plan_digest_of(
+                plan_snapshot(target, descriptor_digest=_DESCRIPTOR)
+            ).canonical
+        )
         # And the value the browser could never have sent is stored EXACTLY as
         # the caller supplied it — not re-rendered, not normalized.
         assert plan.execution_plan_digest == _EXECUTION_PLAN
@@ -644,6 +651,7 @@ def test_timestamps_render_as_explicit_utc_and_never_as_a_python_repr(
             command_id=str(uuid.uuid4()),
             target_id=target_id,
             operation="deploy",
+            descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=False,
         ),

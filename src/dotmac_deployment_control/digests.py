@@ -430,9 +430,22 @@ class ExecutionPlanDigestV1(_ReceivedSha256Digest):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class DescriptorDigestV1(_ReceivedSha256Digest):
+    """The Foundation's canonical deployment-descriptor digest, received only.
+
+    Control binds this value into its own plan snapshot but never interprets or
+    recomputes the descriptor.  Keeping it type-distinct from both
+    :class:`PlanDigestV1` and :class:`ExecutionPlanDigestV1` prevents three
+    different documents that happen to use sha256 from satisfying one
+    another's bindings by spelling alone.
+    """
+
+
 __all__ = [
     "ALGORITHM",
     "DIGEST_BYTES",
+    "DescriptorDigestV1",
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
     "ImageDigestV1",
