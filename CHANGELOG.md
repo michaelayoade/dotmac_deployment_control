@@ -53,6 +53,36 @@ DECLARED by this change and carries everything under "Unreleased" below.
   clean removes untracked files — the evidence the record is written from must
   outlive that checkout.
 
+### The recorder identity's three proofs are observed, not inferred
+
+`.github/workflows/recorder-identity-proofs.yml` (dispatch-only, publishes and
+records nothing) observes what the configuration merely implies:
+
+1. the installation resolves **this** repository — access, not mere
+   installation, since an App can be installed on an account and still not
+   reach a given repository;
+2. it can create a branch and open a pull request, demonstrated end to end;
+3. it **cannot** put a commit on protected `main`, and holds no administration
+   authority over it.
+
+The third is the one worth having. `enforce_admins: true`, no push-restriction
+allowlist and `can_approve_pull_request_reviews: false` together imply it — and
+configuration implying a property is not the same as observing it. An identity
+that *can* bypass protection is a different risk from the one that was granted,
+and the only way to know which one you have is to try.
+
+Both negatives are safe by construction. The push attempt is a fast-forward of
+an **empty** commit, so an unexpected success leaves `main` carrying no content
+change — loud, trivially revertable, and itself the finding. The administration
+probe is a **read** of branch protection rather than a write: a malformed write
+returns 422 and proves nothing about authority, while a well-formed one that
+succeeded would have disabled protection on `main`. Reading protection requires
+administration rights, so a refused read is the strictly stronger evidence and
+cannot damage anything whichever way it answers.
+
+The workflow's own token is granted `permissions: {}`. Every observation is made
+with the App's installation token, or it is not a statement about the App.
+
 ### One deliberate divergence from the Starter
 
 The Starter's script ends `gh pr merge --auto --squash`; this one does not, and
