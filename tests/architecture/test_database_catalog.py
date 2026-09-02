@@ -146,7 +146,14 @@ def test_dc_0003_appends_the_execution_binding_in_add_column_order() -> None:
     plans = next(
         table for table in database_catalog.tables if table.name == "deployment_plans"
     )
-    tail = {column.name: column for column in plans.columns if column.ordinal > 16}
+    # BOUNDED AT BOTH ENDS. `> 16` alone was correct while `dc_0003` was the
+    # head and silently became a claim about every later revision's columns
+    # too: `dc_0004` appends four more to this table, and an open-ended window
+    # would report them as `dc_0003`'s. A test whose subject grows with the
+    # lineage is a test that stops describing what it is named for.
+    tail = {
+        column.name: column for column in plans.columns if 16 < column.ordinal <= 20
+    }
 
     assert sorted(tail) == [
         "authorized_execution_plan_digest",

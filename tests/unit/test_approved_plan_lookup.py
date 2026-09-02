@@ -240,7 +240,12 @@ class TestAStandingApprovalResolvesWithEveryTerm:
         # The decision, and its standing.
         assert auth.approval_decision_ref is not None
         assert auth.approval_decision_status == "granted"
-        assert auth.approved_at == _NOW
+        assert auth.approved_at is not None
+        # Compared tz-naive, the way the sibling suites do: this lane runs on
+        # in-memory SQLite, whose driver erases `tzinfo` on a round trip. The
+        # INSTANT is what matters here and it is preserved; the timezone-aware
+        # round trip is a Postgres property and is proven in the Postgres lane.
+        assert auth.approved_at.replace(tzinfo=None) == _NOW.replace(tzinfo=None)
         # And what may run.
         assert [image.as_mapping() for image in auth.authorized_images] == _IMAGES
 
