@@ -1,0 +1,40 @@
+name: Release recorder token
+description: Mint the narrow App token that writes and opens a release record
+
+inputs:
+  client-id:
+    description: GitHub App client ID
+    required: true
+  private-key:
+    description: GitHub App private key
+    required: true
+
+outputs:
+  token:
+    description: Short-lived installation token, revoked when the job ends
+    value: ${{ steps.token.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    - id: token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        client-id: ${{ inputs.client-id }}
+        private-key: ${{ inputs.private-key }}
+        permission-contents: write
+        permission-pull-requests: write
+
+    # `actions/checkout` leaves its original GITHUB_TOKEN credential in the
+    # local repository. Merely exporting the App token for `gh pr create`
+    # would therefore attribute the record-branch push to the publisher. A
+    # second checkout is cheap at this irreversible boundary and makes the App
+    # (or the deliberately-loud fallback) the credential used by BOTH git and
+    # the GitHub API.
+    - name: Bind Git to the recorder identity
+      if: always()
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        token: ${{ steps.token.outputs.token || github.token }}
+        fetch-depth: 0
+        persist-credentials: true

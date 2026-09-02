@@ -24,6 +24,11 @@ on:
           run ties them to a workflow, a head commit and a declared version.
         required: true
 
+# `contents: write` writes the tag and pushes the record branch. Deliberately
+# NOT `pull-requests: write`: the pull request is opened by the recorder App's
+# short-lived token, and granting the publisher's own workflow token PR
+# authority would put the tag writer and the record author in one identity —
+# which is the separation the App exists to hold.
 permissions:
   contents: write
 
@@ -271,6 +276,12 @@ jobs:
               "index_filenames": json.loads(pathlib.Path("index-files.json").read_text()),
           }))
           PY
+          # OUT OF THE WORKSPACE, and this is not tidiness. The recorder below
+          # rebinds git to the App identity with a second `actions/checkout`,
+          # whose default clean removes untracked files — `observations.json`
+          # among them. The evidence the record is written from must outlive
+          # that checkout, so it is copied somewhere the checkout cannot reach.
+          cp observations.json "${RUNNER_TEMP}/observations.json"
           python scripts/verify_release.py --observations observations.json
 
       # Only a VERIFIED outcome reaches this step: the decision above exits
@@ -292,6 +303,49 @@ jobs:
             --commit "${HEAD_SHA}" \
             --message "${DISTRIBUTION} ${{ inputs.version }} verified: registry bytes match release run ${{ inputs.release_run }}, read back as the publisher, installed with its dependencies by a read-only consumer, and imported"
 
-      - name: State what is now owed
+      # ── THE RECORD, OPENED HERE RATHER THAN REMEMBERED ──────────────────
+      #
+      # What stood here was:
+      #
+      #     echo "::notice::OWED: remove the ... row from the ledger."
+      #
+      # A notice nothing reads. Everything the record needs was already
+      # computed into `observations.json` above, and the tag one step earlier
+      # makes the ledger row false the INSTANT it lands — after which
+      # `test_the_ledger_and_the_published_record_never_claim_the_same_version`
+      # fails on main state, and every open pull request inherits it.
+      #
+      # That has happened TWICE. `0.1.0a4`'s row outlived its own publication
+      # by six hours and nothing noticed; `0.1.0a7`'s absence turned protected
+      # main red for every PR, including an empty one. a4 failed silently and
+      # a7 failed loudly at innocent people.
+      #
+      # `if: always()` on both steps is deliberate and is the Starter's rule:
+      # the tag is pushed by the step above, so a later failure must never
+      # leave a tag with no record — the exact state this exists to prevent.
+      - name: Mint the narrow release-recorder App token
+        id: recorder-token
+        if: always()
+        uses: ./.github/actions/release-recorder-token
+        with:
+          client-id: ${{ vars.RELEASE_RECORDER_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_RECORDER_PRIVATE_KEY }}
+
+      # The App is the PUSH and API identity; the fallback is deliberately
+      # loud rather than silent. With no App installed, `GITHUB_TOKEN` can
+      # push the correct branch and then fails RED at `gh pr create` with
+      # "GitHub Actions is not permitted to create or approve pull requests",
+      # which is the fail-closed bridge the Starter ran on for two releases —
+      # a red run plus a one-click compare URL, never a green run with no
+      # record.
+      - name: Open the post-release record
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.recorder-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
-          echo "::notice::OWED: remove the ${{ inputs.version }} row from docs/publication-ledger.json."
+          bash scripts/open_release_record_pr.sh \
+            --distribution "${DISTRIBUTION}" \
+            --version "${{ inputs.version }}" \
+            --tag "${DISTRIBUTION}-v${{ inputs.version }}" \
+            --observations "${RUNNER_TEMP}/observations.json" \
+            --verify-run "${{ github.run_id }}"

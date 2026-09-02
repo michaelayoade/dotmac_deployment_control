@@ -454,6 +454,69 @@ move from kernel a77 to a98 — a 21-alpha jump. Michael's constraint is that
 the upgrade receives its own migration and compatibility run and is not chosen
 silently by a resolver.
 
+## The release recorder is ported but its identity is not provisioned here
+
+**Status:** OPEN. The mechanism is in the tree; the credential it prefers is
+not, and this entry is what keeps that from reading as complete.
+
+`verify-release.yml` now opens the post-release record itself, through
+`.github/actions/release-recorder-token` and
+`scripts/open_release_record_pr.sh`, ported from `dotmac_starter_mt` without
+redesign. The action mints a short-lived GitHub App token from
+`vars.RELEASE_RECORDER_CLIENT_ID` and `secrets.RELEASE_RECORDER_PRIVATE_KEY`.
+
+**Neither exists in this repository.** Its only credentials are
+`FORGEJO_READ_TOKEN` (repository) and `FORGEJO_PUBLISH_TOKEN` (the
+`registry-release` environment), and the App `dotmac-release-recorder-328160`
+is installed on `michaelayoade/dotmac_starter_mt` with SELECTED-repository
+access — so projecting the secret here would not by itself grant the
+installation that makes it usable. Two acts are owed, and only Michael can
+perform them: extend the App's installation to
+`michaelayoade/dotmac_deployment_control`, and project the variable and the
+private key into this repository's `registry-release` environment. The
+credential's custody pointer is `bao://secret/dotmac/github/release-recorder`;
+its value is never recorded here or anywhere else in this tree.
+
+**What happens meanwhile, and why it is a bridge rather than a hole.** The
+record step falls back to `secrets.GITHUB_TOKEN`. That token can push the
+record branch and then fails at `gh pr create` with *"GitHub Actions is not
+permitted to create or approve pull requests"* unless the repository setting
+allowing that is enabled. Either way the outcome is a RED run carrying a
+pushed branch and a one-click compare URL — never a green run with no record,
+which is the failure this whole port exists to end. That is exactly the state
+the Starter ran in for two kernel releases before its App landed.
+
+**The premise, stated so it can be falsified:** acceptable only while a human
+is watching each release run. The moment releases are expected to complete
+unattended, the fallback is a person remembering again — which has failed
+twice here.
+
+## The coordinates-only record cannot be green on its own
+
+**Status:** OPEN, and it is a finding rather than a defect in the port.
+
+Recording a version raises the release floor, because `release_guard
+.published_floor()` derives it from `docs/published-versions.json`. The floor's
+own guard holds its expectations as LITERALS, and eight of them move when a
+version is recorded — `test_the_floor_is_derived_from_the_recorded_coordinates`,
+the version list in `test_every_published_version_is_recorded`, the positive
+control `test_the_next_version_would_be_admitted`, three
+`"not greater than …"` refusal strings, and both parametrize lists in
+`test_nothing_at_or_below_the_floor_is_admitted` /
+`test_anything_above_the_floor_is_admitted`.
+
+Michael's rule is that a bot must not write those: the floor bump edits the
+guard's own positive control and refusal strings, and a bot writing them is a
+bot editing the constraint that binds it. The recorder therefore refuses any
+diff outside the two record files, and its pull request is RED until a human
+pushes the floor literals and the disposition — `pinnable`, `superseded_by`,
+the release notes — onto the same branch.
+
+**This is deliberate and it is not automated away.** The recorder removes the
+bookkeeping that was forgotten twice; it does not remove the judgement. What is
+NOT claimed is that a release now completes without a human: it completes
+without a human REMEMBERING, which is a different and smaller claim.
+
 ## The publication gate was blind to tags in CI
 
 **Status:** closed.
