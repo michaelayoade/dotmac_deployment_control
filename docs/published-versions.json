@@ -250,7 +250,10 @@
         "dotmac_deployment_control-0.1.0a9.tar.gz": "a2afddd7753cfc72c1d7fd5939f317188d28fda360e56d3efee9da7b277bed70"
       },
       "supersedes": "0.1.0a8",
-      "declared_kernel_floor": ">=0.1.0a100"
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published by run 33686171205 from the exact protected-main commit b8427af26101bde5e9b09aecebe3c9176dd18b36; that run built and uploaded the package bytes but neither verified nor tagged them. Independent verify run 33686335734 fetched both artifacts from registry.dotmac.io by filename and reproduced the release manifest digests, installed the dependency-complete wheel as ci-reader, imported it, and ran the behavioral canaries against those registry-served bytes. The verifier alone wrote the annotated tag through tag_once.py after VERIFIED. WHAT a9 CARRIES: DescriptorDigestV1 is required and frozen inside Control's canonical plan snapshot, so a descriptor-only change moves plan_digest while the Foundation's descriptor and execution-plan digests remain distinct received values. AuthorizationEnvelopeV1 is a provider-neutral, signed, portable authorization over authorization and approval identity, target, operation, release, the canonical image set, all three digests, approval standing, validity interval, version, key id and algorithm. The artifact canary independently issues and verifies the envelope, proves image order has no meaning while membership does, and refuses a descriptor mutation. The PostgreSQL lane migrated a clean database to dc_0005 and verified the exact seven-table, 105-column effective-privilege contract.",
+      "adoption_note": "PIN a9 for a deployment that requires the Foundation descriptor binding or portable authorization; a8 remains published, verified and pinnable but cannot provide either. Adoption still requires the consuming assembly to inject a production AuthorizationSigner whose private material is held outside Control, distribute the corresponding verifier trust material to the executor, and keep the target-to-Control signed observation identity separate. This release provides the provider-neutral contract and verification seam; it does not choose or provision a cryptographic provider."
     }
   ],
   "tags_remain_in_source_for": [

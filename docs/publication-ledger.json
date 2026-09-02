@@ -5,7 +5,7 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "0.1.0a9 is declared by the current tree and is not published yet.",
+    "EMPTY, and that is the correct state: every declared version is published.",
     "",
     "The 0.1.0a8 row that sat here between the declaration and the publication was",
     "removed by the RECORDER rather than by a human — the first time that has been",

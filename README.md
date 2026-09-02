@@ -194,18 +194,17 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Pin `0.1.0a8`, with `dotmac-kernel
->=0.1.0a100`. That is the newest PUBLISHED version — release run `33624369841`,
-independently VERIFIED by run `33624502557` on 2026-09-02 — and it requires
+**Built and validated, not adopted.** Pin `0.1.0a9`, with `dotmac-kernel
+>=0.1.0a100`. That is the newest PUBLISHED version — release run `33686171205`,
+independently VERIFIED by run `33686335734` on 2026-09-02 — and it requires
 `dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
 `dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
 wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
 pinnable, against `dotmac-kernel >=0.1.0a98`.
 
-`0.1.0a9` is the next declared release, not yet published. It adds the required
-Foundation descriptor binding and portable signed authorization. Until its
-recorder row lands with registry coordinates, `0.1.0a8` remains the version a
-consumer may pin.
+`0.1.0a9` adds the required Foundation descriptor binding and portable signed
+authorization. `0.1.0a8` remains immutable, verified and pinnable, but a
+consumer that needs either a9 contract must not substitute it.
 
 Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
 `a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is

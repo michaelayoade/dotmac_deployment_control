@@ -60,6 +60,7 @@ def test_every_published_version_is_recorded() -> None:
         "0.1.0a6",
         "0.1.0a7",
         "0.1.0a8",
+        "0.1.0a9",
     ], versions
 
 
@@ -123,7 +124,7 @@ def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
     """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
     floor that skipped it would let the next release collide with bytes that are
     permanently on the index."""
-    assert release_guard.published_floor() == "0.1.0a8"
+    assert release_guard.published_floor() == "0.1.0a9"
 
 
 def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
@@ -137,9 +138,9 @@ def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything.
 
-    a9 rather than a8, as of the change that recorded a8's coordinates. a8 is
+    a10 rather than a9, as of the change that recorded a9's coordinates. a9 is
     now PUBLISHED, so the guard is required to refuse it; leaving the control on
-    a8 would assert that this repository may re-upload a name that already
+    a9 would assert that this repository may re-upload a name that already
     exists — the exact hazard the floor is for.
 
     The two moves are one change because the floor is DERIVED from
@@ -147,7 +148,7 @@ def test_the_next_version_would_be_admitted() -> None:
     control left behind the floor is a control asserting the opposite of what
     the floor says.
     """
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a9") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a10") == []
 
 
 def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
@@ -260,7 +261,7 @@ def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNADOPTABLE" in problems[0], problems
-    assert any("not greater than 0.1.0a8" in p for p in problems), problems
+    assert any("not greater than 0.1.0a9" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -272,7 +273,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a8" in problems[0], problems
+    assert problems and "not greater than 0.1.0a9" in problems[0], problems
     assert not any("UNPINNABLE" in p for p in problems), (
         "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
         "unpinnable would be a different and wrong statement"
@@ -290,6 +291,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
         "0.1.0a6",
         "0.1.0a7",
         "0.1.0a8",
+        "0.1.0a9",
         "0.0.9a99",
         "0.1.0a0",
     ],
@@ -298,7 +300,7 @@ def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a9", "0.1.0a10", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a10", "0.1.0a11", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
     """`0.1.0a10` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse the tenth alpha
@@ -313,7 +315,7 @@ def test_another_distribution_is_refused(distribution: str) -> None:
     """The credential will be owner-scoped on Forgejo and able to write any
     package under `dotmac`. This check is the only thing narrowing it to one
     name, so it is tested as a first-class refusal rather than a formality."""
-    problems = release_guard.refusals(distribution, "0.1.0a8")
+    problems = release_guard.refusals(distribution, "0.1.0a9")
     assert problems and "and nothing else" in problems[0], problems
 
 
@@ -401,6 +403,40 @@ def test_the_recorded_tag_coordinates_match_the_tag_that_exists() -> None:
         assert (
             peeled == release["peeled_commit"]
         ), f"{tag} peels to {peeled or 'nothing'}, not {release['peeled_commit']}"
+
+
+def test_a9_records_the_portable_authorization_release_and_its_disposition() -> None:
+    """The coordinates are mechanical; the adoption meaning is human-owned."""
+    a9 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a9")
+
+    assert a9["release_run"] == "33686171205"
+    assert a9["verify_run"] == "33686335734"
+    assert a9["peeled_commit"] == "b8427af26101bde5e9b09aecebe3c9176dd18b36"
+    assert a9["supersedes"] == "0.1.0a8"
+    assert a9["pinnable"] is True
+    assert a9["declared_kernel_floor"] == ">=0.1.0a100"
+    assert set(a9["sha256"]) == {
+        "dotmac_deployment_control-0.1.0a9-py3-none-any.whl",
+        "dotmac_deployment_control-0.1.0a9.tar.gz",
+    }
+    assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in a9["sha256"].values())
+
+    release_note = a9["release_run_note"]
+    for evidence in (
+        "DescriptorDigestV1",
+        "AuthorizationEnvelopeV1",
+        "seven-table, 105-column",
+        "registry-served bytes",
+    ):
+        assert evidence in release_note, evidence
+    adoption_note = a9["adoption_note"]
+    for obligation in (
+        "production AuthorizationSigner",
+        "private material",
+        "verifier trust material",
+        "target-to-Control signed observation identity separate",
+    ):
+        assert obligation in adoption_note, obligation
 
 
 # ── a5: published, and the first verified on SEVEN properties ───────────────
@@ -578,7 +614,7 @@ def test_a5_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNSUITABLE FOR NEW ADOPTION" in problems[0], problems
-    assert any("not greater than 0.1.0a8" in p for p in problems), problems
+    assert any("not greater than 0.1.0a9" in p for p in problems), problems
 
 
 # ── a6: the first release whose declared floor is itself proven ─────────────
