@@ -88,9 +88,13 @@ answers neither "how many times did we try?" nor "what did we decide?".
   no endpoint, credential reference, transport name or retry policy. It emits a
   provider-neutral `DeliveryIntent`; the Integrator owns everything after that
   (ADR-0024, hard rule 28).
-- **It verifies nothing itself.** `dotmac_kernel.licensing.verify_applied_state`
-  and `verify_possession` own that (ADR-0007); the caller runs them and passes the
-  result in.
+- **It verifies no target observation itself.**
+  `dotmac_kernel.licensing.verify_applied_state` and `verify_possession` own that
+  inbound trust direction (ADR-0007); the caller runs them and passes the result
+  in. Control separately owns the canonical portable authorization it issues to
+  an executor, through provider-neutral injected signer/verifier protocols. It
+  stores no private key, selects no crypto provider, and never reuses the
+  target-observation signer.
 - **No health status at all.** Whether a deployment is UP belongs to Dotmac
   Observability. Ruling A4 keeps them apart so "no mutating consumer of health"
   stays a checkable dependency direction.
@@ -162,6 +166,27 @@ compared; `ApprovalRefusedError` means it was read and the plan really did move.
 else. A consumer that normalizes has forked this parser; the two will disagree,
 and the disagreement surfaces as a false "the plan changed".
 
+## Portable authorization
+
+An approved database row is a live Control-plane fact, not a document an
+executor can verify while disconnected from Control. `0.1.0a9` adds a distinct
+portable contract: `AuthorizationEnvelopeV1` signs Control-owned canonical bytes
+and is stored unchanged on the rollout that received it.
+
+The signed statement binds the authorization and approval identities, target,
+operation, release, canonical image set, Control `plan_digest`, Foundation
+`descriptor_digest`, Foundation `execution_plan_digest`, approval standing,
+issue/expiry instants, schema version, and signer `key_id`/`algorithm`. Image
+order is canonical because it is a set; changing membership or any image digest
+changes the signed bytes.
+
+Cryptography is injected through `AuthorizationSigner` and
+`AuthorizationVerifier`. The signer exposes immutable identity before bytes are
+constructed, then must return that identical identity with its signature.
+Control chooses no algorithm/provider, holds no private material, and does not
+reuse the target-observation signing seam. Revocation blocks lookup and dispatch
+without rewriting the historical envelope.
+
 ## Published facts
 
 Nineteen types, all `.v1` — read `PUBLISHED_EVENT_TYPES` rather than keeping a
@@ -169,13 +194,18 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Pin `0.1.0a7`, with `dotmac-kernel
->=0.1.0a100`. That is the newest PUBLISHED version — release run `33507951778`,
-independently VERIFIED by run `33508897684` on 2026-09-01 — and it requires
+**Built and validated, not adopted.** Pin `0.1.0a8`, with `dotmac-kernel
+>=0.1.0a100`. That is the newest PUBLISHED version — release run `33624369841`,
+independently VERIFIED by run `33624502557` on 2026-09-02 — and it requires
 `dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
 `dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
 wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
 pinnable, against `dotmac-kernel >=0.1.0a98`.
+
+`0.1.0a9` is the next declared release, not yet published. It adds the required
+Foundation descriptor binding and portable signed authorization. Until its
+recorder row lands with registry coordinates, `0.1.0a8` remains the version a
+consumer may pin.
 
 Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
 `a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is
@@ -189,10 +219,11 @@ NOT by the nine artifact canaries, which are unchanged from a6 and drive none of
 it. It is not production-adoption evidence.
 
 The tree has since moved past that: `dc_0003_execution_plan_binding` appends four
-columns to `deployment_plans`, and `dc_0004_authorized_image_set` appends four
-more there plus one on `deployment_targets`, so the CURRENT declaration is seven
-tables and 104 columns. The 95 above is a fact about the published a7 wheel and
-stays as one.
+columns to `deployment_plans`, `dc_0004_authorized_image_set` appends four more
+there plus one on `deployment_targets`, and
+`dc_0005_portable_authorization` appends the immutable signed authorization to
+`rollouts`. The CURRENT declaration is seven tables and 105 columns. The 95
+above is a fact about the published a7 wheel and stays as one.
 
 `dc_0004` adds no image column to `deployment_plans`, deliberately. A plan's
 authorized image set lives inside `snapshot` — the exact document `plan_digest`

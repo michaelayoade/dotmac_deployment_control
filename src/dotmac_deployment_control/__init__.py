@@ -46,12 +46,17 @@ decisions; and general infrastructure observability — this module holds no hea
 status at all, because ruling A4 keeps health separate from fleet so that "no
 mutating consumer of health" stays a checkable dependency direction.
 
-## It verifies nothing itself
+## It verifies no target observation itself
 
-`dotmac_kernel.licensing.verify_applied_state` and `verify_possession` own
-signature and possession checking (ADR-0007). The caller runs them and passes the
-result in as an `ObservedState`. A second verifier here could disagree with the
-first, and the disagreement would be invisible until it mattered.
+`dotmac_kernel.licensing.verify_applied_state` and `verify_possession` own the
+target's inbound signature and possession checking (ADR-0007). The caller runs
+them and passes the result in as an `ObservedState`.
+
+Control does own the canonical bytes of the portable authorization it issues to
+an executor.  Its cryptographic signer and verifier are injected protocols:
+this package chooses no algorithm or provider, stores no private key, and does
+not reuse the target-observation identity.  These are opposite trust directions
+and deliberately remain different seams.
 
 ## Transaction authority
 
@@ -73,12 +78,27 @@ from dotmac_deployment_control.approvals import (
     ApprovalDecisionStatus,
     require_decision_status,
 )
+from dotmac_deployment_control.authorization import (
+    AUTHORIZATION_SCHEMA,
+    AUTHORIZATION_VERSION,
+    AuthorizationEnvelopeRefusalCode,
+    AuthorizationEnvelopeRefusedError,
+    AuthorizationEnvelopeV1,
+    AuthorizationSignature,
+    AuthorizationSigner,
+    AuthorizationSignerIdentity,
+    AuthorizationStatementV1,
+    AuthorizationVerifier,
+    issue_authorization_envelope,
+    verify_authorization_envelope,
+)
 from dotmac_deployment_control.database_catalog import database_catalog
 from dotmac_deployment_control.database_catalog_snapshot import (
     build_database_catalog_snapshot,
 )
 from dotmac_deployment_control.digests import (
     ALGORITHM,
+    DescriptorDigestV1,
     ExecutionPlanDigestV1,
     ImageDigestV1,
     PlanDigestV1,
@@ -158,6 +178,7 @@ from dotmac_deployment_control.ports import (
     ApprovedPlanRefusedError,
     DeliveryIntent,
     DeploymentControlError,
+    DescriptorBindingError,
     DesiredDeployment,
     DigestEncodingError,
     ExecutionPlanBindingError,
@@ -258,6 +279,8 @@ except PackageNotFoundError:  # pragma: no cover
 
 __all__ = [
     "ALGORITHM",
+    "AUTHORIZATION_SCHEMA",
+    "AUTHORIZATION_VERSION",
     "APPROVAL_DECISION_STATUSES",
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
@@ -293,6 +316,14 @@ __all__ = [
     "ApprovalDecisionStatus",
     "ApprovalEvidence",
     "ApprovalRefusedError",
+    "AuthorizationEnvelopeRefusalCode",
+    "AuthorizationEnvelopeRefusedError",
+    "AuthorizationEnvelopeV1",
+    "AuthorizationSignature",
+    "AuthorizationSigner",
+    "AuthorizationSignerIdentity",
+    "AuthorizationStatementV1",
+    "AuthorizationVerifier",
     "ApprovePlanCommand",
     "ApprovedPlanAuthorization",
     "ApprovedPlanLookup",
@@ -311,6 +342,8 @@ __all__ = [
     "DeploymentOperation",
     "DeploymentPlan",
     "DeploymentTarget",
+    "DescriptorBindingError",
+    "DescriptorDigestV1",
     "DesiredDeployment",
     "DigestEncodingError",
     "DriftReport",
@@ -373,6 +406,7 @@ __all__ = [
     "get_plan",
     "get_rollout",
     "get_target",
+    "issue_authorization_envelope",
     "list_targets",
     "module",
     "observation_attempts",
@@ -401,4 +435,5 @@ __all__ = [
     "spec_digest_of",
     "suspend_target",
     "versions_dir",
+    "verify_authorization_envelope",
 ]

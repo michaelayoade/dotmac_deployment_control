@@ -68,6 +68,7 @@ from dotmac_deployment_control import (
     spec_digest,
 )
 from dotmac_deployment_control.models import DeploymentTarget, Rollout
+from tests.authorization_support import SIGNER, VERIFIER
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _SPEC = {"replicas": 2}
@@ -77,6 +78,7 @@ _RELEASE = "dotmac_sub@7.187.1"
 #: out rather than computed: Control cannot compute one, and a fixture that
 #: derived it would be exercising a capability the module does not have.
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +144,7 @@ def enrolled(db: Session):
         SetDesiredStateCommand(
             command_id=_cmd(),
             target_id=target.id,
-            desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC),
+            desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC, images=[]),
         ),
     )
     credential_id = enrol_credential(
@@ -202,6 +204,7 @@ def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
             command_id=_cmd(),
             target_id=target.id,
             operation="deploy",
+            descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=False,
         ),
@@ -212,7 +215,10 @@ def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
             command_id=_cmd(),
             rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan.id,
+            authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            authorization_issued_at=_NOW,
         ),
+        signer=SIGNER,
     ).rollout_ref
 
 
@@ -372,7 +378,7 @@ class TestEligibilityIsATimelinePredicate:
             SetDesiredStateCommand(
                 command_id=_cmd(),
                 target_id=target.id,
-                desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC),
+                desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC, images=[]),
             ),
         )
         enrol_credential(
@@ -516,7 +522,7 @@ class TestReplaysAndConflicts:
             SetDesiredStateCommand(
                 command_id=_cmd(),
                 target_id=second.id,
-                desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC),
+                desired=DesiredDeployment(release_ref=_RELEASE, spec=_SPEC, images=[]),
             ),
         )
         credential_id = enrol_credential(
@@ -584,6 +590,7 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
                 command_id=_cmd(),
                 target_id=target_id,
                 operation="deploy",
+                descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
                 requires_approval=False,
             ),
@@ -594,9 +601,14 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
                 command_id=_cmd(),
                 rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
                 plan_id=plan.id,
+                authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                authorization_issued_at=_NOW,
             ),
+            signer=SIGNER,
         )
-        dispatch_attempt(db, command_id=_cmd(), rollout_id=rollout.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         settle_attempt(
             db,
             SettleAttemptCommand(

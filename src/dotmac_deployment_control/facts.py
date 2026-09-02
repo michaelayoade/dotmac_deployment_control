@@ -34,6 +34,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Final
 from uuid import UUID
 
+from dotmac_deployment_control.authorization import AuthorizationEnvelopeV1
 from dotmac_deployment_control.images import AuthorizedImage
 
 # ── Event types ─────────────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ class PlanView:
     desired_revision: int
     record_version: int
     plan_digest: str | None = None
+    descriptor_digest: str | None = None
     #: The execution binding, in two pairs: what was PROPOSED and what was
     #: AUTHORIZED. Both are surfaced because they are the terms an operator
     #: needs to read when a report is quarantined — "which execution did we
@@ -182,10 +184,10 @@ class PlanView:
 
 
 class ApprovedPlanRefusalCode(StrEnum):
-    """WHY the lookup did not return an authorization. Eight, not one.
+    """WHY the lookup did not return an authorization. Typed, never one "no".
 
-    Eight members because they have eight different readers, and a lookup that
-    answered "no" would leave every one of them opening the wrong system.
+    These members have different readers and repairs; a lookup that answered
+    only "no" would leave each of them opening the wrong system.
 
     The first two are the a4 lesson applied to the read path, and they are the
     pair most worth keeping apart: *I could not read the digest you sent* is a
@@ -234,6 +236,18 @@ class ApprovedPlanRefusalCode(StrEnum):
     #: binds a different one. Only reachable when the caller supplied one; the
     #: lookup never invents a term to compare.
     EXECUTION_PLAN_MISMATCH = "execution_plan_mismatch"
+    #: The plan predates the required Foundation canonical-descriptor binding.
+    DESCRIPTOR_BINDING_ABSENT = "descriptor_binding_absent"
+    #: A caller expected another Foundation descriptor.
+    DESCRIPTOR_MISMATCH = "descriptor_mismatch"
+    #: No rollout-scoped portable authorization was named or stored.
+    AUTHORIZATION_ENVELOPE_ABSENT = "authorization_envelope_absent"
+    #: A stored envelope is malformed, mismatched, expired or fails signature.
+    AUTHORIZATION_ENVELOPE_INVALID = "authorization_envelope_invalid"
+    #: The named rollout authorization does not exist or belongs to another plan.
+    AUTHORIZATION_UNRESOLVED = "authorization_unresolved"
+    #: Cryptographic verification is injected; silence cannot mean verified.
+    AUTHORIZATION_VERIFIER_ABSENT = "authorization_verifier_absent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +293,8 @@ class ApprovedPlanAuthorization:
     #: WHICH approved plan record this is — Control's own snapshot digest, and
     #: the key the lookup was made by.
     plan_digest: str
+    #: The Foundation's canonical descriptor digest, preserved byte-identically.
+    descriptor_digest: str
     #: WHAT THE FOUNDATION RENDERED, as authorized. A third value, distinct
     #: from `plan_digest` and from a spec digest; see `digests`.
     execution_plan_digest: str
@@ -301,6 +317,8 @@ class ApprovedPlanAuthorization:
     #: digest binds these images, and an image cannot change without the digest
     #: changing.
     authorized_images: tuple[AuthorizedImage, ...]
+    #: Portable authorization whose signature can be verified without this DB.
+    authorization_envelope: AuthorizationEnvelopeV1
     release_ref: str | None = None
     licence_ref: str | None = None
     brand_profile_ref: str | None = None
@@ -372,6 +390,7 @@ class RolloutView:
     plan_id: UUID
     status: str
     record_version: int
+    authorization_envelope: AuthorizationEnvelopeV1 | None = None
     reason: str | None = None
     completed_at: datetime | None = None
     attempts: tuple[AttemptView, ...] = ()

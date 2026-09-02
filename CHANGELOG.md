@@ -5,10 +5,61 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a8 (declared, not yet published) — the record stops being remembered
+## 0.1.0a9 (declared, not yet published) — portable authorization
 
-`0.1.0a7` remains the published, tagged and VERIFIED release. `0.1.0a8` is
-DECLARED by this change and carries everything under "Unreleased" below.
+`0.1.0a8` remains published, tagged, independently VERIFIED and pinnable.
+`0.1.0a9` is declared by this change and must not be treated as published until
+the recorder removes its row from `docs/publication-ledger.json` and appends its
+registry coordinates to `docs/published-versions.json`.
+
+### Added
+
+- `DescriptorDigestV1`, a received-only Foundation descriptor identity. A
+  proposal must carry it, and Control freezes it inside the canonical plan
+  snapshot. A descriptor-only mutation therefore moves `plan_digest`; Control
+  neither imports nor reconstructs the Foundation's canonical document.
+- `AuthorizationEnvelopeV1`, a provider-neutral portable authorization whose
+  canonical signed statement binds authorization and approval identity, target,
+  operation, release, canonical image set, Control plan digest, Foundation
+  descriptor digest, Foundation execution-plan digest, approval standing,
+  issue/expiry instants, schema version and signer identity/algorithm.
+- Injected `AuthorizationSigner` and `AuthorizationVerifier` protocols. The
+  signer declares immutable key identity and algorithm before signing, so both
+  are inside the signed bytes; a returned identity mismatch is refused. Control
+  stores no private key, chooses no cryptographic provider and does not reuse
+  the target-to-Control observation signer.
+- Typed approved-plan lookup refusals for an absent descriptor, a descriptor
+  mismatch, an absent/invalid/unresolved envelope, and an absent verifier.
+- `dc_0005_portable_authorization`, appending the immutable envelope to the
+  rollout record. Revocation blocks lookup and dispatch but never rewrites the
+  historical issuance bytes.
+
+### Changed
+
+- `ProposePlanCommand.descriptor_digest` is required and received-only.
+  `ApprovedPlanAuthorization` and `DeliveryIntent` return the identical frozen
+  value, separately from `plan_digest` and `execution_plan_digest`.
+- `request_rollout` requires an injected signer and an explicit expiry;
+  `dispatch_attempt` requires an injected verifier. A live Control database row
+  is no longer representable as portable signed authorization.
+- The database catalogue advances to `dc_0005_portable_authorization`, seven
+  tables and 105 columns.
+
+### Security
+
+- Every signed field has a mutation test; changing any one invalidates the
+  signature. Image ordering is canonical (order does not change meaning) while
+  membership or digest mutation does. Missing signatures, unsupported versions,
+  expiry, not-yet-valid issuance, non-standing approval and signer-identity
+  substitution are distinct refusals.
+- Transport settlement remains separate from signed authorization: settling an
+  attempt changes delivery evidence and cannot replace or rewrite the envelope.
+
+## 0.1.0a8 (published 2026-09-02) — the record stops being remembered
+
+Published from protected main, independently verified and tagged. The release
+recorder opened PR #28 and the completed coordinates are in
+`docs/published-versions.json`.
 
 ### Added
 

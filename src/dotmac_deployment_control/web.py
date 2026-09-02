@@ -491,6 +491,10 @@ async def propose_plan_submit(
             command_id=f"web.propose_plan:{target_id}:{expected}",
             target_id=target_id,
             operation=values.get("operation", "").strip(),
+            # A browser owns neither canonical descriptor nor execution-plan
+            # bytes. Both empty values are deliberate and are refused by the
+            # service rather than filled from client input.
+            descriptor_digest="",
             # THE ABSENCE, stated. There is no value this surface could put
             # here: `refuse_client_supplied_digest` rejects a digest by shape
             # whatever it is called, and it is right to — a browser has rendered

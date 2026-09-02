@@ -67,6 +67,7 @@ from dotmac_deployment_control.models import DeploymentTarget
 _NOW = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
 _RELEASE = "dotmac_sub@7.187.1"
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 #: Three image digests, WRITTEN OUT rather than computed — the same discipline
 #: the execution-plan fixtures follow, and for a stronger reason: Control does
@@ -164,6 +165,7 @@ def _propose(db: Session, target_id):  # type: ignore[no-untyped-def]
             command_id=_cmd(),
             target_id=target_id,
             operation="deploy",
+            descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
             requires_approval=True,
             approval_policy_code="deployment.production",

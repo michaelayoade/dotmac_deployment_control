@@ -42,6 +42,7 @@ In-memory SQLite; logic only.
 
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -77,8 +78,9 @@ from dotmac_deployment_control import (
     revoke_plan_approval,
     set_desired_state,
 )
-from dotmac_deployment_control.models import DeploymentPlan
+from dotmac_deployment_control.models import DeploymentPlan, Rollout
 from dotmac_deployment_control.ports import ApprovalRefusedError
+from tests.authorization_support import SIGNER, VERIFIER
 
 _NOW = datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
@@ -89,6 +91,7 @@ _RELEASE = "dotmac_sub@7.187.1"
 #: that derived it would exercise a capability this module does not have.
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
 _OTHER_EXECUTION_PLAN = "sha256:" + "2b" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 _IMAGE_A = "sha256:" + "aa" * 32
 _IMAGES = [
@@ -176,6 +179,7 @@ def _propose(db: Session, target_id, **overrides: object):  # type: ignore[no-un
         "command_id": _cmd(),
         "target_id": target_id,
         "operation": "deploy",
+        "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _EXECUTION_PLAN,
         "requires_approval": True,
         "approval_policy_code": _POLICY,
@@ -212,6 +216,46 @@ def _approved(db: Session, **target_kwargs: object):
     )
 
 
+def _rollout(db: Session, plan):  # type: ignore[no-untyped-def]
+    existing = db.query(Rollout).filter(Rollout.plan_id == plan.id).one_or_none()
+    if existing is not None:
+        return existing
+    return request_rollout(
+        db,
+        RequestRolloutCommand(
+            command_id=_cmd(),
+            rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
+            plan_id=plan.id,
+            authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            authorization_issued_at=_NOW,
+        ),
+        signer=SIGNER,
+    )
+
+
+def _lookup(db: Session, plan, **kwargs: object):  # type: ignore[no-untyped-def]
+    rollout = _rollout(db, plan)
+    return find_approved_plan(
+        db,
+        plan_digest=plan.plan_digest or "",
+        authorization_id=rollout.id,
+        verifier=VERIFIER,
+        at=_NOW,
+        **kwargs,
+    )
+
+
+def _require(db: Session, plan):  # type: ignore[no-untyped-def]
+    rollout = _rollout(db, plan)
+    return require_approved_plan(
+        db,
+        plan_digest=plan.plan_digest or "",
+        authorization_id=rollout.id,
+        verifier=VERIFIER,
+        at=_NOW,
+    )
+
+
 # ── The positive answer ─────────────────────────────────────────────────────
 
 
@@ -222,13 +266,15 @@ class TestAStandingApprovalResolvesWithEveryTerm:
         """Every term Michael named, from one read, none of them re-derived."""
         plan = _approved(db)
 
-        lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        lookup = _lookup(db, plan)
         assert lookup, "a standing approval must be truthy"
         auth = lookup.authorization
         assert auth is not None
 
         assert auth.plan_id == plan.id
         assert auth.plan_digest == plan.plan_digest
+        assert auth.descriptor_digest == _DESCRIPTOR
+        assert auth.authorization_envelope.statement.plan_digest == auth.plan_digest
         # The execution binding — a THIRD value, not the plan digest.
         assert auth.execution_plan_digest == _EXECUTION_PLAN
         assert auth.execution_plan_digest != auth.plan_digest
@@ -256,7 +302,7 @@ class TestAStandingApprovalResolvesWithEveryTerm:
         image contradicts it, and that is a decidable comparison."""
         plan = _approved(db, images=[])
 
-        auth = require_approved_plan(db, plan_digest=plan.plan_digest or "")
+        auth = _require(db, plan)
         assert auth.authorized_images == ()
 
     def test_the_lookup_writes_nothing(self, db: Session) -> None:
@@ -266,7 +312,7 @@ class TestAStandingApprovalResolvesWithEveryTerm:
         assert row is not None
         before = (row.record_version, row.status, row.approval_decision_status)
 
-        find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        _lookup(db, plan)
         find_approved_plan(db, plan_digest="sha256:" + "ff" * 32)
         db.flush()
 
@@ -285,7 +331,7 @@ class TestAStandingApprovalResolvesWithEveryTerm:
         returned text is byte-identical to what was frozen.
         """
         plan = _approved(db)
-        auth = require_approved_plan(db, plan_digest=plan.plan_digest or "")
+        auth = _require(db, plan)
 
         assert auth.execution_plan_digest == _EXECUTION_PLAN
         assert not hasattr(ExecutionPlanDigestV1, "over_json")
@@ -298,11 +344,7 @@ class TestAStandingApprovalResolvesWithEveryTerm:
         """The optional third term: supply it and the lookup confirms it."""
         plan = _approved(db)
 
-        assert find_approved_plan(
-            db,
-            plan_digest=plan.plan_digest or "",
-            expected_execution_plan_digest=_EXECUTION_PLAN,
-        )
+        assert _lookup(db, plan, expected_execution_plan_digest=_EXECUTION_PLAN)
 
 
 # ── Every refusal, observed on its own ──────────────────────────────────────
@@ -363,7 +405,11 @@ class TestEachRefusalIsItsOwnFinding:
         worse than no API at all.
         """
         plan = _approved(db)
-        assert find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        rollout = _rollout(db, plan)
+        stored_before = db.get(Rollout, rollout.id)
+        assert stored_before is not None
+        envelope_before = copy.deepcopy(stored_before.authorization_envelope)
+        assert _lookup(db, plan)
 
         revoked = revoke_plan_approval(
             db,
@@ -389,6 +435,9 @@ class TestEachRefusalIsItsOwnFinding:
         assert lookup.refusal.plan_status == PlanStatus.APPROVED.value
         assert revoked.approval_decision_status == "revoked"
         assert revoked.approval_revocation_ref == "apr-rev-88"
+        stored = db.get(Rollout, rollout.id)
+        assert stored is not None
+        assert stored.authorization_envelope == envelope_before
 
     def test_an_approval_whose_standing_was_never_recorded_is_not_read_as_granted(
         self, db: Session
@@ -484,6 +533,82 @@ class TestEachRefusalIsItsOwnFinding:
         assert lookup.refusal.code is ApprovedPlanRefusalCode.DIGEST_UNREADABLE
         assert "NO comparison was made" in lookup.refusal.detail
 
+    def test_a_legacy_plan_without_descriptor_binding_is_refused(self, db) -> None:
+        plan = _approved(db)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        snapshot = dict(row.snapshot or {})
+        snapshot.pop("descriptor_digest")
+        row.snapshot = snapshot
+        db.flush()
+        lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        assert lookup.refusal is not None
+        assert lookup.refusal.code is ApprovedPlanRefusalCode.DESCRIPTOR_BINDING_ABSENT
+
+    def test_a_different_expected_descriptor_is_its_own_refusal(self, db) -> None:
+        plan = _approved(db)
+        lookup = find_approved_plan(
+            db,
+            plan_digest=plan.plan_digest or "",
+            expected_descriptor_digest="sha256:" + "ff" * 32,
+        )
+        assert lookup.refusal is not None
+        assert lookup.refusal.code is ApprovedPlanRefusalCode.DESCRIPTOR_MISMATCH
+
+    def test_a_plan_approval_without_a_rollout_is_not_a_portable_authorization(
+        self, db
+    ) -> None:
+        plan = _approved(db)
+        lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        assert lookup.refusal is not None
+        assert (
+            lookup.refusal.code is ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_ABSENT
+        )
+
+    def test_an_unknown_authorization_id_is_refused(self, db) -> None:
+        plan = _approved(db)
+        lookup = find_approved_plan(
+            db,
+            plan_digest=plan.plan_digest or "",
+            authorization_id=uuid.uuid4(),
+            verifier=VERIFIER,
+        )
+        assert lookup.refusal is not None
+        assert lookup.refusal.code is ApprovedPlanRefusalCode.AUTHORIZATION_UNRESOLVED
+
+    def test_a_verifier_is_required_for_a_stored_envelope(self, db) -> None:
+        plan = _approved(db)
+        rollout = _rollout(db, plan)
+        lookup = find_approved_plan(
+            db, plan_digest=plan.plan_digest or "", authorization_id=rollout.id
+        )
+        assert lookup.refusal is not None
+        assert (
+            lookup.refusal.code is ApprovedPlanRefusalCode.AUTHORIZATION_VERIFIER_ABSENT
+        )
+
+    def test_a_mutated_stored_envelope_is_refused(self, db) -> None:
+        plan = _approved(db)
+        rollout = _rollout(db, plan)
+        row = db.get(Rollout, rollout.id)
+        assert row is not None and row.authorization_envelope is not None
+        payload = dict(row.authorization_envelope)
+        payload["signature"] = "mutated"
+        row.authorization_envelope = payload
+        db.flush()
+        lookup = find_approved_plan(
+            db,
+            plan_digest=plan.plan_digest or "",
+            authorization_id=rollout.id,
+            verifier=VERIFIER,
+            at=_NOW,
+        )
+        assert lookup.refusal is not None
+        assert (
+            lookup.refusal.code
+            is ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_INVALID
+        )
+
     def test_every_refusal_code_is_reachable(self) -> None:
         """The set of codes and the set this file observes are the same set.
 
@@ -501,6 +626,12 @@ class TestEachRefusalIsItsOwnFinding:
             ApprovedPlanRefusalCode.EXECUTION_BINDING_ABSENT,
             ApprovedPlanRefusalCode.IMAGE_SET_UNDECLARED,
             ApprovedPlanRefusalCode.EXECUTION_PLAN_MISMATCH,
+            ApprovedPlanRefusalCode.DESCRIPTOR_BINDING_ABSENT,
+            ApprovedPlanRefusalCode.DESCRIPTOR_MISMATCH,
+            ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_ABSENT,
+            ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_INVALID,
+            ApprovedPlanRefusalCode.AUTHORIZATION_UNRESOLVED,
+            ApprovedPlanRefusalCode.AUTHORIZATION_VERIFIER_ABSENT,
         }
         assert observed == set(ApprovedPlanRefusalCode)
 
@@ -517,14 +648,14 @@ class TestARefusalCannotBeMistakenForAnApproval:
         remove, so truthiness is approval here."""
         plan = _approved(db)
 
-        assert bool(find_approved_plan(db, plan_digest=plan.plan_digest or ""))
+        assert bool(_lookup(db, plan))
         assert not bool(find_approved_plan(db, plan_digest="sha256:" + "ff" * 32))
 
     def test_an_absent_answer_is_not_a_possible_answer(self, db: Session) -> None:
         """There is no empty result to confuse with a negative one: every
         lookup carries exactly one of an authorization or a typed refusal."""
         plan = _approved(db)
-        yes = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        yes = _lookup(db, plan)
         no = find_approved_plan(db, plan_digest="sha256:" + "ff" * 32)
 
         assert (yes.authorization is None) != (yes.refusal is None)
@@ -579,8 +710,12 @@ class TestRevocationIsADecisionWithAReference:
             request_rollout(
                 db,
                 RequestRolloutCommand(
-                    command_id=_cmd(), rollout_ref="rol-1", plan_id=plan.id
+                    command_id=_cmd(),
+                    rollout_ref="rol-1",
+                    plan_id=plan.id,
+                    authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
                 ),
+                signer=SIGNER,
             )
         assert "revoked" in str(caught.value)
 

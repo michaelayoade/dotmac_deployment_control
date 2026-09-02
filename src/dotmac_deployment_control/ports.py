@@ -64,7 +64,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from dotmac_deployment_control.authorization import AuthorizationEnvelopeV1
 
 # ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -178,6 +181,14 @@ class ExecutionPlanBindingError(DeploymentControlError):
     snapshot moving under an approval. This one is about the FOUNDATION's
     execution plan: the two answer different questions and send the reader to
     different systems.
+    """
+
+
+class DescriptorBindingError(DeploymentControlError):
+    """A Foundation descriptor binding is absent or unreadable.
+
+    The descriptor and execution plan are different documents. Keeping this
+    refusal distinct prevents an operator from repairing the wrong producer.
     """
 
 
@@ -383,6 +394,7 @@ class DeliveryIntent:
     target_ref: str
     release_ref: str
     plan_digest: str
+    descriptor_digest: str
     #: The AUTHORIZED operation and the AUTHORIZED execution plan, carried out
     #: so the executor can do steps 6 and 7 of the flow: recompute the plan
     #: digest before executing, and carry the same two values back in its
@@ -391,6 +403,7 @@ class DeliveryIntent:
     #: `plan_digest` already is.
     operation: str
     execution_plan_digest: str
+    authorization_envelope: AuthorizationEnvelopeV1
     attempt_no: int
     spec: Mapping[str, Any] = field(default_factory=dict)
     licence_ref: str | None = None
@@ -403,6 +416,7 @@ __all__ = [
     "ApprovedPlanRefusedError",
     "DeliveryIntent",
     "DeploymentControlError",
+    "DescriptorBindingError",
     "DesiredDeployment",
     "DigestEncodingError",
     "ExecutionPlanBindingError",

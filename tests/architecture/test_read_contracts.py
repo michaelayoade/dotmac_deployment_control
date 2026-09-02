@@ -61,7 +61,7 @@ class TestTheClientCanNeverSupplyAPlanDigest:
         ]
         assert not offenders, offenders
 
-    def test_the_one_digest_an_input_may_carry_is_the_one_control_cannot_compute(
+    def test_the_two_digests_an_input_may_carry_are_the_ones_control_cannot_compute(
         self,
     ) -> None:
         """THE NARROWING, stated as a property rather than as an exception.
@@ -77,11 +77,11 @@ class TestTheClientCanNeverSupplyAPlanDigest:
         into one of these values. A value this module is structurally unable to
         compute must be supplied, or the binding cannot exist at all.
 
-        So the rule becomes: exactly ONE digest field on the whole input
-        surface, and it is exactly the one whose type cannot be computed here.
-        Both halves are asserted, because either alone is satisfiable by the
-        wrong shape — a second uncomputable digest field would pass the first,
-        and a computable `execution_plan_digest` would pass the second.
+        The Foundation now issues TWO distinct canonical documents: its product
+        descriptor and its execution plan.  Control owns neither canonicalizer,
+        so both values must be received and frozen inside Control's plan.  They
+        stay separate because equality between them would conflate which
+        deployment is described with which execution was authorized.
         """
         digest_fields = {
             f"{cls.__name__}.{f.name}"
@@ -89,15 +89,17 @@ class TestTheClientCanNeverSupplyAPlanDigest:
             for f in dataclasses.fields(cls)
             if "digest" in f.name
         }
-        assert digest_fields == {"ProposePlanCommand.execution_plan_digest"}
+        assert digest_fields == {
+            "ProposePlanCommand.descriptor_digest",
+            "ProposePlanCommand.execution_plan_digest",
+        }
 
-        assert not hasattr(api.ExecutionPlanDigestV1, "over_json"), (
-            "ExecutionPlanDigestV1 has grown a constructor that takes a "
-            "payload. That is a second canonicalization of the Foundation's "
-            "execution plan, and a second canonicalization agrees about "
-            "serialization while disagreeing about payload — which is the "
-            "defect this whole binding was cut for."
-        )
+        for digest_type in (api.DescriptorDigestV1, api.ExecutionPlanDigestV1):
+            assert not hasattr(digest_type, "over_json"), (
+                f"{digest_type.__name__} has grown a constructor that takes a "
+                "payload. That would be a second canonicalization of a "
+                "Foundation-owned document."
+            )
         assert hasattr(api.PlanDigestV1, "over_json"), (
             "the check above is only meaningful while a digest this module DOES "
             "compute still carries the constructor; without this, "

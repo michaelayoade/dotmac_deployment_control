@@ -80,7 +80,17 @@ from dotmac_deployment_control.approvals import (
     ApprovalDecisionStatus,
     require_decision_status,
 )
+from dotmac_deployment_control.authorization import (
+    AuthorizationEnvelopeRefusalCode,
+    AuthorizationEnvelopeRefusedError,
+    AuthorizationEnvelopeV1,
+    AuthorizationSigner,
+    AuthorizationVerifier,
+    issue_authorization_envelope,
+    verify_authorization_envelope,
+)
 from dotmac_deployment_control.digests import (
+    DescriptorDigestV1,
     ExecutionPlanDigestV1,
     PlanDigestV1,
     SpecDigestV1,
@@ -118,10 +128,12 @@ from dotmac_deployment_control.ports import (
     ApprovalRefusedError,
     ApprovedPlanRefusedError,
     DeliveryIntent,
+    DescriptorBindingError,
     DesiredDeployment,
     DigestEncodingError,
     ExecutionPlanBindingError,
     ExpectedStateError,
+    ImageSetRefusedError,
     ObservationRefusedError,
     ObservedState,
     OperationRefusedError,
@@ -282,6 +294,9 @@ class ProposePlanCommand:
     #: construction so the refusal happens at the caller, before any state is
     #: read — the earliest point at which the absence is known.
     operation: str
+    #: The Foundation's canonical descriptor digest. Control reads and freezes
+    #: it but has no constructor capable of deriving it.
+    descriptor_digest: str
     #: The Foundation's digest, canonical `sha256:<64 lowercase hex>`. Validated
     #: on construction for ENCODING only: this refuses a value that cannot be
     #: read, and it never rewrites one that can.
@@ -353,6 +368,8 @@ class RequestRolloutCommand:
     command_id: str
     rollout_ref: str
     plan_id: UUID
+    authorization_expires_at: datetime
+    authorization_issued_at: datetime | None = None
     reason: str | None = None
     actor_ref: str | None = None
 
@@ -402,7 +419,9 @@ class RecordObservationCommand:
 # ── Digests ─────────────────────────────────────────────────────────────────
 
 
-def plan_snapshot(target: DeploymentTarget) -> dict[str, Any]:
+def plan_snapshot(
+    target: DeploymentTarget, *, descriptor_digest: str | None = None
+) -> dict[str, Any]:
     """The canonical frozen snapshot of a target's desired state.
 
     Deterministic by construction: `json.dumps(sort_keys=True)` at digest time,
@@ -455,6 +474,10 @@ def plan_snapshot(target: DeploymentTarget) -> dict[str, Any]:
                 where=f"target {target.target_ref} desired image set",
             )
         ),
+        # Present unconditionally so legacy absence has one representation.
+        # Every new proposal supplies a canonical value; preview callers use
+        # None because they have not received Foundation's descriptor yet.
+        "descriptor_digest": descriptor_digest,
     }
 
 
@@ -625,6 +648,38 @@ def _supplied_execution_plan_digest(
         ) from exc
 
 
+def _supplied_descriptor_digest(value: object, *, where: str) -> DescriptorDigestV1:
+    """Read the Foundation-owned descriptor digest without reshaping it."""
+    if not value:
+        raise DescriptorBindingError(
+            f"{where} carries no descriptor digest. Deployment Control cannot "
+            "derive one because it neither parses nor canonicalizes the "
+            "Foundation descriptor; submit the exact DescriptorDigestV1 text."
+        )
+    try:
+        return DescriptorDigestV1.parse(value)
+    except DigestEncodingError as exc:
+        raise DescriptorBindingError(
+            f"{where} does not carry a readable descriptor digest: {exc} "
+            "Control refuses rather than normalizes a Foundation-owned value."
+        ) from exc
+
+
+def _frozen_descriptor_digest(row: DeploymentPlan) -> DescriptorDigestV1 | None:
+    """Project the received descriptor binding from the digested snapshot."""
+    snapshot = row.snapshot or {}
+    value = snapshot.get("descriptor_digest")
+    if value is None:
+        return None
+    try:
+        return DescriptorDigestV1.parse(value)
+    except DigestEncodingError as exc:
+        raise DescriptorBindingError(
+            f"plan {row.id} holds an unreadable descriptor binding: {exc} This "
+            "is stored-data corruption, not a reason to re-derive the value."
+        ) from exc
+
+
 def _frozen_image_set(row: DeploymentPlan) -> tuple[AuthorizedImage, ...] | None:
     """The image set THIS PLAN froze, read back out of its own snapshot.
 
@@ -644,6 +699,75 @@ def _frozen_image_set(row: DeploymentPlan) -> tuple[AuthorizedImage, ...] | None
     return image_set_from_payload(
         snapshot.get("authorized_images"), where=f"plan {row.id} frozen snapshot"
     )
+
+
+def _verified_rollout_envelope(
+    rollout: Rollout,
+    plan: DeploymentPlan,
+    target: DeploymentTarget,
+    *,
+    verifier: AuthorizationVerifier | None,
+    at: datetime | None = None,
+) -> AuthorizationEnvelopeV1:
+    """Verify signature and every database-backed term without rewriting history."""
+    if rollout.authorization_envelope is None:
+        raise AuthorizationEnvelopeRefusedError(
+            AuthorizationEnvelopeRefusalCode.ABSENT,
+            f"rollout {rollout.id} predates the portable authorization envelope",
+        )
+    if verifier is None:
+        raise AuthorizationEnvelopeRefusedError(
+            AuthorizationEnvelopeRefusalCode.SIGNATURE_INVALID,
+            "no AuthorizationVerifier was injected; a stored JSON document is "
+            "not evidence that its signature is valid",
+        )
+    envelope = verify_authorization_envelope(
+        rollout.authorization_envelope, verifier=verifier, at=at
+    )
+    descriptor = _frozen_descriptor_digest(plan)
+    images = _frozen_image_set(plan)
+    statement = envelope.statement
+    expected: dict[str, object] = {
+        "authorization_id": str(rollout.id),
+        "rollout_ref": rollout.rollout_ref,
+        "plan_id": str(plan.id),
+        "target_id": str(target.id),
+        "target_ref": target.target_ref,
+        "product_code": target.product_code,
+        "environment": target.environment,
+        "operation": plan.authorized_operation or plan.operation,
+        "release_ref": str((plan.snapshot or {}).get("release_ref") or ""),
+        "authorized_images": images,
+        "plan_digest": _frozen_plan_digest(plan).canonical,
+        "descriptor_digest": None if descriptor is None else descriptor.canonical,
+        "execution_plan_digest": (
+            plan.authorized_execution_plan_digest or plan.execution_plan_digest
+        ),
+        "approval_policy_code": plan.approval_policy_code,
+        "approval_policy_version": plan.approval_policy_version,
+        "approval_decision_ref": plan.approval_decision_ref,
+        "approval_decision_status": (
+            plan.approval_decision_status
+            if plan.requires_approval
+            else "approval_exempt"
+        ),
+        "approved_at": plan.approved_at,
+    }
+    for field, value in expected.items():
+        actual = getattr(statement, field)
+        if field == "approved_at" and actual is not None and value is not None:
+            assert isinstance(actual, datetime)
+            assert isinstance(value, datetime)
+            actual = _as_utc(actual)
+            value = _as_utc(value)
+        if actual != value:
+            raise AuthorizationEnvelopeRefusedError(
+                AuthorizationEnvelopeRefusalCode.SIGNATURE_INVALID,
+                f"portable authorization field {field!r} does not match the "
+                "immutable Control record. The envelope is retained as issued "
+                "and dispatch is refused; history is not rewritten.",
+            )
+    return envelope
 
 
 def _plan_blockers(target: DeploymentTarget) -> tuple[str, ...]:
@@ -783,6 +907,7 @@ def _target_view(row: DeploymentTarget) -> facts.TargetView:
 
 
 def _plan_view(row: DeploymentPlan) -> facts.PlanView:
+    descriptor = _frozen_descriptor_digest(row)
     return facts.PlanView(
         id=row.id,
         target_id=row.target_id,
@@ -791,6 +916,7 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         desired_revision=row.desired_revision,
         record_version=row.record_version,
         plan_digest=row.plan_digest,
+        descriptor_digest=None if descriptor is None else descriptor.canonical,
         operation=row.operation,
         execution_plan_digest=row.execution_plan_digest,
         authorized_operation=row.authorized_operation,
@@ -811,6 +937,11 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
 
 
 def _rollout_view(row: Rollout) -> facts.RolloutView:
+    envelope = (
+        None
+        if row.authorization_envelope is None
+        else AuthorizationEnvelopeV1.parse(row.authorization_envelope)
+    )
     return facts.RolloutView(
         id=row.id,
         rollout_ref=row.rollout_ref,
@@ -818,6 +949,7 @@ def _rollout_view(row: Rollout) -> facts.RolloutView:
         plan_id=row.plan_id,
         status=row.status,
         record_version=row.record_version,
+        authorization_envelope=envelope,
         reason=row.reason,
         completed_at=row.completed_at,
         attempts=tuple(
@@ -1315,6 +1447,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         _supplied_execution_plan_digest_text(
             command.execution_plan_digest, where="this proposal"
         )
+        _supplied_descriptor_digest(command.descriptor_digest, where="this proposal")
 
         highest = session.execute(
             select(func.max(DeploymentPlan.sequence)).where(
@@ -1323,7 +1456,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         ).scalar()
         sequence = int(highest or 0) + 1
 
-        snapshot = plan_snapshot(target)
+        snapshot = plan_snapshot(target, descriptor_digest=command.descriptor_digest)
         row = DeploymentPlan(
             target_id=target.id,
             sequence=sequence,
@@ -1383,6 +1516,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
                 "target_ref": target.target_ref,
                 "sequence": row.sequence,
                 "plan_digest": row.plan_digest,
+                "descriptor_digest": command.descriptor_digest,
                 "operation": row.operation,
                 "execution_plan_digest": row.execution_plan_digest,
                 "desired_revision": row.desired_revision,
@@ -1747,7 +1881,12 @@ def cancel_plan(
 # ── Rollouts ────────────────────────────────────────────────────────────────
 
 
-def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.RolloutView:
+def request_rollout(
+    db: Session,
+    command: RequestRolloutCommand,
+    *,
+    signer: AuthorizationSigner | None = None,
+) -> facts.RolloutView:
     """Decide to converge a target on a plan. No transport happens here."""
 
     def handler(session: Session) -> Mapping[str, object]:
@@ -1800,6 +1939,25 @@ def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.Rollou
                 "left to time out. Propose a plan bound to the execution plan "
                 "the Deployment Foundation rendered."
             )
+        descriptor = _frozen_descriptor_digest(plan)
+        if descriptor is None:
+            raise DescriptorBindingError(
+                f"plan {plan.id} carries no descriptor binding. It predates "
+                "0.1.0a9 and cannot produce a portable authorization; propose "
+                "a new plan with the Foundation descriptor digest."
+            )
+        images = _frozen_image_set(plan)
+        if images is None:
+            raise ImageSetRefusedError(
+                f"plan {plan.id} carries no authorized image set and cannot "
+                "produce a portable authorization"
+            )
+        if signer is None:
+            raise AuthorizationEnvelopeRefusedError(
+                AuthorizationEnvelopeRefusalCode.ABSENT,
+                "request_rollout requires an injected AuthorizationSigner; "
+                "a live database row is not a portable signed authorization",
+            )
         target = _load_target(session, plan.target_id)
         if target.status != TargetStatus.ACTIVE.value:
             raise TransitionRefusedError(
@@ -1816,6 +1974,43 @@ def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.Rollou
         )
         session.add(row)
         session.flush()
+        issued_at = command.authorization_issued_at or datetime.now(UTC)
+        operation = plan.authorized_operation or plan.operation
+        execution = plan.authorized_execution_plan_digest or plan.execution_plan_digest
+        decision_status = (
+            plan.approval_decision_status
+            if plan.requires_approval
+            else "approval_exempt"
+        )
+        envelope = issue_authorization_envelope(
+            {
+                "authorization_id": str(row.id),
+                "rollout_ref": row.rollout_ref,
+                "plan_id": str(plan.id),
+                "target_id": str(target.id),
+                "target_ref": target.target_ref,
+                "product_code": target.product_code,
+                "environment": target.environment,
+                "operation": operation,
+                "release_ref": str((plan.snapshot or {}).get("release_ref") or ""),
+                "authorized_images": image_set_payload(images),
+                "plan_digest": _frozen_plan_digest(plan).canonical,
+                "descriptor_digest": descriptor.canonical,
+                "execution_plan_digest": execution,
+                "approval_policy_code": plan.approval_policy_code,
+                "approval_policy_version": plan.approval_policy_version,
+                "approval_decision_ref": plan.approval_decision_ref,
+                "approval_decision_status": decision_status,
+                "approved_at": (
+                    None if plan.approved_at is None else _as_utc(plan.approved_at)
+                ),
+                "issued_at": issued_at,
+                "expires_at": command.authorization_expires_at,
+            },
+            signer=signer,
+        )
+        row.authorization_envelope = envelope.as_mapping()
+        session.flush()
         _audit_and_emit(
             session,
             action=AUDIT_ACTION_ROLLOUT,
@@ -1828,8 +2023,11 @@ def request_rollout(db: Session, command: RequestRolloutCommand) -> facts.Rollou
                 "target_ref": target.target_ref,
                 "plan_id": str(plan.id),
                 "plan_digest": plan.plan_digest,
+                "descriptor_digest": descriptor.canonical,
                 "operation": plan.operation,
                 "execution_plan_digest": plan.execution_plan_digest,
+                "authorization_key_id": envelope.statement.key_id,
+                "authorization_algorithm": envelope.statement.algorithm,
             },
         )
         return {"id": str(row.id)}
@@ -1850,6 +2048,7 @@ def dispatch_attempt(
     rollout_id: UUID,
     at: datetime | None = None,
     actor_ref: str | None = None,
+    verifier: AuthorizationVerifier | None = None,
 ) -> DeliveryIntent:
     """Open the next attempt and return the provider-neutral delivery intent.
 
@@ -1870,6 +2069,15 @@ def dispatch_attempt(
                 f"rollout {rollout.rollout_ref} is {rollout.status!r}; a settled "
                 "rollout is not retried, a new one is requested"
             )
+        plan = _load_plan(session, rollout.plan_id)
+        if plan.approval_decision_status == ApprovalDecisionStatus.REVOKED.value:
+            raise ApprovalRefusedError(
+                f"plan {plan.id}'s approval was revoked after authorization. "
+                "The rollout and signed envelope remain immutable history, but "
+                "dispatch is no longer permitted."
+            )
+        target = _load_target(session, rollout.target_id)
+        _verified_rollout_envelope(rollout, plan, target, verifier=verifier, at=at)
         pending = session.execute(
             select(RolloutAttempt).where(
                 RolloutAttempt.rollout_id == rollout.id,
@@ -1900,8 +2108,6 @@ def dispatch_attempt(
             rollout.record_version += 1
         session.flush()
 
-        plan = _load_plan(session, rollout.plan_id)
-        target = _load_target(session, rollout.target_id)
         _audit_and_emit(
             session,
             action=AUDIT_ACTION_ROLLOUT,
@@ -1928,17 +2134,26 @@ def dispatch_attempt(
     plan = _load_plan(db, rollout.plan_id)
     target = _load_target(db, rollout.target_id)
     snapshot = plan.snapshot or {}
+    envelope = _verified_rollout_envelope(
+        rollout, plan, target, verifier=verifier, at=at
+    )
+    descriptor = _frozen_descriptor_digest(plan)
+    assert descriptor is not None
     return DeliveryIntent(
         rollout_ref=rollout.rollout_ref,
         target_ref=target.target_ref,
         release_ref=str(snapshot.get("release_ref") or ""),
         plan_digest=plan.plan_digest or "",
+        descriptor_digest=descriptor.canonical,
         # Echoed, never re-derived. These are the values `request_rollout`
         # already refused to dispatch without, so they are present here by that
         # gate rather than by a fallback — the `or ""` is for the type checker's
         # `str | None`, not a state this line can actually be reached in.
-        operation=plan.operation or "",
-        execution_plan_digest=plan.execution_plan_digest or "",
+        operation=plan.authorized_operation or plan.operation or "",
+        execution_plan_digest=(
+            plan.authorized_execution_plan_digest or plan.execution_plan_digest or ""
+        ),
+        authorization_envelope=envelope,
         attempt_no=int(str(outcome.result["attempt_no"])),
         spec=dict(snapshot.get("spec") or {}),
         licence_ref=snapshot.get("licence_ref"),
@@ -2742,7 +2957,11 @@ def find_approved_plan(
     db: Session,
     *,
     plan_digest: str,
+    authorization_id: UUID | str | None = None,
+    expected_descriptor_digest: str | None = None,
     expected_execution_plan_digest: str | None = None,
+    verifier: AuthorizationVerifier | None = None,
+    at: datetime | None = None,
 ) -> facts.ApprovedPlanLookup:
     """Resolve a plan digest to a STANDING authorization, or to a typed refusal.
 
@@ -2922,6 +3141,32 @@ def find_approved_plan(
             plan=row,
         )
 
+    descriptor = _frozen_descriptor_digest(row)
+    if descriptor is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.DESCRIPTOR_BINDING_ABSENT,
+            f"plan {row.id} is approved and carries no Foundation descriptor "
+            "binding. It predates 0.1.0a9; Control cannot infer a canonical "
+            "descriptor digest from the execution plan or its own plan digest.",
+            plan=row,
+        )
+    if expected_descriptor_digest is not None:
+        try:
+            expected_descriptor = DescriptorDigestV1.parse(expected_descriptor_digest)
+        except DigestEncodingError as exc:
+            return _lookup_refusal(
+                facts.ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
+                f"the expected descriptor digest cannot be read: {exc}",
+                plan=row,
+            )
+        if expected_descriptor != descriptor:
+            return _lookup_refusal(
+                facts.ApprovedPlanRefusalCode.DESCRIPTOR_MISMATCH,
+                f"plan {row.id} binds descriptor {descriptor.canonical} and "
+                f"the caller expected {expected_descriptor.canonical}.",
+                plan=row,
+            )
+
     # ── 6. Optionally, is it the execution the caller expected? ────────────
     if expected_execution_plan_digest is not None:
         try:
@@ -2949,6 +3194,49 @@ def find_approved_plan(
                 plan=row,
             )
 
+    if authorization_id is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_ABSENT,
+            "no rollout authorization id was supplied. A plan approval is not "
+            "itself a portable signed authorization.",
+            plan=row,
+        )
+    try:
+        wanted_authorization_id = UUID(str(authorization_id))
+    except ValueError:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.AUTHORIZATION_UNRESOLVED,
+            f"authorization id {authorization_id!r} is not a UUID",
+            plan=row,
+        )
+    rollout = db.get(Rollout, wanted_authorization_id)
+    if rollout is None or rollout.plan_id != row.id:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.AUTHORIZATION_UNRESOLVED,
+            f"authorization {wanted_authorization_id} does not name a rollout "
+            f"for plan {row.id}",
+            plan=row,
+        )
+    if verifier is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.AUTHORIZATION_VERIFIER_ABSENT,
+            "no portable authorization verifier was supplied; reading JSON "
+            "from this database is not signature verification",
+            plan=row,
+        )
+    target = _load_target(db, row.target_id)
+    try:
+        envelope = _verified_rollout_envelope(
+            rollout, row, target, verifier=verifier, at=at
+        )
+    except AuthorizationEnvelopeRefusedError as exc:
+        code = (
+            facts.ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_ABSENT
+            if exc.code is AuthorizationEnvelopeRefusalCode.ABSENT
+            else facts.ApprovedPlanRefusalCode.AUTHORIZATION_ENVELOPE_INVALID
+        )
+        return _lookup_refusal(code, str(exc), plan=row)
+
     snapshot = row.snapshot or {}
     return facts.ApprovedPlanLookup(
         authorization=facts.ApprovedPlanAuthorization(
@@ -2962,6 +3250,7 @@ def find_approved_plan(
             # and a consumer must receive one spelling of one digest whichever
             # version wrote the row.
             plan_digest=wanted.canonical,
+            descriptor_digest=descriptor.canonical,
             # Handed back AS FROZEN. Control received this from the Foundation
             # and has no constructor that could rebuild it.
             execution_plan_digest=authorized_execution.canonical,
@@ -2972,6 +3261,7 @@ def find_approved_plan(
             approval_decision_status=decision_status,
             approved_at=row.approved_at,
             authorized_images=images,
+            authorization_envelope=envelope,
             release_ref=snapshot.get("release_ref"),
             licence_ref=snapshot.get("licence_ref"),
             brand_profile_ref=snapshot.get("brand_profile_ref"),
@@ -2983,7 +3273,11 @@ def require_approved_plan(
     db: Session,
     *,
     plan_digest: str,
+    authorization_id: UUID | str | None = None,
+    expected_descriptor_digest: str | None = None,
     expected_execution_plan_digest: str | None = None,
+    verifier: AuthorizationVerifier | None = None,
+    at: datetime | None = None,
 ) -> facts.ApprovedPlanAuthorization:
     """`find_approved_plan`, for a caller that must not proceed without one.
 
@@ -3000,7 +3294,11 @@ def require_approved_plan(
     lookup = find_approved_plan(
         db,
         plan_digest=plan_digest,
+        authorization_id=authorization_id,
+        expected_descriptor_digest=expected_descriptor_digest,
         expected_execution_plan_digest=expected_execution_plan_digest,
+        verifier=verifier,
+        at=at,
     )
     if lookup.authorization is None:
         raise ApprovedPlanRefusedError(lookup.refusal)

@@ -77,6 +77,7 @@ from dotmac_deployment_control import (
     set_desired_state,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
+from tests.authorization_support import SIGNER
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -115,6 +116,7 @@ DEPLOY_VERSIONS = Path(deploy_versions_dir())
 #: authorization, and Control cannot derive this value — deriving it in a
 #: fixture would exercise a capability the module deliberately does not have.
 _EXECUTION_PLAN = "sha256:" + "1a" * 32
+_DESCRIPTOR = "sha256:" + "3c" * 32
 
 SCHEMA = "mod_deploy"
 TABLES = (
@@ -299,7 +301,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0004_authorized_image_set",
+                revision="dc_0005_portable_authorization",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -675,7 +677,7 @@ def observation_race(
                 command_id=f"seed-desired-{suffix}",
                 target_id=target.id,
                 desired=DesiredDeployment(
-                    release_ref="dotmac_sub@1", spec={"replicas": 2}
+                    release_ref="dotmac_sub@1", spec={"replicas": 2}, images=[]
                 ),
             ),
         )
@@ -685,6 +687,7 @@ def observation_race(
                 command_id=f"seed-plan-{suffix}",
                 target_id=target.id,
                 operation="deploy",
+                descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
                 requires_approval=False,
             ),
@@ -696,7 +699,10 @@ def observation_race(
                 command_id=f"seed-rollout-{suffix}",
                 rollout_ref=rollout_ref,
                 plan_id=plan.id,
+                authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                authorization_issued_at=_OBSERVED_AT,
             ),
+            signer=SIGNER,
         )
         db.commit()
     try:
