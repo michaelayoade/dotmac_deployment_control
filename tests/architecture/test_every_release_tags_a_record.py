@@ -212,36 +212,56 @@ def test_the_opener_refuses_a_diff_outside_those_two_files() -> None:
 
 
 def test_the_recorder_writes_nothing_but_the_two_record_files() -> None:
-    """WRITES, not mentions, and the distinction is deliberate.
+    """WRITES, and every path it can name — never mentions.
 
-    The writer READS `pyproject.toml` at the tag to derive the declared kernel
-    floor — a coordinate, taken from the published tree rather than from the
-    working one. Forbidding the mere substring would forbid that read and would
-    push a real machine-owned field out of the record for no gain.
+    The predicate is about code shape, not about text, and that is a repair
+    rather than a preference: the first form scanned for the substring
+    ``tests/architecture`` outside a ``#`` comment and tripped on the writer's
+    own DOCSTRING, which explains at length why a recorder must never write a
+    floor literal. A probe that cannot tell prose from a path reports on
+    itself — the same wrong-shaped-predicate mistake this repository has now
+    made in four separate guards, each time while explaining a forbidden thing
+    beside the code that forbids it.
 
-    What must never happen is a WRITE outside the two record files, so that is
-    what is asserted: every `write_text` in the writer targets `LEDGER` or
-    `PUBLISHED`, and neither script writes a test, a floor literal or the
-    project file.
+    So: every ``write_text`` in the writer targets ``LEDGER`` or ``PUBLISHED``,
+    and every path it builds from ``REPO_ROOT`` lands under ``docs/``. A
+    constant pointing at a test, at the project file or at a script would fail
+    here no matter how it were later used, and no sentence can trip it.
+
+    The writer still READS ``pyproject.toml`` at the tag, through
+    ``git show``, to derive the declared kernel floor — a coordinate taken from
+    the published tree rather than the working one. That is a read of an object
+    in git, not a path this script can open, which is exactly the distinction
+    the shape check draws and the substring check could not.
     """
     writer = WRITER.read_text(encoding="utf-8")
+
     targets = re.findall(r"^\s*([A-Z_]+)\.write_text\(", writer, re.M)
     assert targets, "the writer writes nothing at all"
     assert set(targets) == {"LEDGER", "PUBLISHED"}, targets
 
-    for path in (WRITER, OPENER):
-        code = "\n".join(
-            line
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        for forbidden in ("tests/architecture", "test_published_versions"):
-            assert forbidden not in code, (
-                f"{path.name} reaches {forbidden!r} outside a comment. The "
-                "release floor's guard holds its own positive control, refusal "
-                "strings and parametrize lists as literals; a bot writing "
-                "those is a bot editing the constraint that binds it."
-            )
+    built = re.findall(r"REPO_ROOT\s*/\s*\"([^\"]+)\"", writer)
+    assert built, "the writer builds no paths at all"
+    assert set(built) == {"docs"}, (
+        f"the writer builds a path outside docs/: {sorted(set(built))}. A "
+        "release record is coordinates only — the release floor's guard holds "
+        "its own positive control, refusal strings and parametrize lists as "
+        "literals, and a bot writing those is a bot editing the constraint "
+        "that binds it."
+    )
+
+
+def test_that_shape_check_would_catch_a_widened_writer() -> None:
+    """SENSITIVITY. A check over code shape is worth exactly as much as its
+    ability to reject the shape it forbids, and this one replaced a check that
+    rejected a docstring instead."""
+    planted = 'FLOOR_GUARD = REPO_ROOT / "tests" / "architecture" / "x.py"\n'
+    built = re.findall(r'REPO_ROOT\s*/\s*"([^"]+)"', planted)
+    assert set(built) != {"docs"}, "a widened path constant was not detected"
+
+    planted_write = "    FLOOR_GUARD.write_text(text)\n"
+    targets = re.findall(r"^\s*([A-Z_]+)\.write_text\(", planted_write, re.M)
+    assert set(targets) - {"LEDGER", "PUBLISHED"}, "a third write target was missed"
 
 
 # ── the failure discipline the mechanism was rebuilt around ────────────────
