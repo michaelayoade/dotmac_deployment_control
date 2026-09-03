@@ -274,6 +274,23 @@
       "pinnable": true,
       "release_run_note": "Published by run 33767109015 from the exact tip of protected main (4a56f5836cab48fa2ed7ca00e5affc4364114b31); that run neither verified itself nor tagged. INDEPENDENT verify run 33767371612 returned VERIFIED — both artifacts fetched from registry.dotmac.io by exact filename and sha256-equal to the release build, publisher read-back, a dependency-complete read-only consumer install, import, and the behavioural canaries against the registry-served wheel — and only that run wrote the tag, through tag_once.py. WHAT a10 CARRIES: the signed execution observation, completed after the interrupted session with its one unresolved blocker repaired. record_observation now takes ONE bounded raw byte input: Control derives the digest over the full body before truncation, parses those bytes (duplicate JSON keys and non-JSON numbers refused), verifies them against the enrolled purpose-typed key, and stores them verbatim — the verify-A-store-B split is unrepresentable rather than checked, ObservedState is gone from the input surface, and signed_report_mismatch left the disposition vocabulary with the disagreement it recorded. Purpose-bound authorization and observation keys, the signed authorization-envelope digest, Control-stamped receipt time, target->credential->plan lock order, and the (execution_sequence, attempt_no) high-water semantics with exact replay and changed-byte conflict handling. The closed operation vocabulary grows its coordinated third member, recover, for post-migration restoration. dc_0006 takes the published catalogue to seven tables and 114 columns, proven by the PostgreSQL lane on a clean migrated database.",
       "adoption_note": "PIN a10 for signed execution observations, the single-input observation boundary, or the recover operation; a9 remains published, verified and pinnable and provides none of them. The replay coordinates a consumer binds to are the signed statement fields execution_sequence and attempt_no, exactly as spelled in the a10 wire contract — the Deployment Foundation's a5 binds to those names. Adoption still requires the consuming assembly to inject production signers and verifiers whose private material is held outside Control."
+    },
+    {
+      "version": "0.1.0a11",
+      "tag": "dotmac-deployment-control-v0.1.0a11",
+      "tag_object": "f1942710f3bd6d54614edc437356bf60ab40c0df",
+      "peeled_commit": "98b2a257f4185ee134b54a0349ad09d76f05286b",
+      "release_run": "33802000337",
+      "verify_run": "33802164085",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a11-py3-none-any.whl": "5571182ab130a20b73fd2a68086a42bca8d9de87de2108fb8e89ca163873139b",
+        "dotmac_deployment_control-0.1.0a11.tar.gz": "b370351382cc1277286c37cc693d90161fa27f173a909e08e7d875711bbb3223"
+      },
+      "supersedes": "0.1.0a10",
+      "declared_kernel_floor": ">=0.1.0a100"
     }
   ],
   "tags_remain_in_source_for": [

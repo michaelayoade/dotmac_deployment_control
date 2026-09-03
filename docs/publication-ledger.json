@@ -25,11 +25,5 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {
-    "0.1.0a11": {
-      "status": "declared-not-published",
-      "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "Adds a purpose-separated signed deployment dispatch that binds the exact a10 authorization envelope and concrete execution attempt before transport."
-    }
-  }
+  "unpublished": {}
 }
