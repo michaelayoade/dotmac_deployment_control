@@ -67,25 +67,21 @@ DECLARED FLOOR is honest, because nothing in the run ever installed that floor.
                              resolves out of `site-packages`. The floor has
                              since moved on to
                              `dotmac_kernel.product_database_catalog` (kernel
-                             `a100`); `transactions` remains a real bound and
-                             both are checked. With `--expect-kernel` the
+                             `a100`). With `--expect-kernel` the
                              equality is exact, which is how `ci.yml`'s floor
                              lane pins the declared minimum literally rather
                              than accepting whatever the resolver chose.
-* `conflict_savepoint_executes` — the symbol whose availability sets that floor
-                             is not merely importable but WORKS: an accepted
-                             observation runs the `with conflict_savepoint(...)`
-                             block, and a genuine unique-constraint collision
-                             driven through the same context manager leaves the
-                             caller's transaction usable. `0.1.0a1` is the
-                             version that got this wrong, so it is a property
-                             with a history rather than a hypothesis.
+The a6 `conflict_savepoint_executes` canary is retired in a10 because the
+service no longer imports or calls that kernel mechanism: target-row
+serialization makes two absent-receipt writers unreachable. Its replacement is
+the installed-wheel signed-observation canary, which drives acceptance, exact
+replay, changed-byte conflict, enrolled-key verification and purpose separation.
 
 ## The catalogue canaries `0.1.0a8` added, and the portable a9 canary
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0005` one, seven tables and 105 columns, because
+extent below is the POST-`dc_0006` one, seven tables and 114 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -98,27 +94,27 @@ carry it?). a7's own record says so, and
 
 * `database_catalogue_as_published` — the installed distribution publishes the
                              exact catalogue: module identity, all seven table
-                             identities, all 105 columns by name, ordinal, type
+                             identities, all 114 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
                              in this file, because `len(tables) == 7 and
-                             len(columns) == 105` passes on seven wrong tables.
+                             len(columns) == 114` passes on seven wrong tables.
 * `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
                              the artifact serialises, the bytes round-trip, and
                              a one-byte change is REFUSED against that digest.
                              A digest a consumer adopts by has to bind.
 
-Deliberately NOT exercised: `_replay_observation`. Its text comparison of
-`payload_digest` is a recorded unmonitored region with its own enforceable
-premise (`tests/architecture/test_digest_comparison_is_typed.py`), and it is
-being addressed independently. A canary that drove it would make this file a
-stakeholder in a redesign it has nothing to say about.
+The a10 signed-observation canary closes the former replay exclusion: it drives
+exact-byte replay and a changed signed envelope under the same report id. The
+receipt digest is independently derived inside Control, while byte identity is
+decided from the stored canonical payload itself.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import re
 import sys
 import sysconfig
@@ -307,22 +303,14 @@ def _declared_kernel_floor() -> str:
 #: that currently sets the floor is the last thing checked and the failure a
 #: below-floor environment produces here names it.
 #:
-#: A tuple rather than the single module the floor is set by, because a floor
-#: that moves does not retire the earlier bound: `dotmac_kernel.transactions`
-#: (kernel `a98`) is still imported by `service.py`, and
-#: `dotmac_kernel.product_database_catalog` (kernel `a100`) is what raised the
-#: declaration. Dropping the older row would leave the artifact free to lose an
-#: import nothing checks.
+#: The actual imported module that currently sets the floor.
 #:
 #: Written here as literals ON PURPOSE. This script runs where the repository is
 #: NOT importable, so it cannot ask `scripts/kernel_floor.py` — and it must not:
 #: reading the source tree is the one thing these canaries exist to refuse.
 #: `tests/architecture/test_kernel_floor.py` is what keeps the two tables from
 #: drifting apart.
-_FLOOR_MODULES = (
-    ("transactions", "conflict_savepoint"),
-    ("product_database_catalog", "ModuleDatabaseCatalogContributionV1"),
-)
+_FLOOR_MODULES = (("product_database_catalog", "ModuleDatabaseCatalogContributionV1"),)
 
 
 def canary_declared_kernel_floor(expect_kernel: str | None = None) -> str:
@@ -339,9 +327,8 @@ def canary_declared_kernel_floor(expect_kernel: str | None = None) -> str:
        true in any lane, so the canary is never vacuous;
     2. every kernel submodule whose availability BOUNDS this artifact resolves
        out of `site-packages`, not out of a checkout, and exports the name it is
-       imported for. `product_database_catalog` (kernel `a100`) is the one that
-       sets the floor today; `transactions` (kernel `a98`) set it through
-       `0.1.0a6` and is still a real bound;
+       imported for. `product_database_catalog` (kernel `a100`) sets the floor
+       today;
     3. with `--expect-kernel`, the installed kernel is EXACTLY that version.
        That is the floor lane's tightening, and it is the one statement a
        resolver free to pick a newer kernel can never make.
@@ -456,6 +443,18 @@ _EXECUTION_PLAN = "sha256:" + "1a" * 32
 #: bytes from the execution plan on purpose: equality would make a swapped
 #: field look correct.
 _DESCRIPTOR = "sha256:" + "2b" * 32
+_AUTHORIZATION_KEY = b"artifact-canary-key-not-production-material"
+_OBSERVATION_KEY = b"artifact-canary-observation-key-not-production-material"
+
+
+def _public_key_b64(key: bytes) -> str:
+    return base64.urlsafe_b64encode(key).decode("ascii").rstrip("=")
+
+
+def _public_key_fingerprint(key: bytes) -> str:
+    from dotmac_deployment_control import PublicKeyFingerprintV1
+
+    return PublicKeyFingerprintV1.from_public_key_b64(_public_key_b64(key)).canonical
 
 
 def _authorization_signer() -> Any:
@@ -468,17 +467,20 @@ def _authorization_signer() -> Any:
         AuthorizationSignerIdentity,
     )
 
-    key = b"artifact-canary-key-not-production-material"
+    key = _AUTHORIZATION_KEY
 
     class CanarySigner:
         identity = AuthorizationSignerIdentity(
-            key_id="artifact-canary", algorithm="hmac-sha256-test-only"
+            key_id="artifact-canary",
+            algorithm="hmac-sha256-test-only",
+            public_key_fingerprint=_public_key_fingerprint(key),
         )
 
         def sign(self, canonical_bytes: bytes) -> AuthorizationSignature:
             return AuthorizationSignature(
                 key_id=self.identity.key_id,
                 algorithm=self.identity.algorithm,
+                public_key_fingerprint=self.identity.public_key_fingerprint,
                 signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
             )
 
@@ -492,7 +494,7 @@ def _authorization_verifier() -> Any:
 
     from dotmac_deployment_control import AUTHORIZATION_PURPOSE
 
-    key = b"artifact-canary-key-not-production-material"
+    key = _AUTHORIZATION_KEY
 
     class CanaryVerifier:
         def verify(
@@ -501,6 +503,7 @@ def _authorization_verifier() -> Any:
             key_id: str,
             algorithm: str,
             purpose: str,
+            public_key_fingerprint: str,
             canonical_bytes: bytes,
             signature: str,
         ) -> bool:
@@ -509,13 +512,14 @@ def _authorization_verifier() -> Any:
                 key_id == "artifact-canary"
                 and algorithm == "hmac-sha256-test-only"
                 and purpose == AUTHORIZATION_PURPOSE
+                and public_key_fingerprint == _public_key_fingerprint(key)
                 and hmac.compare_digest(signature, expected)
             )
 
     return CanaryVerifier()
 
 
-def _execution_observation_signer(key_id: str) -> Any:
+def _execution_observation_signer(key_id: str, *, key: bytes = _OBSERVATION_KEY) -> Any:
     """A distinct target-side test purpose; never the authorization identity."""
     import hashlib
     import hmac
@@ -525,12 +529,11 @@ def _execution_observation_signer(key_id: str) -> Any:
         ExecutionObservationSignerIdentity,
     )
 
-    key = b"artifact-canary-observation-key-not-production-material"
-
     class CanaryObservationSigner:
         execution_observation_identity = ExecutionObservationSignerIdentity(
             key_id=key_id,
             algorithm="hmac-sha256-test-only",
+            public_key_fingerprint=_public_key_fingerprint(key),
         )
 
         def sign_execution_observation(
@@ -541,6 +544,7 @@ def _execution_observation_signer(key_id: str) -> Any:
                 key_id=identity.key_id,
                 algorithm=identity.algorithm,
                 purpose=identity.purpose,
+                public_key_fingerprint=identity.public_key_fingerprint,
                 signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
             )
 
@@ -554,8 +558,6 @@ def _execution_observation_verifier() -> Any:
 
     from dotmac_deployment_control import EXECUTION_OBSERVATION_PURPOSE
 
-    key = b"artifact-canary-observation-key-not-production-material"
-
     class CanaryObservationVerifier:
         def verify_execution_observation(
             self,
@@ -563,14 +565,22 @@ def _execution_observation_verifier() -> Any:
             key_id: str,
             algorithm: str,
             purpose: str,
+            public_key_b64: str,
+            public_key_fingerprint: str,
             canonical_bytes: bytes,
             signature: str,
         ) -> bool:
+            try:
+                key = base64.urlsafe_b64decode(
+                    public_key_b64 + "=" * (-len(public_key_b64) % 4)
+                )
+            except (ValueError, TypeError):
+                return False
             expected = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()
             return (
-                key_id.startswith("key-")
-                and algorithm == "hmac-sha256-test-only"
+                algorithm == "hmac-sha256-test-only"
                 and purpose == EXECUTION_OBSERVATION_PURPOSE
+                and public_key_fingerprint == _public_key_fingerprint(key)
                 and hmac.compare_digest(signature, expected)
             )
 
@@ -685,6 +695,7 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
         RequestRolloutCommand,
         SetDesiredStateCommand,
         activate_credential,
+        dispatch_attempt,
         enrol_credential,
         propose_plan,
         register_target,
@@ -719,8 +730,8 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
             command_id=_command_id(),
             target_id=target.id,
             key_id=key_id,
-            public_key_b64="AAAA",
-            public_key_fingerprint=f"sha256:{uuid.uuid4().hex}",
+            algorithm="hmac-sha256-test-only",
+            public_key_b64=_public_key_b64(_OBSERVATION_KEY),
             enrollment_authority="platform_admin_policy",
         ),
     )
@@ -729,7 +740,6 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
         CredentialTransitionCommand(
             command_id=_command_id(),
             credential_id=credential_id,
-            at=_NOW - timedelta(days=1),
         ),
     )
     plan = propose_plan(
@@ -749,10 +759,15 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
             command_id=_command_id(),
             rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan.id,
-            authorization_expires_at=_NOW + timedelta(days=1),
-            authorization_issued_at=_NOW,
+            authorization_expires_at=datetime.now(UTC) + timedelta(days=1),
         ),
         signer=_authorization_signer(),
+    )
+    dispatch_attempt(
+        db,
+        command_id=_command_id(),
+        rollout_id=rollout.id,
+        verifier=_authorization_verifier(),
     )
     return target, key_id, rollout.rollout_ref
 
@@ -764,19 +779,25 @@ def _signed_execution_observation(
     key_id: str,
     rollout_ref: str,
     report_id: str,
-) -> tuple[Any, Any]:
-    """Build the caller projection from the signed target statement."""
-    import hashlib
-
+    signing_key: bytes = _OBSERVATION_KEY,
+    observed_revision: str = "desired:1",
+) -> Any:
+    """Build the signed target statement. The envelope's canonical bytes ARE
+    the observation — there is no caller projection to build beside them."""
     from sqlalchemy import select
 
     from dotmac_deployment_control import (
-        ObservedState,
+        AuthorizationEnvelopeDigestV1,
+        AuthorizationEnvelopeV2,
         RuntimeIdentityV1,
         issue_execution_observation_envelope,
         spec_digest,
     )
-    from dotmac_deployment_control.models import DeploymentPlan, Rollout
+    from dotmac_deployment_control.models import (
+        DeploymentPlan,
+        Rollout,
+        RolloutAttempt,
+    )
 
     rollout = db.execute(
         select(Rollout).where(Rollout.rollout_ref == rollout_ref)
@@ -785,9 +806,22 @@ def _signed_execution_observation(
     if plan is None:
         raise CanaryFailure("the rollout's plan disappeared before observation")
     snapshot = dict(plan.snapshot or {})
+    authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    attempt = db.execute(
+        select(RolloutAttempt).where(RolloutAttempt.rollout_id == rollout.id)
+    ).scalar_one()
     statement_fields = {
         "report_id": report_id,
         "authorization_id": str(rollout.id),
+        "authorization_plan_id": authorization.statement.plan_id,
+        "authorization_control_version": authorization.statement.control_version,
+        "authorization_envelope_digest": (
+            AuthorizationEnvelopeDigestV1.over_bytes(
+                authorization.canonical_bytes
+            ).canonical
+        ),
+        "execution_sequence": authorization.statement.execution_sequence,
+        "attempt_no": attempt.attempt_no,
         "rollout_ref": rollout_ref,
         "target_id": str(target.id),
         "target_ref": target.target_ref,
@@ -802,34 +836,17 @@ def _signed_execution_observation(
         "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _EXECUTION_PLAN,
         "observed_spec_digest": spec_digest({"replicas": 2}),
-        "observed_revision": "desired:1",
+        "observed_revision": observed_revision,
         "runtime_identity": RuntimeIdentityV1(
             kind="canary_process", identifier="artifact-canary-runtime"
         ),
         "outcome": "succeeded",
         "observed_at": _NOW,
     }
-    envelope = issue_execution_observation_envelope(
+    return issue_execution_observation_envelope(
         statement_fields,
-        signer=_execution_observation_signer(key_id),
+        signer=_execution_observation_signer(key_id, key=signing_key),
     )
-    body = envelope.canonical_bytes
-    observed = ObservedState(
-        report_id=report_id,
-        observed_release_ref=_RELEASE,
-        observed_spec_digest=statement_fields["observed_spec_digest"],
-        reported_at=_NOW,
-        authenticated_target_ref=target.target_ref,
-        claimed_target_ref=target.target_ref,
-        key_id=key_id,
-        raw_body=body,
-        raw_body_digest=f"sha256:{hashlib.sha256(body).hexdigest()}",
-        signature_status="valid",
-        rollout_ref=rollout_ref,
-        operation="deploy",
-        execution_plan_digest=_EXECUTION_PLAN,
-    )
-    return envelope, observed
 
 
 # ── the behavioural canaries ────────────────────────────────────────────────
@@ -1025,174 +1042,11 @@ def canary_mutation_after_authorization_is_refused() -> str:
     )
 
 
-def canary_conflict_savepoint_executes() -> str:
-    """THE SYMBOL THAT SETS THE FLOOR IS NOT MERELY IMPORTABLE — IT WORKS.
-
-    `declared_kernel_floor` proves `dotmac_kernel.transactions` resolves. That
-    is the check a5 would have failed and it is still only half the question:
-    an import that succeeds and a mechanism that behaves are two facts, and
-    this repository's whole argument is that two facts which can only fail
-    together are one fact wearing two names.
-
-    So this drives the real path, twice:
-
-    * an ACCEPTED observation runs `record_observation`, whose canonical
-      receipt is established inside `with conflict_savepoint(session)`. The
-      happy path through the block.
-    * a genuine unique-constraint collision is then driven through the SAME
-      context manager, and the caller's transaction must still be usable
-      afterwards. That is the property `0.1.0a1` shipped without — it did not
-      recover the losing first arrival after the receipt constraint chose a
-      winner — so it is a property with a history, not a hypothesis.
-
-    `_replay_observation` is deliberately not reached. Its text comparison of
-    `payload_digest` is a recorded unmonitored region being addressed
-    independently, and a canary that drove it would tie this file to a
-    redesign it has nothing to say about.
-    """
-    import importlib.metadata
-
-    from dotmac_kernel.transactions import conflict_savepoint
-    from sqlalchemy import select
-    from sqlalchemy.exc import IntegrityError
-
-    from dotmac_deployment_control import service
-
-    # The service module resolved to the INSTALLED package, and the symbol it
-    # calls is the kernel's rather than a local shim of the same name. Both are
-    # cheap to state and neither is implied by the import succeeding.
-    service_origin = Path(service.__file__ or "").resolve()
-    if not any(service_origin.is_relative_to(site) for site in _site_directories()):
-        raise CanaryFailure(
-            f"{IMPORT_NAME}.service was imported from {service_origin}, which "
-            "is not an install directory"
-        )
-    bound = getattr(service, "conflict_savepoint", None)
-    if bound is not conflict_savepoint:
-        raise CanaryFailure(
-            f"{IMPORT_NAME}.service.conflict_savepoint is {bound!r}, not "
-            f"{KERNEL_IMPORT_NAME}.transactions.conflict_savepoint. The floor "
-            "is declared for the kernel's implementation; a local one of the "
-            "same name would make the declaration describe nothing."
-        )
-
-    from dotmac_deployment_control import (
-        ObservationDisposition,
-        ObservationReceipt,
-        RecordObservationCommand,
-    )
-
-    db = _session()
-    target, key_id, rollout_ref = _enrolled_target(db)
-    report_id = f"rep-{uuid.uuid4().hex[:8]}"
-    envelope, observed = _signed_execution_observation(
-        db,
-        target=target,
-        key_id=key_id,
-        rollout_ref=rollout_ref,
-        report_id=report_id,
-    )
-
-    # THE BINDING IS PART OF REACHING THE SAVEPOINT. Since `dc_0003` an accepted
-    # observation must bind the same execution plan and operation across
-    # proposal, authorization and report; an unbound report is quarantined
-    # `unbound_report` before the canonical-receipt lookup, and this canary
-    # would then pass its own refusal check while never entering the `with
-    # conflict_savepoint(...)` block it exists to drive. The three fields below
-    # are what make the happy path actually happy.
-    verdict = service.record_observation(
-        db,
-        RecordObservationCommand(
-            command_id=_command_id(),
-            observed=observed,
-            execution_observation_envelope=envelope,
-            received_at=_NOW,
-        ),
-        observation_verifier=_execution_observation_verifier(),
-        authorization_verifier=_authorization_verifier(),
-    )
-    if verdict.disposition != ObservationDisposition.ACCEPTED.value:
-        raise CanaryFailure(
-            f"a valid, eligible, matching observation was {verdict.disposition!r} "
-            "rather than accepted, so the savepoint block was never reached"
-        )
-    if verdict.receipt_id is None:
-        raise CanaryFailure(
-            "the observation was accepted and no canonical receipt was "
-            "established, which is the row the savepoint exists to create"
-        )
-
-    # THE RECOVERY, which is the half an import cannot show. A second receipt
-    # under the same (identity, report_id) violates
-    # `uq_observation_receipts_identity_report`; the savepoint must absorb it
-    # and leave the caller's transaction alive.
-    #
-    # The `try` sits OUTSIDE the `with`, exactly as `service.py` writes it, and
-    # that placement is the contract rather than a style choice:
-    # `conflict_savepoint` rolls the SAVEPOINT back and RE-RAISES unchanged, so
-    # the caller's transaction survives and the caller still learns what
-    # happened. A canary that caught the error inside the block would be
-    # testing a shape no caller uses.
-    collided = False
-    try:
-        with conflict_savepoint(db):
-            db.add(
-                ObservationReceipt(
-                    authenticated_target_ref=target.target_ref,
-                    report_id=report_id,
-                    payload=b"{}",
-                    payload_digest="sha256:" + "c" * 64,
-                    key_id=key_id,
-                    first_received_at=_NOW,
-                    original_verdict=ObservationDisposition.ACCEPTED.value,
-                )
-            )
-            db.flush()
-    except IntegrityError:
-        collided = True
-    if not collided:
-        raise CanaryFailure(
-            "a duplicate canonical receipt was inserted without violating "
-            "`uq_observation_receipts_identity_report`, so this canary proved "
-            "nothing about recovering from a conflict — the constraint is "
-            "missing from the artifact"
-        )
-
-    # The caller's transaction survived: it can still read, and there is still
-    # exactly one canonical receipt.
-    receipts = (
-        db.execute(
-            select(ObservationReceipt).where(
-                ObservationReceipt.authenticated_target_ref == target.target_ref,
-                ObservationReceipt.report_id == report_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if len(receipts) != 1:
-        raise CanaryFailure(
-            f"{len(receipts)} canonical receipts exist for one idempotency key; "
-            "the savepoint either rolled back too much or too little"
-        )
-    if receipts[0].id != verdict.receipt_id:
-        raise CanaryFailure(
-            "the surviving receipt is not the one the accepted observation "
-            "established, so the loser overwrote the winner"
-        )
-
-    kernel = importlib.metadata.version(KERNEL_DISTRIBUTION)
-    return (
-        f"accepted through conflict_savepoint, and a real collision left the "
-        f"transaction usable (kernel {kernel})"
-    )
-
-
 # ── the published database catalogue ────────────────────────────────────────
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0005` extent, seven tables and 105 columns, and
+# literal below is the POST-`dc_0006` extent, seven tables and 114 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1202,7 +1056,7 @@ def canary_conflict_savepoint_executes() -> str:
 # `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
 #
 # THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 7 and
-# len(columns) == 105` passes against a catalogue holding seven wrong tables, and
+# len(columns) == 114` passes against a catalogue holding seven wrong tables, and
 # this programme keeps finding and repairing exactly that check. So the whole
 # canonical structure is written out below — every table name, every column
 # name, its physical ordinal, its PostgreSQL type identity AND rendered
@@ -1242,7 +1096,7 @@ CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0005_portable_authorization"
+CATALOGUE_LINEAGE_HEAD = "dc_0006_observation_key_identity"
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
 #: single values rather than per-table, because "the module owns all seven and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
@@ -1314,6 +1168,10 @@ CATALOGUE_TABLES: tuple[
             ("updated_at", 18, _TS, False, "now()"),
             # dc_0004: the declared authorized image set, on the TARGET.
             ("desired_images", 19, _JSONB, True, ""),
+            # dc_0006: trusted execution high-water coordinate.
+            ("last_execution_sequence", 20, _INT, True, ""),
+            ("last_execution_attempt_no", 21, _INT, True, ""),
+            ("last_execution_state_digest", 22, _V128, True, ""),
         ),
     ),
     (
@@ -1351,6 +1209,10 @@ CATALOGUE_TABLES: tuple[
             ("observed_spec_digest", 10, _V128, True, ""),
             ("created_at", 11, _TS, False, "now()"),
             ("updated_at", 12, _TS, False, "now()"),
+            # dc_0006: signed execution coordinate and substantive state.
+            ("execution_sequence", 13, _INT, True, ""),
+            ("attempt_no", 14, _INT, True, ""),
+            ("observed_state_digest", 15, _V128, True, ""),
         ),
     ),
     (
@@ -1384,6 +1246,8 @@ CATALOGUE_TABLES: tuple[
             ("updated_at", 10, _TS, False, "now()"),
             # dc_0005: immutable issuance fact, nullable only for legacy rows.
             ("authorization_envelope", 11, _JSONB, True, ""),
+            # dc_0006: per-target monotonic execution coordinate.
+            ("execution_sequence", 12, _INT, True, ""),
         ),
     ),
     (
@@ -1402,6 +1266,9 @@ CATALOGUE_TABLES: tuple[
             ("enrollment_authority", 11, _V60, False, ""),
             ("created_at", 12, _TS, False, "now()"),
             ("updated_at", 13, _TS, False, "now()"),
+            # dc_0006: exact verification interpretation, NULL on legacy rows.
+            ("algorithm", 14, _V60, True, ""),
+            ("purpose", 15, _V60, True, ""),
         ),
     ),
 )
@@ -1418,7 +1285,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 105: this module declares no domain,
+            # BASE and `pg_catalog` for all 114: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
@@ -1665,7 +1532,7 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     """THE PROOF `0.1.0a7` SHIPPED WITHOUT: the ARTIFACT carries the catalogue.
 
     a7's headline was `mod_deploy`'s exact seven platform tables and 95
-    columns — 105 after `dc_0005` — and not one of the nine canaries it published
+    columns — 114 after `dc_0006` — and not one of the nine canaries it published
     touched them. The extent was
     proven by source tests on the release commit — a real proof of a different
     question, and `docs/CONTROL_EXCEPTIONS.md` already records that a source
@@ -1676,16 +1543,16 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * the catalogue modules resolve out of `site-packages`, with no checkout
       copy shadowing them, and the evidence is in this canary's own output;
     * module identity — document schema and scope, distribution name and
-      version, module code, release version, `mod_deploy`, and the `dc_0005`
+      version, module code, release version, `mod_deploy`, and the `dc_0006`
       lineage head;
     * all seven table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 105 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 114 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
 
-    The counts are the least of it. `len(tables) == 7 and len(columns) == 105`
+    The counts are the least of it. `len(tables) == 7 and len(columns) == 114`
     passes on seven wrong tables, and the whole structure is compared instead.
     """
     import json
@@ -1841,6 +1708,7 @@ def canary_portable_authorization_binds() -> str:
         "authorization_id": "auth-artifact-canary",
         "rollout_ref": "rollout-artifact-canary",
         "plan_id": "plan-artifact-canary",
+        "execution_sequence": 1,
         "target_id": "target-artifact-canary",
         "target_ref": "target/reference",
         "product_code": "artifact-canary",
@@ -1921,9 +1789,14 @@ def canary_signed_execution_observation_binds() -> str:
     import json
 
     from dotmac_deployment_control import (
+        CredentialTransitionCommand,
+        EnrolCredentialCommand,
         ExecutionObservationRefusedError,
+        ExecutionObservationVerificationKey,
         ObservationDisposition,
         RecordObservationCommand,
+        activate_credential,
+        enrol_credential,
         issue_execution_observation_envelope,
         record_observation,
         verify_execution_observation_envelope,
@@ -1932,16 +1805,23 @@ def canary_signed_execution_observation_binds() -> str:
     _installed_origin(f"{IMPORT_NAME}.execution_observation")
     db = _session()
     target, key_id, rollout_ref = _enrolled_target(db)
-    envelope, observed = _signed_execution_observation(
+    envelope = _signed_execution_observation(
         db,
         target=target,
         key_id=key_id,
         rollout_ref=rollout_ref,
         report_id=f"rep-{uuid.uuid4().hex[:8]}",
     )
+    verification_key = ExecutionObservationVerificationKey(
+        key_id=key_id,
+        algorithm="hmac-sha256-test-only",
+        public_key_b64=_public_key_b64(_OBSERVATION_KEY),
+        public_key_fingerprint=_public_key_fingerprint(_OBSERVATION_KEY),
+    )
     verify_execution_observation_envelope(
         envelope,
         verifier=_execution_observation_verifier(),
+        verification_key=verification_key,
     )
 
     statement_fields = dict(envelope.statement.as_mapping())
@@ -1965,6 +1845,7 @@ def canary_signed_execution_observation_binds() -> str:
         verify_execution_observation_envelope(
             mutated,
             verifier=_execution_observation_verifier(),
+            verification_key=verification_key,
         )
     except ExecutionObservationRefusedError:
         pass
@@ -1975,9 +1856,7 @@ def canary_signed_execution_observation_binds() -> str:
         db,
         RecordObservationCommand(
             command_id=_command_id(),
-            observed=observed,
-            execution_observation_envelope=envelope,
-            received_at=_NOW,
+            observation=envelope.canonical_bytes,
         ),
         observation_verifier=_execution_observation_verifier(),
         authorization_verifier=_authorization_verifier(),
@@ -1986,9 +1865,115 @@ def canary_signed_execution_observation_binds() -> str:
         raise CanaryFailure(
             f"the purpose-correct signed observation was {verdict.disposition!r}"
         )
+
+    replay = record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=_command_id(),
+            observation=envelope.canonical_bytes,
+        ),
+        observation_verifier=_execution_observation_verifier(),
+        authorization_verifier=_authorization_verifier(),
+    )
+    if (
+        replay.disposition != ObservationDisposition.IDEMPOTENT_REPLAY.value
+        or replay.verdict != ObservationDisposition.ACCEPTED.value
+        or replay.receipt_id != verdict.receipt_id
+    ):
+        raise CanaryFailure("exact signed bytes did not replay the first verdict")
+
+    conflict_envelope = _signed_execution_observation(
+        db,
+        target=target,
+        key_id=key_id,
+        rollout_ref=rollout_ref,
+        report_id=envelope.statement.report_id,
+        observed_revision="desired:changed-under-same-report-id",
+    )
+    conflict = record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=_command_id(),
+            observation=conflict_envelope.canonical_bytes,
+        ),
+        observation_verifier=_execution_observation_verifier(),
+        authorization_verifier=_authorization_verifier(),
+    )
+    if conflict.disposition != ObservationDisposition.CONFLICT.value:
+        raise CanaryFailure("changed signed bytes under one report id did not conflict")
+
+    # Same key id, but an envelope signed by DIFFERENT physical material. A
+    # verifier that resolves its own key by id instead of consuming Control's
+    # enrolled bytes accepts this plant and fails the canary.
+    other_key = b"artifact-canary-unenrolled-key-material"
+    wrong_envelope = _signed_execution_observation(
+        db,
+        target=target,
+        key_id=key_id,
+        rollout_ref=rollout_ref,
+        report_id=f"rep-wrong-key-{uuid.uuid4().hex[:8]}",
+        signing_key=other_key,
+    )
+    wrong_verdict = record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=_command_id(),
+            observation=wrong_envelope.canonical_bytes,
+        ),
+        observation_verifier=_execution_observation_verifier(),
+        authorization_verifier=_authorization_verifier(),
+    )
+    if wrong_verdict.disposition != ObservationDisposition.BAD_SIGNATURE.value:
+        raise CanaryFailure(
+            "different physical material under the enrolled key id was not refused"
+        )
+
+    # A distinct key id does not create a distinct cryptographic purpose. Enrol
+    # the authorization key itself as a target key, then prove Control refuses
+    # its otherwise-valid target signature against the rollout authorization.
+    reused_key_id = f"key-auth-reuse-{uuid.uuid4().hex[:8]}"
+    reused_credential = enrol_credential(
+        db,
+        EnrolCredentialCommand(
+            command_id=_command_id(),
+            target_id=target.id,
+            key_id=reused_key_id,
+            algorithm="hmac-sha256-test-only",
+            public_key_b64=_public_key_b64(_AUTHORIZATION_KEY),
+            enrollment_authority="artifact_canary",
+        ),
+    )
+    activate_credential(
+        db,
+        CredentialTransitionCommand(
+            command_id=_command_id(), credential_id=reused_credential
+        ),
+    )
+    reused_envelope = _signed_execution_observation(
+        db,
+        target=target,
+        key_id=reused_key_id,
+        rollout_ref=rollout_ref,
+        report_id=f"rep-purpose-reuse-{uuid.uuid4().hex[:8]}",
+        signing_key=_AUTHORIZATION_KEY,
+    )
+    reused_verdict = record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=_command_id(),
+            observation=reused_envelope.canonical_bytes,
+        ),
+        observation_verifier=_execution_observation_verifier(),
+        authorization_verifier=_authorization_verifier(),
+    )
+    if reused_verdict.disposition != ObservationDisposition.SIGNER_PURPOSE_REUSED.value:
+        raise CanaryFailure(
+            "one physical key under different purpose-specific ids was not refused"
+        )
     return (
-        "purpose-separated target envelope verified against its standing "
-        "authorization; runtime mutation and authorization-key substitution refused"
+        "purpose-separated target envelope verified with its enrolled public key; "
+        "exact replay was stable; changed report bytes, runtime mutation, same-id "
+        "key substitution and physical-key purpose reuse were refused"
     )
 
 
@@ -2107,7 +2092,6 @@ def main(argv: list[str] | None = None) -> int:
             "declared_kernel_floor",
             lambda: canary_declared_kernel_floor(args.expect_kernel),
         ),
-        ("conflict_savepoint_executes", canary_conflict_savepoint_executes),
         (
             "database_catalogue_as_published",
             lambda: canary_database_catalogue_as_published(args.expect_version),

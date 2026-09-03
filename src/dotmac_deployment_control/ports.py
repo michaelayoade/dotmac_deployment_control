@@ -127,7 +127,8 @@ class OperationRefusedError(DeploymentControlError):
     """The operation named is not one this control plane can authorize.
 
     Separate from every other refusal here, because it is a VOCABULARY fault
-    and the reader is whoever wrote the caller. `deploy` and `rollback` are the
+    and the reader is whoever wrote the caller. `deploy`, `rollback` and
+    `recover` are the
     closed set (`dotmac_deployment_control.operations`); an unknown word is
     refused rather than defaulted, coerced or inferred, and this exception is
     what "refused" means.
@@ -327,57 +328,6 @@ class ApprovalEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class ObservedState:
-    """The caller's projection of the signed target-execution observation.
-
-    `record_observation` verifies the canonical envelope through its injected
-    purpose-specific verifier, then requires every signed projection field here
-    to agree with those bytes. The two identity fields retain ADR-0007's
-    claim/proof distinction:
-
-    - `authenticated_target_ref` is the identity resolved from the verified key
-      and eligible credential. It is `None` when nothing authenticated, and a
-      `None` here can never become an admitted observation.
-    - `claimed_target_ref` is what the report said about itself. Evidence only.
-
-    A caller cannot make the claim authoritative by putting it in both fields:
-    Control resolves and compares the credential target before admission.
-    """
-
-    report_id: str
-    observed_release_ref: str | None
-    observed_spec_digest: str | None
-    reported_at: datetime
-    authenticated_target_ref: str | None = None
-    claimed_target_ref: str | None = None
-    key_id: str | None = None
-    #: The exact bytes as received, so the report stays portable evidence a third
-    #: party can verify — the property ADR-0007 § 1 justifies Ed25519 with in the
-    #: first place. Bounded by the caller before it reaches here.
-    raw_body: bytes | None = None
-    raw_body_digest: str | None = None
-    raw_body_truncated: bool = False
-    #: `unresolved` | `invalid` | `valid` — the kernel verifier's outcome.
-    signature_status: str = "unresolved"
-    #: WHAT THE REPORT BINDS ITSELF TO. Three fields, and none of them is
-    #: authority: like `claimed_target_ref`, they are the report's own account
-    #: of itself, compared against what Control froze and authorized.
-    #:
-    #: `rollout_ref` says which authorization this report claims to be executing
-    #: — without it there is nothing to compare against, because a target may
-    #: hold many plans. `operation` and `execution_plan_digest` are what the
-    #: executor recomputed before running (step 6 of the flow) and carried into
-    #: the report (step 7).
-    #:
-    #: All three default to `None` so a caller cannot be forced to invent one,
-    #: and a report that supplies none is quarantined as UNBOUND rather than
-    #: accepted — an absence is a finding, not a pass.
-    rollout_ref: str | None = None
-    operation: str | None = None
-    execution_plan_digest: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class DeliveryIntent:
     """What this module hands the Integrator: WHAT, never HOW.
 
@@ -424,7 +374,6 @@ __all__ = [
     "ExpectedStateError",
     "ImageSetRefusedError",
     "ObservationRefusedError",
-    "ObservedState",
     "OperationRefusedError",
     "PlanRefusedError",
     "TransitionRefusedError",

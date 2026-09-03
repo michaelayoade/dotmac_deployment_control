@@ -10,9 +10,10 @@ source design earned and this port must not lose:
 
 1. **The claim/proof separation holds against RAW SQL**, not only against the
    service. Both CHECK constraints are exercised directly.
-2. **Concurrent first arrivals keep one stable verdict.** Both real sessions
-   are gated after observing no receipt, so the rehearsal forces the production
-   unique-key race rather than relying on thread timing.
+2. **Concurrent arrivals are serialized on the target.** The waiter is observed
+   blocked on the real PostgreSQL row lock before the winner is released; this
+   proves replay, revocation and monotonic projection against production lock
+   semantics rather than relying on thread timing.
 3. **`app_admin` cannot rewrite an attempt or a receipt.** A rewritable tripwire
    is decoration, and a rewritable `original_verdict` lets an at-least-once
    transport be made to look like a state change.
@@ -22,12 +23,13 @@ Requires real Postgres (`make test-db-up` / `make test-integration`).
 
 from __future__ import annotations
 
-import hashlib
+import json
 import os
 import threading
+import time
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,10 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dotmac_deployment_control import (
+    ApprovalEvidence,
+    ApprovePlanCommand,
+    AuthorizationEnvelopeDigestV1,
+    AuthorizationEnvelopeV2,
     CredentialTransitionCommand,
     DesiredDeployment,
     EnrolCredentialCommand,
@@ -60,16 +66,17 @@ from dotmac_deployment_control import (
     ObservationDisposition,
     ObservationReceipt,
     ObservationVerdict,
-    ObservedState,
     ProposePlanCommand,
     RecordObservationCommand,
     RegisterTargetCommand,
     RequestRolloutCommand,
+    RevokePlanApprovalCommand,
     RuntimeIdentityV1,
     SetDesiredStateCommand,
-    SignatureStatus,
     activate_credential,
+    approve_plan,
     build_database_catalog_snapshot,
+    dispatch_attempt,
     enrol_credential,
     issue_execution_observation_envelope,
     module,
@@ -77,15 +84,24 @@ from dotmac_deployment_control import (
     record_observation,
     register_target,
     request_rollout,
+    revoke_credential,
+    revoke_plan_approval,
     set_desired_state,
     spec_digest,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
-from dotmac_deployment_control.models import DeploymentPlan, DeploymentTarget, Rollout
+from dotmac_deployment_control.models import (
+    DeploymentPlan,
+    DeploymentTarget,
+    Rollout,
+    RolloutAttempt,
+    TargetCredential,
+)
 from tests.authorization_support import SIGNER, VERIFIER
 from tests.execution_observation_support import (
     OBSERVATION_VERIFIER,
     TestExecutionObservationSigner,
+    observation_public_key_b64,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -156,6 +172,18 @@ ALL_PRIVILEGES = (
     "TRIGGER",
 )
 ROW_DML = ("SELECT", "INSERT", "UPDATE", "DELETE")
+COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
+DC_0006_COLUMNS = (
+    ("deployment_targets", "last_execution_sequence", True),
+    ("deployment_targets", "last_execution_attempt_no", True),
+    ("deployment_targets", "last_execution_state_digest", True),
+    ("target_credentials", "algorithm", True),
+    ("target_credentials", "purpose", True),
+    ("rollouts", "execution_sequence", True),
+    ("observation_receipts", "execution_sequence", False),
+    ("observation_receipts", "attempt_no", False),
+    ("observation_receipts", "observed_state_digest", False),
+)
 
 _OBSERVED_AT = datetime(2026, 8, 21, 12, 0, tzinfo=UTC)
 
@@ -245,6 +273,27 @@ def _has_privilege(url: str, table: str, privilege: str, *, role: str) -> bool:
         engine.dispose()
 
 
+def _has_column_privilege(
+    url: str, table: str, column: str, privilege: str, *, role: str
+) -> bool:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            return bool(
+                conn.execute(
+                    text("SELECT has_column_privilege(:r, :t, :c, :p)"),
+                    {
+                        "r": role,
+                        "t": f"mod_deploy.{table}",
+                        "c": column,
+                        "p": privilege,
+                    },
+                ).scalar()
+            )
+    finally:
+        engine.dispose()
+
+
 def _insert_target(conn, **overrides: object) -> uuid.UUID:  # type: ignore[no-untyped-def]
     params: dict[str, object] = {
         "id": uuid.uuid4(),
@@ -262,6 +311,53 @@ def _insert_target(conn, **overrides: object) -> uuid.UUID:  # type: ignore[no-u
         params,
     )
     return params["id"]  # type: ignore[return-value]
+
+
+def _insert_plan(conn, target_id: uuid.UUID) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    plan_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.deployment_plans ("
+            " id, target_id, sequence, status, desired_revision,"
+            " plan_digest, requires_approval, record_version"
+            ") VALUES (:id, :tid, 1, 'approved', 1, :digest, false, 1)"
+        ),
+        {"id": plan_id, "tid": target_id, "digest": uuid.uuid4().hex},
+    )
+    return plan_id
+
+
+def _insert_rollout(
+    conn,
+    target_id: uuid.UUID,
+    plan_id: uuid.UUID,
+    *,
+    execution_sequence: int | None,
+    authorization_envelope: dict[str, object] | None = None,
+) -> uuid.UUID:  # type: ignore[no-untyped-def]
+    rollout_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.rollouts ("
+            " id, rollout_ref, target_id, plan_id, status, record_version,"
+            " authorization_envelope, execution_sequence"
+            ") VALUES (:id, :ref, :tid, :pid, 'requested', 1,"
+            " CAST(:auth AS jsonb), :sequence)"
+        ),
+        {
+            "id": rollout_id,
+            "ref": f"rol-{uuid.uuid4().hex[:8]}",
+            "tid": target_id,
+            "pid": plan_id,
+            "auth": (
+                json.dumps(authorization_envelope)
+                if authorization_envelope is not None
+                else None
+            ),
+            "sequence": execution_sequence,
+        },
+    )
+    return rollout_id
 
 
 # ── Migration from empty ────────────────────────────────────────────────────
@@ -310,7 +406,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0005_portable_authorization",
+                revision="dc_0006_observation_key_identity",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -415,6 +511,109 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
 # ── Isolation ───────────────────────────────────────────────────────────────
 
 
+def test_dc_0006_downgrades_to_the_exact_dc_0005_extent() -> None:
+    """The reverse path removes every a10 physical fact, then reapplies cleanly."""
+    from alembic import command
+    from alembic.config import Config
+
+    superuser = _superuser_url()
+    name = f"deploy_down_{uuid.uuid4().hex[:10]}"
+    server = create_engine(superuser, isolation_level="AUTOCOMMIT")
+    previous_migration_url = os.environ.get("MIGRATION_DATABASE_URL")
+    with server.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}"'))
+    setup = create_engine(_url_for(superuser, name), isolation_level="AUTOCOMMIT")
+    try:
+        with setup.connect() as conn:
+            conn.execute(text("ALTER SCHEMA public OWNER TO app_admin"))
+            conn.execute(text(f'GRANT CREATE ON DATABASE "{name}" TO app_admin'))
+        admin_url = _url_for(superuser, name, user="app_admin")
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        os.environ["MIGRATION_DATABASE_URL"] = admin_url
+        command.upgrade(cfg, "heads")
+        admin = create_engine(admin_url)
+        try:
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT count(*) FROM information_schema.columns "
+                            "WHERE table_schema = 'mod_deploy'"
+                        )
+                    ).scalar_one()
+                    == 114
+                )
+            command.downgrade(cfg, "dc_0005_portable_authorization")
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT count(*) FROM information_schema.columns "
+                            "WHERE table_schema = 'mod_deploy'"
+                        )
+                    ).scalar_one()
+                    == 105
+                )
+                remaining = conn.execute(
+                    text(
+                        "SELECT table_name, column_name "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = 'mod_deploy' AND ("
+                        " (table_name, column_name) IN ("
+                        "  ('deployment_targets', 'last_execution_sequence'),"
+                        "  ('deployment_targets', 'last_execution_attempt_no'),"
+                        "  ('deployment_targets', 'last_execution_state_digest'),"
+                        "  ('target_credentials', 'algorithm'),"
+                        "  ('target_credentials', 'purpose'),"
+                        "  ('rollouts', 'execution_sequence'),"
+                        "  ('observation_receipts', 'execution_sequence'),"
+                        "  ('observation_receipts', 'attempt_no'),"
+                        "  ('observation_receipts', 'observed_state_digest')))"
+                    )
+                ).all()
+                assert remaining == []
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT to_regprocedure("
+                            "'mod_deploy.refuse_rollout_issuance_rewrite()')"
+                        )
+                    ).scalar_one()
+                    is None
+                )
+            command.upgrade(cfg, "heads")
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT count(*) FROM information_schema.columns "
+                            "WHERE table_schema = 'mod_deploy'"
+                        )
+                    ).scalar_one()
+                    == 114
+                )
+        finally:
+            admin.dispose()
+    finally:
+        if previous_migration_url is None:
+            os.environ.pop("MIGRATION_DATABASE_URL", None)
+        else:
+            os.environ["MIGRATION_DATABASE_URL"] = previous_migration_url
+        setup.dispose()
+        with server.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"
+                ),
+                {"n": name},
+            )
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        server.dispose()
+
+
 class TestTheTenantAppRoleCanReachNothing:
     @pytest.mark.parametrize("table", TABLES)
     @pytest.mark.parametrize("privilege", ALL_PRIVILEGES)
@@ -457,6 +656,21 @@ class TestTheTenantAppRoleCanReachNothing:
                 conn.execute(text("SELECT 1 FROM mod_deploy.deployment_targets"))
         finally:
             engine.dispose()
+
+    @pytest.mark.parametrize(("table", "column", "_mutable"), DC_0006_COLUMNS)
+    @pytest.mark.parametrize("privilege", COLUMN_PRIVILEGES)
+    def test_app_user_has_no_privilege_on_any_dc_0006_column(
+        self,
+        migrated_scratch,
+        table: str,
+        column: str,
+        _mutable: bool,
+        privilege: str,
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        assert not _has_column_privilege(
+            admin_url, table, column, privilege, role="app_user"
+        )
 
 
 class TestTheOnlinePlatformRoleCanActuallyWork:
@@ -506,6 +720,28 @@ class TestTheOnlinePlatformRoleCanActuallyWork:
             assert found == "registered"
         finally:
             engine.dispose()
+
+    @pytest.mark.parametrize(("table", "column", "mutable"), DC_0006_COLUMNS)
+    def test_dc_0006_columns_keep_the_intended_effective_privileges(
+        self,
+        migrated_scratch,
+        table: str,
+        column: str,
+        mutable: bool,
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        assert _has_column_privilege(
+            admin_url, table, column, "SELECT", role="platform_api"
+        )
+        assert _has_column_privilege(
+            admin_url, table, column, "INSERT", role="platform_api"
+        )
+        assert (
+            _has_column_privilege(
+                admin_url, table, column, "UPDATE", role="platform_api"
+            )
+            is mutable
+        )
 
 
 # ── The claim/proof CHECKs, against raw SQL ─────────────────────────────────
@@ -579,21 +815,50 @@ class TestTheClaimProofSeparationIsStructural:
 # ── Stable verdict under a genuinely contended first arrival ───────────────
 
 
-class _ReceiptLookupGate:
-    """Hold both workers after their first receipt lookup returned.
+class _TargetLockGate:
+    """Place both workers at the target-row serialization boundary.
 
-    A barrier before the service call is not a concurrency proof: one worker can
-    run the entire call and commit before the other reaches the lookup. This
-    hook gates the production query *after* both transactions observed no
-    receipt, making the unique-constraint race deterministic. Later winner
-    lookups are not gated, or the loser would deadlock after its savepoint
-    rolls back.
+    dc_0006 deliberately makes the old "both saw no receipt" race impossible:
+    the target is locked before the canonical-receipt lookup.  This barrier runs
+    immediately before each worker issues that production ``FOR UPDATE`` query;
+    after both arrive, PostgreSQL admits one and blocks the other until commit.
     """
 
     def __init__(self) -> None:
         self.barrier = threading.Barrier(2)
         self.lock = threading.Lock()
         self.thread_ids: set[int] = set()
+
+    def before_cursor_execute(
+        self,
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        normalised = " ".join(statement.lower().split())
+        if (
+            "from mod_deploy.deployment_targets" not in normalised
+            or "for update" not in normalised
+        ):
+            return
+        thread_id = threading.get_ident()
+        with self.lock:
+            if thread_id in self.thread_ids:
+                return
+            self.thread_ids.add(thread_id)
+        self.barrier.wait(timeout=30)
+
+
+class _HoldOneTargetLock:
+    """Pause one named worker after PostgreSQL grants the target row lock."""
+
+    def __init__(self) -> None:
+        self.holder_thread_id: int | None = None
+        self.acquired = threading.Event()
+        self.release = threading.Event()
 
     def after_cursor_execute(
         self,
@@ -604,15 +869,35 @@ class _ReceiptLookupGate:
         _context: object,
         _executemany: bool,
     ) -> None:
-        normalised = " ".join(statement.lower().split())
-        if "from mod_deploy.observation_receipts" not in normalised:
+        if threading.get_ident() != self.holder_thread_id:
             return
-        thread_id = threading.get_ident()
-        with self.lock:
-            if thread_id in self.thread_ids:
-                return
-            self.thread_ids.add(thread_id)
-        self.barrier.wait(timeout=30)
+        normalised = " ".join(statement.lower().split())
+        if (
+            "from mod_deploy.deployment_targets" not in normalised
+            or "for update" not in normalised
+        ):
+            return
+        self.acquired.set()
+        if not self.release.wait(timeout=30):
+            raise AssertionError("the target-lock holder was never released")
+
+
+def _wait_until_postgres_reports_lock(engine: Engine, backend_pid: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with engine.connect() as conn:
+            wait_type = conn.execute(
+                text(
+                    "SELECT wait_event_type FROM pg_stat_activity " "WHERE pid = :pid"
+                ),
+                {"pid": backend_pid},
+            ).scalar_one_or_none()
+        if wait_type == "Lock":
+            return
+        time.sleep(0.02)
+    raise AssertionError(
+        f"PostgreSQL never reported backend {backend_pid} waiting on a lock"
+    )
 
 
 @pytest.fixture
@@ -667,8 +952,8 @@ def observation_race(
                 command_id=f"seed-key-{suffix}",
                 target_id=target.id,
                 key_id=key_id,
-                public_key_b64="AAAA",
-                public_key_fingerprint=f"sha256:{suffix}{'0' * (64 - len(suffix))}",
+                algorithm="test-sha256",
+                public_key_b64=observation_public_key_b64(key_id),
                 enrollment_authority="platform_admin_policy",
             ),
         )
@@ -677,7 +962,6 @@ def observation_race(
             CredentialTransitionCommand(
                 command_id=f"activate-key-{suffix}",
                 credential_id=credential_id,
-                at=_OBSERVED_AT - timedelta(minutes=1),
             ),
         )
         set_desired_state(
@@ -698,26 +982,120 @@ def observation_race(
                 operation="deploy",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
-                requires_approval=False,
+                requires_approval=True,
+                approval_policy_code="deployment.production",
+                approval_policy_version=1,
+            ),
+        )
+        approve_plan(
+            db,
+            ApprovePlanCommand(
+                command_id=f"approve-plan-{suffix}",
+                plan_id=plan.id,
+                evidence=ApprovalEvidence(
+                    policy_code="deployment.production",
+                    policy_version=1,
+                    decision_ref=f"decision-{suffix}",
+                    content_digest=plan.plan_digest or "",
+                    decided_at=datetime.now(UTC),
+                    operation="deploy",
+                    execution_plan_digest=_EXECUTION_PLAN,
+                    decision_status="granted",
+                ),
             ),
         )
         rollout_ref = f"race-rollout-{suffix}"
-        request_rollout(
+        rollout = request_rollout(
             db,
             RequestRolloutCommand(
                 command_id=f"seed-rollout-{suffix}",
                 rollout_ref=rollout_ref,
                 plan_id=plan.id,
                 authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-                authorization_issued_at=_OBSERVED_AT,
             ),
             signer=SIGNER,
+        )
+        dispatch_attempt(
+            db,
+            command_id=f"seed-dispatch-{suffix}",
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
         )
         db.commit()
     try:
         yield engine, target_ref, key_id, rollout_ref
     finally:
         engine.dispose()
+
+
+def _record_race_observation(
+    db: Session,
+    *,
+    target_ref: str,
+    key_id: str,
+    rollout_ref: str,
+    report_id: str,
+    observed_revision: str,
+) -> ObservationVerdict:
+    rollout = db.execute(
+        select(Rollout).where(Rollout.rollout_ref == rollout_ref)
+    ).scalar_one()
+    plan = db.get(DeploymentPlan, rollout.plan_id)
+    target = db.execute(
+        select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)
+    ).scalar_one()
+    assert plan is not None
+    snapshot = dict(plan.snapshot or {})
+    authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    attempt = db.execute(
+        select(RolloutAttempt).where(RolloutAttempt.rollout_id == rollout.id)
+    ).scalar_one()
+    observed_at = _OBSERVED_AT
+    envelope = issue_execution_observation_envelope(
+        {
+            "report_id": report_id,
+            "authorization_id": str(rollout.id),
+            "authorization_plan_id": authorization.statement.plan_id,
+            "authorization_control_version": authorization.statement.control_version,
+            "authorization_envelope_digest": (
+                AuthorizationEnvelopeDigestV1.over_bytes(
+                    authorization.canonical_bytes
+                ).canonical
+            ),
+            "execution_sequence": authorization.statement.execution_sequence,
+            "attempt_no": attempt.attempt_no,
+            "rollout_ref": rollout_ref,
+            "target_id": str(target.id),
+            "target_ref": target_ref,
+            "product_code": target.product_code,
+            "environment": target.environment,
+            "operation": "deploy",
+            "release_ref": "dotmac_sub@1",
+            "observed_release_ref": "dotmac_sub@1",
+            "authorized_images": [],
+            "observed_images": [],
+            "plan_digest": plan.plan_digest,
+            "descriptor_digest": snapshot["descriptor_digest"],
+            "execution_plan_digest": _EXECUTION_PLAN,
+            "observed_spec_digest": spec_digest({"replicas": 2}),
+            "observed_revision": observed_revision,
+            "runtime_identity": RuntimeIdentityV1(
+                kind="oci_container", identifier="container:race"
+            ),
+            "outcome": "succeeded",
+            "observed_at": observed_at,
+        },
+        signer=TestExecutionObservationSigner(key_id),
+    )
+    return record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=f"arrival-{uuid.uuid4()}",
+            observation=envelope.canonical_bytes,
+        ),
+        observation_verifier=OBSERVATION_VERIFIER,
+        authorization_verifier=VERIFIER,
+    )
 
 
 @pytest.mark.parametrize(
@@ -745,8 +1123,8 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
     """
     engine, target_ref, key_id, rollout_ref = observation_race
     sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-    gate = _ReceiptLookupGate()
-    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    gate = _TargetLockGate()
+    event.listen(engine, "before_cursor_execute", gate.before_cursor_execute)
     report_id = f"report-{uuid.uuid4().hex[:10]}"
     results: dict[int, ObservationVerdict] = {}
     errors: dict[int, BaseException] = {}
@@ -754,71 +1132,13 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
     def worker(index: int, digest: str) -> None:
         db = sessions()
         try:
-            rollout = db.execute(
-                select(Rollout).where(Rollout.rollout_ref == rollout_ref)
-            ).scalar_one()
-            plan = db.get(DeploymentPlan, rollout.plan_id)
-            target = db.execute(
-                select(DeploymentTarget).where(
-                    DeploymentTarget.target_ref == target_ref
-                )
-            ).scalar_one()
-            assert plan is not None
-            snapshot = dict(plan.snapshot or {})
-            envelope = issue_execution_observation_envelope(
-                {
-                    "report_id": report_id,
-                    "authorization_id": str(rollout.id),
-                    "rollout_ref": rollout_ref,
-                    "target_id": str(target.id),
-                    "target_ref": target_ref,
-                    "product_code": target.product_code,
-                    "environment": target.environment,
-                    "operation": "deploy",
-                    "release_ref": "dotmac_sub@1",
-                    "observed_release_ref": "dotmac_sub@1",
-                    "authorized_images": [],
-                    "observed_images": [],
-                    "plan_digest": plan.plan_digest,
-                    "descriptor_digest": snapshot["descriptor_digest"],
-                    "execution_plan_digest": _EXECUTION_PLAN,
-                    "observed_spec_digest": spec_digest({"replicas": 2}),
-                    "observed_revision": digest,
-                    "runtime_identity": RuntimeIdentityV1(
-                        kind="oci_container", identifier="container:race"
-                    ),
-                    "outcome": "succeeded",
-                    "observed_at": _OBSERVED_AT,
-                },
-                signer=TestExecutionObservationSigner(key_id),
-            )
-            body_digest = (
-                f"sha256:{hashlib.sha256(envelope.canonical_bytes).hexdigest()}"
-            )
-            results[index] = record_observation(
+            results[index] = _record_race_observation(
                 db,
-                RecordObservationCommand(
-                    command_id=f"arrival-{index}-{uuid.uuid4()}",
-                    received_at=_OBSERVED_AT,
-                    observed=ObservedState(
-                        report_id=report_id,
-                        observed_release_ref="dotmac_sub@1",
-                        observed_spec_digest=spec_digest({"replicas": 2}),
-                        reported_at=_OBSERVED_AT,
-                        authenticated_target_ref=target_ref,
-                        claimed_target_ref=target_ref,
-                        key_id=key_id,
-                        raw_body=envelope.canonical_bytes,
-                        raw_body_digest=body_digest,
-                        signature_status=SignatureStatus.VALID.value,
-                        rollout_ref=rollout_ref,
-                        operation="deploy",
-                        execution_plan_digest=_EXECUTION_PLAN,
-                    ),
-                    execution_observation_envelope=envelope,
-                ),
-                observation_verifier=OBSERVATION_VERIFIER,
-                authorization_verifier=VERIFIER,
+                target_ref=target_ref,
+                key_id=key_id,
+                rollout_ref=rollout_ref,
+                report_id=report_id,
+                observed_revision=digest,
             )
             db.commit()
         except BaseException as exc:
@@ -838,11 +1158,11 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
             thread.join(timeout=60)
             assert not thread.is_alive(), "the receipt race deadlocked"
     finally:
-        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+        event.remove(engine, "before_cursor_execute", gate.before_cursor_execute)
 
     if errors:
         raise next(iter(errors.values()))
-    assert len(gate.thread_ids) == 2, "the test never forced two absent lookups"
+    assert len(gate.thread_ids) == 2, "the test never forced target-lock contention"
     dispositions = {result.disposition for result in results.values()}
     assert dispositions == {
         ObservationDisposition.ACCEPTED.value,
@@ -875,6 +1195,286 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
     assert len(attempts) == 2
     assert {attempt.receipt_id for attempt in attempts} == {receipts[0].id}
     assert receipts[0].original_verdict == ObservationDisposition.ACCEPTED.value
+
+
+@pytest.mark.parametrize(
+    ("revocation_kind", "first_operation", "expected_disposition", "has_receipt"),
+    [
+        pytest.param(
+            "plan",
+            "observation",
+            ObservationDisposition.ACCEPTED.value,
+            True,
+            id="plan-admission-first",
+        ),
+        pytest.param(
+            "plan",
+            "revocation",
+            ObservationDisposition.AUTHORIZATION_REVOKED.value,
+            True,
+            id="plan-revocation-first",
+        ),
+        pytest.param(
+            "credential",
+            "observation",
+            ObservationDisposition.ACCEPTED.value,
+            True,
+            id="credential-admission-first",
+        ),
+        pytest.param(
+            "credential",
+            "revocation",
+            ObservationDisposition.NOT_ELIGIBLE.value,
+            False,
+            id="credential-revocation-first",
+        ),
+    ],
+)
+def test_admission_and_revocation_linearize_on_the_target_lock(
+    observation_race: tuple[Engine, str, str, str],
+    revocation_kind: str,
+    first_operation: str,
+    expected_disposition: str,
+    has_receipt: bool,
+) -> None:
+    """Four real two-session schedules, with PostgreSQL proving contention.
+
+    The trusted timestamps are captured at each service entry. The target lock
+    then makes the rows coherent without rewriting that arrival order:
+    admission-first may finish, while revoke-first is refused.
+    """
+    engine, target_ref, key_id, rollout_ref = observation_race
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with Session(engine) as lookup:
+        rollout = lookup.execute(
+            select(Rollout).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+        plan_id = rollout.plan_id
+        credential_id = lookup.execute(
+            select(TargetCredential.id).where(TargetCredential.key_id == key_id)
+        ).scalar_one()
+
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    result: dict[str, ObservationVerdict] = {}
+    errors: dict[str, BaseException] = {}
+    backend_pids: dict[str, int] = {}
+
+    def observe_worker() -> None:
+        db = sessions()
+        gate.holder_thread_id = (
+            threading.get_ident()
+            if first_operation == "observation"
+            else gate.holder_thread_id
+        )
+        try:
+            backend_pids["observation"] = int(
+                db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+            )
+            result["observation"] = _record_race_observation(
+                db,
+                target_ref=target_ref,
+                key_id=key_id,
+                rollout_ref=rollout_ref,
+                report_id=f"race-{revocation_kind}-{first_operation}",
+                observed_revision="git:race",
+            )
+            db.commit()
+        except BaseException as exc:
+            errors["observation"] = exc
+            db.rollback()
+        finally:
+            db.close()
+
+    def revoke_worker() -> None:
+        db = sessions()
+        gate.holder_thread_id = (
+            threading.get_ident()
+            if first_operation == "revocation"
+            else gate.holder_thread_id
+        )
+        try:
+            backend_pids["revocation"] = int(
+                db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+            )
+            if revocation_kind == "plan":
+                revoke_plan_approval(
+                    db,
+                    RevokePlanApprovalCommand(
+                        command_id=f"revoke-plan-{uuid.uuid4()}",
+                        plan_id=plan_id,
+                        revocation_ref=f"decision-{uuid.uuid4()}",
+                    ),
+                )
+            else:
+                revoke_credential(
+                    db,
+                    CredentialTransitionCommand(
+                        command_id=f"revoke-key-{uuid.uuid4()}",
+                        credential_id=credential_id,
+                        reason="test revocation",
+                    ),
+                )
+            db.commit()
+        except BaseException as exc:
+            errors["revocation"] = exc
+            db.rollback()
+        finally:
+            db.close()
+
+    first = observe_worker if first_operation == "observation" else revoke_worker
+    second = revoke_worker if first_operation == "observation" else observe_worker
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    try:
+        first_thread.start()
+        assert gate.acquired.wait(timeout=20), "first operation never locked target"
+        second_thread.start()
+        deadline = time.monotonic() + 10
+        second_name = (
+            "revocation" if first_operation == "observation" else "observation"
+        )
+        while second_name not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert second_name in backend_pids, "second operation never opened a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids[second_name])
+        gate.release.set()
+        for thread in (first_thread, second_thread):
+            thread.join(timeout=30)
+            assert not thread.is_alive(), "admission/revocation race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    if errors:
+        raise next(iter(errors.values()))
+    verdict = result["observation"]
+    assert verdict.disposition == expected_disposition
+    assert (verdict.receipt_id is not None) is has_receipt
+
+
+@pytest.mark.parametrize("first_coordinate", ("older", "newer"))
+def test_concurrent_execution_coordinates_leave_the_newer_state_authoritative(
+    observation_race: tuple[Engine, str, str, str],
+    first_coordinate: str,
+) -> None:
+    """Both lock schedules converge on the higher execution coordinate.
+
+    This is not a thread-timing test: PostgreSQL reports the second backend
+    waiting on the target row before the first transaction is released.
+    """
+    engine, target_ref, key_id, older_rollout_ref = observation_race
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with Session(engine) as db:
+        older_rollout = db.execute(
+            select(Rollout).where(Rollout.rollout_ref == older_rollout_ref)
+        ).scalar_one()
+        newer_rollout_ref = f"newer-{uuid.uuid4().hex[:10]}"
+        newer_rollout = request_rollout(
+            db,
+            RequestRolloutCommand(
+                command_id=f"request-{newer_rollout_ref}",
+                rollout_ref=newer_rollout_ref,
+                plan_id=older_rollout.plan_id,
+                authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            ),
+            signer=SIGNER,
+        )
+        dispatch_attempt(
+            db,
+            command_id=f"dispatch-{newer_rollout_ref}",
+            rollout_id=newer_rollout.id,
+            verifier=VERIFIER,
+        )
+        target = db.execute(
+            select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)
+        ).scalar_one()
+        baseline_version = target.record_version
+        db.commit()
+
+    coordinates = {
+        "older": (older_rollout_ref, "git:older"),
+        "newer": (newer_rollout_ref, "git:newer"),
+    }
+    second_coordinate = "newer" if first_coordinate == "older" else "older"
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    results: dict[str, ObservationVerdict] = {}
+    errors: dict[str, BaseException] = {}
+    backend_pids: dict[str, int] = {}
+
+    def worker(coordinate: str, *, hold: bool) -> None:
+        db = sessions()
+        if hold:
+            gate.holder_thread_id = threading.get_ident()
+        try:
+            backend_pids[coordinate] = int(
+                db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+            )
+            rollout_ref, observed_revision = coordinates[coordinate]
+            results[coordinate] = _record_race_observation(
+                db,
+                target_ref=target_ref,
+                key_id=key_id,
+                rollout_ref=rollout_ref,
+                report_id=f"report-{coordinate}-{uuid.uuid4().hex[:8]}",
+                observed_revision=observed_revision,
+            )
+            db.commit()
+        except BaseException as exc:
+            errors[coordinate] = exc
+            db.rollback()
+        finally:
+            db.close()
+
+    first_thread = threading.Thread(
+        target=worker, args=(first_coordinate,), kwargs={"hold": True}
+    )
+    second_thread = threading.Thread(
+        target=worker, args=(second_coordinate,), kwargs={"hold": False}
+    )
+    try:
+        first_thread.start()
+        assert gate.acquired.wait(timeout=20), "first observation never locked target"
+        second_thread.start()
+        deadline = time.monotonic() + 10
+        while second_coordinate not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert second_coordinate in backend_pids, "second observation has no backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids[second_coordinate])
+        gate.release.set()
+        for thread in (first_thread, second_thread):
+            thread.join(timeout=30)
+            assert not thread.is_alive(), "execution-coordinate race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    if errors:
+        raise next(iter(errors.values()))
+    expected = {
+        "older": ObservationDisposition.ACCEPTED.value,
+        "newer": ObservationDisposition.ACCEPTED.value,
+    }
+    if first_coordinate == "newer":
+        expected["older"] = ObservationDisposition.STALE_OBSERVATION.value
+    assert {name: result.disposition for name, result in results.items()} == expected
+    with Session(engine) as db:
+        target = db.execute(
+            select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)
+        ).scalar_one()
+        assert target.last_execution_sequence == 2
+        assert target.last_execution_attempt_no == 1
+        assert target.observed_revision == 1
+        newer_receipt = db.execute(
+            select(ObservationReceipt).where(
+                ObservationReceipt.authenticated_target_ref == target_ref,
+                ObservationReceipt.execution_sequence == 2,
+            )
+        ).scalar_one()
+        assert target.last_execution_state_digest == newer_receipt.observed_state_digest
+        expected_increments = 2 if first_coordinate == "older" else 1
+        assert target.record_version == baseline_version + expected_increments
 
 
 # ── Append-only evidence ────────────────────────────────────────────────────
@@ -1036,6 +1636,159 @@ class TestTheConstraintsHoldWithoutTheService:
                 _insert_target(conn, ref=ref)
             with engine.begin() as conn, pytest.raises(DBAPIError):
                 _insert_target(conn, ref=ref)
+        finally:
+            engine.dispose()
+
+    @pytest.mark.parametrize(
+        "assignment",
+        (
+            "last_execution_sequence = 1",
+            "last_execution_sequence = 1, last_execution_attempt_no = 1",
+            "last_execution_sequence = 0, last_execution_attempt_no = 1, "
+            "last_execution_state_digest = 'sha256:00'",
+        ),
+    )
+    def test_a_partial_or_non_positive_target_high_water_is_refused(
+        self, admin_url: str, assignment: str
+    ) -> None:
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                target_id = _insert_target(conn)
+            with engine.begin() as conn, pytest.raises(DBAPIError):
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.deployment_targets SET "
+                        f"{assignment} WHERE id = :id"
+                    ),
+                    {"id": target_id},
+                )
+        finally:
+            engine.dispose()
+
+    @pytest.mark.parametrize(
+        ("sequence", "attempt_no", "state_digest"),
+        (
+            (1, None, None),
+            (1, 1, None),
+            (0, 1, "sha256:00"),
+            (1, 0, "sha256:00"),
+        ),
+    )
+    def test_a_partial_or_non_positive_receipt_coordinate_is_refused(
+        self,
+        admin_url: str,
+        sequence: int | None,
+        attempt_no: int | None,
+        state_digest: str | None,
+    ) -> None:
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn, pytest.raises(DBAPIError):
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.observation_receipts ("
+                        " id, authenticated_target_ref, report_id, key_id,"
+                        " first_received_at, original_verdict, execution_sequence,"
+                        " attempt_no, observed_state_digest"
+                        ") VALUES (:id, 'tgt-raw', :report, 'key-raw', now(),"
+                        " 'accepted', :sequence, :attempt_no, :state_digest)"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "report": f"rep-{uuid.uuid4().hex[:8]}",
+                        "sequence": sequence,
+                        "attempt_no": attempt_no,
+                        "state_digest": state_digest,
+                    },
+                )
+        finally:
+            engine.dispose()
+
+    def test_rollout_execution_sequence_is_positive_and_unique_per_target(
+        self, admin_url: str
+    ) -> None:
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                target_id = _insert_target(conn)
+                plan_id = _insert_plan(conn, target_id)
+            with engine.begin() as conn, pytest.raises(DBAPIError):
+                _insert_rollout(
+                    conn,
+                    target_id,
+                    plan_id,
+                    execution_sequence=0,
+                )
+            with engine.begin() as conn:
+                _insert_rollout(
+                    conn,
+                    target_id,
+                    plan_id,
+                    execution_sequence=1,
+                )
+            with engine.begin() as conn, pytest.raises(DBAPIError):
+                _insert_rollout(
+                    conn,
+                    target_id,
+                    plan_id,
+                    execution_sequence=1,
+                )
+        finally:
+            engine.dispose()
+
+    def test_rollout_issuance_is_immutable_but_lifecycle_may_advance(
+        self, admin_url: str
+    ) -> None:
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                target_id = _insert_target(conn)
+                plan_id = _insert_plan(conn, target_id)
+                rollout_id = _insert_rollout(
+                    conn,
+                    target_id,
+                    plan_id,
+                    execution_sequence=1,
+                    authorization_envelope={"schema": "AuthorizationEnvelope.v2"},
+                )
+            with (
+                engine.begin() as conn,
+                pytest.raises(DBAPIError, match="immutable issuance evidence"),
+            ):
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rollouts "
+                        "SET authorization_envelope = '{}'::jsonb WHERE id = :id"
+                    ),
+                    {"id": rollout_id},
+                )
+            with (
+                engine.begin() as conn,
+                pytest.raises(DBAPIError, match="immutable issuance evidence"),
+            ):
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rollouts "
+                        "SET execution_sequence = 2 WHERE id = :id"
+                    ),
+                    {"id": rollout_id},
+                )
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rollouts "
+                        "SET status = 'dispatched' WHERE id = :id"
+                    ),
+                    {"id": rollout_id},
+                )
+                assert (
+                    conn.execute(
+                        text("SELECT status FROM mod_deploy.rollouts WHERE id = :id"),
+                        {"id": rollout_id},
+                    ).scalar_one()
+                    == "dispatched"
+                )
         finally:
             engine.dispose()
 

@@ -267,16 +267,39 @@
   attacker-controlled when they were stored.
 #}
 {% if receipts %}
-  {{ ui.table_open(["Report", "Key", "First received", "Original verdict", "Observed release", "Observed spec digest", "Payload digest"]) }}
+  {{ ui.table_open(["Report", "Key", "First received", "Original verdict", "Authorization", "Rollout / operation", "Execution coordinate", "Outcome / observed at", "Runtime identity", "Release / revision", "Authorized images", "Observed images", "Plan digest", "Descriptor digest", "Execution-plan digest", "Authorization-envelope digest", "Observed-state digest", "Payload digest"]) }}
   {% for receipt in receipts %}
   <tr>
     {{ ui.cell(receipt.report_id) }}
     {{ ui.cell(receipt.key_id) }}
     {{ ui.cell(moment(receipt.first_received_at)) }}
     {{ ui.cell(receipt.original_verdict) }}
-    {{ ui.cell(receipt.observed_release_ref) }}
+    {{ ui.cell(receipt.authorization_id ~ " / plan " ~ receipt.authorization_plan_id ~ " / Control " ~ receipt.authorization_control_version if receipt.authorization_id else receipt.signed_evidence_status) }}
+    {{ ui.cell(receipt.rollout_ref ~ " / " ~ receipt.operation if receipt.rollout_ref else none) }}
+    {{ ui.cell(receipt.execution_sequence ~ "." ~ receipt.attempt_no if receipt.execution_sequence else none) }}
+    {{ ui.cell(receipt.outcome ~ " / " ~ moment(receipt.observed_at) if receipt.outcome else none) }}
+    {{ ui.cell(receipt.runtime_identity_kind ~ ":" ~ receipt.runtime_identity_identifier if receipt.runtime_identity_kind else none) }}
+    {{ ui.cell(receipt.observed_release_ref ~ " / " ~ receipt.observed_revision if receipt.observed_release_ref else none) }}
     <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
-      {{ ui.digest(receipt.observed_spec_digest) }}
+      {% for image in receipt.authorized_images %}{{ image.service }}={{ image.repository }}@{{ image.digest.canonical }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {% for image in receipt.observed_images %}{{ image.service }}={{ image.repository }}@{{ image.digest.canonical }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.plan_digest) }}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.descriptor_digest) }}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.execution_plan_digest) }}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.authorization_envelope_digest) }}
+    </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(receipt.observed_state_digest) }}
     </td>
     <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
       {{ ui.digest(receipt.payload_digest) }}

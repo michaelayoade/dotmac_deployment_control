@@ -9,27 +9,78 @@ changes, each called out here.
 
 ### Added
 
+- **`record_observation` takes ONE bounded raw byte input.** The earlier a10
+  shape took a parsed envelope beside an `ObservedState` carrying
+  `raw_body`/`raw_body_digest` — two inputs that had to agree, held apart so
+  nothing forced them to. Control could verify envelope A while storing
+  caller-supplied bytes B, with only a field-by-field comparison bolted between
+  the parameters standing in the way. The repair is single-input BY
+  CONSTRUCTION: `RecordObservationCommand.observation` is the exact wire
+  bytes, Control derives the digest itself (over the FULL body, before any
+  truncation), parses those bytes with `parse_bytes` (duplicate JSON keys and
+  non-JSON numbers refused, because two readers must never read two reports out
+  of one signature), verifies those bytes, and stores those bytes — verbatim,
+  even when they are not the rendering Control's own encoder would produce.
+  `ObservedState` is REMOVED with the split: there is no projection type left
+  for a caller to contradict the body through, no field for a signature
+  outcome, an identity, or a digest, and `signed_report_mismatch` is gone from
+  the disposition vocabulary because the disagreement it recorded is now
+  unrepresentable. Covered by mutation on every path Michael named: malformed,
+  unknown key, bad signature, exact replay, changed-byte conflict — plus the
+  two the single input newly makes provable, non-canonical wire bytes stored
+  exactly as received and an oversize body truncated-stored with its digest
+  taken first over everything.
+- **The typed `recover` operation.** The closed vocabulary grows its
+  coordinated third member — `deploy`, `rollback`, `recover` — for
+  post-migration restoration. A RECOVER is neither a deploy (it converges on
+  state already authorized once) nor a rollback (it does not return to a
+  previous release; it re-establishes the current one), and an operator
+  triaging an authorization trail needs those to be three different words
+  because they are three different consent conversations. Added as exactly the
+  coordinated change `operations.py` says a new member must be, with the
+  Foundation's a5 built against the same three-member vocabulary.
+
 - `AuthorizationEnvelopeV2`, adding the `deployment_authorization` key purpose
   and the installed Control distribution version to the signed statement. The
   version is derived inside Control and cannot be caller-supplied.
 - `ExecutionObservationEnvelopeV1`, a provider-neutral signed target result
-  binding the authorization/rollout, target, operation, release and exact image
-  set, the plan/descriptor/execution-plan digests, observed spec/revision/runtime,
+  binding the exact authorization bytes, authorization and rollout identities,
+  the per-target execution sequence and attempt, target, operation, release and
+  exact image set, all three plan digests, observed spec/revision/runtime,
   outcome and timestamp.
 - Purpose-specific target observation signer/verifier protocols whose methods
   and identity type cannot be satisfied by the authorization signer by accident.
+- `dc_0006_observation_key_identity`: typed target verification algorithm and
+  purpose, immutable rollout execution sequences, and target/receipt execution
+  high-water coordinates. The catalogue advances to seven tables and 114
+  columns.
 
 ### Changed
 
-- `record_observation` verifies the target envelope and the standing portable
-  authorization before admitting state. Caller-projected fields must equal the
-  signed statement; revoked, expired, mismatched and unverifiable
-  authorizations are retained as refused attempts.
-- A byte-identical repeated report is idempotent; the same report id with
-  different signed bytes remains a conflict. Transport settlement and target
-  execution evidence remain separate.
-- No database migration: existing append-only raw payload/digest columns hold
-  the complete envelope. The catalogue remains seven tables and 105 columns.
+- `record_observation` verifies against the exact enrolled public key, derives
+  the proven target from that credential, and compares every caller projection
+  and authorization term. Eligibility and authorization expiry use Control's
+  receipt clock; a target cannot backdate itself into standing.
+- The first eligible, verified, attributable envelope establishes the canonical
+  receipt even when its verdict is a quarantine. Exact bytes replay the original
+  verdict; the same report id with different bytes conflicts.
+- Target, credential and plan rows serialize in one lock order. The signed
+  `(execution_sequence, attempt_no)` coordinate advances a target monotonically:
+  delayed reports are retained without regressing newer state, and a reused
+  coordinate with different substantive state is refused.
+- An observed desired revision is taken only from the exact authorized plan and
+  only when the observed spec digest matches its frozen spec. Equal content in a
+  later plan cannot borrow an earlier execution, and a mismatched observed spec
+  remains visible as drift rather than being attributed to the authorized
+  revision.
+- Authorization issuance bytes and rollout execution sequence are immutable at
+  the database boundary. Transport settlement and signed target execution
+  evidence remain separate facts.
+- The installed-wheel observation canary replaces the a6 conflict-savepoint
+  canary: the service no longer imports that kernel helper now that target-row
+  locking makes the old absent-receipt race unreachable. The replacement drives
+  acceptance, exact replay, changed-byte conflict, enrolled-key substitution and
+  physical-key purpose reuse against the installed artifact.
 
 ### Compatibility
 

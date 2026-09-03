@@ -93,7 +93,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0005_portable_authorization",
+    lineage_head="dc_0006_observation_key_identity",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -175,6 +175,10 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 # dc_0004 appends the declared authorized image set here, on
                 # the TARGET, where desired state is mutable and revisioned.
                 _column("desired_images", 19, _JSONB, nullable=True),
+                # dc_0006 appends the trusted execution high-water coordinate.
+                _column("last_execution_sequence", 20, _INTEGER, nullable=True),
+                _column("last_execution_attempt_no", 21, _INTEGER, nullable=True),
+                _column("last_execution_state_digest", 22, _VARCHAR_128, nullable=True),
             ),
         ),
         _table(
@@ -220,6 +224,11 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "updated_at", 12, _TIMESTAMPTZ, nullable=False, default="now()"
                 ),
+                # dc_0006 appends the signed execution coordinate and the
+                # substantive-state digest carried by this canonical receipt.
+                _column("execution_sequence", 13, _INTEGER, nullable=True),
+                _column("attempt_no", 14, _INTEGER, nullable=True),
+                _column("observed_state_digest", 15, _VARCHAR_128, nullable=True),
             ),
         ),
         _table(
@@ -259,6 +268,8 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 ),
                 # dc_0005 appends the immutable portable authorization.
                 _column("authorization_envelope", 11, _JSONB, nullable=True),
+                # dc_0006 appends the per-target monotonic execution coordinate.
+                _column("execution_sequence", 12, _INTEGER, nullable=True),
             ),
         ),
         _table(
@@ -281,6 +292,10 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "updated_at", 13, _TIMESTAMPTZ, nullable=False, default="now()"
                 ),
+                # dc_0006 appends the exact verification interpretation. NULL
+                # is only for legacy rows whose algorithm was never recorded.
+                _column("algorithm", 14, _VARCHAR_60, nullable=True),
+                _column("purpose", 15, _VARCHAR_60, nullable=True),
             ),
         ),
     ),

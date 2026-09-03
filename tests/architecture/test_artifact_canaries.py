@@ -60,11 +60,11 @@ EXPECTED_CANARIES = (
     "a4_bare_hex_still_binds",
     "encoding_fault_is_not_a_mutation",
     "mutation_after_authorization_is_refused",
-    # 0.1.0a6. The two that answer a defect the seven above cannot see: an
+    # 0.1.0a6's surviving floor proof answers a defect the seven above cannot
+    # see: an
     # artifact whose bytes are perfect and whose DECLARED DEPENDENCY FLOOR is
     # 21 alphas too low.
     "declared_kernel_floor",
-    "conflict_savepoint_executes",
     # The two that close a7's gap: its headline was a database catalogue and
     # its canary set was a6's exact nine, so no canary drove the thing the
     # release existed to ship.
@@ -417,63 +417,32 @@ def test_the_floor_canary_reads_the_floor_from_the_artifact_not_the_tree() -> No
     ), "nothing in the script reads the artifact's own dependency declaration"
 
 
-#: Names that would mean the canary script had started driving the replay path.
-#: `CONFLICT` is the disposition a mismatched replay produces, and
-#: `IDEMPOTENT_REPLAY` the matching one; reaching either from here means the
-#: canary went through `_replay_observation`.
-REPLAY_PATH_NAMES = frozenset({"_replay_observation", "IDEMPOTENT_REPLAY", "CONFLICT"})
+def test_the_installed_observation_canary_drives_both_replay_directions() -> None:
+    """The a10 repair turns the formerly excluded path into artifact evidence.
 
-
-def test_the_conflict_savepoint_canary_does_not_touch_the_replay_path() -> None:
-    """SCOPE, held by a test rather than by a promise.
-
-    `_replay_observation` compares `payload_digest` as text. It is a recorded
-    unmonitored region with its own enforceable premise and it is being
-    addressed independently; a canary that drove it would make this file a
-    stakeholder in that redesign and would quietly re-enable the path in every
-    lane that runs the script.
-
-    COMMENT-BLIND, like every other check in this repository that watches for a
-    shape — and the first version of this test was not, which is why the note
-    is here. It compared the raw source text and failed on the DOCSTRING that
-    explains the exclusion. That is the fourth time a guard in this repository
-    has tripped over prose describing the thing it forbids, and the resolution
-    is always the same: the prose is worth keeping, so the check reads
-    executable code. Here that means every name and attribute the parser can
-    see, which is also strictly stronger: a name assembled at runtime out of
-    two string halves would defeat a text search, and is refused below by the
-    absence of any reference at all.
+    Acceptance alone cannot distinguish a verifier that forgets the canonical
+    receipt. The installed-wheel canary must observe exact bytes replaying the
+    first verdict and changed bytes under the same report id conflicting.
     """
     tree = ast.parse(_source())
-    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
-        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-    }
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            referenced |= {alias.name for alias in node.names}
-    offenders = sorted(referenced & REPLAY_PATH_NAMES)
-    assert not offenders, (
-        f"the canary script references {offenders}. The replay path is out of "
-        "scope for the floor repair and must stay that way until its typed "
-        "boundary is addressed on its own."
+    canary = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "canary_signed_execution_observation_binds"
     )
-
-
-def test_the_replay_path_detector_would_fire() -> None:
-    """SENSITIVITY. The check above is a non-existence claim, and a
-    non-existence claim over a set nothing populates passes for free. So the
-    forbidden names are fed to the same parser as real code."""
-    tree = ast.parse(
-        "from dotmac_deployment_control.service import _replay_observation\n"
-        "x = ObservationDisposition.CONFLICT.value\n"
-    )
-    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
-        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    dispositions = {
+        node.attr for node in ast.walk(canary) if isinstance(node, ast.Attribute)
     }
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            referenced |= {alias.name for alias in node.names}
-    assert referenced & REPLAY_PATH_NAMES == {"_replay_observation", "CONFLICT"}
+    assert {"IDEMPOTENT_REPLAY", "CONFLICT"} <= dispositions
+    calls = [
+        node
+        for node in ast.walk(canary)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "record_observation"
+    ]
+    assert len(calls) >= 5, "the canary no longer drives the two replay paths"
 
 
 # ── a failing canary blocks the tag ─────────────────────────────────────────
@@ -609,11 +578,11 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Seven tables and 99 columns, held as the LITERAL's own shape. A future
+    """Seven tables and 114 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
     assert canaries.CATALOGUE_TABLE_COUNT == 7
-    assert canaries.CATALOGUE_COLUMN_COUNT == 105
+    assert canaries.CATALOGUE_COLUMN_COUNT == 114
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):
@@ -793,7 +762,7 @@ def test_the_refusal_assertion_is_not_satisfied_by_any_red_run() -> None:
     still be healthy around it."""
     text = REFUSAL_ASSERTION.read_text(encoding="utf-8")
     assert "FAIL  database_catalogue_as_published" in text
-    for healthy in ("installed_not_source", "conflict_savepoint_executes"):
+    for healthy in ("installed_not_source", "signed_execution_observation_binds"):
         assert healthy in text, healthy
     assert "--print-evidence" in text, (
         "the strings the refusal must name are repeated in the shell instead of "

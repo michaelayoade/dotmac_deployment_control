@@ -15,8 +15,9 @@
 #   2. the canary that failed is `database_catalogue_as_published`;
 #   3. `installed_not_source` still PASSED, so the environment is still an
 #      installed artifact and not a wreck;
-#   4. `conflict_savepoint_executes` still PASSED, so the package still imports
-#      and still works — the refusal is the catalogue's alone.
+#   4. `signed_execution_observation_binds` still PASSED, so the package still
+#      imports and performs its a10 admission — the refusal is the catalogue's
+#      alone.
 set -euo pipefail
 
 MUTATION="${1:?the mutation name}"
@@ -36,7 +37,7 @@ done < <(python3 scripts/plant_catalogue_mutation.py --mutation "${MUTATION}" --
 grep -q "FAIL  database_catalogue_as_published" "${REPORT}" || fail \
   "the canaries failed under the \`${MUTATION}\` mutation and \`database_catalogue_as_published\` was not one of the failures. Something else refused the artifact first, so the catalogue comparison is still unproven."
 
-for healthy in installed_not_source conflict_savepoint_executes; do
+for healthy in installed_not_source signed_execution_observation_binds; do
   grep -q "ok    ${healthy}" "${REPORT}" || fail \
     "\`${healthy}\` did not pass under the \`${MUTATION}\` mutation. The plant was supposed to change one structural fact, not break the artifact — a package that no longer imports fails every canary and proves none of them."
 done

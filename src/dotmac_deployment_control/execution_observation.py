@@ -9,6 +9,7 @@ the two trust directions must never share a signing identity by accident.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,9 +17,12 @@ from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from dotmac_deployment_control.digests import (
+    AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
     ExecutionPlanDigestV1,
+    ObservedExecutionStateDigestV1,
     PlanDigestV1,
+    PublicKeyFingerprintV1,
     SpecDigestV1,
     canonical_json,
 )
@@ -32,6 +36,7 @@ from dotmac_deployment_control.ports import DeploymentControlError
 EXECUTION_OBSERVATION_SCHEMA = "dotmac.target-execution-observation"
 EXECUTION_OBSERVATION_VERSION = 1
 EXECUTION_OBSERVATION_PURPOSE = "target_execution_observation"
+MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES = 262_144
 
 
 class ExecutionObservationRefusalCode(StrEnum):
@@ -62,11 +67,13 @@ class ExecutionObservationOutcome(StrEnum):
 class ExecutionObservationSignerIdentity:
     key_id: str
     algorithm: str
+    public_key_fingerprint: str
     purpose: str = EXECUTION_OBSERVATION_PURPOSE
 
     def __post_init__(self) -> None:
         _bounded_text(self.key_id, field="key_id")
         _bounded_text(self.algorithm, field="algorithm")
+        PublicKeyFingerprintV1.parse(self.public_key_fingerprint)
         if self.purpose != EXECUTION_OBSERVATION_PURPOSE:
             raise _refused(
                 ExecutionObservationRefusalCode.PURPOSE_MISMATCH,
@@ -80,7 +87,35 @@ class ExecutionObservationSignature:
     key_id: str
     algorithm: str
     purpose: str
+    public_key_fingerprint: str
     signature: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionObservationVerificationKey:
+    """The exact enrolled public verification identity Control selected."""
+
+    key_id: str
+    algorithm: str
+    public_key_b64: str
+    public_key_fingerprint: str
+    purpose: str = EXECUTION_OBSERVATION_PURPOSE
+
+    def __post_init__(self) -> None:
+        _bounded_text(self.key_id, field="verification_key.key_id")
+        _bounded_text(self.algorithm, field="verification_key.algorithm")
+        if self.purpose != EXECUTION_OBSERVATION_PURPOSE:
+            raise _refused(
+                ExecutionObservationRefusalCode.PURPOSE_MISMATCH,
+                "an enrolled execution-observation key must be purpose-bound",
+            )
+        derived = PublicKeyFingerprintV1.from_public_key_b64(self.public_key_b64)
+        recorded = PublicKeyFingerprintV1.parse(self.public_key_fingerprint)
+        if derived != recorded:
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                "the enrolled public-key fingerprint does not match the canonical key",
+            )
 
 
 @runtime_checkable
@@ -107,6 +142,8 @@ class ExecutionObservationVerifier(Protocol):
         key_id: str,
         algorithm: str,
         purpose: str,
+        public_key_b64: str,
+        public_key_fingerprint: str,
         canonical_bytes: bytes,
         signature: str,
     ) -> bool: ...
@@ -138,6 +175,11 @@ class RuntimeIdentityV1:
 class ExecutionObservationStatementV1:
     report_id: str
     authorization_id: str
+    authorization_plan_id: str
+    authorization_control_version: str
+    authorization_envelope_digest: str
+    execution_sequence: int
+    attempt_no: int
     rollout_ref: str
     target_id: str
     target_ref: str
@@ -158,12 +200,15 @@ class ExecutionObservationStatementV1:
     observed_at: datetime
     key_id: str
     algorithm: str
+    public_key_fingerprint: str
     purpose: str = EXECUTION_OBSERVATION_PURPOSE
 
     def __post_init__(self) -> None:
         for field in (
             "report_id",
             "authorization_id",
+            "authorization_plan_id",
+            "authorization_control_version",
             "rollout_ref",
             "target_id",
             "target_ref",
@@ -183,9 +228,18 @@ class ExecutionObservationStatementV1:
                 "the statement does not carry the target execution observation purpose",
             )
         PlanDigestV1.parse(self.plan_digest)
+        AuthorizationEnvelopeDigestV1.parse(self.authorization_envelope_digest)
         DescriptorDigestV1.parse(self.descriptor_digest)
         ExecutionPlanDigestV1.parse(self.execution_plan_digest)
         SpecDigestV1.parse(self.observed_spec_digest)
+        PublicKeyFingerprintV1.parse(self.public_key_fingerprint)
+        for field in ("execution_sequence", "attempt_no"):
+            value = getattr(self, field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise _refused(
+                    ExecutionObservationRefusalCode.MALFORMED,
+                    f"{field} must be a positive integer",
+                )
         for name, images in (
             ("authorized_images", self.authorized_images),
             ("observed_images", self.observed_images),
@@ -205,6 +259,11 @@ class ExecutionObservationStatementV1:
             "purpose": self.purpose,
             "report_id": self.report_id,
             "authorization_id": self.authorization_id,
+            "authorization_plan_id": self.authorization_plan_id,
+            "authorization_control_version": self.authorization_control_version,
+            "authorization_envelope_digest": self.authorization_envelope_digest,
+            "execution_sequence": self.execution_sequence,
+            "attempt_no": self.attempt_no,
             "rollout_ref": self.rollout_ref,
             "target_id": self.target_id,
             "target_ref": self.target_ref,
@@ -225,7 +284,42 @@ class ExecutionObservationStatementV1:
             "observed_at": _timestamp(self.observed_at),
             "key_id": self.key_id,
             "algorithm": self.algorithm,
+            "public_key_fingerprint": self.public_key_fingerprint,
         }
+
+    def substantive_state_mapping(self) -> dict[str, Any]:
+        """State at the execution coordinate, excluding retry/transport facts."""
+        return {
+            "authorization_id": self.authorization_id,
+            "authorization_plan_id": self.authorization_plan_id,
+            "authorization_control_version": self.authorization_control_version,
+            "authorization_envelope_digest": self.authorization_envelope_digest,
+            "rollout_ref": self.rollout_ref,
+            "execution_sequence": self.execution_sequence,
+            "attempt_no": self.attempt_no,
+            "target_id": self.target_id,
+            "target_ref": self.target_ref,
+            "product_code": self.product_code,
+            "environment": self.environment,
+            "operation": self.operation,
+            "release_ref": self.release_ref,
+            "observed_release_ref": self.observed_release_ref,
+            "authorized_images": image_set_payload(self.authorized_images),
+            "observed_images": image_set_payload(self.observed_images),
+            "plan_digest": self.plan_digest,
+            "descriptor_digest": self.descriptor_digest,
+            "execution_plan_digest": self.execution_plan_digest,
+            "observed_spec_digest": self.observed_spec_digest,
+            "observed_revision": self.observed_revision,
+            "runtime_identity": self.runtime_identity.as_mapping(),
+            "outcome": self.outcome.value,
+        }
+
+    @property
+    def substantive_state_digest(self) -> ObservedExecutionStateDigestV1:
+        return ObservedExecutionStateDigestV1.over_json(
+            self.substantive_state_mapping()
+        )
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -269,6 +363,88 @@ class ExecutionObservationEnvelopeV1:
             ) from exc
         return cls(statement=statement, signature=signature)
 
+    @classmethod
+    def parse_bytes(cls, value: bytes) -> ExecutionObservationEnvelopeV1:
+        """Parse the exact bounded wire bytes, refusing ambiguous JSON.
+
+        The caller supplies one byte string. Control stores and hashes those
+        bytes and parses this same value, so a malformed or bad-signature
+        attempt cannot carry evidence from a different alleged request.
+        Duplicate JSON keys are refused because a verifier and an operator may
+        otherwise select different values from one wire document.
+        """
+        if not isinstance(value, bytes):
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                "the execution observation wire value must be bytes",
+            )
+        if len(value) > MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES:
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                "the execution observation exceeds the bounded wire size of "
+                f"{MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES} bytes",
+            )
+        try:
+            text = value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                "the execution observation is not UTF-8 JSON",
+            ) from exc
+        try:
+            decoded = json.loads(
+                text,
+                object_pairs_hook=_mapping_without_duplicate_keys,
+                parse_constant=_refuse_non_json_number,
+            )
+        except json.JSONDecodeError as exc:
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                "the execution observation is not valid JSON",
+            ) from exc
+        return cls.parse(decoded)
+
+
+def _mapping_without_duplicate_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """`object_pairs_hook`: one key, one value, or the document is refused.
+
+    Python's default resolution keeps the LAST duplicate silently, and other
+    readers keep the first — so one wire document could show a verifier one
+    value and an operator another. Refusing is the only reading under which
+    "the signed bytes said X" has a single answer.
+
+    Raised as the module's own refusal rather than a JSONDecodeError: this is
+    not a syntax fault, it is a document whose meaning is ambiguous, and the
+    caller records it as MALFORMED either way.
+    """
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                f"the execution observation repeats JSON key {key!r}; a "
+                "document with two values for one key lets two readers read "
+                "two different reports out of one signature",
+            )
+        seen[key] = value
+    return seen
+
+
+def _refuse_non_json_number(constant: str) -> Any:
+    """`parse_constant`: NaN and the infinities are not JSON and not evidence.
+
+    They cannot round-trip through the canonical encoder, so bytes carrying one
+    could never equal their own re-rendering — accepting them would create a
+    document that verifies once and can never be reproduced.
+    """
+    raise _refused(
+        ExecutionObservationRefusalCode.MALFORMED,
+        f"the execution observation carries {constant!r}, which is not a JSON "
+        "value and cannot round-trip through the canonical encoding",
+    )
+
 
 def issue_execution_observation_envelope(
     statement_fields: Mapping[str, Any], *, signer: ExecutionObservationSigner
@@ -287,7 +463,14 @@ def issue_execution_observation_envelope(
             "the signer did not expose an execution-observation identity",
         )
     fields = dict(statement_fields)
-    for forbidden in ("key_id", "algorithm", "purpose"):
+    for forbidden in (
+        "schema",
+        "version",
+        "key_id",
+        "algorithm",
+        "public_key_fingerprint",
+        "purpose",
+    ):
         if forbidden in fields:
             raise _refused(
                 ExecutionObservationRefusalCode.MALFORMED,
@@ -305,6 +488,7 @@ def issue_execution_observation_envelope(
                 "purpose": identity.purpose,
                 "key_id": identity.key_id,
                 "algorithm": identity.algorithm,
+                "public_key_fingerprint": identity.public_key_fingerprint,
             }
         )
     except ExecutionObservationRefusedError:
@@ -318,6 +502,7 @@ def issue_execution_observation_envelope(
     if (
         signed.key_id != statement.key_id
         or signed.algorithm != statement.algorithm
+        or signed.public_key_fingerprint != statement.public_key_fingerprint
         or signed.purpose != statement.purpose
     ):
         raise _refused(
@@ -334,7 +519,10 @@ def issue_execution_observation_envelope(
 
 
 def verify_execution_observation_envelope(
-    value: object, *, verifier: ExecutionObservationVerifier
+    value: object,
+    *,
+    verifier: ExecutionObservationVerifier,
+    verification_key: ExecutionObservationVerificationKey,
 ) -> ExecutionObservationEnvelopeV1:
     if not isinstance(verifier, ExecutionObservationVerifier):
         raise _refused(
@@ -344,10 +532,22 @@ def verify_execution_observation_envelope(
         )
     envelope = ExecutionObservationEnvelopeV1.parse(value)
     statement = envelope.statement
+    if (
+        statement.key_id != verification_key.key_id
+        or statement.algorithm != verification_key.algorithm
+        or statement.purpose != verification_key.purpose
+        or statement.public_key_fingerprint != verification_key.public_key_fingerprint
+    ):
+        raise _refused(
+            ExecutionObservationRefusalCode.SIGNATURE_INVALID,
+            "the signed key identity does not equal the enrolled verification identity",
+        )
     if not verifier.verify_execution_observation(
         key_id=statement.key_id,
         algorithm=statement.algorithm,
         purpose=statement.purpose,
+        public_key_b64=verification_key.public_key_b64,
+        public_key_fingerprint=verification_key.public_key_fingerprint,
         canonical_bytes=statement.canonical_bytes,
         signature=envelope.signature,
     ):
@@ -364,6 +564,11 @@ _STATEMENT_KEYS = {
     "purpose",
     "report_id",
     "authorization_id",
+    "authorization_plan_id",
+    "authorization_control_version",
+    "authorization_envelope_digest",
+    "execution_sequence",
+    "attempt_no",
     "rollout_ref",
     "target_id",
     "target_ref",
@@ -384,17 +589,25 @@ _STATEMENT_KEYS = {
     "observed_at",
     "key_id",
     "algorithm",
+    "public_key_fingerprint",
 }
 
 
 def _parse_statement(value: object) -> ExecutionObservationStatementV1:
     row = _exact_mapping(value, _STATEMENT_KEYS, where="execution observation")
-    if row["schema"] != EXECUTION_OBSERVATION_SCHEMA:
+    if (
+        not isinstance(row["schema"], str)
+        or row["schema"] != EXECUTION_OBSERVATION_SCHEMA
+    ):
         raise _refused(
             ExecutionObservationRefusalCode.UNSUPPORTED_VERSION,
             f"unsupported execution observation schema {row['schema']!r}",
         )
-    if row["version"] != EXECUTION_OBSERVATION_VERSION:
+    if (
+        not isinstance(row["version"], int)
+        or isinstance(row["version"], bool)
+        or row["version"] != EXECUTION_OBSERVATION_VERSION
+    ):
         raise _refused(
             ExecutionObservationRefusalCode.UNSUPPORTED_VERSION,
             f"unsupported execution observation version {row['version']!r}",
@@ -418,6 +631,11 @@ def _parse_statement(value: object) -> ExecutionObservationStatementV1:
     return ExecutionObservationStatementV1(
         report_id=_text(row, "report_id"),
         authorization_id=_text(row, "authorization_id"),
+        authorization_plan_id=_text(row, "authorization_plan_id"),
+        authorization_control_version=_text(row, "authorization_control_version"),
+        authorization_envelope_digest=_text(row, "authorization_envelope_digest"),
+        execution_sequence=_positive_int(row, "execution_sequence"),
+        attempt_no=_positive_int(row, "attempt_no"),
         rollout_ref=_text(row, "rollout_ref"),
         target_id=_text(row, "target_id"),
         target_ref=_text(row, "target_ref"),
@@ -438,6 +656,7 @@ def _parse_statement(value: object) -> ExecutionObservationStatementV1:
         observed_at=_datetime(row, "observed_at"),
         key_id=_text(row, "key_id"),
         algorithm=_text(row, "algorithm"),
+        public_key_fingerprint=_text(row, "public_key_fingerprint"),
         purpose=_text(row, "purpose"),
     )
 
@@ -475,6 +694,16 @@ def _sequence(value: object, *, field: str) -> Sequence[object]:
         raise _refused(
             ExecutionObservationRefusalCode.MALFORMED,
             f"{field} must be a sequence",
+        )
+    return value
+
+
+def _positive_int(row: Mapping[str, Any], field: str) -> int:
+    value = row[field]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise _refused(
+            ExecutionObservationRefusalCode.MALFORMED,
+            f"{field} must be a positive integer",
         )
     return value
 
@@ -536,6 +765,7 @@ __all__ = [
     "ExecutionObservationSigner",
     "ExecutionObservationSignerIdentity",
     "ExecutionObservationStatementV1",
+    "ExecutionObservationVerificationKey",
     "ExecutionObservationVerifier",
     "RuntimeIdentityV1",
     "issue_execution_observation_envelope",

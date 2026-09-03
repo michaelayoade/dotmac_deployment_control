@@ -79,8 +79,6 @@ DEPENDENCY = "dotmac-kernel"
 #: imports. Not a changelog reading and not a guess: each row was established by
 #: opening the published wheels on either side of the boundary.
 #:
-#: * `dotmac_kernel/transactions.py` is absent from `0.1.0a97` and present in
-#:   `0.1.0a98`. It set this floor from `0.1.0a6`.
 #: * `dotmac_kernel/product_database_catalog.py` is absent from `0.1.0a99` and
 #:   present in `0.1.0a100`. It sets the floor now.
 #:
@@ -92,7 +90,6 @@ DEPENDENCY = "dotmac-kernel"
 #: 'dotmac_kernel'`, which names no module at all and would leave the mutation
 #: lane unable to tell its own proof from unrelated breakage.
 FIRST_SHIPPED_IN = {
-    "dotmac_kernel.transactions": "0.1.0a98",
     "dotmac_kernel.product_database_catalog": "0.1.0a100",
 }
 

@@ -17,6 +17,7 @@ from dotmac_deployment_control import (
 )
 from tests.authorization_support import SIGNER as AUTHORIZATION_SIGNER
 from tests.execution_observation_support import (
+    OBSERVATION_VERIFICATION_KEY,
     OBSERVATION_VERIFIER,
     TestExecutionObservationSigner,
 )
@@ -39,6 +40,11 @@ def _fields() -> dict[str, object]:
     return {
         "report_id": "report-1",
         "authorization_id": "1cf99794-b135-4ec7-93e0-ea85c8cc4660",
+        "authorization_plan_id": "74ef9ff8-4eef-4fef-949f-202fd978d95e",
+        "authorization_control_version": "0.1.0a10",
+        "authorization_envelope_digest": "sha256:" + "55" * 32,
+        "execution_sequence": 1,
+        "attempt_no": 1,
         "rollout_ref": "rollout-1",
         "target_id": "46029f90-2a76-437c-b3d0-05b464e87472",
         "target_ref": "vendor-cp-prod",
@@ -71,7 +77,9 @@ def _issued() -> ExecutionObservationEnvelopeV1:
 
 def test_a_clean_execution_observation_verifies() -> None:
     verified = verify_execution_observation_envelope(
-        _issued(), verifier=OBSERVATION_VERIFIER
+        _issued(),
+        verifier=OBSERVATION_VERIFIER,
+        verification_key=OBSERVATION_VERIFICATION_KEY,
     )
     assert verified.statement.authorization_id == _fields()["authorization_id"]
     assert verified.statement.runtime_identity.identifier == "container:abcdef"
@@ -104,6 +112,11 @@ def test_authorization_signer_cannot_cross_the_observation_purpose_boundary() ->
 _SCALAR_MUTATIONS: tuple[tuple[str, object], ...] = (
     ("report_id", "report-2"),
     ("authorization_id", "8cf99794-b135-4ec7-93e0-ea85c8cc4660"),
+    ("authorization_plan_id", "84ef9ff8-4eef-4fef-949f-202fd978d95e"),
+    ("authorization_control_version", "0.1.0a99"),
+    ("authorization_envelope_digest", "sha256:" + "66" * 32),
+    ("execution_sequence", 2),
+    ("attempt_no", 2),
     ("rollout_ref", "rollout-2"),
     ("target_id", "56029f90-2a76-437c-b3d0-05b464e87472"),
     ("target_ref", "vendor-cp-stage"),
@@ -122,6 +135,7 @@ _SCALAR_MUTATIONS: tuple[tuple[str, object], ...] = (
     ("observed_at", "2026-09-03T12:01:00Z"),
     ("key_id", "other-observation-key"),
     ("algorithm", "other-algorithm"),
+    ("public_key_fingerprint", "sha256:" + "99" * 32),
 )
 _DEDICATED = {"schema", "version", "purpose", "authorized_images", "observed_images"}
 
@@ -140,7 +154,11 @@ def test_every_scalar_mutation_invalidates_the_signature(
     payload = _issued().as_mapping()
     payload["statement"][field] = replacement  # type: ignore[index]
     with pytest.raises(ExecutionObservationRefusedError) as caught:
-        verify_execution_observation_envelope(payload, verifier=OBSERVATION_VERIFIER)
+        verify_execution_observation_envelope(
+            payload,
+            verifier=OBSERVATION_VERIFIER,
+            verification_key=OBSERVATION_VERIFICATION_KEY,
+        )
     assert caught.value.code is ExecutionObservationRefusalCode.SIGNATURE_INVALID
 
 
@@ -151,7 +169,11 @@ def test_each_image_set_is_signed_by_member_and_digest(field: str) -> None:
     changed[0]["digest"] = "sha256:" + "99" * 32
     payload["statement"][field] = changed  # type: ignore[index]
     with pytest.raises(ExecutionObservationRefusedError) as caught:
-        verify_execution_observation_envelope(payload, verifier=OBSERVATION_VERIFIER)
+        verify_execution_observation_envelope(
+            payload,
+            verifier=OBSERVATION_VERIFIER,
+            verification_key=OBSERVATION_VERIFICATION_KEY,
+        )
     assert caught.value.code is ExecutionObservationRefusalCode.SIGNATURE_INVALID
 
 
@@ -174,3 +196,22 @@ def test_contract_identity_is_refused_before_signature_verification(
         ExecutionObservationRefusalCode.UNSUPPORTED_VERSION,
         ExecutionObservationRefusalCode.PURPOSE_MISMATCH,
     }
+
+
+def test_boolean_is_not_an_integer_observation_version() -> None:
+    payload = _issued().as_mapping()
+    payload["statement"]["version"] = True  # type: ignore[index]
+    with pytest.raises(ExecutionObservationRefusedError) as caught:
+        ExecutionObservationEnvelopeV1.parse(payload)
+    assert caught.value.code is ExecutionObservationRefusalCode.UNSUPPORTED_VERSION
+
+
+@pytest.mark.parametrize(("field", "value"), [("schema", "same"), ("version", 1)])
+def test_contract_identity_cannot_be_caller_supplied(field: str, value: object) -> None:
+    fields = _fields()
+    fields[field] = value
+    with pytest.raises(ExecutionObservationRefusedError, match="derived"):
+        issue_execution_observation_envelope(
+            fields,
+            signer=TestExecutionObservationSigner("target-observation-key"),
+        )

@@ -454,6 +454,18 @@ move from kernel a77 to a98 — a 21-alpha jump. Michael's constraint is that
 the upgrade receives its own migration and compatibility run and is not chosen
 silently by a resolver.
 
+### 2026-09-03 — the original execution canary retires with its premise
+
+The a6 proof above remains the artifact evidence that closed this exception for
+a6; it is not rewritten. The a10 service no longer imports or calls
+`conflict_savepoint`: target-row serialization makes concurrent absent-receipt
+writers unreachable, so retaining `conflict_savepoint_executes` would test a
+kernel utility the distribution no longer consumes. The current floor remains
+`a100`, set by the actual `product_database_catalog` import and derived by the
+same floor/mutation lanes. The installed-wheel signed-observation canary replaces
+the retired service-path proof and drives exact replay, changed-byte conflict,
+enrolled-key verification and physical-key purpose separation.
+
 ## The release recorder is ported but its identity is not provisioned here
 
 **Status:** OPEN. The mechanism is in the tree; the credential it prefers is

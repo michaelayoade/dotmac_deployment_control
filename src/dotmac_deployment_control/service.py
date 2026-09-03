@@ -51,30 +51,20 @@ never constructs a session.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.messaging import enqueue_platform_event, process_once_platform
 
-# `transactions`, NOT `db`. Both re-export the same function, and the difference
-# is the import graph: `dotmac_kernel.db` is the reference assembly's CONFIGURED
-# instance and builds a `DatabaseRuntime` at module import time. This module
-# never owns a connection — every operation takes a caller-owned `Session` — so
-# importing the module that makes one is a boundary violation regardless of
-# whether the runtime is ever used.
-#
-# It was previously imported lazily inside the handler, which hid the violation
-# from static analysis and made the failure surface deep inside SQLAlchemy's
-# `make_url`, far from the cause. A module-level import of the engine-free
-# surface is the honest declaration, and `test_no_eager_database_runtime.py`
-# holds it there.
-from dotmac_kernel.transactions import conflict_savepoint
+# This module never imports `dotmac_kernel.db` or constructs an engine. Every
+# operation receives a caller-owned Session; target-row serialization now owns
+# the observation race, so no kernel transaction helper is needed here either.
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
@@ -93,18 +83,23 @@ from dotmac_deployment_control.authorization import (
     verify_authorization_envelope,
 )
 from dotmac_deployment_control.digests import (
+    AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
     ExecutionPlanDigestV1,
     ObservationEnvelopeDigestV1,
     PlanDigestV1,
+    PublicKeyFingerprintV1,
     SpecDigestV1,
     canonical_json,
 )
 from dotmac_deployment_control.execution_observation import (
+    EXECUTION_OBSERVATION_PURPOSE,
+    MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES,
     ExecutionObservationEnvelopeV1,
     ExecutionObservationOutcome,
-    ExecutionObservationRefusalCode,
     ExecutionObservationRefusedError,
+    ExecutionObservationStatementV1,
+    ExecutionObservationVerificationKey,
     ExecutionObservationVerifier,
     verify_execution_observation_envelope,
 )
@@ -147,7 +142,6 @@ from dotmac_deployment_control.ports import (
     ExpectedStateError,
     ImageSetRefusedError,
     ObservationRefusedError,
-    ObservedState,
     OperationRefusedError,
     PlanRefusedError,
     TransitionRefusedError,
@@ -226,17 +220,17 @@ class TargetTransitionCommand:
 class EnrolCredentialCommand:
     """Register a target's own PUBLIC verification key.
 
-    `public_key_fingerprint` is supplied by the caller because computing it means
-    decoding base64, and the caller has already done that to validate the key.
-    The module checks that it is present and unique; it never holds private
-    material and never generates a key.
+    The algorithm is an enrolled fact, not a choice left to a later report.
+    Control validates the canonical public-key bytes and derives their
+    fingerprint itself. It never holds private material and never generates a
+    key.
     """
 
     command_id: str
     target_id: UUID
     key_id: str
+    algorithm: str
     public_key_b64: str
-    public_key_fingerprint: str
     enrollment_authority: str
     actor_ref: str | None = None
 
@@ -246,7 +240,6 @@ class CredentialTransitionCommand:
     command_id: str
     credential_id: UUID
     reason: str | None = None
-    at: datetime | None = None
     actor_ref: str | None = None
 
 
@@ -324,7 +317,7 @@ class ProposePlanCommand:
 
         Here rather than in the handler because it is a fault in the command
         alone: no state has to be read to know that `redeploy` is not a member
-        of a two-member vocabulary, and a command that cannot be valid should
+        of a three-member vocabulary, and a command that cannot be valid should
         not survive long enough to have its refusal mixed with a target's.
 
         The EXECUTION PLAN DIGEST is deliberately NOT validated here. It is
@@ -368,7 +361,6 @@ class RevokePlanApprovalCommand:
     plan_id: UUID
     revocation_ref: str
     reason: str | None = None
-    revoked_at: datetime | None = None
     expected_version: int | None = None
     actor_ref: str | None = None
 
@@ -381,7 +373,6 @@ class RequestRolloutCommand:
     rollout_ref: str
     plan_id: UUID
     authorization_expires_at: datetime
-    authorization_issued_at: datetime | None = None
     reason: str | None = None
     actor_ref: str | None = None
 
@@ -420,13 +411,51 @@ class RolloutTransitionCommand:
 
 @dataclass(frozen=True, slots=True)
 class RecordObservationCommand:
-    """Admit (or refuse, and record) one inbound observation."""
+    """Admit (or refuse, and record) one inbound observation.
+
+    ## ONE input, and the shape is the repair
+
+    `observation` is the exact bounded wire bytes, and it is the ONLY channel.
+    The earlier shape took a parsed envelope beside an `ObservedState` carrying
+    `raw_body`/`raw_body_digest` — two inputs that had to agree, held apart so
+    nothing forced them to. Control could verify envelope A while storing
+    caller-supplied bytes B, and the comparison bolted between the two
+    parameters was the only thing standing in the way. That is the
+    verify-A-store-B split, the same family as every binding this programme has
+    repaired, and the fix is single-input BY CONSTRUCTION: Control derives the
+    digest itself, parses these bytes, verifies these bytes, compares these
+    bytes, and stores these bytes. There is no second parameter to disagree
+    with, and no projection field a caller could use to smuggle a verification
+    outcome in.
+
+    `__post_init__` refuses a non-bytes value outright rather than recording
+    it: rule 3 is about ARRIVALS — a bad thing a remote party sent — and a
+    caller that passes a string or a mapping has not delivered an arrival, it
+    has mis-called the API.
+    """
 
     command_id: str
-    observed: ObservedState
-    execution_observation_envelope: object
-    received_at: datetime
+    #: The exact wire bytes as received from the transport, unparsed and
+    #: untrusted. Bounded on admission: an oversize body is stored truncated
+    #: (digest over the FULL bytes, taken first) and refused as malformed.
+    observation: bytes
     actor_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.observation, bytes):
+            raise ObservationRefusedError(
+                "an observation is the exact wire BYTES as received; this is a "
+                f"{type(self.observation).__name__}. Control derives the "
+                "digest, parses, verifies and stores that one value — a parsed "
+                "or re-encoded form would let what is verified and what is "
+                "stored diverge, which is the split this command exists to "
+                "remove."
+            )
+
+
+def _control_now() -> datetime:
+    """The trusted Control clock. Kept as one seam for deterministic tests."""
+    return datetime.now(UTC)
 
 
 # ── Digests ─────────────────────────────────────────────────────────────────
@@ -742,6 +771,7 @@ def _verified_rollout_envelope(
     statement = envelope.statement
     expected: dict[str, object] = {
         "authorization_id": str(rollout.id),
+        "execution_sequence": rollout.execution_sequence,
         "rollout_ref": rollout.rollout_ref,
         "plan_id": str(plan.id),
         "target_id": str(target.id),
@@ -760,7 +790,7 @@ def _verified_rollout_envelope(
         "approval_policy_version": plan.approval_policy_version,
         "approval_decision_ref": plan.approval_decision_ref,
         "approval_decision_status": (
-            plan.approval_decision_status
+            ApprovalDecisionStatus.GRANTED.value
             if plan.requires_approval
             else "approval_exempt"
         ),
@@ -820,10 +850,66 @@ def _load_target(session: Session, target_id: UUID) -> DeploymentTarget:
     return row
 
 
+def _load_target_for_update(session: Session, target_id: UUID) -> DeploymentTarget:
+    row = session.execute(
+        select(DeploymentTarget)
+        .where(DeploymentTarget.id == target_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if row is None:
+        raise TransitionRefusedError(f"deployment target {target_id} not found")
+    return row
+
+
 def _load_plan(session: Session, plan_id: UUID) -> DeploymentPlan:
     row = session.get(DeploymentPlan, plan_id)
     if row is None:
         raise TransitionRefusedError(f"deployment plan {plan_id} not found")
+    return row
+
+
+def _load_plan_for_update(session: Session, plan_id: UUID) -> DeploymentPlan:
+    row = session.execute(
+        select(DeploymentPlan)
+        .where(DeploymentPlan.id == plan_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if row is None:
+        raise TransitionRefusedError(f"deployment plan {plan_id} not found")
+    return row
+
+
+def _load_plan_with_target_for_update(
+    session: Session, plan_id: UUID
+) -> tuple[DeploymentTarget, DeploymentPlan]:
+    target_id = session.execute(
+        select(DeploymentPlan.target_id).where(DeploymentPlan.id == plan_id)
+    ).scalar_one_or_none()
+    if target_id is None:
+        raise TransitionRefusedError(f"deployment plan {plan_id} not found")
+    target = _load_target_for_update(session, target_id)
+    return target, _load_plan_for_update(session, plan_id)
+
+
+def _load_credential_for_update(
+    session: Session, credential_id: UUID
+) -> TargetCredential:
+    target_id = session.execute(
+        select(TargetCredential.target_id).where(TargetCredential.id == credential_id)
+    ).scalar_one_or_none()
+    if target_id is None:
+        raise TransitionRefusedError(f"credential {credential_id} not found")
+    _load_target_for_update(session, target_id)
+    row = session.execute(
+        select(TargetCredential)
+        .where(TargetCredential.id == credential_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if row is None:
+        raise TransitionRefusedError(f"credential {credential_id} not found")
     return row
 
 
@@ -1017,7 +1103,20 @@ def _observation_attempt_view(row: ObservationAttempt) -> facts.ObservationAttem
 
 
 def _observation_receipt_view(row: ObservationReceipt) -> facts.ObservationReceiptView:
-    """Project a canonical receipt. The signed payload never crosses either."""
+    """Project safe typed evidence; the signed raw payload never crosses."""
+    statement: ExecutionObservationStatementV1 | None = None
+    signed_evidence_status = "legacy_absent"
+    if row.payload is not None:
+        try:
+            decoded = json.loads(row.payload.decode("utf-8"))
+            statement = ExecutionObservationEnvelopeV1.parse(decoded).statement
+            signed_evidence_status = "verified_at_receipt"
+        except (
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ExecutionObservationRefusedError,
+        ):
+            signed_evidence_status = "unreadable"
     return facts.ObservationReceiptView(
         id=row.id,
         authenticated_target_ref=row.authenticated_target_ref,
@@ -1028,6 +1127,39 @@ def _observation_receipt_view(row: ObservationReceipt) -> facts.ObservationRecei
         observed_release_ref=row.observed_release_ref,
         observed_spec_digest=row.observed_spec_digest,
         payload_digest=row.payload_digest,
+        execution_sequence=row.execution_sequence,
+        attempt_no=row.attempt_no,
+        observed_state_digest=row.observed_state_digest,
+        signed_evidence_status=signed_evidence_status,
+        authorization_id=(None if statement is None else statement.authorization_id),
+        authorization_plan_id=(
+            None if statement is None else statement.authorization_plan_id
+        ),
+        authorization_control_version=(
+            None if statement is None else statement.authorization_control_version
+        ),
+        authorization_envelope_digest=(
+            None if statement is None else statement.authorization_envelope_digest
+        ),
+        rollout_ref=(None if statement is None else statement.rollout_ref),
+        operation=(None if statement is None else statement.operation),
+        release_ref=(None if statement is None else statement.release_ref),
+        authorized_images=(() if statement is None else statement.authorized_images),
+        observed_images=(() if statement is None else statement.observed_images),
+        plan_digest=(None if statement is None else statement.plan_digest),
+        descriptor_digest=(None if statement is None else statement.descriptor_digest),
+        execution_plan_digest=(
+            None if statement is None else statement.execution_plan_digest
+        ),
+        observed_revision=(None if statement is None else statement.observed_revision),
+        runtime_identity_kind=(
+            None if statement is None else statement.runtime_identity.kind
+        ),
+        runtime_identity_identifier=(
+            None if statement is None else statement.runtime_identity.identifier
+        ),
+        outcome=(None if statement is None else statement.outcome.value),
+        observed_at=(None if statement is None else statement.observed_at),
     )
 
 
@@ -1091,7 +1223,7 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
     """
 
     def handler(session: Session) -> Mapping[str, object]:
-        row = _load_target(session, command.target_id)
+        row = _load_target_for_update(session, command.target_id)
         _require_expected(
             row.target_ref,
             status=row.status,
@@ -1204,7 +1336,7 @@ def _target_transition(
     event_type: str,
 ) -> facts.TargetView:
     def handler(session: Session) -> Mapping[str, object]:
-        row = _load_target(session, command.target_id)
+        row = _load_target_for_update(session, command.target_id)
         _require_expected(
             row.target_ref,
             status=row.status,
@@ -1257,23 +1389,37 @@ def enrol_credential(db: Session, command: EnrolCredentialCommand) -> UUID:
     """
 
     def handler(session: Session) -> Mapping[str, object]:
-        target = _load_target(session, command.target_id)
+        target = _load_target_for_update(session, command.target_id)
         existing = session.execute(
             select(TargetCredential).where(TargetCredential.key_id == command.key_id)
         ).scalar_one_or_none()
         if existing is not None:
+            expected_fingerprint = PublicKeyFingerprintV1.from_public_key_b64(
+                command.public_key_b64
+            ).canonical
+            if (
+                existing.target_id != target.id
+                or existing.algorithm != command.algorithm
+                or existing.purpose != EXECUTION_OBSERVATION_PURPOSE
+                or existing.public_key_b64 != command.public_key_b64
+                or existing.public_key_fingerprint != expected_fingerprint
+            ):
+                raise TransitionRefusedError(
+                    f"credential key id {command.key_id!r} is already bound to a "
+                    "different target or verification identity; rotate under a "
+                    "new key id rather than reinterpreting enrolled bytes"
+                )
             return {"id": str(existing.id)}
-        if not command.public_key_fingerprint:
-            raise TransitionRefusedError(
-                "a credential needs a fingerprint over the DECODED key bytes; "
-                "base64 text is not canonical and two spellings of one key would "
-                "each enrol separately"
-            )
+        fingerprint = PublicKeyFingerprintV1.from_public_key_b64(
+            command.public_key_b64
+        ).canonical
         row = TargetCredential(
             target_id=target.id,
             key_id=command.key_id,
             public_key_b64=command.public_key_b64,
-            public_key_fingerprint=command.public_key_fingerprint,
+            public_key_fingerprint=fingerprint,
+            algorithm=command.algorithm,
+            purpose=EXECUTION_OBSERVATION_PURPOSE,
             status=CredentialStatus.PENDING.value,
             enrollment_authority=command.enrollment_authority,
         )
@@ -1312,19 +1458,17 @@ def activate_credential(db: Session, command: CredentialTransitionCommand) -> No
     and a second implementation could disagree with the first.
     """
 
+    effective_at = _control_now()
+
     def handler(session: Session) -> Mapping[str, object]:
-        row = session.get(TargetCredential, command.credential_id)
-        if row is None:
-            raise TransitionRefusedError(
-                f"credential {command.credential_id} not found"
-            )
+        row = _load_credential_for_update(session, command.credential_id)
         if row.status != CredentialStatus.PENDING.value:
             raise TransitionRefusedError(
                 f"credential {row.key_id} is {row.status!r}; only a pending "
                 "credential can be activated"
             )
         row.status = CredentialStatus.ACTIVE.value
-        row.activated_at = command.at or datetime.now(UTC)
+        row.activated_at = effective_at
         session.flush()
         _audit_and_emit(
             session,
@@ -1354,16 +1498,14 @@ def revoke_credential(db: Session, command: CredentialTransitionCommand) -> None
     that recorded it are append-only precisely so that history survives.
     """
 
+    effective_at = _control_now()
+
     def handler(session: Session) -> Mapping[str, object]:
-        row = session.get(TargetCredential, command.credential_id)
-        if row is None:
-            raise TransitionRefusedError(
-                f"credential {command.credential_id} not found"
-            )
+        row = _load_credential_for_update(session, command.credential_id)
         if row.status == CredentialStatus.REVOKED.value:
             return {"id": str(row.id)}
         row.status = CredentialStatus.REVOKED.value
-        row.revoked_at = command.at or datetime.now(UTC)
+        row.revoked_at = effective_at
         row.revocation_reason = command.reason
         session.flush()
         _audit_and_emit(
@@ -1399,17 +1541,23 @@ def credential_is_eligible(
     row = db.execute(
         select(TargetCredential).where(TargetCredential.key_id == key_id)
     ).scalar_one_or_none()
-    if row is None or row.activated_at is None:
+    if row is None:
         return False, None
     target = db.get(DeploymentTarget, row.target_id)
     target_ref = target.target_ref if target is not None else None
-    activated = _as_utc(row.activated_at)
-    if at < activated:
-        return False, target_ref
-    for closed_at in (row.retired_at, row.revoked_at):
-        if closed_at is not None and at >= _as_utc(closed_at):
-            return False, target_ref
-    return True, target_ref
+    return _credential_row_is_eligible(row, at=at), target_ref
+
+
+def _credential_row_is_eligible(row: TargetCredential, *, at: datetime) -> bool:
+    if row.activated_at is None:
+        return False
+    instant = _as_utc(at)
+    if instant < _as_utc(row.activated_at):
+        return False
+    return not any(
+        closed_at is not None and instant >= _as_utc(closed_at)
+        for closed_at in (row.retired_at, row.revoked_at)
+    )
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -1434,7 +1582,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
     """
 
     def handler(session: Session) -> Mapping[str, object]:
-        target = _load_target(session, command.target_id)
+        target = _load_target_for_update(session, command.target_id)
         blockers = _plan_blockers(target)
         if blockers:
             # One outcome per command, so the first is the one raised; the
@@ -1575,7 +1723,7 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
     """
 
     def handler(session: Session) -> Mapping[str, object]:
-        row = _load_plan(session, command.plan_id)
+        _target, row = _load_plan_with_target_for_update(session, command.plan_id)
         _require_expected(
             f"plan {row.id}",
             status=row.status,
@@ -1803,8 +1951,10 @@ def revoke_plan_approval(
     stronger thing.
     """
 
+    effective_at = _control_now()
+
     def handler(session: Session) -> Mapping[str, object]:
-        row = _load_plan(session, command.plan_id)
+        _target, row = _load_plan_with_target_for_update(session, command.plan_id)
         _require_expected(
             f"plan {row.id}",
             status=row.status,
@@ -1829,7 +1979,7 @@ def revoke_plan_approval(
                 "from a defect afterwards."
             )
         row.approval_decision_status = ApprovalDecisionStatus.REVOKED.value
-        row.approval_revoked_at = _as_utc(command.revoked_at or datetime.now(UTC))
+        row.approval_revoked_at = effective_at
         row.approval_revocation_ref = command.revocation_ref
         row.approval_revocation_reason = command.reason
         row.record_version += 1
@@ -1920,13 +2070,21 @@ def request_rollout(
 ) -> facts.RolloutView:
     """Decide to converge a target on a plan. No transport happens here."""
 
+    issued_at = _control_now()
+
     def handler(session: Session) -> Mapping[str, object]:
         existing = session.execute(
             select(Rollout).where(Rollout.rollout_ref == command.rollout_ref)
         ).scalar_one_or_none()
         if existing is not None:
             return {"id": str(existing.id)}
-        plan = _load_plan(session, command.plan_id)
+        plan_target_id = session.execute(
+            select(DeploymentPlan.target_id).where(DeploymentPlan.id == command.plan_id)
+        ).scalar_one_or_none()
+        if plan_target_id is None:
+            raise TransitionRefusedError(f"deployment plan {command.plan_id} not found")
+        target = _load_target_for_update(session, plan_target_id)
+        plan = _load_plan_for_update(session, command.plan_id)
         if plan.requires_approval and plan.status != PlanStatus.APPROVED.value:
             raise ApprovalRefusedError(
                 f"plan {plan.id} is {plan.status!r} and requires approval; a "
@@ -1989,23 +2147,27 @@ def request_rollout(
                 "request_rollout requires an injected AuthorizationSigner; "
                 "a live database row is not a portable signed authorization",
             )
-        target = _load_target(session, plan.target_id)
         if target.status != TargetStatus.ACTIVE.value:
             raise TransitionRefusedError(
                 f"target {target.target_ref} is {target.status!r}; a suspended or "
                 "decommissioned target is deliberately excluded from rollouts"
             )
+        previous_execution_sequence = session.execute(
+            select(func.max(Rollout.execution_sequence)).where(
+                Rollout.target_id == target.id
+            )
+        ).scalar_one()
+        execution_sequence = int(previous_execution_sequence or 0) + 1
         row = Rollout(
+            id=uuid4(),
             rollout_ref=command.rollout_ref,
             target_id=target.id,
             plan_id=plan.id,
             status=RolloutStatus.REQUESTED.value,
             reason=command.reason,
             record_version=1,
+            execution_sequence=execution_sequence,
         )
-        session.add(row)
-        session.flush()
-        issued_at = command.authorization_issued_at or datetime.now(UTC)
         operation = plan.authorized_operation or plan.operation
         execution = plan.authorized_execution_plan_digest or plan.execution_plan_digest
         decision_status = (
@@ -2016,6 +2178,7 @@ def request_rollout(
         envelope = issue_authorization_envelope(
             {
                 "authorization_id": str(row.id),
+                "execution_sequence": execution_sequence,
                 "rollout_ref": row.rollout_ref,
                 "plan_id": str(plan.id),
                 "target_id": str(target.id),
@@ -2041,6 +2204,7 @@ def request_rollout(
             signer=signer,
         )
         row.authorization_envelope = envelope.as_mapping()
+        session.add(row)
         session.flush()
         _audit_and_emit(
             session,
@@ -2077,7 +2241,6 @@ def dispatch_attempt(
     *,
     command_id: str,
     rollout_id: UUID,
-    at: datetime | None = None,
     actor_ref: str | None = None,
     verifier: AuthorizationVerifier | None = None,
 ) -> DeliveryIntent:
@@ -2093,22 +2256,36 @@ def dispatch_attempt(
     a retry that has not been tested.
     """
 
+    dispatched_at = _control_now()
+
     def handler(session: Session) -> Mapping[str, object]:
-        rollout = _load_rollout(session, rollout_id)
+        locator = session.execute(
+            select(Rollout.target_id, Rollout.plan_id).where(Rollout.id == rollout_id)
+        ).one_or_none()
+        if locator is None:
+            raise TransitionRefusedError(f"rollout {rollout_id} not found")
+        target = _load_target_for_update(session, locator.target_id)
+        plan = _load_plan_for_update(session, locator.plan_id)
+        rollout = session.execute(
+            select(Rollout)
+            .where(Rollout.id == rollout_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one()
         if rollout.status in TERMINAL_ROLLOUT_STATUSES:
             raise TransitionRefusedError(
                 f"rollout {rollout.rollout_ref} is {rollout.status!r}; a settled "
                 "rollout is not retried, a new one is requested"
             )
-        plan = _load_plan(session, rollout.plan_id)
         if plan.approval_decision_status == ApprovalDecisionStatus.REVOKED.value:
             raise ApprovalRefusedError(
                 f"plan {plan.id}'s approval was revoked after authorization. "
                 "The rollout and signed envelope remain immutable history, but "
                 "dispatch is no longer permitted."
             )
-        target = _load_target(session, rollout.target_id)
-        _verified_rollout_envelope(rollout, plan, target, verifier=verifier, at=at)
+        _verified_rollout_envelope(
+            rollout, plan, target, verifier=verifier, at=dispatched_at
+        )
         pending = session.execute(
             select(RolloutAttempt).where(
                 RolloutAttempt.rollout_id == rollout.id,
@@ -2131,7 +2308,7 @@ def dispatch_attempt(
             rollout_id=rollout.id,
             attempt_no=attempt_no,
             outcome=AttemptOutcome.PENDING.value,
-            dispatched_at=at or datetime.now(UTC),
+            dispatched_at=dispatched_at,
         )
         session.add(attempt)
         if rollout.status == RolloutStatus.REQUESTED.value:
@@ -2161,12 +2338,27 @@ def dispatch_attempt(
     outcome = process_once_platform(
         db, command_id=command_id, command_type=SCOPE_DISPATCH, handler=handler
     )
+    attempt_no = int(str(outcome.result["attempt_no"]))
     rollout = _load_rollout(db, rollout_id)
     plan = _load_plan(db, rollout.plan_id)
     target = _load_target(db, rollout.target_id)
+    attempt = db.execute(
+        select(RolloutAttempt).where(
+            RolloutAttempt.rollout_id == rollout.id,
+            RolloutAttempt.attempt_no == attempt_no,
+        )
+    ).scalar_one()
     snapshot = plan.snapshot or {}
     envelope = _verified_rollout_envelope(
-        rollout, plan, target, verifier=verifier, at=at
+        rollout,
+        plan,
+        target,
+        verifier=verifier,
+        at=(
+            _as_utc(attempt.dispatched_at)
+            if attempt.dispatched_at is not None
+            else None
+        ),
     )
     descriptor = _frozen_descriptor_digest(plan)
     assert descriptor is not None
@@ -2185,7 +2377,7 @@ def dispatch_attempt(
             plan.authorized_execution_plan_digest or plan.execution_plan_digest or ""
         ),
         authorization_envelope=envelope,
-        attempt_no=int(str(outcome.result["attempt_no"])),
+        attempt_no=attempt_no,
         spec=dict(snapshot.get("spec") or {}),
         licence_ref=snapshot.get("licence_ref"),
         brand_profile_ref=snapshot.get("brand_profile_ref"),
@@ -2399,236 +2591,265 @@ def record_observation(
     `unbound_report` — because they are three findings with three readers; see
     `_execution_binding_disposition`.
     """
-    observed = command.observed
-    if command.received_at.tzinfo is None:
-        raise ObservationRefusedError(
-            "received_at must be timezone-aware; an eligibility decision against "
-            "a naive instant is not reproducible"
-        )
+    wire = command.observation
+    received_at = _control_now()
+
+    # THE DIGEST IS DERIVED HERE, inside Control, over the FULL body exactly as
+    # received and BEFORE any truncation — so two truncated attempts remain
+    # distinguishable, and no caller-supplied digest exists to disagree with
+    # the bytes it allegedly describes.
+    raw_body_digest = ObservationEnvelopeDigestV1.over_bytes(wire).canonical
+    raw_body_truncated = len(wire) > MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES
+    stored_body = (
+        wire[:MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES] if raw_body_truncated else wire
+    )
 
     parsed_observation: ExecutionObservationEnvelopeV1 | None = None
-    verified_observation: ExecutionObservationEnvelopeV1 | None = None
-    observation_error: ExecutionObservationRefusedError | None = None
     try:
-        parsed_observation = ExecutionObservationEnvelopeV1.parse(
-            command.execution_observation_envelope
-        )
-        if observation_verifier is None:
-            raise ExecutionObservationRefusedError(
-                ExecutionObservationRefusalCode.SIGNATURE_INVALID,
-                "no ExecutionObservationVerifier was injected; caller-populated "
-                "signature_status is not signature verification",
-            )
-        verified_observation = verify_execution_observation_envelope(
-            parsed_observation,
-            verifier=observation_verifier,
-        )
-    except ExecutionObservationRefusedError as exc:
-        observation_error = exc
+        # `parse_bytes`, never `parse`: the thing parsed is the thing stored,
+        # byte for byte. An oversize body is refused here (and recorded as a
+        # truncated MALFORMED attempt below); ambiguous JSON — duplicate keys,
+        # non-JSON numbers — is refused rather than resolved, because a
+        # verifier and an operator must never read two values out of one wire
+        # document.
+        parsed_observation = ExecutionObservationEnvelopeV1.parse_bytes(wire)
+    except ExecutionObservationRefusedError:
+        # The exact inbound bytes still become an attempt below. Parsing before
+        # the handler is only a bounded syntax operation; trust begins after
+        # Control selects the enrolled verification identity inside it.
+        pass
 
     def handler(session: Session) -> Mapping[str, object]:
         attempt = ObservationAttempt(
-            received_at=command.received_at,
-            raw_body=observed.raw_body,
-            raw_body_truncated=observed.raw_body_truncated,
-            raw_body_digest=observed.raw_body_digest,
-            signature_status=observed.signature_status,
+            received_at=received_at,
+            raw_body=stored_body,
+            raw_body_truncated=raw_body_truncated,
+            raw_body_digest=raw_body_digest,
+            signature_status=SignatureStatus.UNRESOLVED.value,
             eligibility_at_receipt=EligibilityAtReceipt.NOT_APPLICABLE.value,
-            key_id=observed.key_id,
-            claimed_target_ref=observed.claimed_target_ref,
-            report_id=observed.report_id,
+            # Identity fields are EVIDENCE parsed out of the bytes above, and
+            # nothing else: an arrival that never parsed has no claim to record,
+            # rather than a caller-typed one that could disagree with the body.
+            key_id=None,
+            claimed_target_ref=None,
+            report_id=None,
             disposition=ObservationDisposition.MALFORMED.value,
         )
 
-        # The signed statement is the source; the caller's ObservedState is a
-        # projection that must agree field-for-field.  A caller may not turn a
-        # verified envelope into a different observation by populating the
-        # convenient columns differently.
-        if observation_error is not None or verified_observation is None:
-            if (
-                observation_error is not None
-                and observation_error.code
-                is ExecutionObservationRefusalCode.SIGNATURE_INVALID
-                and parsed_observation is not None
-            ):
-                known = session.execute(
-                    select(TargetCredential.id).where(
-                        TargetCredential.key_id == parsed_observation.statement.key_id
-                    )
-                ).scalar_one_or_none()
-                attempt.disposition = (
-                    ObservationDisposition.UNKNOWN_KEY.value
-                    if known is None
-                    else ObservationDisposition.BAD_SIGNATURE.value
-                )
-            else:
-                attempt.disposition = ObservationDisposition.MALFORMED.value
+        if parsed_observation is None:
+            attempt.disposition = ObservationDisposition.MALFORMED.value
             session.add(attempt)
             session.flush()
             return _observation_result(session, attempt, command, changed=False)
 
-        projection_problem = _observation_projection_problem(
-            observed, verified_observation
-        )
-        if projection_problem is not None:
-            attempt.disposition = ObservationDisposition.SIGNED_REPORT_MISMATCH.value
-            session.add(attempt)
-            session.flush()
-            return _observation_result(session, attempt, command, changed=False)
+        statement = parsed_observation.statement
+        attempt.key_id = statement.key_id
+        attempt.claimed_target_ref = statement.target_ref
+        attempt.report_id = statement.report_id
 
-        # ── Nothing authenticated: record and stop. ─────────────────────────
-        if observed.signature_status != SignatureStatus.VALID.value:
-            attempt.disposition = (
-                ObservationDisposition.UNKNOWN_KEY.value
-                if observed.signature_status == SignatureStatus.UNRESOLVED.value
-                else ObservationDisposition.BAD_SIGNATURE.value
+        # Locate without trusting or locking the key, then take the global
+        # consequence lock order: target -> credential -> plan. Re-read each
+        # locked row with populate_existing so a preloaded identity-map value
+        # cannot overwrite a concurrent record_version.
+        credential_target_id = session.execute(
+            select(TargetCredential.target_id).where(
+                TargetCredential.key_id == statement.key_id
             )
+        ).scalar_one_or_none()
+        if credential_target_id is None:
+            attempt.disposition = ObservationDisposition.UNKNOWN_KEY.value
             session.add(attempt)
             session.flush()
-            return _observation_result(session, attempt, command, changed=False)
-
-        # A valid signature MUST have produced an identity. A caller that passes
-        # `valid` without one has defeated the claim/proof split, and the CHECK
-        # constraint would refuse the row anyway — this raises the clearer error.
-        if not observed.authenticated_target_ref:
-            raise ObservationRefusedError(
-                "a valid signature must resolve to an authenticated target; "
-                "passing the report's own claim here would make deployment "
-                "binding decorative"
+            return _observation_result(
+                session, attempt, command, changed=False, statement=statement
             )
-        attempt.authenticated_target_ref = observed.authenticated_target_ref
+        target = _load_target_for_update(session, credential_target_id)
+        credential = session.execute(
+            select(TargetCredential)
+            .where(TargetCredential.key_id == statement.key_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if credential is None:
+            attempt.disposition = ObservationDisposition.UNKNOWN_KEY.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(
+                session, attempt, command, changed=False, statement=statement
+            )
+        if observation_verifier is None:
+            attempt.signature_status = SignatureStatus.INVALID.value
+            attempt.disposition = ObservationDisposition.BAD_SIGNATURE.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(
+                session, attempt, command, changed=False, statement=statement
+            )
+        try:
+            verification_key = ExecutionObservationVerificationKey(
+                key_id=credential.key_id,
+                algorithm=credential.algorithm or "",
+                purpose=credential.purpose or "",
+                public_key_b64=credential.public_key_b64,
+                public_key_fingerprint=credential.public_key_fingerprint,
+            )
+            verified_observation = verify_execution_observation_envelope(
+                parsed_observation,
+                verifier=observation_verifier,
+                verification_key=verification_key,
+            )
+        except ExecutionObservationRefusedError:
+            attempt.signature_status = SignatureStatus.INVALID.value
+            attempt.disposition = ObservationDisposition.BAD_SIGNATURE.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(
+                session, attempt, command, changed=False, statement=statement
+            )
+        attempt.signature_status = SignatureStatus.VALID.value
 
-        eligible, credential_target = credential_is_eligible(
-            session, observed.key_id or "", at=command.received_at
-        )
+        # There is deliberately NO projection comparison here. The earlier
+        # shape checked a caller-supplied ObservedState field by field against
+        # the signed statement — a comparison that only existed because there
+        # were two inputs able to disagree. With one bytes input the statement
+        # IS the report, so a `signed_report_mismatch` is not a rare outcome,
+        # it is an unrepresentable one, and the disposition member is gone with
+        # the input that could have produced it.
+
+        # This is the PROVEN identity. The caller's similarly named field is
+        # compared below and never assigned here.
+        attempt.authenticated_target_ref = target.target_ref
+        eligible = _credential_row_is_eligible(credential, at=received_at)
         attempt.eligibility_at_receipt = (
             EligibilityAtReceipt.ELIGIBLE.value
             if eligible
             else EligibilityAtReceipt.NOT_ELIGIBLE.value
         )
+
+        # A canonical receipt is historical evidence about an arrival that was
+        # eligible when Control first saw it.  A later key revocation cannot
+        # make those exact bytes stop being a replay, or make different bytes
+        # under the same report id stop being a conflict.  Signature and exact
+        # caller projection are still re-verified above with the enrolled
+        # public identity; only the MOVING eligibility decision is deliberately
+        # below this immutable receipt boundary.
+        receipt = session.execute(
+            select(ObservationReceipt).where(
+                ObservationReceipt.authenticated_target_ref == target.target_ref,
+                ObservationReceipt.report_id == statement.report_id,
+            )
+        ).scalar_one_or_none()
+        if receipt is not None:
+            return _replay_observation(
+                session,
+                attempt,
+                command,
+                receipt,
+                statement=statement,
+                canonical_payload=verified_observation.canonical_bytes,
+            )
+
         if not eligible:
             attempt.disposition = ObservationDisposition.NOT_ELIGIBLE.value
             session.add(attempt)
             session.flush()
-            return _observation_result(session, attempt, command, changed=False)
-
-        if observed.authenticated_target_ref != credential_target:
-            attempt.disposition = ObservationDisposition.TARGET_MISMATCH.value
-            session.add(attempt)
-            session.flush()
-            return _observation_result(session, attempt, command, changed=False)
-
-        # ── The claim, compared against the proof. ──────────────────────────
-        if (
-            observed.claimed_target_ref
-            and observed.claimed_target_ref != observed.authenticated_target_ref
-        ):
-            attempt.disposition = ObservationDisposition.TARGET_MISMATCH.value
-            session.add(attempt)
-            session.flush()
-            return _observation_result(session, attempt, command, changed=False)
-
-        target = session.execute(
-            select(DeploymentTarget).where(
-                DeploymentTarget.target_ref == observed.authenticated_target_ref
+            return _observation_result(
+                session, attempt, command, changed=False, statement=statement
             )
-        ).scalar_one_or_none()
-        if target is None or target.target_ref != credential_target:
-            attempt.disposition = ObservationDisposition.UNKNOWN_TARGET.value
-            session.add(attempt)
-            session.flush()
-            return _observation_result(session, attempt, command, changed=False)
 
-        # ── The three-term binding. Step 8, and the reason any of this. ─────
-        #
-        # Placed HERE — after identity is proven and before the canonical
-        # receipt — for the same reason the claim/proof and unknown-target
-        # quarantines are: the question is about THIS arrival's contents, and
-        # answering it from a previous arrival's verdict would let a report bind
-        # to an authorization by being sent twice.
-        unbound = _execution_observation_binding_disposition(
+        # From here the envelope is verified, exactly projected, eligible and
+        # attributable. Its first verdict is therefore canonical even when it
+        # is a quarantine rather than an acceptance.
+        disposition, coordinate, desired_revision = _execution_observation_disposition(
             session,
             target,
-            observed,
             verified_observation,
             authorization_verifier=authorization_verifier,
-            received_at=command.received_at,
+            received_at=received_at,
         )
-        if unbound is not None:
-            attempt.disposition = unbound
-            session.add(attempt)
-            session.flush()
-            return _observation_result(session, attempt, command, changed=False)
+        # ADR-0007's claim/proof split survives with one claimant fewer: the
+        # SIGNED statement's own target_ref is the claim, the credential-locked
+        # target is the proof, and there is no longer a third, caller-typed
+        # account that could contradict both.
+        if statement.target_ref != target.target_ref:
+            disposition = ObservationDisposition.TARGET_MISMATCH.value
 
-        if verified_observation.statement.outcome is ExecutionObservationOutcome.FAILED:
-            attempt.disposition = ObservationDisposition.EXECUTION_FAILED.value
-            session.add(attempt)
-            session.flush()
-            return _observation_result(session, attempt, command, changed=False)
-
-        # ── Idempotency, against the canonical receipt. ─────────────────────
-        receipt = session.execute(
-            select(ObservationReceipt).where(
-                ObservationReceipt.authenticated_target_ref
-                == observed.authenticated_target_ref,
-                ObservationReceipt.report_id == observed.report_id,
+        changed = False
+        state_digest = statement.substantive_state_digest.canonical
+        advances_high_water = disposition in {
+            ObservationDisposition.ACCEPTED.value,
+            ObservationDisposition.EXECUTION_FAILED.value,
+        }
+        if advances_high_water and coordinate is not None:
+            current_coordinate = (
+                (
+                    target.last_execution_sequence,
+                    target.last_execution_attempt_no,
+                )
+                if target.last_execution_sequence is not None
+                and target.last_execution_attempt_no is not None
+                else None
             )
-        ).scalar_one_or_none()
-        if receipt is not None:
-            return _replay_observation(session, attempt, command, receipt)
+            if current_coordinate is not None and coordinate < current_coordinate:
+                disposition = ObservationDisposition.STALE_OBSERVATION.value
+                advances_high_water = False
+            elif current_coordinate == coordinate:
+                if target.last_execution_state_digest != state_digest:
+                    disposition = (
+                        ObservationDisposition.EXECUTION_COORDINATE_CONFLICT.value
+                    )
+                advances_high_water = False
 
-        # The lookup above is an optimisation, never concurrency control. Two
-        # real first arrivals can both observe no receipt. Establish the
-        # canonical row inside its own SAVEPOINT so the unique constraint picks
-        # one winner without aborting the caller's transaction; the loser can
-        # then retain its attempt and return the winner's stable verdict.
-        #
-        try:
-            with conflict_savepoint(session):
-                receipt = ObservationReceipt(
-                    authenticated_target_ref=observed.authenticated_target_ref,
-                    report_id=observed.report_id,
-                    payload=observed.raw_body,
-                    payload_digest=observed.raw_body_digest,
-                    key_id=observed.key_id or "",
-                    first_received_at=command.received_at,
-                    original_verdict=ObservationDisposition.ACCEPTED.value,
-                    observed_release_ref=observed.observed_release_ref,
-                    observed_spec_digest=observed.observed_spec_digest,
-                )
-                session.add(receipt)
-                session.flush()
-        except IntegrityError:
-            receipt = session.execute(
-                select(ObservationReceipt).where(
-                    ObservationReceipt.authenticated_target_ref
-                    == observed.authenticated_target_ref,
-                    ObservationReceipt.report_id == observed.report_id,
-                )
-            ).scalar_one_or_none()
-            if receipt is None:
-                # The flush failed for something other than the canonical-key
-                # race. Do not launder a real persistence defect into a replay.
-                raise
-            return _replay_observation(session, attempt, command, receipt)
+        if advances_high_water and coordinate is not None:
+            target.last_execution_sequence = coordinate[0]
+            target.last_execution_attempt_no = coordinate[1]
+            target.last_execution_state_digest = state_digest
+            changed = True
+            if disposition == ObservationDisposition.ACCEPTED.value:
+                target.observed_release_ref = statement.observed_release_ref
+                target.observed_spec_digest = statement.observed_spec_digest
+                target.last_observed_at = received_at
+                # The signed authorization names one immutable plan.  Its
+                # desired revision is the only revision this execution can
+                # prove. Re-resolving by spec digest here would select the
+                # newest plan with matching content and could project an older
+                # authorized execution as a newer plan that never ran.
+                target.observed_revision = desired_revision
+            target.record_version += 1
 
-        attempt.disposition = ObservationDisposition.ACCEPTED.value
+        canonical_payload = verified_observation.canonical_bytes
+        receipt = ObservationReceipt(
+            authenticated_target_ref=target.target_ref,
+            report_id=statement.report_id,
+            payload=canonical_payload,
+            payload_digest=ObservationEnvelopeDigestV1.over_bytes(
+                canonical_payload
+            ).canonical,
+            key_id=statement.key_id,
+            first_received_at=received_at,
+            original_verdict=disposition,
+            observed_release_ref=statement.observed_release_ref,
+            observed_spec_digest=statement.observed_spec_digest,
+            execution_sequence=(coordinate[0] if coordinate is not None else None),
+            attempt_no=(coordinate[1] if coordinate is not None else None),
+            observed_state_digest=(state_digest if coordinate is not None else None),
+        )
+        session.add(receipt)
+        session.flush()
+
+        attempt.disposition = disposition
         attempt.receipt_id = receipt.id
         session.add(attempt)
 
-        target.observed_release_ref = observed.observed_release_ref
-        target.observed_spec_digest = observed.observed_spec_digest
-        target.last_observed_at = observed.reported_at
-        target.observed_revision = _revision_for_observation(session, target, observed)
-        target.record_version += 1
         session.flush()
 
         return _observation_result(
             session,
             attempt,
             command,
-            changed=True,
-            verdict=ObservationDisposition.ACCEPTED.value,
+            changed=changed,
+            statement=statement,
+            verdict=disposition,
             target=target,
         )
 
@@ -2650,89 +2871,106 @@ def record_observation(
     )
 
 
-def _observation_projection_problem(
-    observed: ObservedState,
-    envelope: ExecutionObservationEnvelopeV1,
-) -> str | None:
-    """Return the first caller projection that contradicts the signed bytes."""
-    statement = envelope.statement
-    envelope_bytes = envelope.canonical_bytes
-    envelope_digest = ObservationEnvelopeDigestV1.over_bytes(envelope_bytes).canonical
-    expected: dict[str, object] = {
-        "report_id": statement.report_id,
-        "observed_release_ref": statement.observed_release_ref,
-        "observed_spec_digest": statement.observed_spec_digest,
-        "reported_at": statement.observed_at,
-        "claimed_target_ref": statement.target_ref,
-        "key_id": statement.key_id,
-        "raw_body": envelope_bytes,
-        "raw_body_digest": envelope_digest,
-        "raw_body_truncated": False,
-        "signature_status": SignatureStatus.VALID.value,
-        "rollout_ref": statement.rollout_ref,
-        "operation": statement.operation,
-        "execution_plan_digest": statement.execution_plan_digest,
-    }
-    for field, wanted in expected.items():
-        actual = getattr(observed, field)
-        if isinstance(actual, datetime) and isinstance(wanted, datetime):
-            actual = _as_utc(actual)
-            wanted = _as_utc(wanted)
-        if actual != wanted:
-            return field
-    return None
-
-
-def _execution_observation_binding_disposition(
+def _execution_observation_disposition(
     session: Session,
     target: DeploymentTarget,
-    observed: ObservedState,
     observation: ExecutionObservationEnvelopeV1,
     *,
     authorization_verifier: AuthorizationVerifier | None,
     received_at: datetime,
-) -> str | None:
-    """Bind the signed target result to one live, standing authorization."""
+) -> tuple[str, tuple[int, int] | None, int | None]:
+    """Decide one verified attributable observation at a trusted instant."""
     statement = observation.statement
     try:
         authorization_id = UUID(statement.authorization_id)
     except ValueError:
-        return ObservationDisposition.UNBOUND_REPORT.value
+        return ObservationDisposition.UNBOUND_REPORT.value, None, None
     rollout = session.get(Rollout, authorization_id)
     if (
         rollout is None
         or rollout.rollout_ref != statement.rollout_ref
         or rollout.target_id != target.id
     ):
-        return ObservationDisposition.UNBOUND_REPORT.value
-    plan = session.get(DeploymentPlan, rollout.plan_id)
+        return ObservationDisposition.UNBOUND_REPORT.value, None, None
+    if (
+        rollout.execution_sequence is None
+        or rollout.execution_sequence != statement.execution_sequence
+    ):
+        return ObservationDisposition.AUTHORIZATION_MISMATCH.value, None, None
+    execution_attempt = session.execute(
+        select(RolloutAttempt).where(
+            RolloutAttempt.rollout_id == rollout.id,
+            RolloutAttempt.attempt_no == statement.attempt_no,
+        )
+    ).scalar_one_or_none()
+    if execution_attempt is None:
+        return ObservationDisposition.UNBOUND_REPORT.value, None, None
+    coordinate = (rollout.execution_sequence, execution_attempt.attempt_no)
+    plan = session.execute(
+        select(DeploymentPlan)
+        .where(DeploymentPlan.id == rollout.plan_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if plan is None:
-        return ObservationDisposition.UNBOUND_REPORT.value
+        return ObservationDisposition.UNBOUND_REPORT.value, coordinate, None
+    # The authorization names one exact plan. Matching by spec across every
+    # plan would let a later, unexecuted revision borrow this execution merely
+    # because its spec happened to be equal. Conversely, a target that reports
+    # a different spec has not proved ANY desired revision even when the
+    # executor itself reports success.
+    reported_spec = SpecDigestV1.parse(statement.observed_spec_digest)
+    frozen_spec = spec_digest_of((plan.snapshot or {}).get("spec") or {})
+    observed_revision = plan.desired_revision if reported_spec == frozen_spec else None
     if plan.approval_decision_status == ApprovalDecisionStatus.REVOKED.value:
-        return ObservationDisposition.AUTHORIZATION_REVOKED.value
+        if plan.approval_revoked_at is None:
+            return ObservationDisposition.AUTHORIZATION_INVALID.value, coordinate, None
+        if _as_utc(received_at) >= _as_utc(plan.approval_revoked_at):
+            return (
+                ObservationDisposition.AUTHORIZATION_REVOKED.value,
+                coordinate,
+                observed_revision,
+            )
     if authorization_verifier is None:
-        return ObservationDisposition.AUTHORIZATION_INVALID.value
+        return ObservationDisposition.AUTHORIZATION_INVALID.value, coordinate, None
     try:
         authorization = _verified_rollout_envelope(
             rollout,
             plan,
             target,
             verifier=authorization_verifier,
-            # Execution is authorized at the instant the target says it ran.
-            # A report may arrive later through an at-least-once transport;
-            # receipt latency cannot retroactively make the execution expired.
-            at=statement.observed_at,
+            # Standing is decided at Control's trusted receipt instant. A target
+            # cannot revive expired authority by backdating its own clock.
+            at=received_at,
         )
     except AuthorizationEnvelopeRefusedError as exc:
         if exc.code is AuthorizationEnvelopeRefusalCode.EXPIRED:
-            return ObservationDisposition.AUTHORIZATION_EXPIRED.value
-        return ObservationDisposition.AUTHORIZATION_INVALID.value
+            return (
+                ObservationDisposition.AUTHORIZATION_EXPIRED.value,
+                coordinate,
+                observed_revision,
+            )
+        return (
+            ObservationDisposition.AUTHORIZATION_INVALID.value,
+            coordinate,
+            observed_revision,
+        )
 
     authorized = authorization.statement
-    if authorized.key_id == statement.key_id:
-        return ObservationDisposition.SIGNER_PURPOSE_REUSED.value
+    if authorized.public_key_fingerprint == statement.public_key_fingerprint:
+        return (
+            ObservationDisposition.SIGNER_PURPOSE_REUSED.value,
+            coordinate,
+            observed_revision,
+        )
+    authorization_digest = AuthorizationEnvelopeDigestV1.over_bytes(
+        authorization.canonical_bytes
+    ).canonical
     expected: dict[str, object] = {
         "authorization_id": authorized.authorization_id,
+        "authorization_plan_id": authorized.plan_id,
+        "authorization_control_version": authorized.control_version,
+        "authorization_envelope_digest": authorization_digest,
         "rollout_ref": authorized.rollout_ref,
         "target_id": authorized.target_id,
         "target_ref": authorized.target_ref,
@@ -2748,21 +2986,54 @@ def _execution_observation_binding_disposition(
     for field, wanted in expected.items():
         if getattr(statement, field) != wanted:
             if field == "execution_plan_digest":
-                return ObservationDisposition.EXECUTION_PLAN_MISMATCH.value
+                return (
+                    ObservationDisposition.EXECUTION_PLAN_MISMATCH.value,
+                    coordinate,
+                    observed_revision,
+                )
             if field == "operation":
-                return ObservationDisposition.OPERATION_MISMATCH.value
-            return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+                return (
+                    ObservationDisposition.OPERATION_MISMATCH.value,
+                    coordinate,
+                    observed_revision,
+                )
+            return (
+                ObservationDisposition.AUTHORIZATION_MISMATCH.value,
+                coordinate,
+                observed_revision,
+            )
     if statement.observed_release_ref != authorized.release_ref:
-        return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+        return (
+            ObservationDisposition.AUTHORIZATION_MISMATCH.value,
+            coordinate,
+            observed_revision,
+        )
     if statement.observed_images != authorized.authorized_images:
-        return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+        return (
+            ObservationDisposition.AUTHORIZATION_MISMATCH.value,
+            coordinate,
+            observed_revision,
+        )
     if _as_utc(statement.observed_at) > _as_utc(received_at):
-        return ObservationDisposition.AUTHORIZATION_MISMATCH.value
-    return _execution_binding_disposition(session, target, observed)
+        return (
+            ObservationDisposition.AUTHORIZATION_MISMATCH.value,
+            coordinate,
+            observed_revision,
+        )
+    binding = _execution_binding_disposition(plan, statement)
+    if binding is not None:
+        return binding, coordinate, observed_revision
+    if statement.outcome is ExecutionObservationOutcome.FAILED:
+        return (
+            ObservationDisposition.EXECUTION_FAILED.value,
+            coordinate,
+            observed_revision,
+        )
+    return ObservationDisposition.ACCEPTED.value, coordinate, observed_revision
 
 
 def _execution_binding_disposition(
-    session: Session, target: DeploymentTarget, observed: ObservedState
+    plan: DeploymentPlan, statement: ExecutionObservationStatementV1
 ) -> str | None:
     """Step 8: accept only when proposal, authorization and report agree.
 
@@ -2798,23 +3069,7 @@ def _execution_binding_disposition(
     #: Nothing to bind against. An ABSENCE, not a contradiction — the sender
     #: never said which authorization it was executing, so no plan was consulted
     #: and none is named in the finding.
-    if not observed.rollout_ref:
-        return ObservationDisposition.UNBOUND_REPORT.value
-    if not observed.execution_plan_digest or not observed.operation:
-        return ObservationDisposition.UNBOUND_REPORT.value
-
-    rollout = session.execute(
-        select(Rollout).where(Rollout.rollout_ref == observed.rollout_ref)
-    ).scalar_one_or_none()
-    if rollout is None or rollout.target_id != target.id:
-        # A rollout that does not exist, or one belonging to somebody else.
-        # Both are "this report names no authorization of THIS target's", and
-        # the second is the interesting one: naming another target's rollout is
-        # how a report would try to satisfy a binding it was never issued.
-        return ObservationDisposition.UNBOUND_REPORT.value
-
-    plan = session.get(DeploymentPlan, rollout.plan_id)
-    if plan is None or not plan.execution_plan_digest or not plan.operation:
+    if not plan.execution_plan_digest or not plan.operation:
         return ObservationDisposition.UNBOUND_REPORT.value
 
     proposed = _stored_execution_plan_digest(
@@ -2824,7 +3079,7 @@ def _execution_binding_disposition(
         plan, plan.authorized_execution_plan_digest, term="authorized execution plan"
     )
     try:
-        reported = ExecutionPlanDigestV1.parse(observed.execution_plan_digest)
+        reported = ExecutionPlanDigestV1.parse(statement.execution_plan_digest)
     except DigestEncodingError:
         # NOT raised, and not a mismatch either. An unreadable digest is a
         # finding about the REPORT's encoding; calling it a mismatch would say
@@ -2843,7 +3098,7 @@ def _execution_binding_disposition(
 
     try:
         reported_operation = require_operation(
-            observed.operation, where="observation operation"
+            statement.operation, where="observation operation"
         )
     except OperationRefusedError:
         # A word outside the closed vocabulary. Never coerced, and never read as
@@ -2864,9 +3119,15 @@ def _replay_observation(
     attempt: ObservationAttempt,
     command: RecordObservationCommand,
     receipt: ObservationReceipt,
+    *,
+    statement: ExecutionObservationStatementV1,
+    canonical_payload: bytes,
 ) -> Mapping[str, object]:
     """Retain a replay and preserve the first verdict as immutable history."""
-    same_bytes = receipt.payload_digest == command.observed.raw_body_digest
+    # The digest is a coordinate for operators; equality is over the exact
+    # signed bytes. A corrupted/replaced digest column cannot make different
+    # evidence idempotent.
+    same_bytes = receipt.payload == canonical_payload
     attempt.disposition = (
         ObservationDisposition.IDEMPOTENT_REPLAY.value
         if same_bytes
@@ -2880,51 +3141,9 @@ def _replay_observation(
         attempt,
         command,
         changed=False,
+        statement=statement,
         verdict=receipt.original_verdict,
     )
-
-
-def _revision_for_observation(
-    session: Session, target: DeploymentTarget, observed: ObservedState
-) -> int | None:
-    """Which desired revision does the observed state correspond to?
-
-    Resolved by matching the observed spec digest against the digests of this
-    target's plans, newest first. Deliberately NOT "the current desired
-    revision": a target reports what it is RUNNING, and assuming that equals what
-    was most recently asked for is precisely the assumption that makes drift
-    undetectable.
-
-    Returns `None` when the observed state matches no plan this control plane
-    produced — which is itself a finding, and a truthful one.
-    """
-    if not observed.observed_spec_digest:
-        return None
-    plans = (
-        session.execute(
-            select(DeploymentPlan)
-            .where(DeploymentPlan.target_id == target.id)
-            .order_by(DeploymentPlan.sequence.desc())
-        )
-        .scalars()
-        .all()
-    )
-    try:
-        reported = SpecDigestV1.parse_accepting_a4_bare_hex(
-            observed.observed_spec_digest
-        )
-    except DigestEncodingError:
-        # NOT raised. Rule 3: every arrival is recorded, and an unreadable spec
-        # digest is a finding about the REPORT, not a reason to lose it. The
-        # caller has already written the append-only attempt; returning None
-        # says "this matches no plan we produced", which is exactly true and is
-        # the same answer an unrecognised-but-well-formed digest gets.
-        return None
-    for plan in plans:
-        snapshot = plan.snapshot or {}
-        if spec_digest_of(snapshot.get("spec") or {}) == reported:
-            return plan.desired_revision
-    return None
 
 
 def _observation_result(
@@ -2933,6 +3152,7 @@ def _observation_result(
     command: RecordObservationCommand,
     *,
     changed: bool,
+    statement: ExecutionObservationStatementV1 | None = None,
     verdict: str | None = None,
     target: DeploymentTarget | None = None,
 ) -> Mapping[str, object]:
@@ -2943,7 +3163,7 @@ def _observation_result(
     silently unaudited outcome.
     """
     details: dict[str, Any] = {
-        "report_id": command.observed.report_id,
+        "report_id": attempt.report_id,
         "disposition": attempt.disposition,
         "signature_status": attempt.signature_status,
         "eligibility": attempt.eligibility_at_receipt,
@@ -2951,13 +3171,19 @@ def _observation_result(
         "claimed_target_ref": attempt.claimed_target_ref,
         "key_id": attempt.key_id,
         "changed_state": changed,
-        # The report's OWN account of what it executed. Evidence, never
-        # authority — the same rule `claimed_target_ref` is held to — and
-        # recorded on every path so a quarantined arrival can be triaged
-        # without reaching for the signed body.
-        "reported_rollout_ref": command.observed.rollout_ref,
-        "reported_operation": command.observed.operation,
-        "reported_execution_plan_digest": command.observed.execution_plan_digest,
+        # The report's OWN account of what it executed, read out of the parsed
+        # bytes and nowhere else. Evidence, never authority — the same rule
+        # `claimed_target_ref` is held to — and recorded on every path that
+        # parsed, so a quarantined arrival can be triaged without reaching for
+        # the signed body. None on the one path that could not parse, because
+        # an unreadable body HAS no account to record.
+        "reported_rollout_ref": (
+            statement.rollout_ref if statement is not None else None
+        ),
+        "reported_operation": (statement.operation if statement is not None else None),
+        "reported_execution_plan_digest": (
+            statement.execution_plan_digest if statement is not None else None
+        ),
     }
     _audit_and_emit(
         session,

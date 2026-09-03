@@ -573,6 +573,27 @@ class ObservationReceiptView:
     observed_release_ref: str | None
     observed_spec_digest: str | None
     payload_digest: str | None
+    execution_sequence: int | None = None
+    attempt_no: int | None = None
+    observed_state_digest: str | None = None
+    signed_evidence_status: str = "legacy_absent"
+    authorization_id: str | None = None
+    authorization_plan_id: str | None = None
+    authorization_control_version: str | None = None
+    authorization_envelope_digest: str | None = None
+    rollout_ref: str | None = None
+    operation: str | None = None
+    release_ref: str | None = None
+    authorized_images: tuple[AuthorizedImage, ...] = ()
+    observed_images: tuple[AuthorizedImage, ...] = ()
+    plan_digest: str | None = None
+    descriptor_digest: str | None = None
+    execution_plan_digest: str | None = None
+    observed_revision: str | None = None
+    runtime_identity_kind: str | None = None
+    runtime_identity_identifier: str | None = None
+    outcome: str | None = None
+    observed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

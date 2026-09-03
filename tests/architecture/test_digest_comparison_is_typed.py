@@ -59,29 +59,12 @@ DIGEST_ATTRIBUTES = frozenset(
         # executor ran something nobody authorized".
         "execution_plan_digest",
         "authorized_execution_plan_digest",
+        # The exact inbound observation bytes and canonical receipt bytes are
+        # now Control-computed values. They are no longer opaque caller tokens.
+        "raw_body_digest",
+        "payload_digest",
     }
 )
-
-#: NOT COVERED, and the region is named rather than silently omitted.
-#:
-#: `raw_body_digest` and `payload_digest` are opaque tokens the CALLER supplies
-#: on `ObservedState` and this module only stores and echoes back — the
-#: `payload_digest` column is written verbatim from `observed.raw_body_digest`.
-#: `_replay_observation` compares them to decide replay-versus-conflict, and it
-#: compares them as text.
-#:
-#: The exclusion carries an ENFORCEABLE premise rather than a promise: this
-#: package computes a digest in exactly one module, and computes exactly two
-#: kinds. A value it does not produce has no canonical form it could hold the
-#: value to, and inventing one would be this module asserting an encoding for
-#: somebody else's token. `test_this_package_computes_digests_in_exactly_one_
-#: module` is that premise, checked.
-#:
-#: The residual risk is stated rather than hidden: a caller that changes its own
-#: body-digest encoding mid-stream would see a replay recorded as a CONFLICT.
-#: That is a real, narrower instance of the same defect class, and it is
-#: recorded here as an unmonitored region — not as one this gate covers.
-CALLER_SUPPLIED_TOKENS = frozenset({"raw_body_digest", "payload_digest"})
 
 #: Functions returning the canonical STRING rendering. Their result must not be
 #: an operand of a comparison either — `snapshot_digest(x) == y` is the same
@@ -242,28 +225,26 @@ def test_this_package_computes_digests_in_exactly_one_module() -> None:
         if "hashlib" in path.read_text(encoding="utf-8")
     )
     assert computing == [DIGESTS.name], (
-        f"{computing} compute digests. The gate above excludes "
-        f"{sorted(CALLER_SUPPLIED_TOKENS)} on the premise that this package only "
-        "stores and echoes them; a new digest computed outside digests.py "
-        "breaks that premise and the exclusion must be revisited."
+        f"{computing} compute digests. A new digest computed outside digests.py "
+        "creates a second encoding authority and the gate must refuse it."
     )
 
 
-def test_the_excluded_tokens_are_still_only_stored_and_echoed() -> None:
-    """The other half of the premise: nothing DERIVES a caller-supplied token.
+def test_observation_body_and_receipt_digests_use_the_typed_boundary() -> None:
+    """The a10 admission computes both digests from exact canonical bytes.
 
-    `payload_digest` is written straight from `observed.raw_body_digest`. If a
-    line ever computed one, this module would have an encoding opinion about it
-    and the exclusion would no longer be honest.
+    The caller projection is parsed as a value before comparison and the
+    receipt independently derives its digest. This is the positive half that
+    keeps a missing comparison from satisfying the source-wide prohibition.
     """
     source = SERVICE.read_text(encoding="utf-8")
-    derived = [
-        line.strip()
-        for line in source.splitlines()
-        if any(token in line for token in CALLER_SUPPLIED_TOKENS)
-        and ("sha256" in line or "hashlib" in line or "encode(" in line)
-    ]
-    assert not derived, derived
+    parsed_body_digest = (
+        "ObservationEnvelopeDigestV1.parse(\n            observed.raw_body_digest"
+    )
+    assert parsed_body_digest in source
+    assert source.count("ObservationEnvelopeDigestV1.over_bytes(") >= 2
+    assert "if supplied_body_digest != envelope_digest:" in source
+    assert "payload=canonical_payload" in source
 
 
 def test_the_detector_is_not_looking_at_nothing() -> None:

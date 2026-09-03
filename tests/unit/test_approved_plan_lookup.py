@@ -53,6 +53,7 @@ from dotmac_kernel.models import Base
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     ApprovalEvidence,
     ApprovedPlanRefusalCode,
@@ -106,6 +107,11 @@ _IMAGES = [
 @pytest.fixture(autouse=True)
 def _installed_module_audit_actions() -> None:
     install_audit_actions(AuditActionRegistry.from_manifests([module]))
+
+
+@pytest.fixture(autouse=True)
+def _fixed_control_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(control_service, "_control_now", lambda: _NOW)
 
 
 @pytest.fixture
@@ -227,7 +233,6 @@ def _rollout(db: Session, plan):  # type: ignore[no-untyped-def]
             rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan.id,
             authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-            authorization_issued_at=_NOW,
         ),
         signer=SIGNER,
     )

@@ -19,6 +19,7 @@ from dotmac_deployment_control.digests import (
     DescriptorDigestV1,
     ExecutionPlanDigestV1,
     PlanDigestV1,
+    PublicKeyFingerprintV1,
     canonical_json,
 )
 from dotmac_deployment_control.images import (
@@ -61,11 +62,13 @@ class AuthorizationEnvelopeRefusedError(DeploymentControlError):
 class AuthorizationSignerIdentity:
     key_id: str
     algorithm: str
+    public_key_fingerprint: str
     purpose: str = AUTHORIZATION_PURPOSE
 
     def __post_init__(self) -> None:
         _bounded_text(self.key_id, field="key_id")
         _bounded_text(self.algorithm, field="algorithm")
+        PublicKeyFingerprintV1.parse(self.public_key_fingerprint)
         if self.purpose != AUTHORIZATION_PURPOSE:
             raise _refused(
                 AuthorizationEnvelopeRefusalCode.PURPOSE_MISMATCH,
@@ -78,6 +81,7 @@ class AuthorizationSignerIdentity:
 class AuthorizationSignature:
     key_id: str
     algorithm: str
+    public_key_fingerprint: str
     signature: str
     purpose: str = AUTHORIZATION_PURPOSE
 
@@ -102,6 +106,7 @@ class AuthorizationVerifier(Protocol):
         key_id: str,
         algorithm: str,
         purpose: str,
+        public_key_fingerprint: str,
         canonical_bytes: bytes,
         signature: str,
     ) -> bool: ...
@@ -207,6 +212,7 @@ class AuthorizationStatementV2:
     """The a10 authorization contract, including its issuing Control version."""
 
     authorization_id: str
+    execution_sequence: int
     rollout_ref: str
     plan_id: str
     target_id: str
@@ -229,6 +235,7 @@ class AuthorizationStatementV2:
     control_version: str
     key_id: str
     algorithm: str
+    public_key_fingerprint: str
     purpose: str = AUTHORIZATION_PURPOSE
 
     def __post_init__(self) -> None:
@@ -256,6 +263,16 @@ class AuthorizationStatementV2:
         PlanDigestV1.parse(self.plan_digest)
         DescriptorDigestV1.parse(self.descriptor_digest)
         ExecutionPlanDigestV1.parse(self.execution_plan_digest)
+        PublicKeyFingerprintV1.parse(self.public_key_fingerprint)
+        if (
+            not isinstance(self.execution_sequence, int)
+            or isinstance(self.execution_sequence, bool)
+            or self.execution_sequence < 1
+        ):
+            raise _refused(
+                AuthorizationEnvelopeRefusalCode.MALFORMED,
+                "execution_sequence must be a positive integer",
+            )
         canonical = authorized_image_set(
             self.authorized_images, where="authorization statement image set"
         )
@@ -278,6 +295,7 @@ class AuthorizationStatementV2:
             "version": AUTHORIZATION_VERSION,
             "purpose": self.purpose,
             "authorization_id": self.authorization_id,
+            "execution_sequence": self.execution_sequence,
             "rollout_ref": self.rollout_ref,
             "plan_id": self.plan_id,
             "target_id": self.target_id,
@@ -300,6 +318,7 @@ class AuthorizationStatementV2:
             "control_version": self.control_version,
             "key_id": self.key_id,
             "algorithm": self.algorithm,
+            "public_key_fingerprint": self.public_key_fingerprint,
         }
 
     @property
@@ -317,6 +336,10 @@ class AuthorizationEnvelopeV1:
 
     def as_mapping(self) -> dict[str, Any]:
         return {"statement": self.statement.as_mapping(), "signature": self.signature}
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return canonical_json(self.as_mapping())
 
     @classmethod
     def parse(cls, value: object) -> AuthorizationEnvelopeV1:
@@ -344,6 +367,10 @@ class AuthorizationEnvelopeV2:
     def as_mapping(self) -> dict[str, Any]:
         return {"statement": self.statement.as_mapping(), "signature": self.signature}
 
+    @property
+    def canonical_bytes(self) -> bytes:
+        return canonical_json(self.as_mapping())
+
     @classmethod
     def parse(cls, value: object) -> AuthorizationEnvelopeV2:
         if isinstance(value, cls):
@@ -365,7 +392,15 @@ def issue_authorization_envelope(
     """Bind the signer's immutable identity into bytes before signing them."""
     identity = signer.identity
     fields = dict(statement_fields)
-    for forbidden in ("control_version", "key_id", "algorithm", "purpose"):
+    for forbidden in (
+        "schema",
+        "version",
+        "control_version",
+        "key_id",
+        "algorithm",
+        "public_key_fingerprint",
+        "purpose",
+    ):
         if forbidden in fields:
             raise _refused(
                 AuthorizationEnvelopeRefusalCode.MALFORMED,
@@ -383,6 +418,7 @@ def issue_authorization_envelope(
             "control_version": _installed_control_version(),
             "key_id": identity.key_id,
             "algorithm": identity.algorithm,
+            "public_key_fingerprint": identity.public_key_fingerprint,
             "purpose": identity.purpose,
         }
     )
@@ -391,6 +427,7 @@ def issue_authorization_envelope(
     if (
         signed.key_id != statement.key_id
         or signed.algorithm != statement.algorithm
+        or signed.public_key_fingerprint != statement.public_key_fingerprint
         or signed.purpose != statement.purpose
     ):
         raise _refused(
@@ -431,6 +468,7 @@ def verify_authorization_envelope(
         key_id=envelope.statement.key_id,
         algorithm=envelope.statement.algorithm,
         purpose=envelope.statement.purpose,
+        public_key_fingerprint=envelope.statement.public_key_fingerprint,
         canonical_bytes=envelope.statement.canonical_bytes,
         signature=envelope.signature,
     ):
@@ -481,17 +519,26 @@ _STATEMENT_KEYS = {
     "algorithm",
 }
 
-_STATEMENT_KEYS_V2 = _STATEMENT_KEYS | {"purpose", "control_version"}
+_STATEMENT_KEYS_V2 = _STATEMENT_KEYS | {
+    "purpose",
+    "control_version",
+    "public_key_fingerprint",
+    "execution_sequence",
+}
 
 
 def _parse_statement(value: object) -> AuthorizationStatementV1:
     row = _exact_mapping(value, _STATEMENT_KEYS, where="authorization statement")
-    if row["schema"] != AUTHORIZATION_SCHEMA:
+    if not isinstance(row["schema"], str) or row["schema"] != AUTHORIZATION_SCHEMA:
         raise _refused(
             AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION,
             f"unsupported authorization schema {row['schema']!r}",
         )
-    if row["version"] != 1:
+    if (
+        not isinstance(row["version"], int)
+        or isinstance(row["version"], bool)
+        or row["version"] != 1
+    ):
         raise _refused(
             AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION,
             f"unsupported authorization version {row['version']!r}",
@@ -529,12 +576,16 @@ def _parse_statement(value: object) -> AuthorizationStatementV1:
 
 def _parse_statement_v2(value: object) -> AuthorizationStatementV2:
     row = _exact_mapping(value, _STATEMENT_KEYS_V2, where="authorization statement")
-    if row["schema"] != AUTHORIZATION_SCHEMA:
+    if not isinstance(row["schema"], str) or row["schema"] != AUTHORIZATION_SCHEMA:
         raise _refused(
             AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION,
             f"unsupported authorization schema {row['schema']!r}",
         )
-    if row["version"] != AUTHORIZATION_VERSION:
+    if (
+        not isinstance(row["version"], int)
+        or isinstance(row["version"], bool)
+        or row["version"] != AUTHORIZATION_VERSION
+    ):
         raise _refused(
             AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION,
             f"unsupported authorization version {row['version']!r}",
@@ -546,6 +597,7 @@ def _parse_statement_v2(value: object) -> AuthorizationStatementV2:
     assert images is not None
     return AuthorizationStatementV2(
         authorization_id=_text(row, "authorization_id"),
+        execution_sequence=_required_positive_int(row, "execution_sequence"),
         rollout_ref=_text(row, "rollout_ref"),
         plan_id=_text(row, "plan_id"),
         target_id=_text(row, "target_id"),
@@ -568,6 +620,7 @@ def _parse_statement_v2(value: object) -> AuthorizationStatementV2:
         control_version=_text(row, "control_version"),
         key_id=_text(row, "key_id"),
         algorithm=_text(row, "algorithm"),
+        public_key_fingerprint=_text(row, "public_key_fingerprint"),
         purpose=_text(row, "purpose"),
     )
 
@@ -633,6 +686,16 @@ def _optional_int(row: Mapping[str, Any], field: str) -> int | None:
         raise _refused(
             AuthorizationEnvelopeRefusalCode.MALFORMED,
             f"{field} must be an integer or null",
+        )
+    return value
+
+
+def _required_positive_int(row: Mapping[str, Any], field: str) -> int:
+    value = row[field]
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise _refused(
+            AuthorizationEnvelopeRefusalCode.MALFORMED,
+            f"{field} must be a positive integer",
         )
     return value
 

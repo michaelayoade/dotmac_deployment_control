@@ -176,7 +176,7 @@ executor can verify while disconnected from Control. `0.1.0a9` added
 `AuthorizationEnvelopeV2`, stored unchanged on the rollout that received it.
 
 The signed statement binds the authorization and approval identities, target,
-operation, release, canonical image set, Control `plan_digest`, Foundation
+per-target execution sequence, operation, release, canonical image set, Control `plan_digest`, Foundation
 `descriptor_digest`, Foundation `execution_plan_digest`, approval standing,
 issue/expiry instants, schema version, signer `key_id`/`algorithm`, the
 `deployment_authorization` purpose, and the installed Control distribution
@@ -193,20 +193,31 @@ without rewriting the historical envelope.
 ## Signed target execution observation
 
 `ExecutionObservationEnvelopeV1` is the return trust direction. The target
-signs the authorization id and rollout, target, operation, release, exact
+signs the digest of the exact authorization envelope, its plan and Control
+version, the authorization id, rollout and dispatched attempt, target, operation, release, exact
 authorized and observed image sets, all three plan/descriptor/execution-plan
 digests, observed spec and revision, runtime identity, outcome and timestamp.
-The signer and verifier protocols have purpose-specific method and identity
-types; an authorization signer cannot satisfy them accidentally.
+The verifier receives Control's enrolled public key, algorithm, purpose and
+derived fingerprint as one typed identity. A key id never selects un-enrolled
+material, and the authorization and observation purposes cannot use the same
+physical key under different names.
 
-`record_observation` first verifies those bytes, then resolves the standing
-authorization and compares every shared term before writing observed state. A
-revoked, expired, mismatched or unverifiable authorization changes no target.
-A byte-identical repeated `report_id` is idempotent and preserves the original
-verdict; the same id with different signed bytes is a conflict. Transport
-settlement remains separate: a successful delivery attempt is not evidence
-that the target executed it, and a signed execution failure does not rewrite
-the transport outcome.
+Control stamps receipt time before parsing, derives the proven target from the
+enrolled credential, and serializes target, credential and plan in one lock
+order. The first eligible verified envelope establishes the canonical receipt,
+including a quarantine; exact bytes replay that first verdict and changed bytes
+under the same `report_id` conflict. The signed
+`(execution_sequence, attempt_no)` is the target's high-water coordinate, so a
+delayed older result remains evidence without regressing newer state. Transport
+settlement remains separate: a successful delivery attempt is not evidence that
+the target executed it, and a signed execution failure does not rewrite the
+transport outcome.
+
+An accepted observation can project a Control desired revision only from the
+exact plan named by its authorization, and only when the reported spec digest
+matches that plan's frozen spec. A later plan with identical content cannot
+borrow the older execution, while a different observed spec remains accepted
+evidence of drift with no falsely-attributed revision.
 
 ## Published facts
 
@@ -243,7 +254,9 @@ The tree has since moved past that: `dc_0003_execution_plan_binding` appends fou
 columns to `deployment_plans`, `dc_0004_authorized_image_set` appends four more
 there plus one on `deployment_targets`, and
 `dc_0005_portable_authorization` appends the immutable signed authorization to
-`rollouts`. The CURRENT declaration is seven tables and 105 columns. The 95
+`rollouts`; `dc_0006_observation_key_identity` adds typed verification identity
+and the monotonic execution coordinates. The CURRENT declaration is seven
+tables and 114 columns. The 95
 above is a fact about the published a7 wheel and stays as one.
 
 `dc_0004` adds no image column to `deployment_plans`, deliberately. A plan's
