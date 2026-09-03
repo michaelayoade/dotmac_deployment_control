@@ -5,7 +5,14 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a11 (declared, not published) — signed dispatch attempt
+## 0.1.0a11 (published 2026-09-03) — signed dispatch attempt
+
+Published by run `33802000337` from protected main `98b2a257f418`;
+independent verify run `33802164085` fetched both artifacts by name, matched
+their recorded digests, installed the wheel with its dependency graph, drove
+all fourteen behavioural canaries, and only then wrote the annotated tag.
+Exact coordinates and the adoption disposition are recorded in
+`docs/published-versions.json`.
 
 ### Added
 
