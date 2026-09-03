@@ -249,9 +249,9 @@ hand-written list.
 
 ## Status
 
-**The a11 successor is declared, not published or adopted.** The newest
-published version is `0.1.0a10`, with `dotmac-kernel >=0.1.0a100` — release run
-`33767109015`, independently VERIFIED by run `33767371612` on 2026-09-03 — and it requires
+**The newest published version is `0.1.0a11`; it is not yet adopted.** It was
+published by release run `33802000337` from protected main and independently
+VERIFIED by run `33802164085` on 2026-09-03. It requires
 `dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
 `dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
 wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
@@ -259,9 +259,10 @@ pinnable, against `dotmac-kernel >=0.1.0a98`.
 
 `0.1.0a9` adds the required Foundation descriptor binding and V1 portable signed
 authorization. Published a10 adds Control-version binding and the
-purpose-separated signed target execution result. The declared a11 successor
-signs the concrete outbound dispatch attempt under a third purpose; it is not
-pinnable until its registry artifacts are independently verified and recorded.
+purpose-separated signed target execution result. Published and pinnable a11
+signs the concrete outbound dispatch attempt under a third purpose. Adoption
+still requires the consuming assembly to inject its purpose-separated signer
+and verifier identities.
 
 Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
 `a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is
