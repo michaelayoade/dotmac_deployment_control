@@ -32,11 +32,5 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {
-    "0.1.0a10": {
-      "status": "declared-not-published",
-      "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "Adds Control-derived version binding to the signed authorization and a purpose-separated, provider-neutral signed target execution observation whose terms are verified against the standing authorization before state changes."
-    }
-  }
+  "unpublished": {}
 }

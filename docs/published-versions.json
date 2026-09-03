@@ -254,6 +254,23 @@
       "pinnable": true,
       "release_run_note": "Published by run 33686171205 from the exact protected-main commit b8427af26101bde5e9b09aecebe3c9176dd18b36; that run built and uploaded the package bytes but neither verified nor tagged them. Independent verify run 33686335734 fetched both artifacts from registry.dotmac.io by filename and reproduced the release manifest digests, installed the dependency-complete wheel as ci-reader, imported it, and ran the behavioral canaries against those registry-served bytes. The verifier alone wrote the annotated tag through tag_once.py after VERIFIED. WHAT a9 CARRIES: DescriptorDigestV1 is required and frozen inside Control's canonical plan snapshot, so a descriptor-only change moves plan_digest while the Foundation's descriptor and execution-plan digests remain distinct received values. AuthorizationEnvelopeV1 is a provider-neutral, signed, portable authorization over authorization and approval identity, target, operation, release, the canonical image set, all three digests, approval standing, validity interval, version, key id and algorithm. The artifact canary independently issues and verifies the envelope, proves image order has no meaning while membership does, and refuses a descriptor mutation. The PostgreSQL lane migrated a clean database to dc_0005 and verified the exact seven-table, 105-column effective-privilege contract.",
       "adoption_note": "PIN a9 for a deployment that requires the Foundation descriptor binding or portable authorization; a8 remains published, verified and pinnable but cannot provide either. Adoption still requires the consuming assembly to inject a production AuthorizationSigner whose private material is held outside Control, distribute the corresponding verifier trust material to the executor, and keep the target-to-Control signed observation identity separate. This release provides the provider-neutral contract and verification seam; it does not choose or provision a cryptographic provider."
+    },
+    {
+      "version": "0.1.0a10",
+      "tag": "dotmac-deployment-control-v0.1.0a10",
+      "tag_object": "accbc88d5a2b266931450d4a7dc6820c1d301c4b",
+      "peeled_commit": "4a56f5836cab48fa2ed7ca00e5affc4364114b31",
+      "release_run": "33767109015",
+      "verify_run": "33767371612",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a10-py3-none-any.whl": "4c0050bb7fd048345ea1899aa34ad6012dc7ba9d5f4ba10785d5ff3eda8c5dbd",
+        "dotmac_deployment_control-0.1.0a10.tar.gz": "ba99565657ad48d3b519318dcb3a5a47ba00889753064a9e7c2c99cfb9b560dc"
+      },
+      "supersedes": "0.1.0a9",
+      "declared_kernel_floor": ">=0.1.0a100"
     }
   ],
   "tags_remain_in_source_for": [
