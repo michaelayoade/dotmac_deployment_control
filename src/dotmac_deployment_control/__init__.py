@@ -46,17 +46,16 @@ decisions; and general infrastructure observability — this module holds no hea
 status at all, because ruling A4 keeps health separate from fleet so that "no
 mutating consumer of health" stays a checkable dependency direction.
 
-## It verifies no target observation itself
+## Two signed directions, two purposes
 
-`dotmac_kernel.licensing.verify_applied_state` and `verify_possession` own the
-target's inbound signature and possession checking (ADR-0007). The caller runs
-them and passes the result in as an `ObservedState`.
-
-Control does own the canonical bytes of the portable authorization it issues to
-an executor.  Its cryptographic signer and verifier are injected protocols:
-this package chooses no algorithm or provider, stores no private key, and does
-not reuse the target-observation identity.  These are opposite trust directions
-and deliberately remain different seams.
+Control owns canonical bytes for both the portable authorization sent to an
+executor and the target execution observation returned to Control. Their
+cryptographic signer/verifier protocols are injected and purpose-specific:
+this package chooses no algorithm or provider, stores no private key, and a
+signer for one direction cannot satisfy the other by structural coincidence.
+ADR-0007 possession proof remains the prerequisite for activating the target's
+public credential; every execution result is then verified independently before
+it can change observed state.
 
 ## Transaction authority
 
@@ -79,15 +78,18 @@ from dotmac_deployment_control.approvals import (
     require_decision_status,
 )
 from dotmac_deployment_control.authorization import (
+    AUTHORIZATION_PURPOSE,
     AUTHORIZATION_SCHEMA,
     AUTHORIZATION_VERSION,
     AuthorizationEnvelopeRefusalCode,
     AuthorizationEnvelopeRefusedError,
     AuthorizationEnvelopeV1,
+    AuthorizationEnvelopeV2,
     AuthorizationSignature,
     AuthorizationSigner,
     AuthorizationSignerIdentity,
     AuthorizationStatementV1,
+    AuthorizationStatementV2,
     AuthorizationVerifier,
     issue_authorization_envelope,
     verify_authorization_envelope,
@@ -98,11 +100,34 @@ from dotmac_deployment_control.database_catalog_snapshot import (
 )
 from dotmac_deployment_control.digests import (
     ALGORITHM,
+    AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
     ExecutionPlanDigestV1,
     ImageDigestV1,
+    ObservationEnvelopeDigestV1,
+    ObservedExecutionStateDigestV1,
     PlanDigestV1,
+    PublicKeyFingerprintV1,
     SpecDigestV1,
+)
+from dotmac_deployment_control.execution_observation import (
+    EXECUTION_OBSERVATION_PURPOSE,
+    EXECUTION_OBSERVATION_SCHEMA,
+    EXECUTION_OBSERVATION_VERSION,
+    MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES,
+    ExecutionObservationEnvelopeV1,
+    ExecutionObservationOutcome,
+    ExecutionObservationRefusalCode,
+    ExecutionObservationRefusedError,
+    ExecutionObservationSignature,
+    ExecutionObservationSigner,
+    ExecutionObservationSignerIdentity,
+    ExecutionObservationStatementV1,
+    ExecutionObservationVerificationKey,
+    ExecutionObservationVerifier,
+    RuntimeIdentityV1,
+    issue_execution_observation_envelope,
+    verify_execution_observation_envelope,
 )
 from dotmac_deployment_control.facts import (
     CREDENTIAL_ACTIVATED_V1,
@@ -185,7 +210,6 @@ from dotmac_deployment_control.ports import (
     ExpectedStateError,
     ImageSetRefusedError,
     ObservationRefusedError,
-    ObservedState,
     OperationRefusedError,
     PlanRefusedError,
     TransitionRefusedError,
@@ -279,18 +303,23 @@ except PackageNotFoundError:  # pragma: no cover
 
 __all__ = [
     "ALGORITHM",
-    "AUTHORIZATION_SCHEMA",
-    "AUTHORIZATION_VERSION",
     "APPROVAL_DECISION_STATUSES",
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
     "AUDIT_ACTION_ROLLOUT",
     "AUDIT_ACTION_TARGET",
+    "AUTHORIZATION_PURPOSE",
+    "AUTHORIZATION_SCHEMA",
+    "AUTHORIZATION_VERSION",
     "CREDENTIAL_ACTIVATED_V1",
     "CREDENTIAL_ENROLLED_V1",
     "CREDENTIAL_REVOKED_V1",
     "DEPLOYMENT_CONTROL_SURFACE",
     "DRIFT_DETECTED_V1",
+    "EXECUTION_OBSERVATION_PURPOSE",
+    "MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES",
+    "EXECUTION_OBSERVATION_SCHEMA",
+    "EXECUTION_OBSERVATION_VERSION",
     "INTENT_DISPATCHED_V1",
     "OBSERVATION_RECORDED_V1",
     "OPERATIONS",
@@ -316,14 +345,6 @@ __all__ = [
     "ApprovalDecisionStatus",
     "ApprovalEvidence",
     "ApprovalRefusedError",
-    "AuthorizationEnvelopeRefusalCode",
-    "AuthorizationEnvelopeRefusedError",
-    "AuthorizationEnvelopeV1",
-    "AuthorizationSignature",
-    "AuthorizationSigner",
-    "AuthorizationSignerIdentity",
-    "AuthorizationStatementV1",
-    "AuthorizationVerifier",
     "ApprovePlanCommand",
     "ApprovedPlanAuthorization",
     "ApprovedPlanLookup",
@@ -332,6 +353,17 @@ __all__ = [
     "ApprovedPlanRefusedError",
     "AttemptOutcome",
     "AttemptView",
+    "AuthorizationEnvelopeRefusalCode",
+    "AuthorizationEnvelopeRefusedError",
+    "AuthorizationEnvelopeDigestV1",
+    "AuthorizationEnvelopeV1",
+    "AuthorizationEnvelopeV2",
+    "AuthorizationSignature",
+    "AuthorizationSigner",
+    "AuthorizationSignerIdentity",
+    "AuthorizationStatementV1",
+    "AuthorizationStatementV2",
+    "AuthorizationVerifier",
     "AuthorizedImage",
     "BrowserFieldError",
     "BrowserSuppliedDigestError",
@@ -349,6 +381,16 @@ __all__ = [
     "DriftReport",
     "EligibilityAtReceipt",
     "EnrolCredentialCommand",
+    "ExecutionObservationEnvelopeV1",
+    "ExecutionObservationOutcome",
+    "ExecutionObservationRefusalCode",
+    "ExecutionObservationRefusedError",
+    "ExecutionObservationSignature",
+    "ExecutionObservationSigner",
+    "ExecutionObservationSignerIdentity",
+    "ExecutionObservationStatementV1",
+    "ExecutionObservationVerificationKey",
+    "ExecutionObservationVerifier",
     "ExecutionPlanBindingError",
     "ExecutionPlanDigestV1",
     "ExpectedStateError",
@@ -357,11 +399,12 @@ __all__ = [
     "ObservationAttempt",
     "ObservationAttemptView",
     "ObservationDisposition",
+    "ObservationEnvelopeDigestV1",
     "ObservationReceipt",
     "ObservationReceiptView",
     "ObservationRefusedError",
     "ObservationVerdict",
-    "ObservedState",
+    "ObservedExecutionStateDigestV1",
     "OperationRefusedError",
     "PlanDigestV1",
     "PlanProposalPreview",
@@ -369,6 +412,7 @@ __all__ = [
     "PlanStatus",
     "PlanView",
     "ProposePlanCommand",
+    "PublicKeyFingerprintV1",
     "RecordObservationCommand",
     "RegisterTargetCommand",
     "RequestRolloutCommand",
@@ -378,6 +422,7 @@ __all__ = [
     "RolloutStatus",
     "RolloutTransitionCommand",
     "RolloutView",
+    "RuntimeIdentityV1",
     "SetDesiredStateCommand",
     "SettleAttemptCommand",
     "SignatureStatus",
@@ -391,8 +436,8 @@ __all__ = [
     "TransitionRefusedError",
     "__version__",
     "activate_credential",
-    "authorized_image_set",
     "approve_plan",
+    "authorized_image_set",
     "build_database_catalog_snapshot",
     "cancel_plan",
     "cancel_rollout",
@@ -407,6 +452,7 @@ __all__ = [
     "get_rollout",
     "get_target",
     "issue_authorization_envelope",
+    "issue_execution_observation_envelope",
     "list_targets",
     "module",
     "observation_attempts",
@@ -434,6 +480,7 @@ __all__ = [
     "spec_digest",
     "spec_digest_of",
     "suspend_target",
-    "versions_dir",
     "verify_authorization_envelope",
+    "verify_execution_observation_envelope",
+    "versions_dir",
 ]

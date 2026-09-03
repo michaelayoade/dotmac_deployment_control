@@ -366,12 +366,38 @@ class TestTargetObservationVerificationStaysExternal:
                 offenders.append(f"{path.relative_to(REPO_ROOT)} names {bad}")
         assert not offenders, "\n".join(offenders)
 
-    def test_the_signature_outcome_arrives_as_a_value(self) -> None:
-        """The caller runs the kernel verifier and passes the result in."""
-        from dotmac_deployment_control import ObservedState
+    def test_the_observation_arrives_as_bytes_and_the_outcome_is_decided_here(
+        self,
+    ) -> None:
+        """The a10 form of this rule, updated with the seam it protected.
 
-        assert "signature_status" in ObservedState.__dataclass_fields__
-        assert "authenticated_target_ref" in ObservedState.__dataclass_fields__
+        Through a9 the caller ran the verifier and passed the OUTCOME in as
+        `ObservedState.signature_status` — so this test held the claim/proof
+        split visible on that type. a10 moved verification inside Control,
+        behind an injected purpose-typed verifier, and the single-input repair
+        then removed the caller's projection entirely: the command's whole
+        input surface is one bytes value, and there is no field through which
+        a caller could assert a verification outcome, an identity, or a digest
+        for its own bytes. The stronger form of the old rule is that the claim
+        channel does not exist.
+        """
+        import dataclasses
+
+        from dotmac_deployment_control import RecordObservationCommand
+
+        fields = {f.name: f for f in dataclasses.fields(RecordObservationCommand)}
+        assert set(fields) == {"command_id", "observation", "actor_ref"}, fields
+        assert fields["observation"].type == "bytes"
+        for smuggled in (
+            "signature_status",
+            "authenticated_target_ref",
+            "raw_body_digest",
+            "raw_body",
+        ):
+            assert smuggled not in fields, (
+                f"RecordObservationCommand has grown {smuggled!r} — a channel "
+                "through which a caller could contradict the bytes it sent"
+            )
 
     def test_the_detector_fires_against_a_synthetic_violation(self) -> None:
         assert _identifiers("def verify_signature(x): pass") & self._VERIFY_NAMES

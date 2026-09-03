@@ -1,4 +1,4 @@
-"""The CLOSED operation vocabulary: `deploy` and `rollback`, and nothing else.
+"""The CLOSED vocabulary: `deploy`, `rollback` and `recover`, and nothing else.
 
 ## Why this one vocabulary is closed when every other one here is open
 
@@ -52,16 +52,27 @@ __all__ = [
 
 
 class DeploymentOperation(StrEnum):
-    """What an authorization authorizes. Two members, and the set is closed.
+    """What an authorization authorizes. Three members, and the set is closed.
 
     `DEPLOY` — converge a target on the plan's artifact. `ROLLBACK` — return it
-    to a previously deployed one. They are separate authorizations: an approval
-    of one is never an approval of the other, and nothing in this module derives
-    one from the other.
+    to a previously deployed one. `RECOVER` — re-establish the authorized state
+    after a migration. They are separate authorizations: an approval of one is
+    never an approval of another, and nothing in this module derives one from
+    another.
     """
 
     DEPLOY = "deploy"
     ROLLBACK = "rollback"
+    #: Restore a target after a migration — the post-migration restoration act,
+    #: added for `0.1.0a10` as the coordinated change the module docstring says
+    #: a new member must be: Michael named it required, and the Deployment
+    #: Foundation's a5 is being built against the same three-member vocabulary.
+    #: A RECOVER is neither a deploy (it converges on state that was already
+    #: authorized once) nor a rollback (it does not return to a previous
+    #: release; it re-establishes the current one) — and an operator triaging
+    #: an authorization trail needs those to be three different words, because
+    #: they are three different consent conversations.
+    RECOVER = "recover"
 
 
 #: The closed set, as text. Written from the enum rather than beside it, so a

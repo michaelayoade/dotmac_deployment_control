@@ -384,7 +384,7 @@ jobs:
       #   * the failure NAMES what moved, from `--print-evidence` rather than
       #     from a literal repeated here, so the strings cannot drift apart;
       #   * the failing canary is `database_catalogue_as_published` itself;
-      #   * `installed_not_source` and `conflict_savepoint_executes` still PASS,
+      #   * `installed_not_source` and `signed_execution_observation_binds` still PASS,
       #     which is how the lane distinguishes "the catalogue canary refused a
       #     lie" from "the mutated package no longer imports".
       - name: A published table nobody agreed to must not satisfy those canaries

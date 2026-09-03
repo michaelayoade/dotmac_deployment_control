@@ -59,17 +59,21 @@ from __future__ import annotations
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
 from dotmac_kernel.models import Base
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     OPERATIONS,
     ApprovalEvidence,
     ApprovePlanCommand,
+    AuthorizationEnvelopeDigestV1,
+    AuthorizationEnvelopeV2,
     CredentialTransitionCommand,
     DeploymentOperation,
     DescriptorBindingError,
@@ -79,29 +83,42 @@ from dotmac_deployment_control import (
     ExecutionPlanBindingError,
     ExecutionPlanDigestV1,
     ObservationDisposition,
-    ObservedState,
     OperationRefusedError,
     ProposePlanCommand,
     RecordObservationCommand,
     RegisterTargetCommand,
     RequestRolloutCommand,
+    RevokePlanApprovalCommand,
+    RuntimeIdentityV1,
     SetDesiredStateCommand,
     SignatureStatus,
     activate_credential,
     approve_plan,
     dispatch_attempt,
     enrol_credential,
+    issue_execution_observation_envelope,
     module,
     propose_plan,
     record_observation,
     register_target,
     request_rollout,
     require_operation,
+    revoke_plan_approval,
     set_desired_state,
     spec_digest,
 )
-from dotmac_deployment_control.models import DeploymentPlan
-from tests.authorization_support import SIGNER, VERIFIER
+from dotmac_deployment_control.models import (
+    DeploymentPlan,
+    DeploymentTarget,
+    Rollout,
+    RolloutAttempt,
+)
+from tests.authorization_support import AUTHORIZATION_PUBLIC_KEY_B64, SIGNER, VERIFIER
+from tests.execution_observation_support import (
+    OBSERVATION_VERIFIER,
+    TestExecutionObservationSigner,
+    observation_public_key_b64,
+)
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
@@ -121,6 +138,12 @@ _DESCRIPTOR = "sha256:" + "3c" * 32
 @pytest.fixture(autouse=True)
 def _installed_module_audit_actions() -> None:
     install_audit_actions(AuditActionRegistry.from_manifests([module]))
+
+
+@pytest.fixture(autouse=True)
+def _fixed_control_clock():
+    with patch.object(control_service, "_control_now", return_value=_NOW):
+        yield
 
 
 @pytest.fixture
@@ -163,7 +186,13 @@ def _cmd() -> str:
     return f"cmd-{uuid.uuid4().hex[:12]}"
 
 
-def _ready_target(db: Session, *, target_ref: str = "tgt-1", key_id: str = "key-1"):
+def _ready_target(
+    db: Session,
+    *,
+    target_ref: str = "tgt-1",
+    key_id: str = "key-1",
+    public_key_b64: str | None = None,
+):
     """A target with a desired state and an ACTIVE credential."""
     view = register_target(
         db,
@@ -189,8 +218,8 @@ def _ready_target(db: Session, *, target_ref: str = "tgt-1", key_id: str = "key-
             command_id=_cmd(),
             target_id=view.id,
             key_id=key_id,
-            public_key_b64=f"AAAA{key_id}",
-            public_key_fingerprint=f"sha256:{key_id}",
+            algorithm="test-sha256",
+            public_key_b64=public_key_b64 or observation_public_key_b64(key_id),
             enrollment_authority="platform_admin_policy",
         ),
     )
@@ -199,7 +228,6 @@ def _ready_target(db: Session, *, target_ref: str = "tgt-1", key_id: str = "key-
         CredentialTransitionCommand(
             command_id=_cmd(),
             credential_id=credential_id,
-            at=_NOW - timedelta(days=1),
         ),
     )
     return view
@@ -244,21 +272,33 @@ def _approve(db: Session, plan, **overrides: object):  # type: ignore[no-untyped
     )
 
 
-def _rollout(db: Session, plan_id, ref: str | None = None):  # type: ignore[no-untyped-def]
-    return request_rollout(
-        db,
-        RequestRolloutCommand(
-            command_id=_cmd(),
-            rollout_ref=ref or f"rol-{uuid.uuid4().hex[:8]}",
-            plan_id=plan_id,
-            authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-            authorization_issued_at=_NOW,
-        ),
-        signer=SIGNER,
-    )
+def _rollout(
+    db: Session,
+    plan_id,
+    ref: str | None = None,
+    *,
+    issued_at: datetime = _NOW,
+    expires_at: datetime = datetime(2099, 1, 1, tzinfo=UTC),
+):  # type: ignore[no-untyped-def]
+    with patch.object(control_service, "_control_now", return_value=issued_at):
+        return request_rollout(
+            db,
+            RequestRolloutCommand(
+                command_id=_cmd(),
+                rollout_ref=ref or f"rol-{uuid.uuid4().hex[:8]}",
+                plan_id=plan_id,
+                authorization_expires_at=expires_at,
+            ),
+            signer=SIGNER,
+        )
 
 
 def _report(db: Session, **overrides: object):
+    statement_overrides = dict(
+        overrides.pop("_statement_overrides", {})  # type: ignore[arg-type]
+    )
+    received_at = overrides.pop("_received_at", _NOW)
+    signer_public_key_b64 = overrides.pop("_signer_public_key_b64", None)
     fields: dict[str, object] = {
         "report_id": f"rep-{uuid.uuid4().hex[:8]}",
         "observed_release_ref": _RELEASE,
@@ -267,35 +307,140 @@ def _report(db: Session, **overrides: object):
         "authenticated_target_ref": "tgt-1",
         "claimed_target_ref": "tgt-1",
         "key_id": "key-1",
-        "raw_body": b"{}",
-        "raw_body_digest": "sha256:beef",
+        "raw_body": None,
+        "raw_body_digest": None,
         "signature_status": SignatureStatus.VALID.value,
         "operation": "deploy",
         "execution_plan_digest": _PLAN_A,
     }
     fields.update(overrides)
-    return record_observation(
-        db,
-        RecordObservationCommand(
-            command_id=_cmd(),
-            observed=ObservedState(**fields),  # type: ignore[arg-type]
-            received_at=_NOW,
+    rollout = db.execute(
+        select(Rollout).where(Rollout.rollout_ref == fields.get("rollout_ref"))
+    ).scalar_one_or_none()
+    plan = None if rollout is None else db.get(DeploymentPlan, rollout.plan_id)
+    authorization = (
+        None
+        if rollout is None or rollout.authorization_envelope is None
+        else AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    )
+    attempt = None
+    if rollout is not None:
+        attempt = (
+            db.execute(
+                select(RolloutAttempt)
+                .where(RolloutAttempt.rollout_id == rollout.id)
+                .order_by(RolloutAttempt.attempt_no.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if attempt is None:
+            dispatch_attempt(
+                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            )
+            attempt = (
+                db.execute(
+                    select(RolloutAttempt)
+                    .where(RolloutAttempt.rollout_id == rollout.id)
+                    .order_by(RolloutAttempt.attempt_no.desc())
+                )
+                .scalars()
+                .first()
+            )
+    target = db.execute(
+        select(DeploymentTarget).where(
+            DeploymentTarget.target_ref == fields["authenticated_target_ref"]
+        )
+    ).scalar_one()
+    snapshot = {} if plan is None else dict(plan.snapshot or {})
+    statement_fields: dict[str, object] = {
+        "report_id": fields["report_id"],
+        "authorization_id": (
+            str(rollout.id)
+            if rollout is not None
+            else "00000000-0000-0000-0000-000000000000"
+        ),
+        "authorization_plan_id": (
+            authorization.statement.plan_id
+            if authorization is not None
+            else str(uuid.uuid4())
+        ),
+        "authorization_control_version": (
+            authorization.statement.control_version
+            if authorization is not None
+            else "0.1.0a10"
+        ),
+        "authorization_envelope_digest": (
+            AuthorizationEnvelopeDigestV1.over_bytes(
+                authorization.canonical_bytes
+            ).canonical
+            if authorization is not None
+            else "sha256:" + "0b" * 32
+        ),
+        "execution_sequence": (
+            authorization.statement.execution_sequence
+            if authorization is not None
+            else 1
+        ),
+        "attempt_no": attempt.attempt_no if attempt is not None else 1,
+        "rollout_ref": fields.get("rollout_ref") or "unbound-rollout",
+        "target_id": str(target.id),
+        "target_ref": fields["claimed_target_ref"],
+        "product_code": target.product_code,
+        "environment": target.environment,
+        "operation": fields.get("operation") or "deploy",
+        "release_ref": snapshot.get("release_ref") or _RELEASE,
+        "observed_release_ref": fields["observed_release_ref"],
+        "authorized_images": snapshot.get("authorized_images") or [],
+        "observed_images": snapshot.get("authorized_images") or [],
+        "plan_digest": (
+            plan.plan_digest if plan is not None else "sha256:" + "0a" * 32
+        ),
+        "descriptor_digest": snapshot.get("descriptor_digest") or _DESCRIPTOR,
+        "execution_plan_digest": fields.get("execution_plan_digest") or _PLAN_A,
+        "observed_spec_digest": fields["observed_spec_digest"],
+        "observed_revision": "git:0123456789abcdef",
+        "runtime_identity": RuntimeIdentityV1(
+            kind="oci_container", identifier="container:abcdef"
+        ),
+        "outcome": "succeeded",
+        "observed_at": fields["reported_at"],
+    }
+    statement_fields.update(statement_overrides)
+    envelope = issue_execution_observation_envelope(
+        statement_fields,
+        signer=TestExecutionObservationSigner(
+            str(fields["key_id"]),
+            public_key_b64=(
+                str(signer_public_key_b64)
+                if signer_public_key_b64 is not None
+                else None
+            ),
         ),
     )
+    with patch.object(control_service, "_control_now", return_value=received_at):
+        return record_observation(
+            db,
+            RecordObservationCommand(
+                command_id=_cmd(), observation=envelope.canonical_bytes
+            ),
+            observation_verifier=OBSERVATION_VERIFIER,
+            authorization_verifier=VERIFIER,
+        )
 
 
 # ── 1. The closed vocabulary ────────────────────────────────────────────────
 
 
 class TestTheOperationVocabularyIsClosed:
-    """`deploy` and `rollback`. An unknown value is REFUSED — not coerced, not
+    """`deploy`, `rollback`, `recover`. An unknown value is REFUSED — never
     defaulted, and never inferred."""
 
     def test_the_set_is_exactly_two_and_the_enum_agrees_with_it(self) -> None:
-        assert OPERATIONS == {"deploy", "rollback"}
+        assert OPERATIONS == {"deploy", "rollback", "recover"}
         assert {member.value for member in DeploymentOperation} == OPERATIONS
 
-    @pytest.mark.parametrize("word", ["deploy", "rollback"])
+    @pytest.mark.parametrize("word", ["deploy", "rollback", "recover"])
     def test_a_member_parses_to_a_value_not_a_string(self, word: str) -> None:
         parsed = require_operation(word, where="test")
         assert isinstance(parsed, DeploymentOperation)
@@ -317,7 +462,7 @@ class TestTheOperationVocabularyIsClosed:
         with pytest.raises(OperationRefusedError, match="is not an operation"):
             require_operation(word, where="test")
 
-    @pytest.mark.parametrize("word", ["Deploy", "DEPLOY", "RollBack"])
+    @pytest.mark.parametrize("word", ["Deploy", "DEPLOY", "RollBack", "Recover"])
     def test_a_case_variant_is_refused_rather_than_folded(self, word: str) -> None:
         """A case fold is an inference: it decides that `Deploy` MEANT `deploy`.
 
@@ -594,18 +739,19 @@ class TestAReportIsAcceptedOnlyWhenAllThreeTermsAgree:
         being folded into a mismatch, which would say the executor ran the wrong
         thing when nothing established that it ran anything.
         """
-        _, ref = self._bound(db)
-        for absent in (
-            {"rollout_ref": None},
-            {"rollout_ref": ref, "operation": None},
-            {"rollout_ref": ref, "execution_plan_digest": None},
-            {"rollout_ref": "rol-nothing-was-ever-called-this"},
-        ):
-            verdict = _report(db, **absent)  # type: ignore[arg-type]
-            assert (
-                verdict.disposition == ObservationDisposition.UNBOUND_REPORT.value
-            ), absent
-            assert verdict.changed_state is False
+        self._bound(db)
+
+        # A report that carries no binding terms at all is no longer a
+        # quarantine — it is UNREPRESENTABLE. The statement schema requires
+        # rollout_ref, operation and execution_plan_digest, so a wire document
+        # missing one refuses at parse as MALFORMED rather than reaching any
+        # binding decision; there is no caller projection left through which an
+        # absence could arrive beside a well-formed body. What remains of
+        # "unbound" is the honest case: a WELL-FORMED, verified report naming
+        # an authorization nothing ever issued.
+        verdict = _report(db, rollout_ref="rol-nothing-was-ever-called-this")
+        assert verdict.disposition == ObservationDisposition.UNBOUND_REPORT.value
+        assert verdict.changed_state is False
 
     def test_the_three_dispositions_are_three_distinct_values(self) -> None:
         """A mismatch, a wrong operation and an absence must never collapse.
@@ -643,8 +789,8 @@ class TestAReportIsAcceptedOnlyWhenAllThreeTermsAgree:
         report's encoding rather than about which plan ran. Calling it a
         mismatch would assert something nothing established."""
         _, ref = self._bound(db)
-        verdict = _report(db, rollout_ref=ref, execution_plan_digest="1a" * 32)
-        assert verdict.disposition == ObservationDisposition.UNBOUND_REPORT.value
+        with pytest.raises(Exception, match="unreadable typed value"):
+            _report(db, rollout_ref=ref, execution_plan_digest="1a" * 32)
 
     def test_an_operation_outside_the_vocabulary_is_never_read_as_the_plans(
         self, db
@@ -700,15 +846,198 @@ class TestAReportIsAcceptedOnlyWhenAllThreeTermsAgree:
         plan = _propose(db, target.id)
         _approve(db, plan)
         rollout = _rollout(db, plan.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
         row = db.get(DeploymentPlan, plan.id)
         assert row is not None
         row.authorized_execution_plan_digest = _PLAN_B
         db.flush()
 
         verdict = _report(db, rollout_ref=rollout.rollout_ref)
-        assert (
-            verdict.disposition == ObservationDisposition.EXECUTION_PLAN_MISMATCH.value
+        assert verdict.disposition == ObservationDisposition.AUTHORIZATION_INVALID.value
+
+
+class TestTheSignedResultNeedsAStandingAuthorization:
+    def _approved(
+        self,
+        db,
+        *,
+        key_id: str = "key-1",
+        public_key_b64: str | None = None,
+    ):
+        target = _ready_target(db, key_id=key_id, public_key_b64=public_key_b64)
+        plan = _propose(db, target.id)
+        _approve(db, plan)
+        return target, plan
+
+    def test_a_revoked_authorization_changes_no_target(self, db) -> None:
+        target, plan = self._approved(db)
+        rollout = _rollout(db, plan.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
         )
+        revoke_plan_approval(
+            db,
+            RevokePlanApprovalCommand(
+                command_id=_cmd(),
+                plan_id=plan.id,
+                revocation_ref="approval-revocation-1",
+            ),
+        )
+
+        verdict = _report(db, rollout_ref=rollout.rollout_ref)
+        assert verdict.disposition == ObservationDisposition.AUTHORIZATION_REVOKED
+        assert verdict.changed_state is False
+        assert db.get(DeploymentTarget, target.id).observed_release_ref is None
+
+    def test_a_revoked_authorization_verdict_is_canonical_for_replay(self, db) -> None:
+        _target, plan = self._approved(db)
+        rollout = _rollout(db, plan.id)
+        dispatch_attempt(
+            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+        )
+        revoke_plan_approval(
+            db,
+            RevokePlanApprovalCommand(
+                command_id=_cmd(),
+                plan_id=plan.id,
+                revocation_ref="approval-revocation-replay",
+            ),
+        )
+
+        first = _report(
+            db, rollout_ref=rollout.rollout_ref, report_id="revoked-canonical"
+        )
+        replay = _report(
+            db, rollout_ref=rollout.rollout_ref, report_id="revoked-canonical"
+        )
+        changed = _report(
+            db,
+            rollout_ref=rollout.rollout_ref,
+            report_id="revoked-canonical",
+            _statement_overrides={"observed_revision": "git:different"},
+        )
+        assert first.disposition == ObservationDisposition.AUTHORIZATION_REVOKED
+        assert replay.disposition == ObservationDisposition.IDEMPOTENT_REPLAY
+        assert replay.verdict == ObservationDisposition.AUTHORIZATION_REVOKED
+        assert changed.disposition == ObservationDisposition.CONFLICT
+        assert changed.verdict == ObservationDisposition.AUTHORIZATION_REVOKED
+
+    def test_an_expired_authorization_changes_no_target(self, db) -> None:
+        target, plan = self._approved(db)
+        rollout = _rollout(
+            db,
+            plan.id,
+            issued_at=_NOW - timedelta(hours=2),
+            expires_at=_NOW - timedelta(hours=1),
+        )
+        with patch.object(
+            control_service, "_control_now", return_value=_NOW - timedelta(hours=2)
+        ):
+            dispatch_attempt(
+                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            )
+
+        verdict = _report(db, rollout_ref=rollout.rollout_ref)
+        assert verdict.disposition == ObservationDisposition.AUTHORIZATION_EXPIRED
+        assert verdict.changed_state is False
+        assert db.get(DeploymentTarget, target.id).observed_release_ref is None
+
+    def test_an_expired_authorization_verdict_is_canonical_for_replay(self, db) -> None:
+        _target, plan = self._approved(db)
+        issued_at = _NOW - timedelta(hours=2)
+        rollout = _rollout(
+            db,
+            plan.id,
+            issued_at=issued_at,
+            expires_at=_NOW - timedelta(hours=1),
+        )
+        with patch.object(control_service, "_control_now", return_value=issued_at):
+            dispatch_attempt(
+                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            )
+
+        first = _report(
+            db, rollout_ref=rollout.rollout_ref, report_id="expired-canonical"
+        )
+        replay = _report(
+            db, rollout_ref=rollout.rollout_ref, report_id="expired-canonical"
+        )
+        changed = _report(
+            db,
+            rollout_ref=rollout.rollout_ref,
+            report_id="expired-canonical",
+            _statement_overrides={"observed_revision": "git:different"},
+        )
+        assert first.disposition == ObservationDisposition.AUTHORIZATION_EXPIRED
+        assert replay.disposition == ObservationDisposition.IDEMPOTENT_REPLAY
+        assert replay.verdict == ObservationDisposition.AUTHORIZATION_EXPIRED
+        assert changed.disposition == ObservationDisposition.CONFLICT
+        assert changed.verdict == ObservationDisposition.AUTHORIZATION_EXPIRED
+
+    def test_authorization_and_observation_cannot_reuse_one_key_purpose(
+        self, db
+    ) -> None:
+        authorization_key_id = SIGNER.identity.key_id
+        target, plan = self._approved(
+            db,
+            key_id=authorization_key_id,
+            public_key_b64=AUTHORIZATION_PUBLIC_KEY_B64,
+        )
+        rollout = _rollout(db, plan.id)
+
+        verdict = _report(
+            db,
+            rollout_ref=rollout.rollout_ref,
+            key_id=authorization_key_id,
+            _signer_public_key_b64=AUTHORIZATION_PUBLIC_KEY_B64,
+        )
+        assert verdict.disposition == ObservationDisposition.SIGNER_PURPOSE_REUSED
+        assert verdict.changed_state is False
+        assert db.get(DeploymentTarget, target.id).observed_release_ref is None
+
+    def test_a_failed_execution_is_not_a_successful_transport_settlement(
+        self, db
+    ) -> None:
+        target, plan = self._approved(db)
+        rollout = _rollout(db, plan.id)
+
+        verdict = _report(
+            db,
+            rollout_ref=rollout.rollout_ref,
+            _statement_overrides={"outcome": "failed"},
+        )
+        assert verdict.disposition == ObservationDisposition.EXECUTION_FAILED
+        # The execution high-water mark advances so an older success cannot
+        # overwrite this later failure, while the observed deployment itself
+        # remains unchanged.
+        assert verdict.changed_state is True
+        persisted = db.get(Rollout, rollout.id)
+        assert persisted is not None
+        assert persisted.status == "dispatched"
+        assert db.get(DeploymentTarget, target.id).observed_release_ref is None
+
+    def test_observed_images_must_equal_the_authorized_set(self, db) -> None:
+        target, plan = self._approved(db)
+        rollout = _rollout(db, plan.id)
+
+        verdict = _report(
+            db,
+            rollout_ref=rollout.rollout_ref,
+            _statement_overrides={
+                "observed_images": [
+                    {
+                        "service": "app",
+                        "repository": "registry.invalid/app",
+                        "digest": "sha256:" + "ab" * 32,
+                    }
+                ]
+            },
+        )
+        assert verdict.disposition == ObservationDisposition.AUTHORIZATION_MISMATCH
+        assert verdict.changed_state is False
+        assert db.get(DeploymentTarget, target.id).observed_release_ref is None
 
 
 # ── 6. The type itself ──────────────────────────────────────────────────────

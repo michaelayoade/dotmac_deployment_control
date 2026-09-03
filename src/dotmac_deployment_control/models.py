@@ -256,6 +256,14 @@ class ObservationDisposition(StrEnum):
     EXECUTION_PLAN_MISMATCH = "execution_plan_mismatch"
     OPERATION_MISMATCH = "operation_mismatch"
     UNBOUND_REPORT = "unbound_report"
+    AUTHORIZATION_INVALID = "authorization_invalid"
+    AUTHORIZATION_EXPIRED = "authorization_expired"
+    AUTHORIZATION_REVOKED = "authorization_revoked"
+    AUTHORIZATION_MISMATCH = "authorization_mismatch"
+    SIGNER_PURPOSE_REUSED = "signer_purpose_reused"
+    EXECUTION_FAILED = "execution_failed"
+    STALE_OBSERVATION = "stale_observation"
+    EXECUTION_COORDINATE_CONFLICT = "execution_coordinate_conflict"
 
 
 class DeploymentTarget(Base, TimestampMixin):
@@ -266,6 +274,18 @@ class DeploymentTarget(Base, TimestampMixin):
         UniqueConstraint("target_ref", name="uq_deployment_targets_ref"),
         CheckConstraint("desired_revision >= 0", name="ck_targets_desired_revision"),
         CheckConstraint("record_version >= 1", name="ck_targets_record_version"),
+        CheckConstraint(
+            "((last_execution_sequence IS NULL) = "
+            "(last_execution_attempt_no IS NULL)) AND "
+            "((last_execution_attempt_no IS NULL) = "
+            "(last_execution_state_digest IS NULL))",
+            name="ck_targets_execution_coordinate_complete",
+        ),
+        CheckConstraint(
+            "last_execution_sequence IS NULL OR "
+            "(last_execution_sequence >= 1 AND last_execution_attempt_no >= 1)",
+            name="ck_targets_execution_coordinate_positive",
+        ),
         schema_table_args(SCHEMA),
     )
 
@@ -324,6 +344,12 @@ class DeploymentTarget(Base, TimestampMixin):
     observed_spec_digest: Mapped[str | None] = mapped_column(String(128))
     observed_revision: Mapped[int | None] = mapped_column(Integer)
     last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Trusted high-water coordinate for target execution reports. It is
+    #: independent of the observed deployment projection: a failed newer
+    #: attempt still prevents an older success from regressing state.
+    last_execution_sequence: Mapped[int | None] = mapped_column(Integer)
+    last_execution_attempt_no: Mapped[int | None] = mapped_column(Integer)
+    last_execution_state_digest: Mapped[str | None] = mapped_column(String(128))
 
     record_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
@@ -363,6 +389,11 @@ class TargetCredential(Base, TimestampMixin):
     #: text, which is not canonical: padding, alphabet and whitespace variants
     #: would each hash differently and defeat the uniqueness constraint above.
     public_key_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: Purpose and algorithm are enrolled facts, never selected by an inbound
+    #: statement. NULL is reserved for pre-a10 rows, which cannot verify a10
+    #: observations and must rotate to a newly purpose-bound key.
+    algorithm: Mapped[str | None] = mapped_column(String(60))
+    purpose: Mapped[str | None] = mapped_column(String(60))
 
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=CredentialStatus.PENDING.value
@@ -531,7 +562,14 @@ class Rollout(Base, TimestampMixin):
     __tablename__ = _ROLLOUTS
     __table_args__ = (
         UniqueConstraint("rollout_ref", name="uq_rollouts_ref"),
+        UniqueConstraint(
+            "target_id", "execution_sequence", name="uq_rollouts_target_execution"
+        ),
         CheckConstraint("record_version >= 1", name="ck_rollouts_record_version"),
+        CheckConstraint(
+            "execution_sequence IS NULL OR execution_sequence >= 1",
+            name="ck_rollouts_execution_sequence",
+        ),
         schema_table_args(SCHEMA),
     )
 
@@ -554,6 +592,8 @@ class Rollout(Base, TimestampMixin):
     #: Immutable issuance fact. NULL is reserved for rollouts created before
     #: the portable authorization contract; they are refused, never inferred.
     authorization_envelope: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
+    #: Per-target monotonic coordinate, NULL only on pre-a10 history.
+    execution_sequence: Mapped[int | None] = mapped_column(Integer)
 
     attempts: Mapped[list[RolloutAttempt]] = relationship(
         lambda: RolloutAttempt,
@@ -620,6 +660,16 @@ class ObservationReceipt(Base, TimestampMixin):
             "report_id",
             name="uq_observation_receipts_identity_report",
         ),
+        CheckConstraint(
+            "((execution_sequence IS NULL) = (attempt_no IS NULL)) AND "
+            "((attempt_no IS NULL) = (observed_state_digest IS NULL))",
+            name="ck_observation_receipts_execution_coordinate_complete",
+        ),
+        CheckConstraint(
+            "execution_sequence IS NULL OR "
+            "(execution_sequence >= 1 AND attempt_no >= 1)",
+            name="ck_observation_receipts_execution_coordinate_positive",
+        ),
         schema_table_args(SCHEMA),
     )
 
@@ -643,6 +693,9 @@ class ObservationReceipt(Base, TimestampMixin):
     original_verdict: Mapped[str] = mapped_column(String(40), nullable=False)
     observed_release_ref: Mapped[str | None] = mapped_column(String(200))
     observed_spec_digest: Mapped[str | None] = mapped_column(String(128))
+    execution_sequence: Mapped[int | None] = mapped_column(Integer)
+    attempt_no: Mapped[int | None] = mapped_column(Integer)
+    observed_state_digest: Mapped[str | None] = mapped_column(String(128))
 
 
 class ObservationAttempt(Base, TimestampMixin):
@@ -670,7 +723,7 @@ class ObservationAttempt(Base, TimestampMixin):
     )
 
     id: Mapped[UUID] = uuid_pk()
-    #: The trusted receipt instant, supplied by the caller after the complete
+    #: The trusted receipt instant, stamped by Control after the complete
     #: bounded body has arrived and BEFORE parsing.
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False

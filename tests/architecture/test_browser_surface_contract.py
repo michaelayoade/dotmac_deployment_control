@@ -623,6 +623,24 @@ class TestTheTemplatesDecideNothingAndInventNoDesignSystem:
         for path in self._templates():
             assert "| safe" not in path.read_text(encoding="utf-8"), path.name
 
+    def test_no_template_receives_or_renders_raw_observation_bytes(self) -> None:
+        """Only the safe typed receipt projection reaches the browser.
+
+        Payload digests are coordinates and may render; `payload` and
+        `raw_body` are attacker-controlled bytes and remain behind the service
+        boundary even when a quarantined receipt must be diagnosable.
+        """
+        raw_evidence = re.compile(r"\.(?:payload|raw_body)\b")
+        for path in self._templates():
+            text = path.read_text(encoding="utf-8")
+            assert not raw_evidence.search(text), path.name
+        context_source = ast.parse(WEB.read_text(encoding="utf-8"))
+        names = {
+            node.id for node in ast.walk(context_source) if isinstance(node, ast.Name)
+        }
+        assert "ObservationReceipt" not in names
+        assert "ObservationAttempt" not in names
+
     def test_every_screen_extends_the_facets_shell_or_is_a_fragment(self) -> None:
         for path in self._templates():
             text = path.read_text(encoding="utf-8")

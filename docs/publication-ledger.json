@@ -5,7 +5,7 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "EMPTY, and that is the correct state: every declared version is published.",
+    "The sole row is the version this tree declares and has not yet published.",
     "",
     "The 0.1.0a8 row that sat here between the declaration and the publication was",
     "removed by the RECORDER rather than by a human — the first time that has been",
@@ -20,8 +20,10 @@
     "verified on seven properties, and refused for adoption because its declared",
     "dotmac-kernel floor is 21 alphas below the module it imports; 0.1.0a6 is",
     "published, verified, and still pinnable; 0.1.0a7 is published and verified and",
-    "carries no approved-plan read API; 0.1.0a8 is published, verified, carries that",
-    "API, and is the version to pin. All of them live in",
+    "carries no approved-plan read API; 0.1.0a8 is published and verified with that",
+    "read API; 0.1.0a9 is published, verified, and is the version to pin when a",
+    "Foundation descriptor binding and portable authorization are required. All",
+    "of them live in",
     "docs/published-versions.json, each superseding disposition APPENDED to its",
     "original record rather than replacing it.",
     "",
@@ -30,5 +32,11 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a10": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "Adds Control-derived version binding to the signed authorization and a purpose-separated, provider-neutral signed target execution observation whose terms are verified against the standing authorization before state changes."
+    }
+  }
 }

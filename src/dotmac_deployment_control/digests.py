@@ -79,6 +79,8 @@ Control does not build images and holds none of the bytes.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -339,6 +341,81 @@ class PlanDigestV1(_Sha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationEnvelopeDigestV1(_ReceivedSha256Digest):
+    """The identity of the exact signed target-observation envelope bytes.
+
+    Unlike a caller-supplied plan or execution digest, Control owns the
+    envelope serialization and therefore owns this computation.  Keeping the
+    constructor here preserves one digest authority for the package while the
+    distinct type prevents an envelope digest satisfying a plan/spec binding.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> ObservationEnvelopeDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the envelope must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedExecutionStateDigestV1(_Sha256Digest):
+    """Control's digest of the substantive state at one execution coordinate."""
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationEnvelopeDigestV1(_ReceivedSha256Digest):
+    """Identity of the exact portable authorization envelope bytes.
+
+    A target signs this value into its execution observation.  It therefore
+    proves which immutable authorization document it executed rather than only
+    repeating a caller-selected authorization identifier.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> AuthorizationEnvelopeDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the envelope must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
+class PublicKeyFingerprintV1(_ReceivedSha256Digest):
+    """Fingerprint of canonical decoded public-key bytes.
+
+    The public key arrives as unpadded base64url.  Control validates that one
+    encoding and computes the fingerprint itself, so a caller cannot give the
+    same key two identities or enrol an unrelated fingerprint.
+    """
+
+    @classmethod
+    def from_public_key_b64(cls, value: object) -> PublicKeyFingerprintV1:
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise _refuse(
+                cls.__name__, value, "the public key must be non-empty exact text"
+            )
+        if "=" in value:
+            raise _refuse(
+                cls.__name__, value, "the public key must be unpadded base64url"
+            )
+        try:
+            raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        except (ValueError, binascii.Error) as exc:
+            raise _refuse(
+                cls.__name__, value, "the public key is not valid base64url"
+            ) from exc
+        if not raw:
+            raise _refuse(cls.__name__, value, "the decoded public key is empty")
+        canonical = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        if canonical != value:
+            raise _refuse(
+                cls.__name__,
+                value,
+                "the public key is not in its canonical unpadded base64url form",
+            )
+        return cls(ALGORITHM, hashlib.sha256(raw).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class SpecDigestV1(_Sha256Digest):
     """The identity of a DEPLOYMENT SPEC alone.
 
@@ -444,12 +521,16 @@ class DescriptorDigestV1(_ReceivedSha256Digest):
 
 __all__ = [
     "ALGORITHM",
+    "AuthorizationEnvelopeDigestV1",
     "DIGEST_BYTES",
     "DescriptorDigestV1",
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
     "ImageDigestV1",
+    "ObservationEnvelopeDigestV1",
+    "ObservedExecutionStateDigestV1",
     "PlanDigestV1",
+    "PublicKeyFingerprintV1",
     "SpecDigestV1",
     "canonical_json",
 ]

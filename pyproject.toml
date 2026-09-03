@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-deployment-control"
-version = "0.1.0a9"
+version = "0.1.0a10"
 description = "DotMac Deployment Control — desired deployment intent, immutable plans, approval-gated rollouts, authenticated target acknowledgements and drift reconciliation for licensed deployments (ADR-0057 § 3)"
 authors = ["DotMac"]
 readme = "README.md"
@@ -38,8 +38,10 @@ python = ">=3.11,<3.14"
 # (`NamespaceRegistry.from_manifests` raises `UnallocatedNamespaceError`) — plus
 # a one-alpha margin. The two declared request-time prerequisites are older
 # still (`idempotency_ledger.v1` in a66, `platform_audit_log.v1` in a68);
-# `dotmac_kernel.transactions`, which `service.py:73` imports, first shipped in
-# a98 and set this floor through `0.1.0a6`.
+# `dotmac_kernel.transactions`, which earlier releases imported, first shipped
+# in a98 and set this floor through `0.1.0a6`. The a10 observation admission
+# serializes on the target row and no longer needs that import; removing it does
+# not lower the current a100 floor established below.
 #
 # Every one of those is a real lower bound and none of them is THE lower bound
 # any more. `database_catalog.py` reads `from

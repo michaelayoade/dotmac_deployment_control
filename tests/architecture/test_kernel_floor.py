@@ -5,7 +5,7 @@ more because every check in here is aimed at it: the artifact's bytes were
 beyond doubt — peeled commit, wheel and sdist sha256, publisher read-back, an
 independent read-only consumer install, seven behavioural canaries against the
 wheel the registry served — and it could not run in its consuming assembly. It
-imports `dotmac_kernel.transactions` (`service.py:73`), first shipped in kernel
+imported `dotmac_kernel.transactions`, first shipped in kernel
 `0.1.0a98`, while declaring `dotmac-kernel >=0.1.0a77`. **Under-constrained by
 21 alphas.** The floor has since moved to
 `dotmac_kernel.product_database_catalog` (`0.1.0a100`); what is permanent here

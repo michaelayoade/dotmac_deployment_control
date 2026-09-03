@@ -67,7 +67,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from dotmac_deployment_control.authorization import AuthorizationEnvelopeV1
+    from dotmac_deployment_control.authorization import AuthorizationEnvelopeV2
 
 # ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -127,7 +127,8 @@ class OperationRefusedError(DeploymentControlError):
     """The operation named is not one this control plane can authorize.
 
     Separate from every other refusal here, because it is a VOCABULARY fault
-    and the reader is whoever wrote the caller. `deploy` and `rollback` are the
+    and the reader is whoever wrote the caller. `deploy`, `rollback` and
+    `recover` are the
     closed set (`dotmac_deployment_control.operations`); an unknown word is
     refused rather than defaulted, coerced or inferred, and this exception is
     what "refused" means.
@@ -327,56 +328,6 @@ class ApprovalEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class ObservedState:
-    """What a target reports about itself, already verified by the caller.
-
-    The caller runs `dotmac_kernel.licensing.verify_applied_state` (ADR-0007) and
-    passes the RESULT in. This module does not re-verify a signature — the kernel
-    owns that — but it does insist on the distinction the verification produces:
-
-    - `authenticated_target_ref` is the identity resolved from the SIGNED key. It
-      is `None` when nothing authenticated, and a `None` here can never become an
-      admitted observation.
-    - `claimed_target_ref` is what the report said about itself. Evidence only.
-
-    A caller that puts the claim in both fields has defeated the whole design,
-    which is why they are separate parameters rather than one with a flag.
-    """
-
-    report_id: str
-    observed_release_ref: str | None
-    observed_spec_digest: str | None
-    reported_at: datetime
-    authenticated_target_ref: str | None = None
-    claimed_target_ref: str | None = None
-    key_id: str | None = None
-    #: The exact bytes as received, so the report stays portable evidence a third
-    #: party can verify — the property ADR-0007 § 1 justifies Ed25519 with in the
-    #: first place. Bounded by the caller before it reaches here.
-    raw_body: bytes | None = None
-    raw_body_digest: str | None = None
-    raw_body_truncated: bool = False
-    #: `unresolved` | `invalid` | `valid` — the kernel verifier's outcome.
-    signature_status: str = "unresolved"
-    #: WHAT THE REPORT BINDS ITSELF TO. Three fields, and none of them is
-    #: authority: like `claimed_target_ref`, they are the report's own account
-    #: of itself, compared against what Control froze and authorized.
-    #:
-    #: `rollout_ref` says which authorization this report claims to be executing
-    #: — without it there is nothing to compare against, because a target may
-    #: hold many plans. `operation` and `execution_plan_digest` are what the
-    #: executor recomputed before running (step 6 of the flow) and carried into
-    #: the report (step 7).
-    #:
-    #: All three default to `None` so a caller cannot be forced to invent one,
-    #: and a report that supplies none is quarantined as UNBOUND rather than
-    #: accepted — an absence is a finding, not a pass.
-    rollout_ref: str | None = None
-    operation: str | None = None
-    execution_plan_digest: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class DeliveryIntent:
     """What this module hands the Integrator: WHAT, never HOW.
 
@@ -403,7 +354,7 @@ class DeliveryIntent:
     #: `plan_digest` already is.
     operation: str
     execution_plan_digest: str
-    authorization_envelope: AuthorizationEnvelopeV1
+    authorization_envelope: AuthorizationEnvelopeV2
     attempt_no: int
     spec: Mapping[str, Any] = field(default_factory=dict)
     licence_ref: str | None = None
@@ -423,7 +374,6 @@ __all__ = [
     "ExpectedStateError",
     "ImageSetRefusedError",
     "ObservationRefusedError",
-    "ObservedState",
     "OperationRefusedError",
     "PlanRefusedError",
     "TransitionRefusedError",

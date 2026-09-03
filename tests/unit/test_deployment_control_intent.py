@@ -29,11 +29,14 @@ from dotmac_kernel.models import Base
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     ApprovalEvidence,
     ApprovalRefusedError,
     ApprovePlanCommand,
     AttemptOutcome,
+    AuthorizationEnvelopeV1,
+    AuthorizationEnvelopeV2,
     DesiredDeployment,
     DigestEncodingError,
     EnrolCredentialCommand,
@@ -75,6 +78,7 @@ from dotmac_deployment_control import (
 )
 from dotmac_deployment_control.models import Rollout
 from tests.authorization_support import SIGNER, VERIFIER
+from tests.execution_observation_support import observation_public_key_b64
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _POLICY = "deployment.production"
@@ -94,6 +98,11 @@ _DESCRIPTOR = "sha256:" + "3c" * 32
 @pytest.fixture(autouse=True)
 def _installed_module_audit_actions() -> None:
     install_audit_actions(AuditActionRegistry.from_manifests([module]))
+
+
+@pytest.fixture(autouse=True)
+def _fixed_control_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(control_service, "_control_now", lambda: _NOW)
 
 
 @pytest.fixture
@@ -219,7 +228,6 @@ def _rollout(db: Session, plan_id):  # type: ignore[no-untyped-def]
             rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
             plan_id=plan_id,
             authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
-            authorization_issued_at=_NOW,
         ),
         signer=SIGNER,
     )
@@ -295,8 +303,8 @@ class TestCredentials:
                 command_id=_cmd(),
                 target_id=target.id,
                 key_id="k1",
-                public_key_b64="AAAA",
-                public_key_fingerprint="sha256:aa",
+                algorithm="test-sha256",
+                public_key_b64=observation_public_key_b64("k1"),
                 enrollment_authority="platform_admin_policy",
             ),
         )
@@ -304,19 +312,18 @@ class TestCredentials:
         assert row is not None
         assert row.status == CredentialStatus.PENDING.value
 
-    def test_a_credential_with_no_fingerprint_is_refused(self, db) -> None:
-        """base64 text is not canonical — padding and alphabet variants would
-        each enrol separately, defeating the uniqueness constraint."""
+    def test_a_credential_with_noncanonical_key_bytes_is_refused(self, db) -> None:
+        """Control derives the fingerprint only from canonical base64url bytes."""
         target = _target(db)
-        with pytest.raises(TransitionRefusedError, match="fingerprint"):
+        with pytest.raises(DigestEncodingError, match="canonical unpadded base64url"):
             enrol_credential(
                 db,
                 EnrolCredentialCommand(
                     command_id=_cmd(),
                     target_id=target.id,
                     key_id="k1",
-                    public_key_b64="AAAA",
-                    public_key_fingerprint="",
+                    algorithm="test-sha256",
+                    public_key_b64="not*base64url",
                     enrollment_authority="platform_admin_policy",
                 ),
             )
@@ -602,6 +609,34 @@ class TestRolloutsOnlyRunApprovedPlans:
             signer=SIGNER,
         )
         assert first.id == second.id
+
+    def test_a_v1_authorization_remains_readable_only_as_historical_v1(
+        self, db
+    ) -> None:
+        """Reading old rows is not silently promoting their authority.
+
+        Production can hold a9 rollouts after a10 is installed. The operator
+        read path must retain those bytes and their exact V1 type, while the
+        dispatch path remains V2-only.
+        """
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        stored = db.get(Rollout, rollout.id)
+        assert stored is not None and stored.authorization_envelope is not None
+        historical = copy.deepcopy(stored.authorization_envelope)
+        statement = historical["statement"]
+        statement["version"] = 1
+        statement.pop("purpose")
+        statement.pop("control_version")
+        statement.pop("execution_sequence")
+        statement.pop("public_key_fingerprint")
+        stored.authorization_envelope = historical
+        db.flush()
+
+        view = get_rollout(db, rollout.id)
+        assert view is not None
+        assert isinstance(view.authorization_envelope, AuthorizationEnvelopeV1)
+        assert not isinstance(view.authorization_envelope, AuthorizationEnvelopeV2)
 
 
 class TestDispatchCarriesThePlanNotTheCurrentState:
