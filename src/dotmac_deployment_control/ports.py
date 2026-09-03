@@ -67,7 +67,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from dotmac_deployment_control.authorization import AuthorizationEnvelopeV1
+    from dotmac_deployment_control.authorization import AuthorizationEnvelopeV2
 
 # ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -328,19 +328,20 @@ class ApprovalEvidence:
 
 @dataclass(frozen=True, slots=True)
 class ObservedState:
-    """What a target reports about itself, already verified by the caller.
+    """The caller's projection of the signed target-execution observation.
 
-    The caller runs `dotmac_kernel.licensing.verify_applied_state` (ADR-0007) and
-    passes the RESULT in. This module does not re-verify a signature — the kernel
-    owns that — but it does insist on the distinction the verification produces:
+    `record_observation` verifies the canonical envelope through its injected
+    purpose-specific verifier, then requires every signed projection field here
+    to agree with those bytes. The two identity fields retain ADR-0007's
+    claim/proof distinction:
 
-    - `authenticated_target_ref` is the identity resolved from the SIGNED key. It
-      is `None` when nothing authenticated, and a `None` here can never become an
-      admitted observation.
+    - `authenticated_target_ref` is the identity resolved from the verified key
+      and eligible credential. It is `None` when nothing authenticated, and a
+      `None` here can never become an admitted observation.
     - `claimed_target_ref` is what the report said about itself. Evidence only.
 
-    A caller that puts the claim in both fields has defeated the whole design,
-    which is why they are separate parameters rather than one with a flag.
+    A caller cannot make the claim authoritative by putting it in both fields:
+    Control resolves and compares the credential target before admission.
     """
 
     report_id: str
@@ -403,7 +404,7 @@ class DeliveryIntent:
     #: `plan_digest` already is.
     operation: str
     execution_plan_digest: str
-    authorization_envelope: AuthorizationEnvelopeV1
+    authorization_envelope: AuthorizationEnvelopeV2
     attempt_no: int
     spec: Mapping[str, Any] = field(default_factory=dict)
     licence_ref: str | None = None

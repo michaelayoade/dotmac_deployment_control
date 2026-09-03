@@ -18,8 +18,8 @@ the desired state mid-rollout would silently change what is being deployed, and
 the approval would be for something else.
 
 **2. A claim is never a proof.** An observation's authoritative identity is the
-one the caller resolved from the SIGNED key (ADR-0007 § 4). What the report says
-about itself is stored beside it as evidence and is never promoted.
+one Control resolves from the verified observation key (ADR-0007 § 4). What the
+report says about itself is stored beside it as evidence and is never promoted.
 
 **3. Every arrival is recorded, including the ones that fail.** An unknown key, a
 malformed envelope or a bad signature against a known key is exactly the evidence
@@ -32,9 +32,11 @@ of both — closed AND blind.
   verification; no endpoint, credential reference, transport name or retry
   policy. It emits a provider-neutral `DeliveryIntent` and the Integrator owns
   everything after that (ADR-0024, hard rule 28).
-- **Verify a signature.** `dotmac_kernel.licensing.verify_applied_state` owns
-  that (ADR-0007); the caller runs it and passes the result in. Re-implementing
-  it here would be a second verifier that could disagree with the first.
+- **Own cryptographic keys or algorithms.** Control owns the canonical
+  authorization and execution-observation statements, then calls injected,
+  purpose-specific signer/verifier ports. The authorization key and the target
+  observation key cannot cross purposes through the typed API and Control
+  stores neither private key nor provider implementation.
 - **Decide what a deployment may run.** That is `dotmac-licensing`. This module
   records a `licence_ref` and never inspects it.
 - **Interpret a deployment spec.** `spec` is opaque. Interpreting it would make
@@ -84,6 +86,7 @@ from dotmac_deployment_control.authorization import (
     AuthorizationEnvelopeRefusalCode,
     AuthorizationEnvelopeRefusedError,
     AuthorizationEnvelopeV1,
+    AuthorizationEnvelopeV2,
     AuthorizationSigner,
     AuthorizationVerifier,
     issue_authorization_envelope,
@@ -92,9 +95,18 @@ from dotmac_deployment_control.authorization import (
 from dotmac_deployment_control.digests import (
     DescriptorDigestV1,
     ExecutionPlanDigestV1,
+    ObservationEnvelopeDigestV1,
     PlanDigestV1,
     SpecDigestV1,
     canonical_json,
+)
+from dotmac_deployment_control.execution_observation import (
+    ExecutionObservationEnvelopeV1,
+    ExecutionObservationOutcome,
+    ExecutionObservationRefusalCode,
+    ExecutionObservationRefusedError,
+    ExecutionObservationVerifier,
+    verify_execution_observation_envelope,
 )
 from dotmac_deployment_control.images import (
     AuthorizedImage,
@@ -412,6 +424,7 @@ class RecordObservationCommand:
 
     command_id: str
     observed: ObservedState
+    execution_observation_envelope: object
     received_at: datetime
     actor_ref: str | None = None
 
@@ -708,7 +721,7 @@ def _verified_rollout_envelope(
     *,
     verifier: AuthorizationVerifier | None,
     at: datetime | None = None,
-) -> AuthorizationEnvelopeV1:
+) -> AuthorizationEnvelopeV2:
     """Verify signature and every database-backed term without rewriting history."""
     if rollout.authorization_envelope is None:
         raise AuthorizationEnvelopeRefusedError(
@@ -940,7 +953,7 @@ def _rollout_view(row: Rollout) -> facts.RolloutView:
     envelope = (
         None
         if row.authorization_envelope is None
-        else AuthorizationEnvelopeV1.parse(row.authorization_envelope)
+        else _parse_historical_authorization_envelope(row.authorization_envelope)
     )
     return facts.RolloutView(
         id=row.id,
@@ -965,6 +978,24 @@ def _rollout_view(row: Rollout) -> facts.RolloutView:
             for attempt in row.attempts
         ),
     )
+
+
+def _parse_historical_authorization_envelope(
+    value: object,
+) -> AuthorizationEnvelopeV1 | AuthorizationEnvelopeV2:
+    """Read a stored envelope at its own version without upgrading it.
+
+    V1 remains operator-visible history. Dispatch and approval lookup call the
+    V2-only verifier instead, so this reader cannot turn old bytes into current
+    permission.
+    """
+    if isinstance(value, AuthorizationEnvelopeV1 | AuthorizationEnvelopeV2):
+        return value
+    if isinstance(value, Mapping):
+        statement = value.get("statement")
+        if isinstance(statement, Mapping) and statement.get("version") == 1:
+            return AuthorizationEnvelopeV1.parse(value)
+    return AuthorizationEnvelopeV2.parse(value)
 
 
 def _observation_attempt_view(row: ObservationAttempt) -> facts.ObservationAttemptView:
@@ -2338,7 +2369,11 @@ def _rollout_transition(
 
 
 def record_observation(
-    db: Session, command: RecordObservationCommand
+    db: Session,
+    command: RecordObservationCommand,
+    *,
+    observation_verifier: ExecutionObservationVerifier | None = None,
+    authorization_verifier: AuthorizationVerifier | None = None,
 ) -> facts.ObservationVerdict:
     """Record one arrival, whatever happens to it, and update state if admitted.
 
@@ -2352,9 +2387,10 @@ def record_observation(
     valid-but-ineligible arrival is recorded, attributable, and activates
     nothing.
 
-    **A replay returns the ORIGINAL verdict verbatim.** Recomputing could yield a
-    different answer against changed target state for bytes the deployment sent
-    once, which would make an at-least-once transport look like a state change.
+    **A byte-identical replay returns the ORIGINAL verdict verbatim.** Recomputing
+    could yield a different answer against changed target state for bytes the
+    deployment sent once, which would make an at-least-once transport look like a
+    state change. Reusing the report id with different signed bytes is a conflict.
 
     **A report is accepted only when proposal, authorization and report bind the
     same execution plan and the same operation.** Step 8 of the flow, and the
@@ -2370,6 +2406,26 @@ def record_observation(
             "a naive instant is not reproducible"
         )
 
+    parsed_observation: ExecutionObservationEnvelopeV1 | None = None
+    verified_observation: ExecutionObservationEnvelopeV1 | None = None
+    observation_error: ExecutionObservationRefusedError | None = None
+    try:
+        parsed_observation = ExecutionObservationEnvelopeV1.parse(
+            command.execution_observation_envelope
+        )
+        if observation_verifier is None:
+            raise ExecutionObservationRefusedError(
+                ExecutionObservationRefusalCode.SIGNATURE_INVALID,
+                "no ExecutionObservationVerifier was injected; caller-populated "
+                "signature_status is not signature verification",
+            )
+        verified_observation = verify_execution_observation_envelope(
+            parsed_observation,
+            verifier=observation_verifier,
+        )
+    except ExecutionObservationRefusedError as exc:
+        observation_error = exc
+
     def handler(session: Session) -> Mapping[str, object]:
         attempt = ObservationAttempt(
             received_at=command.received_at,
@@ -2383,6 +2439,42 @@ def record_observation(
             report_id=observed.report_id,
             disposition=ObservationDisposition.MALFORMED.value,
         )
+
+        # The signed statement is the source; the caller's ObservedState is a
+        # projection that must agree field-for-field.  A caller may not turn a
+        # verified envelope into a different observation by populating the
+        # convenient columns differently.
+        if observation_error is not None or verified_observation is None:
+            if (
+                observation_error is not None
+                and observation_error.code
+                is ExecutionObservationRefusalCode.SIGNATURE_INVALID
+                and parsed_observation is not None
+            ):
+                known = session.execute(
+                    select(TargetCredential.id).where(
+                        TargetCredential.key_id == parsed_observation.statement.key_id
+                    )
+                ).scalar_one_or_none()
+                attempt.disposition = (
+                    ObservationDisposition.UNKNOWN_KEY.value
+                    if known is None
+                    else ObservationDisposition.BAD_SIGNATURE.value
+                )
+            else:
+                attempt.disposition = ObservationDisposition.MALFORMED.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(session, attempt, command, changed=False)
+
+        projection_problem = _observation_projection_problem(
+            observed, verified_observation
+        )
+        if projection_problem is not None:
+            attempt.disposition = ObservationDisposition.SIGNED_REPORT_MISMATCH.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(session, attempt, command, changed=False)
 
         # ── Nothing authenticated: record and stop. ─────────────────────────
         if observed.signature_status != SignatureStatus.VALID.value:
@@ -2420,6 +2512,12 @@ def record_observation(
             session.flush()
             return _observation_result(session, attempt, command, changed=False)
 
+        if observed.authenticated_target_ref != credential_target:
+            attempt.disposition = ObservationDisposition.TARGET_MISMATCH.value
+            session.add(attempt)
+            session.flush()
+            return _observation_result(session, attempt, command, changed=False)
+
         # ── The claim, compared against the proof. ──────────────────────────
         if (
             observed.claimed_target_ref
@@ -2448,9 +2546,22 @@ def record_observation(
         # quarantines are: the question is about THIS arrival's contents, and
         # answering it from a previous arrival's verdict would let a report bind
         # to an authorization by being sent twice.
-        unbound = _execution_binding_disposition(session, target, observed)
+        unbound = _execution_observation_binding_disposition(
+            session,
+            target,
+            observed,
+            verified_observation,
+            authorization_verifier=authorization_verifier,
+            received_at=command.received_at,
+        )
         if unbound is not None:
             attempt.disposition = unbound
+            session.add(attempt)
+            session.flush()
+            return _observation_result(session, attempt, command, changed=False)
+
+        if verified_observation.statement.outcome is ExecutionObservationOutcome.FAILED:
+            attempt.disposition = ObservationDisposition.EXECUTION_FAILED.value
             session.add(attempt)
             session.flush()
             return _observation_result(session, attempt, command, changed=False)
@@ -2537,6 +2648,117 @@ def record_observation(
         ),
         verdict=(str(result["verdict"]) if result.get("verdict") else None),
     )
+
+
+def _observation_projection_problem(
+    observed: ObservedState,
+    envelope: ExecutionObservationEnvelopeV1,
+) -> str | None:
+    """Return the first caller projection that contradicts the signed bytes."""
+    statement = envelope.statement
+    envelope_bytes = envelope.canonical_bytes
+    envelope_digest = ObservationEnvelopeDigestV1.over_bytes(envelope_bytes).canonical
+    expected: dict[str, object] = {
+        "report_id": statement.report_id,
+        "observed_release_ref": statement.observed_release_ref,
+        "observed_spec_digest": statement.observed_spec_digest,
+        "reported_at": statement.observed_at,
+        "claimed_target_ref": statement.target_ref,
+        "key_id": statement.key_id,
+        "raw_body": envelope_bytes,
+        "raw_body_digest": envelope_digest,
+        "raw_body_truncated": False,
+        "signature_status": SignatureStatus.VALID.value,
+        "rollout_ref": statement.rollout_ref,
+        "operation": statement.operation,
+        "execution_plan_digest": statement.execution_plan_digest,
+    }
+    for field, wanted in expected.items():
+        actual = getattr(observed, field)
+        if isinstance(actual, datetime) and isinstance(wanted, datetime):
+            actual = _as_utc(actual)
+            wanted = _as_utc(wanted)
+        if actual != wanted:
+            return field
+    return None
+
+
+def _execution_observation_binding_disposition(
+    session: Session,
+    target: DeploymentTarget,
+    observed: ObservedState,
+    observation: ExecutionObservationEnvelopeV1,
+    *,
+    authorization_verifier: AuthorizationVerifier | None,
+    received_at: datetime,
+) -> str | None:
+    """Bind the signed target result to one live, standing authorization."""
+    statement = observation.statement
+    try:
+        authorization_id = UUID(statement.authorization_id)
+    except ValueError:
+        return ObservationDisposition.UNBOUND_REPORT.value
+    rollout = session.get(Rollout, authorization_id)
+    if (
+        rollout is None
+        or rollout.rollout_ref != statement.rollout_ref
+        or rollout.target_id != target.id
+    ):
+        return ObservationDisposition.UNBOUND_REPORT.value
+    plan = session.get(DeploymentPlan, rollout.plan_id)
+    if plan is None:
+        return ObservationDisposition.UNBOUND_REPORT.value
+    if plan.approval_decision_status == ApprovalDecisionStatus.REVOKED.value:
+        return ObservationDisposition.AUTHORIZATION_REVOKED.value
+    if authorization_verifier is None:
+        return ObservationDisposition.AUTHORIZATION_INVALID.value
+    try:
+        authorization = _verified_rollout_envelope(
+            rollout,
+            plan,
+            target,
+            verifier=authorization_verifier,
+            # Execution is authorized at the instant the target says it ran.
+            # A report may arrive later through an at-least-once transport;
+            # receipt latency cannot retroactively make the execution expired.
+            at=statement.observed_at,
+        )
+    except AuthorizationEnvelopeRefusedError as exc:
+        if exc.code is AuthorizationEnvelopeRefusalCode.EXPIRED:
+            return ObservationDisposition.AUTHORIZATION_EXPIRED.value
+        return ObservationDisposition.AUTHORIZATION_INVALID.value
+
+    authorized = authorization.statement
+    if authorized.key_id == statement.key_id:
+        return ObservationDisposition.SIGNER_PURPOSE_REUSED.value
+    expected: dict[str, object] = {
+        "authorization_id": authorized.authorization_id,
+        "rollout_ref": authorized.rollout_ref,
+        "target_id": authorized.target_id,
+        "target_ref": authorized.target_ref,
+        "product_code": authorized.product_code,
+        "environment": authorized.environment,
+        "operation": authorized.operation,
+        "release_ref": authorized.release_ref,
+        "authorized_images": authorized.authorized_images,
+        "plan_digest": authorized.plan_digest,
+        "descriptor_digest": authorized.descriptor_digest,
+        "execution_plan_digest": authorized.execution_plan_digest,
+    }
+    for field, wanted in expected.items():
+        if getattr(statement, field) != wanted:
+            if field == "execution_plan_digest":
+                return ObservationDisposition.EXECUTION_PLAN_MISMATCH.value
+            if field == "operation":
+                return ObservationDisposition.OPERATION_MISMATCH.value
+            return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+    if statement.observed_release_ref != authorized.release_ref:
+        return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+    if statement.observed_images != authorized.authorized_images:
+        return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+    if _as_utc(statement.observed_at) > _as_utc(received_at):
+        return ObservationDisposition.AUTHORIZATION_MISMATCH.value
+    return _execution_binding_disposition(session, target, observed)
 
 
 def _execution_binding_disposition(
@@ -2643,7 +2865,7 @@ def _replay_observation(
     command: RecordObservationCommand,
     receipt: ObservationReceipt,
 ) -> Mapping[str, object]:
-    """Retain a losing/repeated arrival and return the first verdict verbatim."""
+    """Retain a replay and preserve the first verdict as immutable history."""
     same_bytes = receipt.payload_digest == command.observed.raw_body_digest
     attempt.disposition = (
         ObservationDisposition.IDEMPOTENT_REPLAY.value
@@ -3260,6 +3482,7 @@ def find_approved_plan(
             approval_decision_ref=row.approval_decision_ref,
             approval_decision_status=decision_status,
             approved_at=row.approved_at,
+            control_version=envelope.statement.control_version,
             authorized_images=images,
             authorization_envelope=envelope,
             release_ref=snapshot.get("release_ref"),

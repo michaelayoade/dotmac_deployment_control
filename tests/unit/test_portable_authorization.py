@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from importlib.metadata import version as distribution_version
 
 import pytest
 
 from dotmac_deployment_control import (
+    AUTHORIZATION_PURPOSE,
     AuthorizationEnvelopeRefusalCode,
     AuthorizationEnvelopeRefusedError,
-    AuthorizationEnvelopeV1,
+    AuthorizationEnvelopeV2,
     AuthorizationSignature,
     issue_authorization_envelope,
     verify_authorization_envelope,
@@ -59,7 +61,7 @@ def _fields() -> dict[str, object]:
     }
 
 
-def _issued() -> AuthorizationEnvelopeV1:
+def _issued() -> AuthorizationEnvelopeV2:
     return issue_authorization_envelope(_fields(), signer=SIGNER)
 
 
@@ -136,11 +138,11 @@ def test_a_cryptographically_valid_revoked_decision_is_still_refused() -> None:
     valid = _issued()
     payload = valid.as_mapping()
     payload["statement"]["approval_decision_status"] = "revoked"  # type: ignore[index]
-    statement = AuthorizationEnvelopeV1.parse(
+    statement = AuthorizationEnvelopeV2.parse(
         {"statement": payload["statement"], "signature": "temporary"}
     ).statement
     signed = SIGNER.sign(statement.canonical_bytes)
-    revoked = AuthorizationEnvelopeV1(statement=statement, signature=signed.signature)
+    revoked = AuthorizationEnvelopeV2(statement=statement, signature=signed.signature)
 
     with pytest.raises(AuthorizationEnvelopeRefusedError) as caught:
         verify_authorization_envelope(revoked, verifier=VERIFIER, at=_NOW)
@@ -175,6 +177,7 @@ _MUTATIONS: list[tuple[str, object]] = [
     ("approved_at", "2026-09-02T10:00:00Z"),
     ("issued_at", "2026-09-02T11:59:00Z"),
     ("expires_at", "2026-09-02T12:31:00Z"),
+    ("control_version", "0.1.0a999"),
     ("key_id", "another-key"),
     ("algorithm", "another-algorithm"),
 ]
@@ -192,7 +195,7 @@ _MUTATIONS: list[tuple[str, object]] = [
 #: scalar mutation asserts the wrong refusal — which is exactly what happened on
 #: the first attempt at this file, and is why they are named here with the
 #: reason rather than left out.
-_COVERED_ELSEWHERE = {"authorized_images", "version", "schema"}
+_COVERED_ELSEWHERE = {"authorized_images", "version", "schema", "purpose"}
 
 
 def test_a_clean_envelope_verifies_and_returns_its_statement() -> None:
@@ -215,6 +218,10 @@ def test_a_clean_envelope_verifies_and_returns_its_statement() -> None:
     assert statement.plan_digest == _D1
     assert statement.descriptor_digest == _D2
     assert statement.execution_plan_digest == _D3
+    assert statement.control_version == distribution_version(
+        "dotmac-deployment-control"
+    )
+    assert statement.purpose == AUTHORIZATION_PURPOSE
     # The three digests are distinct VALUES in the signed bytes and stay
     # distinct through a round trip. Foundation is being repaired in parallel to
     # refuse when one is substituted for another; this is Control's half of
@@ -246,6 +253,21 @@ def test_the_schema_name_is_signed_and_refused_before_the_signature() -> None:
     with pytest.raises(AuthorizationEnvelopeRefusedError) as caught:
         verify_authorization_envelope(payload, verifier=VERIFIER, at=_NOW)
     assert caught.value.code is AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION
+
+
+def test_the_authorization_purpose_is_refused_before_key_resolution() -> None:
+    payload = _issued().as_mapping()
+    payload["statement"]["purpose"] = "target_execution_observation"  # type: ignore[index]
+    with pytest.raises(AuthorizationEnvelopeRefusedError) as caught:
+        verify_authorization_envelope(payload, verifier=VERIFIER, at=_NOW)
+    assert caught.value.code is AuthorizationEnvelopeRefusalCode.PURPOSE_MISMATCH
+
+
+def test_control_version_is_derived_inside_control_not_caller_supplied() -> None:
+    fields = _fields()
+    fields["control_version"] = "0.1.0a999"
+    with pytest.raises(AuthorizationEnvelopeRefusedError, match="derived inside"):
+        issue_authorization_envelope(fields, signer=SIGNER)
 
 
 def test_every_signed_key_has_a_mutation_and_no_mutation_is_orphaned() -> None:
@@ -309,9 +331,9 @@ def test_plan_digest_substitution_is_not_a_descriptor_mismatch() -> None:
 
 def test_unsupported_version_and_expiry_are_distinct_refusals() -> None:
     payload = _issued().as_mapping()
-    payload["statement"]["version"] = 2  # type: ignore[index]
+    payload["statement"]["version"] = 3  # type: ignore[index]
     with pytest.raises(AuthorizationEnvelopeRefusedError) as unsupported:
-        AuthorizationEnvelopeV1.parse(payload)
+        AuthorizationEnvelopeV2.parse(payload)
     assert (
         unsupported.value.code is AuthorizationEnvelopeRefusalCode.UNSUPPORTED_VERSION
     )

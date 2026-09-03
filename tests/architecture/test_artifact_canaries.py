@@ -73,6 +73,9 @@ EXPECTED_CANARIES = (
     # a9's portable authorization must be driven from the installed wheel,
     # including its canonical image-set and descriptor signature binding.
     "portable_authorization_binds",
+    # a10: the target result is a signed document with a distinct key purpose,
+    # verified against the standing authorization before state can change.
+    "signed_execution_observation_binds",
     # The browser surface ships templates as package data, and the kernel
     # validates that directory when it builds the surface graph — at the
     # CONSUMER's startup. A wheel missing it imports perfectly and composes

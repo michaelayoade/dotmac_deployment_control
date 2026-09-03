@@ -22,6 +22,7 @@ Requires real Postgres (`make test-db-up` / `make test-integration`).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import uuid
@@ -64,20 +65,28 @@ from dotmac_deployment_control import (
     RecordObservationCommand,
     RegisterTargetCommand,
     RequestRolloutCommand,
+    RuntimeIdentityV1,
     SetDesiredStateCommand,
     SignatureStatus,
     activate_credential,
     build_database_catalog_snapshot,
     enrol_credential,
+    issue_execution_observation_envelope,
     module,
     propose_plan,
     record_observation,
     register_target,
     request_rollout,
     set_desired_state,
+    spec_digest,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
-from tests.authorization_support import SIGNER
+from dotmac_deployment_control.models import DeploymentPlan, DeploymentTarget, Rollout
+from tests.authorization_support import SIGNER, VERIFIER
+from tests.execution_observation_support import (
+    OBSERVATION_VERIFIER,
+    TestExecutionObservationSigner,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -745,6 +754,47 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
     def worker(index: int, digest: str) -> None:
         db = sessions()
         try:
+            rollout = db.execute(
+                select(Rollout).where(Rollout.rollout_ref == rollout_ref)
+            ).scalar_one()
+            plan = db.get(DeploymentPlan, rollout.plan_id)
+            target = db.execute(
+                select(DeploymentTarget).where(
+                    DeploymentTarget.target_ref == target_ref
+                )
+            ).scalar_one()
+            assert plan is not None
+            snapshot = dict(plan.snapshot or {})
+            envelope = issue_execution_observation_envelope(
+                {
+                    "report_id": report_id,
+                    "authorization_id": str(rollout.id),
+                    "rollout_ref": rollout_ref,
+                    "target_id": str(target.id),
+                    "target_ref": target_ref,
+                    "product_code": target.product_code,
+                    "environment": target.environment,
+                    "operation": "deploy",
+                    "release_ref": "dotmac_sub@1",
+                    "observed_release_ref": "dotmac_sub@1",
+                    "authorized_images": [],
+                    "observed_images": [],
+                    "plan_digest": plan.plan_digest,
+                    "descriptor_digest": snapshot["descriptor_digest"],
+                    "execution_plan_digest": _EXECUTION_PLAN,
+                    "observed_spec_digest": spec_digest({"replicas": 2}),
+                    "observed_revision": digest,
+                    "runtime_identity": RuntimeIdentityV1(
+                        kind="oci_container", identifier="container:race"
+                    ),
+                    "outcome": "succeeded",
+                    "observed_at": _OBSERVED_AT,
+                },
+                signer=TestExecutionObservationSigner(key_id),
+            )
+            body_digest = (
+                f"sha256:{hashlib.sha256(envelope.canonical_bytes).hexdigest()}"
+            )
             results[index] = record_observation(
                 db,
                 RecordObservationCommand(
@@ -753,19 +803,22 @@ def test_concurrent_first_arrivals_keep_one_receipt_and_the_winners_verdict(
                     observed=ObservedState(
                         report_id=report_id,
                         observed_release_ref="dotmac_sub@1",
-                        observed_spec_digest="sha256:spec",
+                        observed_spec_digest=spec_digest({"replicas": 2}),
                         reported_at=_OBSERVED_AT,
                         authenticated_target_ref=target_ref,
                         claimed_target_ref=target_ref,
                         key_id=key_id,
-                        raw_body=digest.encode(),
-                        raw_body_digest=digest,
+                        raw_body=envelope.canonical_bytes,
+                        raw_body_digest=body_digest,
                         signature_status=SignatureStatus.VALID.value,
                         rollout_ref=rollout_ref,
                         operation="deploy",
                         execution_plan_digest=_EXECUTION_PLAN,
                     ),
+                    execution_observation_envelope=envelope,
                 ),
+                observation_verifier=OBSERVATION_VERIFIER,
+                authorization_verifier=VERIFIER,
             )
             db.commit()
         except BaseException as exc:

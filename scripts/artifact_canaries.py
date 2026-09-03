@@ -485,6 +485,98 @@ def _authorization_signer() -> Any:
     return CanarySigner()
 
 
+def _authorization_verifier() -> Any:
+    """The public half of the canary authorization identity."""
+    import hashlib
+    import hmac
+
+    from dotmac_deployment_control import AUTHORIZATION_PURPOSE
+
+    key = b"artifact-canary-key-not-production-material"
+
+    class CanaryVerifier:
+        def verify(
+            self,
+            *,
+            key_id: str,
+            algorithm: str,
+            purpose: str,
+            canonical_bytes: bytes,
+            signature: str,
+        ) -> bool:
+            expected = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()
+            return (
+                key_id == "artifact-canary"
+                and algorithm == "hmac-sha256-test-only"
+                and purpose == AUTHORIZATION_PURPOSE
+                and hmac.compare_digest(signature, expected)
+            )
+
+    return CanaryVerifier()
+
+
+def _execution_observation_signer(key_id: str) -> Any:
+    """A distinct target-side test purpose; never the authorization identity."""
+    import hashlib
+    import hmac
+
+    from dotmac_deployment_control import (
+        ExecutionObservationSignature,
+        ExecutionObservationSignerIdentity,
+    )
+
+    key = b"artifact-canary-observation-key-not-production-material"
+
+    class CanaryObservationSigner:
+        execution_observation_identity = ExecutionObservationSignerIdentity(
+            key_id=key_id,
+            algorithm="hmac-sha256-test-only",
+        )
+
+        def sign_execution_observation(
+            self, canonical_bytes: bytes
+        ) -> ExecutionObservationSignature:
+            identity = self.execution_observation_identity
+            return ExecutionObservationSignature(
+                key_id=identity.key_id,
+                algorithm=identity.algorithm,
+                purpose=identity.purpose,
+                signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
+            )
+
+    return CanaryObservationSigner()
+
+
+def _execution_observation_verifier() -> Any:
+    """The Control-side public verifier for the target purpose only."""
+    import hashlib
+    import hmac
+
+    from dotmac_deployment_control import EXECUTION_OBSERVATION_PURPOSE
+
+    key = b"artifact-canary-observation-key-not-production-material"
+
+    class CanaryObservationVerifier:
+        def verify_execution_observation(
+            self,
+            *,
+            key_id: str,
+            algorithm: str,
+            purpose: str,
+            canonical_bytes: bytes,
+            signature: str,
+        ) -> bool:
+            expected = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()
+            return (
+                key_id.startswith("key-")
+                and algorithm == "hmac-sha256-test-only"
+                and purpose == EXECUTION_OBSERVATION_PURPOSE
+                and hmac.compare_digest(signature, expected)
+            )
+
+    return CanaryObservationVerifier()
+
+
 def _command_id() -> str:
     return f"cmd-{uuid.uuid4().hex[:12]}"
 
@@ -663,6 +755,81 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
         signer=_authorization_signer(),
     )
     return target, key_id, rollout.rollout_ref
+
+
+def _signed_execution_observation(
+    db: Any,
+    *,
+    target: Any,
+    key_id: str,
+    rollout_ref: str,
+    report_id: str,
+) -> tuple[Any, Any]:
+    """Build the caller projection from the signed target statement."""
+    import hashlib
+
+    from sqlalchemy import select
+
+    from dotmac_deployment_control import (
+        ObservedState,
+        RuntimeIdentityV1,
+        issue_execution_observation_envelope,
+        spec_digest,
+    )
+    from dotmac_deployment_control.models import DeploymentPlan, Rollout
+
+    rollout = db.execute(
+        select(Rollout).where(Rollout.rollout_ref == rollout_ref)
+    ).scalar_one()
+    plan = db.get(DeploymentPlan, rollout.plan_id)
+    if plan is None:
+        raise CanaryFailure("the rollout's plan disappeared before observation")
+    snapshot = dict(plan.snapshot or {})
+    statement_fields = {
+        "report_id": report_id,
+        "authorization_id": str(rollout.id),
+        "rollout_ref": rollout_ref,
+        "target_id": str(target.id),
+        "target_ref": target.target_ref,
+        "product_code": target.product_code,
+        "environment": target.environment,
+        "operation": "deploy",
+        "release_ref": _RELEASE,
+        "observed_release_ref": _RELEASE,
+        "authorized_images": snapshot.get("authorized_images") or [],
+        "observed_images": snapshot.get("authorized_images") or [],
+        "plan_digest": plan.plan_digest,
+        "descriptor_digest": _DESCRIPTOR,
+        "execution_plan_digest": _EXECUTION_PLAN,
+        "observed_spec_digest": spec_digest({"replicas": 2}),
+        "observed_revision": "desired:1",
+        "runtime_identity": RuntimeIdentityV1(
+            kind="canary_process", identifier="artifact-canary-runtime"
+        ),
+        "outcome": "succeeded",
+        "observed_at": _NOW,
+    }
+    envelope = issue_execution_observation_envelope(
+        statement_fields,
+        signer=_execution_observation_signer(key_id),
+    )
+    body = envelope.canonical_bytes
+    observed = ObservedState(
+        report_id=report_id,
+        observed_release_ref=_RELEASE,
+        observed_spec_digest=statement_fields["observed_spec_digest"],
+        reported_at=_NOW,
+        authenticated_target_ref=target.target_ref,
+        claimed_target_ref=target.target_ref,
+        key_id=key_id,
+        raw_body=body,
+        raw_body_digest=f"sha256:{hashlib.sha256(body).hexdigest()}",
+        signature_status="valid",
+        rollout_ref=rollout_ref,
+        operation="deploy",
+        execution_plan_digest=_EXECUTION_PLAN,
+    )
+    return envelope, observed
 
 
 # ── the behavioural canaries ────────────────────────────────────────────────
@@ -912,15 +1079,19 @@ def canary_conflict_savepoint_executes() -> str:
     from dotmac_deployment_control import (
         ObservationDisposition,
         ObservationReceipt,
-        ObservedState,
         RecordObservationCommand,
-        SignatureStatus,
-        spec_digest,
     )
 
     db = _session()
     target, key_id, rollout_ref = _enrolled_target(db)
     report_id = f"rep-{uuid.uuid4().hex[:8]}"
+    envelope, observed = _signed_execution_observation(
+        db,
+        target=target,
+        key_id=key_id,
+        rollout_ref=rollout_ref,
+        report_id=report_id,
+    )
 
     # THE BINDING IS PART OF REACHING THE SAVEPOINT. Since `dc_0003` an accepted
     # observation must bind the same execution plan and operation across
@@ -933,23 +1104,12 @@ def canary_conflict_savepoint_executes() -> str:
         db,
         RecordObservationCommand(
             command_id=_command_id(),
-            observed=ObservedState(
-                report_id=report_id,
-                observed_release_ref=_RELEASE,
-                observed_spec_digest=spec_digest({"replicas": 2}),
-                reported_at=_NOW,
-                authenticated_target_ref=target.target_ref,
-                claimed_target_ref=target.target_ref,
-                key_id=key_id,
-                raw_body=b"{}",
-                raw_body_digest="sha256:" + "b" * 64,
-                signature_status=SignatureStatus.VALID.value,
-                rollout_ref=rollout_ref,
-                operation="deploy",
-                execution_plan_digest=_EXECUTION_PLAN,
-            ),
+            observed=observed,
+            execution_observation_envelope=envelope,
             received_at=_NOW,
         ),
+        observation_verifier=_execution_observation_verifier(),
+        authorization_verifier=_authorization_verifier(),
     )
     if verdict.disposition != ObservationDisposition.ACCEPTED.value:
         raise CanaryFailure(
@@ -1665,49 +1825,17 @@ def canary_portable_authorization_binds() -> str:
     to drive the provider-neutral protocols from the installed wheel and prove
     that a Foundation descriptor mutation invalidates the same signature.
     """
-    import hashlib
-    import hmac
+    import importlib.metadata
     import json
 
     from dotmac_deployment_control import (
+        AUTHORIZATION_PURPOSE,
         AuthorizationEnvelopeRefusedError,
-        AuthorizationSignature,
-        AuthorizationSignerIdentity,
         issue_authorization_envelope,
         verify_authorization_envelope,
     )
 
     _installed_origin(f"{IMPORT_NAME}.authorization")
-    key = b"artifact-canary-key-not-production-material"
-
-    class CanarySigner:
-        identity = AuthorizationSignerIdentity(
-            key_id="artifact-canary", algorithm="hmac-sha256-test-only"
-        )
-
-        def sign(self, canonical_bytes: bytes) -> AuthorizationSignature:
-            return AuthorizationSignature(
-                key_id=self.identity.key_id,
-                algorithm=self.identity.algorithm,
-                signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
-            )
-
-    class CanaryVerifier:
-        def verify(
-            self,
-            *,
-            key_id: str,
-            algorithm: str,
-            canonical_bytes: bytes,
-            signature: str,
-        ) -> bool:
-            expected = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()
-            return (
-                key_id == "artifact-canary"
-                and algorithm == "hmac-sha256-test-only"
-                and hmac.compare_digest(signature, expected)
-            )
-
     issued = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
     fields = {
         "authorization_id": "auth-artifact-canary",
@@ -1744,10 +1872,19 @@ def canary_portable_authorization_binds() -> str:
         "issued_at": issued,
         "expires_at": issued.replace(year=2027),
     }
-    signer = CanarySigner()
-    verifier = CanaryVerifier()
+    signer = _authorization_signer()
+    verifier = _authorization_verifier()
     envelope = issue_authorization_envelope(fields, signer=signer)
     verify_authorization_envelope(envelope, verifier=verifier, at=issued)
+    installed = importlib.metadata.version(DISTRIBUTION)
+    if envelope.statement.control_version != installed:
+        raise CanaryFailure(
+            "the signed authorization says Control "
+            f"{envelope.statement.control_version}, while installed metadata says "
+            f"{installed}"
+        )
+    if envelope.statement.purpose != AUTHORIZATION_PURPOSE:
+        raise CanaryFailure("the signed authorization carries the wrong key purpose")
 
     reordered = dict(fields)
     reordered["authorized_images"] = list(reversed(fields["authorized_images"]))
@@ -1773,8 +1910,85 @@ def canary_portable_authorization_binds() -> str:
         raise CanaryFailure("image membership did not change portable authorization")
 
     return (
-        "provider-neutral envelope verified; image reorder was identical and "
-        "descriptor mutation was refused, and image membership changed the signature"
+        f"provider-neutral v2 envelope binds installed Control {installed}; image "
+        "reorder was identical, descriptor mutation was refused, and image "
+        "membership changed the signature"
+    )
+
+
+def canary_signed_execution_observation_binds() -> str:
+    """The installed artifact admits only a purpose-correct signed result."""
+    import json
+
+    from dotmac_deployment_control import (
+        ExecutionObservationRefusedError,
+        ObservationDisposition,
+        RecordObservationCommand,
+        issue_execution_observation_envelope,
+        record_observation,
+        verify_execution_observation_envelope,
+    )
+
+    _installed_origin(f"{IMPORT_NAME}.execution_observation")
+    db = _session()
+    target, key_id, rollout_ref = _enrolled_target(db)
+    envelope, observed = _signed_execution_observation(
+        db,
+        target=target,
+        key_id=key_id,
+        rollout_ref=rollout_ref,
+        report_id=f"rep-{uuid.uuid4().hex[:8]}",
+    )
+    verify_execution_observation_envelope(
+        envelope,
+        verifier=_execution_observation_verifier(),
+    )
+
+    statement_fields = dict(envelope.statement.as_mapping())
+    for derived in ("schema", "version", "purpose", "key_id", "algorithm"):
+        statement_fields.pop(derived)
+    try:
+        issue_execution_observation_envelope(
+            statement_fields,
+            signer=_authorization_signer(),
+        )
+    except ExecutionObservationRefusedError:
+        pass
+    else:
+        raise CanaryFailure(
+            "the authorization signer satisfied the target-observation purpose"
+        )
+
+    mutated = json.loads(json.dumps(envelope.as_mapping()))
+    mutated["statement"]["observed_revision"] = "git:mutated-after-signing"
+    try:
+        verify_execution_observation_envelope(
+            mutated,
+            verifier=_execution_observation_verifier(),
+        )
+    except ExecutionObservationRefusedError:
+        pass
+    else:
+        raise CanaryFailure("an observed-runtime mutation kept a valid signature")
+
+    verdict = record_observation(
+        db,
+        RecordObservationCommand(
+            command_id=_command_id(),
+            observed=observed,
+            execution_observation_envelope=envelope,
+            received_at=_NOW,
+        ),
+        observation_verifier=_execution_observation_verifier(),
+        authorization_verifier=_authorization_verifier(),
+    )
+    if verdict.disposition != ObservationDisposition.ACCEPTED.value:
+        raise CanaryFailure(
+            f"the purpose-correct signed observation was {verdict.disposition!r}"
+        )
+    return (
+        "purpose-separated target envelope verified against its standing "
+        "authorization; runtime mutation and authorization-key substitution refused"
     )
 
 
@@ -1903,6 +2117,10 @@ def main(argv: list[str] | None = None) -> int:
             lambda: canary_catalogue_digest_binds(args.expect_version),
         ),
         ("portable_authorization_binds", canary_portable_authorization_binds),
+        (
+            "signed_execution_observation_binds",
+            canary_signed_execution_observation_binds,
+        ),
         # The browser surface's package data, which only an installed
         # artifact can be asked about.
         ("web_surface_ships_its_templates", canary_web_surface_ships_its_templates),

@@ -49,7 +49,7 @@ register_target ─► set_desired_state ─► propose_plan ─► approve_plan
                                                               │            (to Integrator)
                                                        settle_attempt
                                                               │
-   record_observation ◄── (target reports, kernel-verified) ──┘
+   record_observation ◄── (target signs an execution result) ──┘
             │
           drift()   ── computed on demand, against the plan that was ROLLED OUT
 ```
@@ -88,13 +88,15 @@ answers neither "how many times did we try?" nor "what did we decide?".
   no endpoint, credential reference, transport name or retry policy. It emits a
   provider-neutral `DeliveryIntent`; the Integrator owns everything after that
   (ADR-0024, hard rule 28).
-- **It verifies no target observation itself.**
-  `dotmac_kernel.licensing.verify_applied_state` and `verify_possession` own that
-  inbound trust direction (ADR-0007); the caller runs them and passes the result
-  in. Control separately owns the canonical portable authorization it issues to
-  an executor, through provider-neutral injected signer/verifier protocols. It
-  stores no private key, selects no crypto provider, and never reuses the
-  target-observation signer.
+- **It owns the target execution-observation document, not its private key.**
+  `ExecutionObservationEnvelopeV1` is provider-neutral and is verified through
+  an injected, purpose-specific verifier before any target state changes. Its
+  signed terms must equal the standing Control authorization and the caller's
+  `ObservedState` projection. Control stores no private key, selects no crypto
+  provider, and structurally separates the target-observation signer/verifier
+  from the opposite authorization trust direction. ADR-0007 possession proof
+  still governs activating a target credential; it is not a substitute for
+  verifying each execution result.
 - **No health status at all.** Whether a deployment is UP belongs to Dotmac
   Observability. Ruling A4 keeps them apart so "no mutating consumer of health"
   stays a checkable dependency direction.
@@ -169,16 +171,17 @@ and the disagreement surfaces as a false "the plan changed".
 ## Portable authorization
 
 An approved database row is a live Control-plane fact, not a document an
-executor can verify while disconnected from Control. `0.1.0a9` adds a distinct
-portable contract: `AuthorizationEnvelopeV1` signs Control-owned canonical bytes
-and is stored unchanged on the rollout that received it.
+executor can verify while disconnected from Control. `0.1.0a9` added
+`AuthorizationEnvelopeV1`. This tree declares the explicit successor
+`AuthorizationEnvelopeV2`, stored unchanged on the rollout that received it.
 
 The signed statement binds the authorization and approval identities, target,
 operation, release, canonical image set, Control `plan_digest`, Foundation
 `descriptor_digest`, Foundation `execution_plan_digest`, approval standing,
-issue/expiry instants, schema version, and signer `key_id`/`algorithm`. Image
-order is canonical because it is a set; changing membership or any image digest
-changes the signed bytes.
+issue/expiry instants, schema version, signer `key_id`/`algorithm`, the
+`deployment_authorization` purpose, and the installed Control distribution
+version derived inside Control. Image order is canonical because it is a set;
+changing membership or any image digest changes the signed bytes.
 
 Cryptography is injected through `AuthorizationSigner` and
 `AuthorizationVerifier`. The signer exposes immutable identity before bytes are
@@ -187,6 +190,24 @@ Control chooses no algorithm/provider, holds no private material, and does not
 reuse the target-observation signing seam. Revocation blocks lookup and dispatch
 without rewriting the historical envelope.
 
+## Signed target execution observation
+
+`ExecutionObservationEnvelopeV1` is the return trust direction. The target
+signs the authorization id and rollout, target, operation, release, exact
+authorized and observed image sets, all three plan/descriptor/execution-plan
+digests, observed spec and revision, runtime identity, outcome and timestamp.
+The signer and verifier protocols have purpose-specific method and identity
+types; an authorization signer cannot satisfy them accidentally.
+
+`record_observation` first verifies those bytes, then resolves the standing
+authorization and compares every shared term before writing observed state. A
+revoked, expired, mismatched or unverifiable authorization changes no target.
+A byte-identical repeated `report_id` is idempotent and preserves the original
+verdict; the same id with different signed bytes is a conflict. Transport
+settlement remains separate: a successful delivery attempt is not evidence
+that the target executed it, and a signed execution failure does not rewrite
+the transport outcome.
+
 ## Published facts
 
 Nineteen types, all `.v1` — read `PUBLISHED_EVENT_TYPES` rather than keeping a
@@ -194,17 +215,18 @@ hand-written list.
 
 ## Status
 
-**Built and validated, not adopted.** Pin `0.1.0a9`, with `dotmac-kernel
->=0.1.0a100`. That is the newest PUBLISHED version — release run `33686171205`,
+**The a10 successor is declared, not published or adopted.** The newest
+published version remains `0.1.0a9`, with `dotmac-kernel >=0.1.0a100` — release run `33686171205`,
 independently VERIFIED by run `33686335734` on 2026-09-02 — and it requires
 `dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
 `dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
 wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
 pinnable, against `dotmac-kernel >=0.1.0a98`.
 
-`0.1.0a9` adds the required Foundation descriptor binding and portable signed
-authorization. `0.1.0a8` remains immutable, verified and pinnable, but a
-consumer that needs either a9 contract must not substitute it.
+`0.1.0a9` adds the required Foundation descriptor binding and V1 portable signed
+authorization. The declared a10 successor adds Control-version binding and the
+purpose-separated signed target execution result. It is not pinnable until its
+registry artifacts are independently verified and recorded.
 
 Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
 `a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is

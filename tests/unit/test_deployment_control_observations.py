@@ -10,9 +10,10 @@ Three invariants, each with a failure mode worth stating:
    exists.** An unknown key or a bad signature against a known one is precisely
    the evidence an operator needs, and a fail-closed system that discards it is
    closed AND blind.
-3. **A replay returns the ORIGINAL verdict.** Recomputing could yield a
-   different answer against changed target state for bytes the deployment sent
-   once, which would make an at-least-once transport look like a state change.
+3. **A replay is refused while preserving the ORIGINAL verdict.** Recomputing
+   could yield a different answer against changed target state for bytes the
+   deployment sent once, which would make an at-least-once transport look like
+   a state change.
 
 Every rejection path below is asserted to WRITE an attempt row, not just to
 return a disposition. That is the half a "does it refuse?" suite misses, and it
@@ -25,6 +26,7 @@ structural are proven against real Postgres in
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
@@ -40,6 +42,8 @@ from dotmac_deployment_control import (
     CredentialTransitionCommand,
     DesiredDeployment,
     EnrolCredentialCommand,
+    ExecutionObservationEnvelopeV1,
+    ExecutionObservationRefusedError,
     ObservationDisposition,
     ObservationRefusedError,
     ObservedState,
@@ -47,6 +51,7 @@ from dotmac_deployment_control import (
     RecordObservationCommand,
     RegisterTargetCommand,
     RequestRolloutCommand,
+    RuntimeIdentityV1,
     SetDesiredStateCommand,
     SettleAttemptCommand,
     SignatureStatus,
@@ -56,6 +61,7 @@ from dotmac_deployment_control import (
     drift,
     enrol_credential,
     get_target,
+    issue_execution_observation_envelope,
     module,
     observation_attempts,
     propose_plan,
@@ -67,8 +73,12 @@ from dotmac_deployment_control import (
     settle_attempt,
     spec_digest,
 )
-from dotmac_deployment_control.models import DeploymentTarget, Rollout
+from dotmac_deployment_control.models import DeploymentPlan, DeploymentTarget, Rollout
 from tests.authorization_support import SIGNER, VERIFIER
+from tests.execution_observation_support import (
+    OBSERVATION_VERIFIER,
+    TestExecutionObservationSigner,
+)
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 _SPEC = {"replicas": 2}
@@ -222,7 +232,13 @@ def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
     ).rollout_ref
 
 
-def _observe(db: Session, *, received_at: datetime | None = None, **overrides: object):
+def _observe(
+    db: Session,
+    *,
+    received_at: datetime | None = None,
+    observed_revision: str = "git:0123456789abcdef",
+    **overrides: object,
+):
     fields: dict[str, object] = {
         "report_id": f"rep-{uuid.uuid4().hex[:8]}",
         "observed_release_ref": _RELEASE,
@@ -231,24 +247,89 @@ def _observe(db: Session, *, received_at: datetime | None = None, **overrides: o
         "authenticated_target_ref": "tgt-acme-1",
         "claimed_target_ref": "tgt-acme-1",
         "key_id": "key-acme-1",
-        "raw_body": b"{}",
-        "raw_body_digest": "sha256:beef",
+        "raw_body": None,
+        "raw_body_digest": None,
         "signature_status": SignatureStatus.VALID.value,
         "operation": "deploy",
         "execution_plan_digest": _EXECUTION_PLAN,
     }
     fields.update(overrides)
+    if fields["signature_status"] == SignatureStatus.UNRESOLVED.value:
+        fields["key_id"] = "unknown-observation-key"
     if "rollout_ref" not in fields:
         fields["rollout_ref"] = _bound_rollout_ref(
             db, fields["authenticated_target_ref"]
         )
+    rollout = db.execute(
+        select(Rollout).where(Rollout.rollout_ref == fields["rollout_ref"])
+    ).scalar_one_or_none()
+    plan = None if rollout is None else db.get(DeploymentPlan, rollout.plan_id)
+    target = (
+        None
+        if fields["authenticated_target_ref"] is None
+        else db.execute(
+            select(DeploymentTarget).where(
+                DeploymentTarget.target_ref == fields["authenticated_target_ref"]
+            )
+        ).scalar_one_or_none()
+    )
+    snapshot = {} if plan is None else dict(plan.snapshot or {})
+    statement_fields: dict[str, object] = {
+        "report_id": fields["report_id"],
+        "authorization_id": (
+            str(rollout.id)
+            if rollout is not None
+            else "00000000-0000-0000-0000-000000000000"
+        ),
+        "rollout_ref": fields["rollout_ref"] or "unbound-rollout",
+        "target_id": (
+            str(target.id)
+            if target is not None
+            else "00000000-0000-0000-0000-000000000000"
+        ),
+        "target_ref": fields["claimed_target_ref"] or "unclaimed-target",
+        "product_code": target.product_code if target is not None else "unknown",
+        "environment": target.environment if target is not None else "unknown",
+        "operation": fields["operation"],
+        "release_ref": snapshot.get("release_ref") or _RELEASE,
+        "observed_release_ref": fields["observed_release_ref"],
+        "authorized_images": snapshot.get("authorized_images") or [],
+        "observed_images": snapshot.get("authorized_images") or [],
+        "plan_digest": (
+            plan.plan_digest if plan is not None else "sha256:" + "0a" * 32
+        ),
+        "descriptor_digest": snapshot.get("descriptor_digest") or _DESCRIPTOR,
+        "execution_plan_digest": fields["execution_plan_digest"],
+        "observed_spec_digest": fields["observed_spec_digest"],
+        "observed_revision": observed_revision,
+        "runtime_identity": RuntimeIdentityV1(
+            kind="oci_container", identifier="container:abcdef"
+        ),
+        "outcome": "succeeded",
+        "observed_at": fields["reported_at"],
+    }
+    envelope = issue_execution_observation_envelope(
+        statement_fields,
+        signer=TestExecutionObservationSigner(str(fields["key_id"] or "unknown-key")),
+    )
+    if fields["signature_status"] != SignatureStatus.VALID.value:
+        envelope = ExecutionObservationEnvelopeV1(
+            statement=envelope.statement, signature="invalid-signature"
+        )
+    fields["raw_body"] = envelope.canonical_bytes
+    fields["raw_body_digest"] = (
+        f"sha256:{hashlib.sha256(envelope.canonical_bytes).hexdigest()}"
+    )
     return record_observation(
         db,
         RecordObservationCommand(
             command_id=_cmd(),
             observed=ObservedState(**fields),  # type: ignore[arg-type]
+            execution_observation_envelope=envelope,
             received_at=received_at or _NOW,
         ),
+        observation_verifier=OBSERVATION_VERIFIER,
+        authorization_verifier=VERIFIER,
     )
 
 
@@ -312,11 +393,11 @@ class TestUnauthenticatedArrivalsChangeNothingAndAreRecorded:
     def test_a_valid_signature_with_no_resolved_identity_is_refused(
         self, db, enrolled
     ) -> None:
-        """A caller passing `valid` without an identity has defeated the
-        claim/proof split. This raises the clear error rather than letting the
-        CHECK constraint produce an opaque one."""
-        with pytest.raises(ObservationRefusedError, match="decorative"):
-            _observe(db, authenticated_target_ref=None)
+        """A caller cannot project a signed report into an unauthenticated row."""
+        verdict = _observe(db, authenticated_target_ref=None)
+        assert (
+            verdict.disposition == ObservationDisposition.SIGNED_REPORT_MISMATCH.value
+        )
 
 
 # ── Claim versus proof ──────────────────────────────────────────────────────
@@ -352,7 +433,9 @@ class TestTheClaimIsComparedAgainstTheProof:
             claimed_target_ref="tgt-ghost",
             key_id="key-acme-1",
         )
-        assert verdict.disposition == ObservationDisposition.UNKNOWN_TARGET.value
+        assert (
+            verdict.disposition == ObservationDisposition.SIGNED_REPORT_MISMATCH.value
+        )
         assert verdict.changed_state is False
 
 
@@ -489,8 +572,8 @@ class TestReplaysAndConflicts:
         """The row worth keeping — and the one a single uniquely-keyed table
         could not have stored."""
         report_id = "rep-fixed"
-        _observe(db, report_id=report_id, raw_body_digest="sha256:aaa")
-        conflict = _observe(db, report_id=report_id, raw_body_digest="sha256:bbb")
+        _observe(db, report_id=report_id, observed_revision="git:first")
+        conflict = _observe(db, report_id=report_id, observed_revision="git:second")
         assert conflict.disposition == ObservationDisposition.CONFLICT.value
         assert conflict.changed_state is False
 
@@ -498,8 +581,8 @@ class TestReplaysAndConflicts:
         self, db, enrolled
     ) -> None:
         report_id = "rep-fixed"
-        _observe(db, report_id=report_id, raw_body_digest="sha256:aaa")
-        _observe(db, report_id=report_id, raw_body_digest="sha256:bbb")
+        _observe(db, report_id=report_id, observed_revision="git:first")
+        _observe(db, report_id=report_id, observed_revision="git:second")
         attempts = observation_attempts(db, target_ref="tgt-acme-1")
         assert len(attempts) == 2
         assert attempts[0].receipt_id == attempts[1].receipt_id
@@ -574,6 +657,7 @@ class TestCallerInputsThatCannotBeUsed:
                         key_id="key-acme-1",
                         signature_status=SignatureStatus.VALID.value,
                     ),
+                    execution_observation_envelope={},
                     received_at=datetime(2026, 9, 1, 12, 0),
                 ),
             )
@@ -665,9 +749,12 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
         )
         report = drift(db, target.id)
         assert report is not None
-        assert report.drifted is True
+        assert report.drifted is False
         assert report.rolled_out_release_ref == _RELEASE
-        assert report.observed_release_ref == "dotmac_sub@6.0.0"
+        assert report.observed_release_ref is None
+        assert observation_attempts(db)[0].disposition == (
+            ObservationDisposition.AUTHORIZATION_MISMATCH.value
+        )
 
     def test_an_observation_matching_no_plan_reports_no_revision(
         self, db, enrolled
@@ -686,21 +773,47 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
         assert view is not None
         assert view.observed_revision is None
 
-    def test_an_unreadable_spec_digest_is_recorded_not_raised(
+    def test_the_local_signer_refuses_an_unreadable_spec_digest(
         self, db, enrolled
     ) -> None:
-        """Rule 3: EVERY arrival is recorded, including the ones that fail.
-
-        A report whose spec digest this module cannot read is a finding about
-        the report. It resolves to no revision — the same honest answer an
-        unrecognised-but-well-formed digest gets — and it must not raise, or a
-        malformed arrival would be the one thing the append-only log never
-        holds.
-        """
+        """A local producer cannot issue malformed typed statement bytes."""
         target, _ = enrolled
         self._rolled_out(db, target.id)
-        verdict = _observe(db, observed_spec_digest="sha256:NOT-LOWERCASE-HEX")
-        assert verdict.disposition == ObservationDisposition.ACCEPTED.value
-        view = get_target(db, target.id)
-        assert view is not None
-        assert view.observed_revision is None
+        with pytest.raises(ExecutionObservationRefusedError, match="unreadable"):
+            _observe(db, observed_spec_digest="sha256:NOT-LOWERCASE-HEX")
+
+    def test_a_malformed_wire_envelope_is_recorded_not_raised(
+        self, db, enrolled
+    ) -> None:
+        """Every ARRIVAL is retained, even when its statement cannot parse."""
+        target, _ = enrolled
+        self._rolled_out(db, target.id)
+        observed = ObservedState(
+            report_id="malformed-report",
+            observed_release_ref=_RELEASE,
+            observed_spec_digest=spec_digest(_SPEC),
+            reported_at=_NOW,
+            authenticated_target_ref=None,
+            claimed_target_ref="tgt-acme-1",
+            key_id="unknown-malformed-key",
+            raw_body=b'{"statement":{},"signature":"x"}',
+            raw_body_digest="sha256:" + "ab" * 32,
+            signature_status=SignatureStatus.UNRESOLVED.value,
+            rollout_ref=None,
+            operation=None,
+            execution_plan_digest=None,
+        )
+        verdict = record_observation(
+            db,
+            RecordObservationCommand(
+                command_id=_cmd(),
+                observed=observed,
+                execution_observation_envelope={"statement": {}, "signature": "x"},
+                received_at=_NOW,
+            ),
+            observation_verifier=OBSERVATION_VERIFIER,
+            authorization_verifier=VERIFIER,
+        )
+        assert verdict.disposition == ObservationDisposition.MALFORMED.value
+        assert verdict.changed_state is False
+        assert len(observation_attempts(db)) == 1

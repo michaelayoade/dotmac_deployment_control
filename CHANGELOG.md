@@ -5,6 +5,38 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a10 (declared, not published) — signed execution result
+
+### Added
+
+- `AuthorizationEnvelopeV2`, adding the `deployment_authorization` key purpose
+  and the installed Control distribution version to the signed statement. The
+  version is derived inside Control and cannot be caller-supplied.
+- `ExecutionObservationEnvelopeV1`, a provider-neutral signed target result
+  binding the authorization/rollout, target, operation, release and exact image
+  set, the plan/descriptor/execution-plan digests, observed spec/revision/runtime,
+  outcome and timestamp.
+- Purpose-specific target observation signer/verifier protocols whose methods
+  and identity type cannot be satisfied by the authorization signer by accident.
+
+### Changed
+
+- `record_observation` verifies the target envelope and the standing portable
+  authorization before admitting state. Caller-projected fields must equal the
+  signed statement; revoked, expired, mismatched and unverifiable
+  authorizations are retained as refused attempts.
+- A byte-identical repeated report is idempotent; the same report id with
+  different signed bytes remains a conflict. Transport settlement and target
+  execution evidence remain separate.
+- No database migration: existing append-only raw payload/digest columns hold
+  the complete envelope. The catalogue remains seven tables and 105 columns.
+
+### Compatibility
+
+- V1 authorizations remain parseable as historical documents but are not
+  silently promoted to V2. New service lookups and dispatch require V2 so a
+  missing purpose or Control-version binding cannot be invented by a reader.
+
 ## 0.1.0a9 (published 2026-09-02) — portable authorization
 
 Published by run `33686171205` from protected main `b8427af26101`; independent

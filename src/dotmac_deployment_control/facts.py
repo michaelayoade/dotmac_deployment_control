@@ -34,7 +34,10 @@ from enum import StrEnum
 from typing import Any, ClassVar, Final
 from uuid import UUID
 
-from dotmac_deployment_control.authorization import AuthorizationEnvelopeV1
+from dotmac_deployment_control.authorization import (
+    AuthorizationEnvelopeV1,
+    AuthorizationEnvelopeV2,
+)
 from dotmac_deployment_control.images import AuthorizedImage
 
 # ── Event types ─────────────────────────────────────────────────────────────
@@ -312,13 +315,16 @@ class ApprovedPlanAuthorization:
     approval_decision_ref: str | None
     approval_decision_status: str
     approved_at: datetime | None
+    #: The installed Control distribution that issued and signed the envelope.
+    #: Derived by Control from package metadata, never supplied by the caller.
+    control_version: str
     #: WHAT MAY RUN. Inside `plan_digest` above, not beside it: the set is part
     #: of the document the digest is taken over, so an approval that binds the
     #: digest binds these images, and an image cannot change without the digest
     #: changing.
     authorized_images: tuple[AuthorizedImage, ...]
     #: Portable authorization whose signature can be verified without this DB.
-    authorization_envelope: AuthorizationEnvelopeV1
+    authorization_envelope: AuthorizationEnvelopeV2
     release_ref: str | None = None
     licence_ref: str | None = None
     brand_profile_ref: str | None = None
@@ -382,7 +388,11 @@ class AttemptView:
 
 @dataclass(frozen=True, slots=True)
 class RolloutView:
-    """A rollout decision and every attempt at it."""
+    """A rollout decision and every attempt at it.
+
+    Historical a9 rows retain their exact V1 envelope type for reading. Only a
+    V2 envelope is dispatchable; preserving V1 here is history, never promotion.
+    """
 
     id: UUID
     rollout_ref: str
@@ -390,7 +400,9 @@ class RolloutView:
     plan_id: UUID
     status: str
     record_version: int
-    authorization_envelope: AuthorizationEnvelopeV1 | None = None
+    authorization_envelope: AuthorizationEnvelopeV1 | AuthorizationEnvelopeV2 | None = (
+        None
+    )
     reason: str | None = None
     completed_at: datetime | None = None
     attempts: tuple[AttemptView, ...] = ()

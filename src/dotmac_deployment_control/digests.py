@@ -339,6 +339,23 @@ class PlanDigestV1(_Sha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationEnvelopeDigestV1(_ReceivedSha256Digest):
+    """The identity of the exact signed target-observation envelope bytes.
+
+    Unlike a caller-supplied plan or execution digest, Control owns the
+    envelope serialization and therefore owns this computation.  Keeping the
+    constructor here preserves one digest authority for the package while the
+    distinct type prevents an envelope digest satisfying a plan/spec binding.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> ObservationEnvelopeDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the envelope must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class SpecDigestV1(_Sha256Digest):
     """The identity of a DEPLOYMENT SPEC alone.
 
@@ -449,6 +466,7 @@ __all__ = [
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
     "ImageDigestV1",
+    "ObservationEnvelopeDigestV1",
     "PlanDigestV1",
     "SpecDigestV1",
     "canonical_json",

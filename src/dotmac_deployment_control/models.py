@@ -256,6 +256,13 @@ class ObservationDisposition(StrEnum):
     EXECUTION_PLAN_MISMATCH = "execution_plan_mismatch"
     OPERATION_MISMATCH = "operation_mismatch"
     UNBOUND_REPORT = "unbound_report"
+    SIGNED_REPORT_MISMATCH = "signed_report_mismatch"
+    AUTHORIZATION_INVALID = "authorization_invalid"
+    AUTHORIZATION_EXPIRED = "authorization_expired"
+    AUTHORIZATION_REVOKED = "authorization_revoked"
+    AUTHORIZATION_MISMATCH = "authorization_mismatch"
+    SIGNER_PURPOSE_REUSED = "signer_purpose_reused"
+    EXECUTION_FAILED = "execution_failed"
 
 
 class DeploymentTarget(Base, TimestampMixin):

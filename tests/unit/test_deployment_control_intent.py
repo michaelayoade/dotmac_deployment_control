@@ -34,6 +34,8 @@ from dotmac_deployment_control import (
     ApprovalRefusedError,
     ApprovePlanCommand,
     AttemptOutcome,
+    AuthorizationEnvelopeV1,
+    AuthorizationEnvelopeV2,
     DesiredDeployment,
     DigestEncodingError,
     EnrolCredentialCommand,
@@ -602,6 +604,32 @@ class TestRolloutsOnlyRunApprovedPlans:
             signer=SIGNER,
         )
         assert first.id == second.id
+
+    def test_a_v1_authorization_remains_readable_only_as_historical_v1(
+        self, db
+    ) -> None:
+        """Reading old rows is not silently promoting their authority.
+
+        Production can hold a9 rollouts after a10 is installed. The operator
+        read path must retain those bytes and their exact V1 type, while the
+        dispatch path remains V2-only.
+        """
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        stored = db.get(Rollout, rollout.id)
+        assert stored is not None and stored.authorization_envelope is not None
+        historical = copy.deepcopy(stored.authorization_envelope)
+        statement = historical["statement"]
+        statement["version"] = 1
+        statement.pop("purpose")
+        statement.pop("control_version")
+        stored.authorization_envelope = historical
+        db.flush()
+
+        view = get_rollout(db, rollout.id)
+        assert view is not None
+        assert isinstance(view.authorization_envelope, AuthorizationEnvelopeV1)
+        assert not isinstance(view.authorization_envelope, AuthorizationEnvelopeV2)
 
 
 class TestDispatchCarriesThePlanNotTheCurrentState:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from dotmac_deployment_control import (
+    AUTHORIZATION_PURPOSE,
     AuthorizationSignature,
     AuthorizationSignerIdentity,
 )
@@ -24,6 +25,7 @@ class TestAuthorizationSigner:
             key_id=self.identity.key_id,
             algorithm=self.identity.algorithm,
             signature=signature,
+            purpose=AUTHORIZATION_PURPOSE,
         )
 
 
@@ -35,10 +37,15 @@ class TestAuthorizationVerifier:
         *,
         key_id: str,
         algorithm: str,
+        purpose: str,
         canonical_bytes: bytes,
         signature: str,
     ) -> bool:
-        if key_id != "test-authorization-key" or algorithm != "test-sha256":
+        if (
+            key_id != "test-authorization-key"
+            or algorithm != "test-sha256"
+            or purpose != AUTHORIZATION_PURPOSE
+        ):
             return False
         expected = hashlib.sha256(key_id.encode() + b"\0" + canonical_bytes).hexdigest()
         return signature == expected
