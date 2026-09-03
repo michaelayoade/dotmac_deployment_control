@@ -5,7 +5,53 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a10 (declared, not published) — signed execution result
+## 0.1.0a11 (declared, not published) — signed dispatch attempt
+
+### Added
+
+- `DispatchEnvelopeV1`, a provider-neutral Control-to-executor signed document
+  whose canonical statement binds the exact verified authorization envelope,
+  its signer identity and Control version, execution sequence, concrete attempt,
+  rollout, target, operation, release, authorized images and all three digests.
+- A typed refusal when the dispatch signer reuses the authorization signer's
+  physical public key, even through a correctly-shaped dispatch adapter.
+- Purpose-specific `DispatchSigner` and `DispatchVerifier` protocols. Their
+  identity and method names are structurally distinct from both authorization
+  and target-observation keys; Control selects no provider or algorithm.
+- `dc_0007_signed_dispatch_envelope`, which stores the exact envelope on its
+  append-only attempt. Pre-a11 attempts remain readable with a null value; new
+  dispatches refuse to return executable intent without signed evidence.
+- An installed-wheel canary that verifies the signed dispatch against its exact
+  authorization, proves idempotent replay returns identical stored bytes, and
+  refuses an `attempt_no`-only mutation, protocol crossing and physical-key
+  purpose reuse.
+
+### Changed
+
+- `dispatch_attempt` requires a dispatch signer and signs the attempt inside the
+  same idempotent transaction that creates it. `DeliveryIntent` carries the
+  signed envelope and no stored unsigned `attempt_no`; the compatibility
+  property derives that number only from the signed statement.
+- Replaying a pre-a11 dispatch idempotency record now returns a typed refusal
+  naming the unsigned historical attempt; malformed, mixed and unknown result
+  shapes are refused instead of surfacing an untyped lookup error.
+- The database catalogue advances to `dc_0007_signed_dispatch_envelope`, seven
+  tables and 115 columns.
+
+### Compatibility
+
+- Published a10 authorization and execution-observation bytes are unchanged.
+  This is an additive successor contract, not a rewrite of either published
+  schema. Callers adopting a11 must inject a third, dispatch-purpose signer and
+  verify the dispatch envelope before executing it.
+
+## 0.1.0a10 (published 2026-09-03) — signed execution result
+
+Published by run `33767109015` from protected main `4a56f5836cab`; independent
+verify run `33767371612` fetched both artifacts by name, matched their recorded
+digests, installed the wheel with its dependency graph, drove its behavioural
+canaries, and only then wrote the annotated tag. Exact coordinates and the
+adoption disposition are recorded in `docs/published-versions.json`.
 
 ### Added
 

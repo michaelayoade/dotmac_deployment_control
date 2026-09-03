@@ -5,7 +5,7 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "EMPTY, and that is the correct state: every declared version is published.",
+    "The sole row is the version this tree declares and has not yet published.",
     "",
     "The 0.1.0a10 row that sat here between the declaration and the publication",
     "was removed by the RECORDER, as a8's and a9's were — the gesture a human",
@@ -25,5 +25,11 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a11": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "Adds a purpose-separated signed deployment dispatch that binds the exact a10 authorization envelope and concrete execution attempt before transport."
+    }
+  }
 }

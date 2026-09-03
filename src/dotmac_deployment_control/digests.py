@@ -379,6 +379,17 @@ class AuthorizationEnvelopeDigestV1(_ReceivedSha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class DispatchEnvelopeDigestV1(_ReceivedSha256Digest):
+    """Identity of the exact signed Control-to-executor dispatch envelope."""
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> DispatchEnvelopeDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the envelope must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class PublicKeyFingerprintV1(_ReceivedSha256Digest):
     """Fingerprint of canonical decoded public-key bytes.
 
@@ -524,6 +535,7 @@ __all__ = [
     "AuthorizationEnvelopeDigestV1",
     "DIGEST_BYTES",
     "DescriptorDigestV1",
+    "DispatchEnvelopeDigestV1",
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
     "ImageDigestV1",

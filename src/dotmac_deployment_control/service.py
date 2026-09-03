@@ -33,10 +33,10 @@ of both — closed AND blind.
   policy. It emits a provider-neutral `DeliveryIntent` and the Integrator owns
   everything after that (ADR-0024, hard rule 28).
 - **Own cryptographic keys or algorithms.** Control owns the canonical
-  authorization and execution-observation statements, then calls injected,
-  purpose-specific signer/verifier ports. The authorization key and the target
-  observation key cannot cross purposes through the typed API and Control
-  stores neither private key nor provider implementation.
+  authorization, concrete dispatch and execution-observation statements, then
+  calls injected, purpose-specific signer/verifier ports. Those three key
+  purposes cannot cross through the typed API and Control stores neither
+  private key nor provider implementation.
 - **Decide what a deployment may run.** That is `dotmac-licensing`. This module
   records a `licence_ref` and never inspects it.
 - **Interpret a deployment spec.** `spec` is opaque. Interpreting it would make
@@ -85,12 +85,18 @@ from dotmac_deployment_control.authorization import (
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
+    DispatchEnvelopeDigestV1,
     ExecutionPlanDigestV1,
     ObservationEnvelopeDigestV1,
     PlanDigestV1,
     PublicKeyFingerprintV1,
     SpecDigestV1,
     canonical_json,
+)
+from dotmac_deployment_control.dispatch_envelope import (
+    DispatchEnvelopeV1,
+    DispatchSigner,
+    issue_dispatch_envelope,
 )
 from dotmac_deployment_control.execution_observation import (
     EXECUTION_OBSERVATION_PURPOSE,
@@ -2243,6 +2249,7 @@ def dispatch_attempt(
     rollout_id: UUID,
     actor_ref: str | None = None,
     verifier: AuthorizationVerifier | None = None,
+    dispatch_signer: DispatchSigner,
 ) -> DeliveryIntent:
     """Open the next attempt and return the provider-neutral delivery intent.
 
@@ -2283,7 +2290,7 @@ def dispatch_attempt(
                 "The rollout and signed envelope remain immutable history, but "
                 "dispatch is no longer permitted."
             )
-        _verified_rollout_envelope(
+        authorization = _verified_rollout_envelope(
             rollout, plan, target, verifier=verifier, at=dispatched_at
         )
         pending = session.execute(
@@ -2304,11 +2311,21 @@ def dispatch_attempt(
             )
         ).scalar()
         attempt_no = int(highest or 0) + 1
+        attempt_id = uuid4()
+        dispatch_envelope = issue_dispatch_envelope(
+            authorization_envelope=authorization,
+            dispatch_id=str(attempt_id),
+            attempt_no=attempt_no,
+            issued_at=dispatched_at,
+            signer=dispatch_signer,
+        )
         attempt = RolloutAttempt(
+            id=attempt_id,
             rollout_id=rollout.id,
             attempt_no=attempt_no,
             outcome=AttemptOutcome.PENDING.value,
             dispatched_at=dispatched_at,
+            dispatch_envelope=dispatch_envelope.as_mapping(),
         )
         session.add(attempt)
         if rollout.status == RolloutStatus.REQUESTED.value:
@@ -2331,23 +2348,69 @@ def dispatch_attempt(
                 "operation": plan.operation,
                 "execution_plan_digest": plan.execution_plan_digest,
                 "release_ref": (plan.snapshot or {}).get("release_ref"),
+                "dispatch_envelope_digest": DispatchEnvelopeDigestV1.over_bytes(
+                    dispatch_envelope.canonical_bytes
+                ).canonical,
+                "dispatch_key_id": dispatch_envelope.statement.key_id,
             },
         )
-        return {"attempt_no": attempt_no}
+        return {"attempt_id": str(attempt_id)}
 
     outcome = process_once_platform(
         db, command_id=command_id, command_type=SCOPE_DISPATCH, handler=handler
     )
-    attempt_no = int(str(outcome.result["attempt_no"]))
     rollout = _load_rollout(db, rollout_id)
+    result_keys = set(outcome.result)
+    if result_keys == {"attempt_no"}:
+        legacy_attempt_no = outcome.result["attempt_no"]
+        if (
+            not isinstance(legacy_attempt_no, int)
+            or isinstance(legacy_attempt_no, bool)
+            or legacy_attempt_no < 1
+        ):
+            raise TransitionRefusedError(
+                "the pre-a11 dispatch idempotency record carries an invalid "
+                "attempt number"
+            )
+        legacy_attempt = db.execute(
+            select(RolloutAttempt).where(
+                RolloutAttempt.rollout_id == rollout.id,
+                RolloutAttempt.attempt_no == legacy_attempt_no,
+            )
+        ).scalar_one_or_none()
+        if legacy_attempt is None:
+            raise TransitionRefusedError(
+                "the pre-a11 dispatch idempotency record names no attempt in "
+                "this rollout"
+            )
+        raise TransitionRefusedError(
+            "the dispatch attempt predates the signed dispatch contract and cannot "
+            "be returned as executable intent"
+        )
+    if result_keys != {"attempt_id"}:
+        raise TransitionRefusedError(
+            "the dispatch idempotency result has an unsupported shape; expected "
+            "exactly attempt_id, or the pre-a11 attempt_no shape"
+        )
+    try:
+        attempt_id = UUID(str(outcome.result["attempt_id"]))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise TransitionRefusedError(
+            "the dispatch idempotency result carries an invalid attempt_id"
+        ) from exc
     plan = _load_plan(db, rollout.plan_id)
     target = _load_target(db, rollout.target_id)
-    attempt = db.execute(
-        select(RolloutAttempt).where(
-            RolloutAttempt.rollout_id == rollout.id,
-            RolloutAttempt.attempt_no == attempt_no,
+    attempt = db.get(RolloutAttempt, attempt_id)
+    if attempt is None or attempt.rollout_id != rollout.id:
+        raise TransitionRefusedError(
+            "the idempotency record names a dispatch attempt outside this rollout"
         )
-    ).scalar_one()
+    if attempt.dispatch_envelope is None:
+        raise TransitionRefusedError(
+            "the dispatch attempt predates the signed dispatch contract and cannot "
+            "be returned as executable intent"
+        )
+    dispatch_envelope = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
     snapshot = plan.snapshot or {}
     envelope = _verified_rollout_envelope(
         rollout,
@@ -2377,7 +2440,7 @@ def dispatch_attempt(
             plan.authorized_execution_plan_digest or plan.execution_plan_digest or ""
         ),
         authorization_envelope=envelope,
-        attempt_no=attempt_no,
+        dispatch_envelope=dispatch_envelope,
         spec=dict(snapshot.get("spec") or {}),
         licence_ref=snapshot.get("licence_ref"),
         brand_profile_ref=snapshot.get("brand_profile_ref"),

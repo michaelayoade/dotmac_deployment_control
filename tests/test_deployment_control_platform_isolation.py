@@ -98,6 +98,7 @@ from dotmac_deployment_control.models import (
     TargetCredential,
 )
 from tests.authorization_support import SIGNER, VERIFIER
+from tests.dispatch_support import DISPATCH_SIGNER
 from tests.execution_observation_support import (
     OBSERVATION_VERIFIER,
     TestExecutionObservationSigner,
@@ -406,7 +407,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0006_observation_key_identity",
+                revision="dc_0007_signed_dispatch_envelope",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -511,8 +512,8 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
 # ── Isolation ───────────────────────────────────────────────────────────────
 
 
-def test_dc_0006_downgrades_to_the_exact_dc_0005_extent() -> None:
-    """The reverse path removes every a10 physical fact, then reapplies cleanly."""
+def test_dc_0007_downgrades_to_the_exact_dc_0005_extent() -> None:
+    """The reverse path removes every a10/a11 fact, then reapplies cleanly."""
     from alembic import command
     from alembic.config import Config
 
@@ -543,7 +544,7 @@ def test_dc_0006_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 114
+                    == 115
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -570,7 +571,8 @@ def test_dc_0006_downgrades_to_the_exact_dc_0005_extent() -> None:
                         "  ('rollouts', 'execution_sequence'),"
                         "  ('observation_receipts', 'execution_sequence'),"
                         "  ('observation_receipts', 'attempt_no'),"
-                        "  ('observation_receipts', 'observed_state_digest')))"
+                        "  ('observation_receipts', 'observed_state_digest'),"
+                        "  ('rollout_attempts', 'dispatch_envelope')))"
                     )
                 ).all()
                 assert remaining == []
@@ -592,7 +594,7 @@ def test_dc_0006_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 114
+                    == 115
                 )
         finally:
             admin.dispose()
@@ -1020,6 +1022,7 @@ def observation_race(
             command_id=f"seed-dispatch-{suffix}",
             rollout_id=rollout.id,
             verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         db.commit()
     try:
@@ -1385,6 +1388,7 @@ def test_concurrent_execution_coordinates_leave_the_newer_state_authoritative(
             command_id=f"dispatch-{newer_rollout_ref}",
             rollout_id=newer_rollout.id,
             verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         target = db.execute(
             select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)

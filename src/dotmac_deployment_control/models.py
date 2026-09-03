@@ -636,6 +636,11 @@ class RolloutAttempt(Base, TimestampMixin):
     detail: Mapped[str | None] = mapped_column(Text)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Exact signed Control-to-executor bytes. NULL is reserved for attempts
+    #: created before the a11 dispatch contract; new dispatches refuse to
+    #: return an unsigned coordinate. The table's existing append-only trigger
+    #: makes this issuance evidence immutable after INSERT.
+    dispatch_envelope: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
 
     rollout: Mapped[Rollout] = relationship(lambda: Rollout, back_populates="attempts")
 

@@ -81,7 +81,7 @@ replay, changed-byte conflict, enrolled-key verification and purpose separation.
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0006` one, seven tables and 114 columns, because
+extent below is the POST-`dc_0007` one, seven tables and 115 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -94,12 +94,12 @@ carry it?). a7's own record says so, and
 
 * `database_catalogue_as_published` — the installed distribution publishes the
                              exact catalogue: module identity, all seven table
-                             identities, all 114 columns by name, ordinal, type
+                             identities, all 115 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
                              in this file, because `len(tables) == 7 and
-                             len(columns) == 114` passes on seven wrong tables.
+                             len(columns) == 115` passes on seven wrong tables.
 * `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
                              the artifact serialises, the bytes round-trip, and
                              a one-byte change is REFUSED against that digest.
@@ -444,6 +444,7 @@ _EXECUTION_PLAN = "sha256:" + "1a" * 32
 #: field look correct.
 _DESCRIPTOR = "sha256:" + "2b" * 32
 _AUTHORIZATION_KEY = b"artifact-canary-key-not-production-material"
+_DISPATCH_KEY = b"artifact-canary-dispatch-key-not-production-material"
 _OBSERVATION_KEY = b"artifact-canary-observation-key-not-production-material"
 
 
@@ -519,6 +520,64 @@ def _authorization_verifier() -> Any:
     return CanaryVerifier()
 
 
+def _dispatch_signer(*, key: bytes = _DISPATCH_KEY) -> Any:
+    """A third physical test key for Control's distinct dispatch purpose."""
+    import hashlib
+    import hmac
+
+    from dotmac_deployment_control import DispatchSignature, DispatchSignerIdentity
+
+    class CanaryDispatchSigner:
+        dispatch_identity = DispatchSignerIdentity(
+            key_id="artifact-canary-dispatch",
+            algorithm="hmac-sha256-test-only",
+            public_key_fingerprint=_public_key_fingerprint(key),
+        )
+
+        def sign_dispatch(self, canonical_bytes: bytes) -> DispatchSignature:
+            identity = self.dispatch_identity
+            return DispatchSignature(
+                key_id=identity.key_id,
+                algorithm=identity.algorithm,
+                purpose=identity.purpose,
+                public_key_fingerprint=identity.public_key_fingerprint,
+                signature=hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest(),
+            )
+
+    return CanaryDispatchSigner()
+
+
+def _dispatch_verifier() -> Any:
+    import hashlib
+    import hmac
+
+    from dotmac_deployment_control import DISPATCH_PURPOSE
+
+    key = _DISPATCH_KEY
+
+    class CanaryDispatchVerifier:
+        def verify_dispatch(
+            self,
+            *,
+            key_id: str,
+            algorithm: str,
+            purpose: str,
+            public_key_fingerprint: str,
+            canonical_bytes: bytes,
+            signature: str,
+        ) -> bool:
+            expected = hmac.new(key, canonical_bytes, hashlib.sha256).hexdigest()
+            return (
+                key_id == "artifact-canary-dispatch"
+                and algorithm == "hmac-sha256-test-only"
+                and purpose == DISPATCH_PURPOSE
+                and public_key_fingerprint == _public_key_fingerprint(key)
+                and hmac.compare_digest(signature, expected)
+            )
+
+    return CanaryDispatchVerifier()
+
+
 def _execution_observation_signer(key_id: str, *, key: bytes = _OBSERVATION_KEY) -> Any:
     """A distinct target-side test purpose; never the authorization identity."""
     import hashlib
@@ -591,7 +650,9 @@ def _command_id() -> str:
     return f"cmd-{uuid.uuid4().hex[:12]}"
 
 
-def _proposed_plan(db: Any, *, replicas: int = 2) -> Any:
+def _proposed_plan(
+    db: Any, *, replicas: int = 2, images: list[dict[str, str]] | None = None
+) -> Any:
     """register -> set desired -> propose, returning the frozen plan."""
     from dotmac_deployment_control import (
         DesiredDeployment,
@@ -623,6 +684,7 @@ def _proposed_plan(db: Any, *, replicas: int = 2) -> Any:
                 spec={"replicas": replicas},
                 licence_ref="lic-1",
                 brand_profile_ref="brand-acme",
+                images=images,
             ),
         ),
     )
@@ -768,6 +830,7 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
         command_id=_command_id(),
         rollout_id=rollout.id,
         verifier=_authorization_verifier(),
+        dispatch_signer=_dispatch_signer(),
     )
     return target, key_id, rollout.rollout_ref
 
@@ -1046,7 +1109,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0006` extent, seven tables and 114 columns, and
+# literal below is the POST-`dc_0007` extent, seven tables and 115 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1056,7 +1119,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
 # `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
 #
 # THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 7 and
-# len(columns) == 114` passes against a catalogue holding seven wrong tables, and
+# len(columns) == 115` passes against a catalogue holding seven wrong tables, and
 # this programme keeps finding and repairing exactly that check. So the whole
 # canonical structure is written out below — every table name, every column
 # name, its physical ordinal, its PostgreSQL type identity AND rendered
@@ -1096,7 +1159,7 @@ CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0006_observation_key_identity"
+CATALOGUE_LINEAGE_HEAD = "dc_0007_signed_dispatch_envelope"
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
 #: single values rather than per-table, because "the module owns all seven and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
@@ -1229,6 +1292,8 @@ CATALOGUE_TABLES: tuple[
             ("settled_at", 9, _TS, True, ""),
             ("created_at", 10, _TS, False, "now()"),
             ("updated_at", 11, _TS, False, "now()"),
+            # dc_0007: exact signed attempt, nullable only for old rows.
+            ("dispatch_envelope", 12, _JSONB, True, ""),
         ),
     ),
     (
@@ -1285,7 +1350,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 114: this module declares no domain,
+            # BASE and `pg_catalog` for all 115: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
@@ -1543,16 +1608,16 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * the catalogue modules resolve out of `site-packages`, with no checkout
       copy shadowing them, and the evidence is in this canary's own output;
     * module identity — document schema and scope, distribution name and
-      version, module code, release version, `mod_deploy`, and the `dc_0006`
+      version, module code, release version, `mod_deploy`, and the `dc_0007`
       lineage head;
     * all seven table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 114 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 115 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
 
-    The counts are the least of it. `len(tables) == 7 and len(columns) == 114`
+    The counts are the least of it. `len(tables) == 7 and len(columns) == 115`
     passes on seven wrong tables, and the whole structure is compared instead.
     """
     import json
@@ -1781,6 +1846,127 @@ def canary_portable_authorization_binds() -> str:
         f"provider-neutral v2 envelope binds installed Control {installed}; image "
         "reorder was identical, descriptor mutation was refused, and image "
         "membership changed the signature"
+    )
+
+
+def canary_signed_dispatch_binds_attempt() -> str:
+    """The installed artifact signs the concrete attempt before transport."""
+    import json
+
+    from dotmac_deployment_control import (
+        DispatchEnvelopeRefusedError,
+        RequestRolloutCommand,
+        dispatch_attempt,
+        request_rollout,
+        verify_dispatch_envelope,
+    )
+
+    _installed_origin(f"{IMPORT_NAME}.dispatch_envelope")
+    db = _session()
+    # The empty list is a DECLARED empty image set. ``None`` means an old plan
+    # that predates image authorization and is correctly refused by the
+    # portable authorization path before this canary reaches dispatch.
+    _target, plan = _proposed_plan(db, images=[])
+    _approve(db, plan.id, plan.plan_digest)
+    rollout = request_rollout(
+        db,
+        RequestRolloutCommand(
+            command_id=_command_id(),
+            rollout_ref=f"rol-{uuid.uuid4().hex[:8]}",
+            plan_id=plan.id,
+            authorization_expires_at=datetime.now(UTC) + timedelta(days=1),
+        ),
+        signer=_authorization_signer(),
+    )
+    command_id = _command_id()
+    intent = dispatch_attempt(
+        db,
+        command_id=command_id,
+        rollout_id=rollout.id,
+        verifier=_authorization_verifier(),
+        dispatch_signer=_dispatch_signer(),
+    )
+    verified = verify_dispatch_envelope(
+        intent.dispatch_envelope,
+        authorization_envelope=intent.authorization_envelope,
+        authorization_verifier=_authorization_verifier(),
+        dispatch_verifier=_dispatch_verifier(),
+        at=intent.dispatch_envelope.statement.issued_at,
+    )
+    if verified.statement.attempt_no != 1 or intent.attempt_no != 1:
+        raise CanaryFailure("the first dispatch did not bind attempt 1")
+    if "attempt_no" in intent.__dataclass_fields__:
+        raise CanaryFailure("DeliveryIntent still carries an unsigned attempt sibling")
+
+    replay = dispatch_attempt(
+        db,
+        command_id=command_id,
+        rollout_id=rollout.id,
+        verifier=_authorization_verifier(),
+        dispatch_signer=_dispatch_signer(),
+    )
+    if replay.dispatch_envelope.canonical_bytes != verified.canonical_bytes:
+        raise CanaryFailure(
+            "idempotent replay did not return the original signed bytes"
+        )
+
+    mutated = json.loads(json.dumps(verified.as_mapping()))
+    mutated["statement"]["attempt_no"] = 2
+    try:
+        verify_dispatch_envelope(
+            mutated,
+            authorization_envelope=intent.authorization_envelope,
+            authorization_verifier=_authorization_verifier(),
+            dispatch_verifier=_dispatch_verifier(),
+            at=verified.statement.issued_at,
+        )
+    except DispatchEnvelopeRefusedError:
+        pass
+    else:
+        raise CanaryFailure("an attempt_no-only mutation kept a valid signature")
+
+    try:
+        from dotmac_deployment_control import issue_dispatch_envelope
+
+        issue_dispatch_envelope(
+            authorization_envelope=intent.authorization_envelope,
+            dispatch_id="wrong-purpose",
+            attempt_no=1,
+            issued_at=verified.statement.issued_at,
+            signer=_authorization_signer(),
+        )
+    except DispatchEnvelopeRefusedError:
+        pass
+    else:
+        raise CanaryFailure("the authorization signer satisfied dispatch purpose")
+
+    # A renamed adapter is still the same physical key. The distinct method and
+    # purpose make accidental protocol crossing impossible; the fingerprint
+    # comparison is what makes deliberate wrapping impossible too.
+    try:
+        issue_dispatch_envelope(
+            authorization_envelope=intent.authorization_envelope,
+            dispatch_id="reused-physical-key",
+            attempt_no=1,
+            issued_at=verified.statement.issued_at,
+            signer=_dispatch_signer(key=_AUTHORIZATION_KEY),
+        )
+    except DispatchEnvelopeRefusedError as exc:
+        if exc.code.value != "dispatch_signer_purpose_reused":
+            raise CanaryFailure(
+                "physical authorization-key reuse was refused for the wrong reason: "
+                f"{exc.code.value}"
+            ) from exc
+    else:
+        raise CanaryFailure(
+            "the authorization physical key satisfied dispatch purpose through "
+            "a renamed adapter"
+        )
+
+    return (
+        "signed dispatch verified against its exact authorization; replay returned "
+        "identical bytes; attempt mutation, protocol crossing and physical-key "
+        "purpose reuse refused"
     )
 
 
@@ -2101,6 +2287,7 @@ def main(argv: list[str] | None = None) -> int:
             lambda: canary_catalogue_digest_binds(args.expect_version),
         ),
         ("portable_authorization_binds", canary_portable_authorization_binds),
+        ("signed_dispatch_binds_attempt", canary_signed_dispatch_binds_attempt),
         (
             "signed_execution_observation_binds",
             canary_signed_execution_observation_binds,

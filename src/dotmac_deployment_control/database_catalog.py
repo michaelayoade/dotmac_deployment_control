@@ -5,7 +5,8 @@ from a running Platform CP database.  ``dc_0001_deployment_control`` creates the
 seven platform tables, ``dc_0002_canonical_plan_digest`` widens the one column
 whose final type differs from the root revision, and
 ``dc_0003_execution_plan_binding`` appends the four columns that bind a plan to
-the Foundation's execution plan and to a declared operation.
+the Foundation's execution plan and to a declared operation. ``dc_0007``
+appends the exact signed dispatch to the append-only attempt that it names.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -93,7 +94,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0006_observation_key_identity",
+    lineage_head="dc_0007_signed_dispatch_envelope",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -249,6 +250,10 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "updated_at", 11, _TIMESTAMPTZ, nullable=False, default="now()"
                 ),
+                # dc_0007 appends the exact signed attempt coordinate. NULL is
+                # reserved for pre-a11 history; the existing append-only
+                # trigger makes the value immutable after INSERT.
+                _column("dispatch_envelope", 12, _JSONB, nullable=True),
             ),
         ),
         _table(

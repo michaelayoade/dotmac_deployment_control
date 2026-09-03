@@ -75,6 +75,10 @@ EXPECTED_CANARIES = (
     "portable_authorization_binds",
     # a10: the target result is a signed document with a distinct key purpose,
     # verified against the standing authorization before state can change.
+    # a11: the outbound concrete attempt is likewise signed under its own
+    # purpose; attempt_no is no longer an unsigned sibling of authorization,
+    # and a renamed adapter around the authorization key is refused too.
+    "signed_dispatch_binds_attempt",
     "signed_execution_observation_binds",
     # The browser surface ships templates as package data, and the kernel
     # validates that directory when it builds the surface graph — at the
@@ -578,11 +582,11 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Seven tables and 114 columns, held as the LITERAL's own shape. A future
+    """Seven tables and 115 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
     assert canaries.CATALOGUE_TABLE_COUNT == 7
-    assert canaries.CATALOGUE_COLUMN_COUNT == 114
+    assert canaries.CATALOGUE_COLUMN_COUNT == 115
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):

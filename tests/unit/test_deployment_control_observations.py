@@ -89,6 +89,7 @@ from dotmac_deployment_control.models import (
     TargetCredential,
 )
 from tests.authorization_support import SIGNER, VERIFIER
+from tests.dispatch_support import DISPATCH_SIGNER
 from tests.execution_observation_support import (
     OBSERVATION_VERIFIER,
     TestExecutionObservationSigner,
@@ -234,6 +235,7 @@ def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
                 command_id=_cmd(),
                 rollout_id=rollout.id,
                 verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
             )
         return rollout.rollout_ref
     plan = propose_plan(
@@ -262,6 +264,7 @@ def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
         command_id=_cmd(),
         rollout_id=rollout.id,
         verifier=VERIFIER,
+        dispatch_signer=DISPATCH_SIGNER,
     )
     return rollout.rollout_ref
 
@@ -437,7 +440,7 @@ class TestAnAdmittedObservationUpdatesState:
         assert receipt.signed_evidence_status == "verified_at_receipt"
         assert receipt.authorization_id is not None
         assert receipt.authorization_plan_id is not None
-        assert receipt.authorization_control_version == "0.1.0a10"
+        assert receipt.authorization_control_version == "0.1.0a11"
         assert receipt.authorization_envelope_digest is not None
         assert receipt.rollout_ref is not None
         assert receipt.operation == "deploy"
@@ -1070,6 +1073,7 @@ class TestExecutionCoordinatesAreMonotonic:
             command_id=_cmd(),
             rollout_id=rollout.id,
             verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         return rollout
 
@@ -1247,7 +1251,11 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
             signer=SIGNER,
         )
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         settle_attempt(
             db,
