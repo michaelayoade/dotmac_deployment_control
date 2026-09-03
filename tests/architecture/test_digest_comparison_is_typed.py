@@ -231,20 +231,29 @@ def test_this_package_computes_digests_in_exactly_one_module() -> None:
 
 
 def test_observation_body_and_receipt_digests_use_the_typed_boundary() -> None:
-    """The a10 admission computes both digests from exact canonical bytes.
+    """The a10 admission COMPUTES every observation digest; none is parsed in.
 
-    The caller projection is parsed as a value before comparison and the
-    receipt independently derives its digest. This is the positive half that
-    keeps a missing comparison from satisfying the source-wide prohibition.
+    The earlier form of this test pinned the parse of a caller-supplied
+    `raw_body_digest` through the typed boundary — the positive half of the
+    comparison between the caller's claim about its bytes and the bytes
+    themselves. The single-input repair removed that comparison by removing the
+    claim: the command carries the wire bytes and nothing else, so there is no
+    supplied digest left to parse and nothing for one to disagree with.
+
+    What the boundary now owes, asserted positively so a deleted derivation
+    cannot satisfy the source-wide prohibition: the attempt's body digest and
+    the receipt's payload digest are both DERIVED through
+    `ObservationEnvelopeDigestV1.over_bytes` — the wire bytes for the attempt,
+    the canonical signed bytes for the receipt — and no caller text is ever
+    read back as an observation digest.
     """
     source = SERVICE.read_text(encoding="utf-8")
-    parsed_body_digest = (
-        "ObservationEnvelopeDigestV1.parse(\n            observed.raw_body_digest"
-    )
-    assert parsed_body_digest in source
+    assert "raw_body_digest = ObservationEnvelopeDigestV1.over_bytes(wire)" in source
     assert source.count("ObservationEnvelopeDigestV1.over_bytes(") >= 2
-    assert "if supplied_body_digest != envelope_digest:" in source
     assert "payload=canonical_payload" in source
+    # The removed shape must STAY removed: parsing a caller's digest claim is
+    # the split coming back one field at a time.
+    assert "ObservationEnvelopeDigestV1.parse(" not in source
 
 
 def test_the_detector_is_not_looking_at_nothing() -> None:
