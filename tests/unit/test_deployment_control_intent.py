@@ -25,6 +25,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
+from dotmac_kernel.idempotency_models import (
+    INBOX_SCOPE,
+    IdempotencyStatus,
+    PlatformIdempotencyRecord,
+)
 from dotmac_kernel.models import Base
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
@@ -39,6 +44,7 @@ from dotmac_deployment_control import (
     AuthorizationEnvelopeV2,
     DesiredDeployment,
     DigestEncodingError,
+    DispatchEnvelopeV1,
     EnrolCredentialCommand,
     ExpectedStateError,
     PlanDigestV1,
@@ -76,8 +82,9 @@ from dotmac_deployment_control import (
     snapshot_digest,
     suspend_target,
 )
-from dotmac_deployment_control.models import Rollout
+from dotmac_deployment_control.models import Rollout, RolloutAttempt
 from tests.authorization_support import SIGNER, VERIFIER
+from tests.dispatch_support import DISPATCH_SIGNER, TestDispatchSigner
 from tests.execution_observation_support import observation_public_key_b64
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -651,7 +658,11 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         _desired(db, target.id, release_ref="dotmac_sub@9.0.0", spec={"replicas": 99})
 
         intent = dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         assert (
             intent.release_ref == "dotmac_sub@7.187.1"
@@ -659,6 +670,107 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         assert intent.spec == {"replicas": 2}
         assert intent.plan_digest == plan.plan_digest
         assert intent.attempt_no == 1
+        assert intent.dispatch_envelope.statement.attempt_no == 1
+        assert "attempt_no" not in intent.__dataclass_fields__
+
+    def test_replay_returns_the_exact_stored_dispatch_without_resigning(
+        self, db
+    ) -> None:
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        signer = TestDispatchSigner()
+        command_id = _cmd()
+
+        first = dispatch_attempt(
+            db,
+            command_id=command_id,
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=signer,
+        )
+        second = dispatch_attempt(
+            db,
+            command_id=command_id,
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=signer,
+        )
+
+        assert signer.calls == 1
+        assert first.dispatch_envelope.canonical_bytes == (
+            second.dispatch_envelope.canonical_bytes
+        )
+        assert (
+            DispatchEnvelopeV1.parse(first.dispatch_envelope.as_mapping())
+            == first.dispatch_envelope
+        )
+
+    def test_pre_a11_replay_is_a_typed_refusal_not_a_key_error(self, db) -> None:
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        command_id = _cmd()
+        db.add(
+            RolloutAttempt(
+                rollout_id=rollout.id,
+                attempt_no=1,
+                outcome=AttemptOutcome.PENDING.value,
+                dispatched_at=_NOW,
+                dispatch_envelope=None,
+            )
+        )
+        db.add(
+            PlatformIdempotencyRecord(
+                scope=INBOX_SCOPE,
+                key=command_id,
+                operation="deployment.dispatch_attempt",
+                status=IdempotencyStatus.EXECUTED.value,
+                result={"attempt_no": 1},
+            )
+        )
+        db.flush()
+
+        with pytest.raises(TransitionRefusedError, match="predates the signed"):
+            dispatch_attempt(
+                db,
+                command_id=command_id,
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
+            )
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"attempt_id": "not-a-uuid"},
+            {"attempt_id": str(uuid.uuid4()), "attempt_no": 1},
+            {"attempt": 1},
+        ],
+    )
+    def test_malformed_or_mixed_dispatch_replay_result_is_typed_refusal(
+        self, db, result: dict[str, object]
+    ) -> None:
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        command_id = _cmd()
+        db.add(
+            PlatformIdempotencyRecord(
+                scope=INBOX_SCOPE,
+                key=command_id,
+                operation="deployment.dispatch_attempt",
+                status=IdempotencyStatus.EXECUTED.value,
+                result=result,
+            )
+        )
+        db.flush()
+
+        with pytest.raises(TransitionRefusedError, match="dispatch idempotency"):
+            dispatch_attempt(
+                db,
+                command_id=command_id,
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
+            )
 
     def test_the_intent_is_provider_neutral(self, db) -> None:
         """No endpoint, credential reference, transport name or retry policy —
@@ -666,7 +778,11 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
         intent = dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         fields = set(intent.__dataclass_fields__)
         for forbidden in (
@@ -686,11 +802,19 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         with pytest.raises(TransitionRefusedError, match="already has attempt"):
             dispatch_attempt(
-                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+                db,
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
             )
 
     def test_retry_is_the_same_operation_as_dispatch(self, db) -> None:
@@ -700,7 +824,11 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
         first = dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         settle_attempt(
             db,
@@ -713,7 +841,11 @@ class TestDispatchCarriesThePlanNotTheCurrentState:
             ),
         )
         second = dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         assert second.attempt_no == 2
         assert second.plan_digest == first.plan_digest
@@ -724,7 +856,11 @@ class TestSettlingAnAttempt:
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         return rollout
 
@@ -840,7 +976,11 @@ class TestSettlingAnAttempt:
         assert view.completed_at is None, "a failed rollout is not settled"
         # And it can still be dispatched again.
         assert dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
 
     def test_timed_out_is_a_distinct_state_from_failed(self, db) -> None:
@@ -909,7 +1049,11 @@ class TestCancelIsNotManualRepair:
         target = _desired(db, _target(db).id)
         rollout = _rollout(db, _approved_plan(db, target.id).id)
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         return rollout
 
@@ -954,7 +1098,11 @@ class TestCancelIsNotManualRepair:
         cancel_rollout(db, RolloutTransitionCommand(_cmd(), rollout.id))
         with pytest.raises(TransitionRefusedError, match="not retried"):
             dispatch_attempt(
-                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+                db,
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
             )
 
 

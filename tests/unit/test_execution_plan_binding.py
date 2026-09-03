@@ -114,6 +114,7 @@ from dotmac_deployment_control.models import (
     RolloutAttempt,
 )
 from tests.authorization_support import AUTHORIZATION_PUBLIC_KEY_B64, SIGNER, VERIFIER
+from tests.dispatch_support import DISPATCH_SIGNER
 from tests.execution_observation_support import (
     OBSERVATION_VERIFIER,
     TestExecutionObservationSigner,
@@ -336,7 +337,11 @@ def _report(db: Session, **overrides: object):
         )
         if attempt is None:
             dispatch_attempt(
-                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+                db,
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
             )
             attempt = (
                 db.execute(
@@ -674,7 +679,11 @@ class TestAnUnboundPlanCannotBeRolledOut:
         plan = _propose(db, target.id, operation="rollback", requires_approval=False)
         rollout = _rollout(db, plan.id)
         intent = dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
 
         assert intent.operation == "rollback"
@@ -847,7 +856,11 @@ class TestAReportIsAcceptedOnlyWhenAllThreeTermsAgree:
         _approve(db, plan)
         rollout = _rollout(db, plan.id)
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         row = db.get(DeploymentPlan, plan.id)
         assert row is not None
@@ -875,7 +888,11 @@ class TestTheSignedResultNeedsAStandingAuthorization:
         target, plan = self._approved(db)
         rollout = _rollout(db, plan.id)
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         revoke_plan_approval(
             db,
@@ -895,7 +912,11 @@ class TestTheSignedResultNeedsAStandingAuthorization:
         _target, plan = self._approved(db)
         rollout = _rollout(db, plan.id)
         dispatch_attempt(
-            db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
         )
         revoke_plan_approval(
             db,
@@ -936,7 +957,11 @@ class TestTheSignedResultNeedsAStandingAuthorization:
             control_service, "_control_now", return_value=_NOW - timedelta(hours=2)
         ):
             dispatch_attempt(
-                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+                db,
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
             )
 
         verdict = _report(db, rollout_ref=rollout.rollout_ref)
@@ -955,7 +980,11 @@ class TestTheSignedResultNeedsAStandingAuthorization:
         )
         with patch.object(control_service, "_control_now", return_value=issued_at):
             dispatch_attempt(
-                db, command_id=_cmd(), rollout_id=rollout.id, verifier=VERIFIER
+                db,
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                verifier=VERIFIER,
+                dispatch_signer=DISPATCH_SIGNER,
             )
 
         first = _report(

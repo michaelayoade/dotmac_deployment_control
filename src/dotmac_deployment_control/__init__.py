@@ -46,13 +46,14 @@ decisions; and general infrastructure observability — this module holds no hea
 status at all, because ruling A4 keeps health separate from fleet so that "no
 mutating consumer of health" stays a checkable dependency direction.
 
-## Two signed directions, two purposes
+## Three signed documents, three purposes
 
-Control owns canonical bytes for both the portable authorization sent to an
-executor and the target execution observation returned to Control. Their
-cryptographic signer/verifier protocols are injected and purpose-specific:
-this package chooses no algorithm or provider, stores no private key, and a
-signer for one direction cannot satisfy the other by structural coincidence.
+Control owns canonical bytes for the portable authorization, the concrete
+dispatch attempt sent to an executor, and the target execution observation
+returned to Control. Their cryptographic signer/verifier protocols are injected
+and purpose-specific: this package chooses no algorithm or provider, stores no
+private key, and a signer for one purpose cannot satisfy another by structural
+coincidence.
 ADR-0007 possession proof remains the prerequisite for activating the target's
 public credential; every execution result is then verified independently before
 it can change observed state.
@@ -102,6 +103,7 @@ from dotmac_deployment_control.digests import (
     ALGORITHM,
     AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
+    DispatchEnvelopeDigestV1,
     ExecutionPlanDigestV1,
     ImageDigestV1,
     ObservationEnvelopeDigestV1,
@@ -109,6 +111,21 @@ from dotmac_deployment_control.digests import (
     PlanDigestV1,
     PublicKeyFingerprintV1,
     SpecDigestV1,
+)
+from dotmac_deployment_control.dispatch_envelope import (
+    DISPATCH_PURPOSE,
+    DISPATCH_SCHEMA,
+    DISPATCH_VERSION,
+    DispatchEnvelopeRefusalCode,
+    DispatchEnvelopeRefusedError,
+    DispatchEnvelopeV1,
+    DispatchSignature,
+    DispatchSigner,
+    DispatchSignerIdentity,
+    DispatchStatementV1,
+    DispatchVerifier,
+    issue_dispatch_envelope,
+    verify_dispatch_envelope,
 )
 from dotmac_deployment_control.execution_observation import (
     EXECUTION_OBSERVATION_PURPOSE,
@@ -316,6 +333,9 @@ __all__ = [
     "CREDENTIAL_REVOKED_V1",
     "DEPLOYMENT_CONTROL_SURFACE",
     "DRIFT_DETECTED_V1",
+    "DISPATCH_PURPOSE",
+    "DISPATCH_SCHEMA",
+    "DISPATCH_VERSION",
     "EXECUTION_OBSERVATION_PURPOSE",
     "MAX_EXECUTION_OBSERVATION_ENVELOPE_BYTES",
     "EXECUTION_OBSERVATION_SCHEMA",
@@ -376,6 +396,15 @@ __all__ = [
     "DeploymentTarget",
     "DescriptorBindingError",
     "DescriptorDigestV1",
+    "DispatchEnvelopeDigestV1",
+    "DispatchEnvelopeRefusalCode",
+    "DispatchEnvelopeRefusedError",
+    "DispatchEnvelopeV1",
+    "DispatchSignature",
+    "DispatchSigner",
+    "DispatchSignerIdentity",
+    "DispatchStatementV1",
+    "DispatchVerifier",
     "DesiredDeployment",
     "DigestEncodingError",
     "DriftReport",
@@ -452,6 +481,7 @@ __all__ = [
     "get_rollout",
     "get_target",
     "issue_authorization_envelope",
+    "issue_dispatch_envelope",
     "issue_execution_observation_envelope",
     "list_targets",
     "module",
@@ -481,6 +511,7 @@ __all__ = [
     "spec_digest_of",
     "suspend_target",
     "verify_authorization_envelope",
+    "verify_dispatch_envelope",
     "verify_execution_observation_envelope",
     "versions_dir",
 ]

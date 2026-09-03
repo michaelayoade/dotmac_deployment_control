@@ -88,11 +88,15 @@ answers neither "how many times did we try?" nor "what did we decide?".
   no endpoint, credential reference, transport name or retry policy. It emits a
   provider-neutral `DeliveryIntent`; the Integrator owns everything after that
   (ADR-0024, hard rule 28).
+- **The concrete dispatch is signed before transport.** `DispatchEnvelopeV1`
+  binds the exact verified authorization and its signer identity to one
+  execution sequence and attempt, under a third purpose-specific signer. The
+  Integrator moves those bytes; it does not choose or amend the attempt.
 - **It owns the target execution-observation document, not its private key.**
   `ExecutionObservationEnvelopeV1` is provider-neutral and is verified through
   an injected, purpose-specific verifier before any target state changes. Its
-  signed terms must equal the standing Control authorization and the caller's
-  `ObservedState` projection. Control stores no private key, selects no crypto
+  signed terms must equal the standing Control authorization. Control stores no
+  private key, selects no crypto
   provider, and structurally separates the target-observation signer/verifier
   from the opposite authorization trust direction. ADR-0007 possession proof
   still governs activating a target credential; it is not a substitute for
@@ -190,6 +194,25 @@ Control chooses no algorithm/provider, holds no private material, and does not
 reuse the target-observation signing seam. Revocation blocks lookup and dispatch
 without rewriting the historical envelope.
 
+## Signed dispatch attempt
+
+`DispatchEnvelopeV1` is the Control-to-executor command coordinate. Control
+derives its authorization id, plan id and issuing Control version, authorization
+key identity, authorization-envelope digest, execution sequence, rollout,
+target, operation, release, authorized images and all three digests from one
+verified `AuthorizationEnvelopeV2`; callers can supply none of them. It adds the
+append-only attempt id and number and signs the resulting canonical document
+under the distinct `deployment_dispatch` purpose. The dispatch public-key
+fingerprint must also differ from the authorization signer's: changing the
+method name, key id or purpose around the same physical key is refused.
+
+`dispatch_attempt` creates and signs that document inside the same idempotent
+transaction, stores it on the append-only attempt, and returns the stored bytes
+on command replay. `DeliveryIntent.attempt_no` remains as a compatibility
+property only: it is derived from the signed envelope and is not a second field
+that a transport can change independently. An executor verifies both the
+authorization and dispatch through `verify_dispatch_envelope` before execution.
+
 ## Signed target execution observation
 
 `ExecutionObservationEnvelopeV1` is the return trust direction. The target
@@ -226,18 +249,19 @@ hand-written list.
 
 ## Status
 
-**The a10 successor is declared, not published or adopted.** The newest
-published version remains `0.1.0a9`, with `dotmac-kernel >=0.1.0a100` — release run `33686171205`,
-independently VERIFIED by run `33686335734` on 2026-09-02 — and it requires
+**The a11 successor is declared, not published or adopted.** The newest
+published version is `0.1.0a10`, with `dotmac-kernel >=0.1.0a100` — release run
+`33767109015`, independently VERIFIED by run `33767371612` on 2026-09-03 — and it requires
 `dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
 `dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
 wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
 pinnable, against `dotmac-kernel >=0.1.0a98`.
 
 `0.1.0a9` adds the required Foundation descriptor binding and V1 portable signed
-authorization. The declared a10 successor adds Control-version binding and the
-purpose-separated signed target execution result. It is not pinnable until its
-registry artifacts are independently verified and recorded.
+authorization. Published a10 adds Control-version binding and the
+purpose-separated signed target execution result. The declared a11 successor
+signs the concrete outbound dispatch attempt under a third purpose; it is not
+pinnable until its registry artifacts are independently verified and recorded.
 
 Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
 `a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is
@@ -255,8 +279,9 @@ columns to `deployment_plans`, `dc_0004_authorized_image_set` appends four more
 there plus one on `deployment_targets`, and
 `dc_0005_portable_authorization` appends the immutable signed authorization to
 `rollouts`; `dc_0006_observation_key_identity` adds typed verification identity
-and the monotonic execution coordinates. The CURRENT declaration is seven
-tables and 114 columns. The 95
+and the monotonic execution coordinates; `dc_0007_signed_dispatch_envelope`
+appends the signed attempt document. The CURRENT declaration is seven tables
+and 115 columns. The 95
 above is a fact about the published a7 wheel and stays as one.
 
 `dc_0004` adds no image column to `deployment_plans`, deliberately. A plan's

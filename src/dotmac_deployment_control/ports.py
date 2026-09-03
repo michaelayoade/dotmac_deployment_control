@@ -68,6 +68,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from dotmac_deployment_control.authorization import AuthorizationEnvelopeV2
+    from dotmac_deployment_control.dispatch_envelope import DispatchEnvelopeV1
 
 # ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -355,10 +356,18 @@ class DeliveryIntent:
     operation: str
     execution_plan_digest: str
     authorization_envelope: AuthorizationEnvelopeV2
-    attempt_no: int
+    #: The signed dispatch is the authority for the concrete attempt.  There is
+    #: deliberately no stored unsigned ``attempt_no`` sibling: a transport that
+    #: mutates only that coordinate must invalidate the dispatch signature.
+    dispatch_envelope: DispatchEnvelopeV1
     spec: Mapping[str, Any] = field(default_factory=dict)
     licence_ref: str | None = None
     brand_profile_ref: str | None = None
+
+    @property
+    def attempt_no(self) -> int:
+        """Compatibility projection derived only from the signed document."""
+        return self.dispatch_envelope.statement.attempt_no
 
 
 __all__ = [
