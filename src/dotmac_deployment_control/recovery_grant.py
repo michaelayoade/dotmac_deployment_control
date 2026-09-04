@@ -81,6 +81,45 @@ RECOVERY_GRANT_VERSION: Final = 1
 _MAX_TEXT = 512
 
 
+#: THE FOUNDATION-OWNED PRESTATE DISCRIMINATOR, MIRRORED.
+#:
+#: Foundation owns this identity; Control stores it beside the digest and
+#: REQUIRES it, and neither this module, `dc_0009`, nor a future
+#: `RecoveryGrantV1` version may redefine what it means. Control does not depend
+#: on `dotmac-deployment-foundation` — its runtime dependencies are the kernel
+#: and SQLAlchemy, and every cross-repository coupling is cut at a VALUE, which
+#: is what makes this module independently releasable. So the identity is
+#: mirrored here rather than imported.
+#:
+#: WHAT PROTECTS THIS MIRROR, AND WHAT DOES NOT. Foundation's frozen release
+#: canary asserts its three identity strings, so the identity cannot CHANGE
+#: without turning a Foundation release red. That protection is real and it is
+#: asymmetric: it stops the string moving underneath this file, and it cannot
+#: detect a mirror that was WRONG WHEN WRITTEN — nothing in Control's CI can
+#: compare these characters against their source, because Foundation is not
+#: installed here. A transcription error at authoring time is caught by the
+#: planted cases in `tests/unit/test_recovery_grant_prestate.py` and by nothing
+#: else. Stated plainly rather than implied, on the same rule as any other
+#: guard: say what it establishes and what it leaves unmonitored.
+PRESTATE_DISCRIMINATOR: Final = "dotmac.deployment_foundation.failed_system_observation.v1"
+
+#: Every discriminator THIS version can honour. Closed, which is what makes an
+#: unknown one refusable — accepting any string would trust a producer nobody
+#: has met to have used rules nobody can check.
+#:
+#: RENAME HISTORY, recorded because Foundation's changelog does not carry it and
+#: an archived transcript will outlive this comment. An earlier spelling of this
+#: identity used `...incumbent_prestate...` — named after Control's FIELD.
+#: Foundation renamed it to name the DOCUMENT it digests, before anything pinned
+#: it. The old spelling is OBSOLETE AND REFUSED, deliberately not aliased: an
+#: alias would give one contract two valid spellings, which is the defect the
+#: rename existed to remove. A reader meeting the old string somewhere should
+#: conclude it is dead, not that both are valid.
+KNOWN_PRESTATE_DISCRIMINATORS: Final[frozenset[str]] = frozenset(
+    {PRESTATE_DISCRIMINATOR}
+)
+
+
 class RecoveryGrantRefusalCode(StrEnum):
     """Why a recovery grant does not authorize the recovery in hand.
 
@@ -103,6 +142,15 @@ class RecoveryGrantRefusalCode(StrEnum):
     RECOVERY_PLAN_MISMATCH = "recovery_grant_recovery_plan_mismatch"
     BUNDLE_MISMATCH = "recovery_grant_bundle_mismatch"
     PRESTATE_MISMATCH = "recovery_grant_prestate_mismatch"
+    #: The grant carries no Foundation prestate discriminator. A HISTORICAL row,
+    #: and permanently unexecutable — never backfilled as the current identity by
+    #: assumption. See `PRESTATE_DISCRIMINATOR` below for why the two are
+    #: different facts and why assuming one manufactures provenance.
+    PRESTATE_UNDISCRIMINATED = "recovery_grant_prestate_undiscriminated"
+    #: The grant names a prestate encoding this version cannot honour. Distinct
+    #: from a mismatch because the repair is a VERSION, not a re-observation:
+    #: comparing under rules you do not have is not comparing.
+    PRESTATE_UNKNOWN_DISCRIMINATOR = "recovery_grant_prestate_unknown_discriminator"
     APPROVAL_NOT_STANDING = "recovery_grant_approval_not_standing"
     NOT_YET_VALID = "recovery_grant_not_yet_valid"
     EXPIRED = "recovery_grant_expired"
@@ -218,6 +266,9 @@ class RecoverySubject:
     recovery_execution_plan_digest: str
     recovery_bundle_digest: str
     incumbent_prestate_digest: str
+    #: Foundation's identity for the encoding that produced the digest
+    #: above. Required, never defaulted: see `PRESTATE_DISCRIMINATOR`.
+    incumbent_prestate_discriminator: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +283,9 @@ class RecoveryGrantStatementV1:
     recovery_execution_plan_digest: str
     recovery_bundle_digest: str
     incumbent_prestate_digest: str
+    #: Foundation's identity for the encoding that produced the digest
+    #: above. Required, never defaulted: see `PRESTATE_DISCRIMINATOR`.
+    incumbent_prestate_discriminator: str
     approval_policy_code: str
     approval_policy_version: int
     approval_decision_ref: str
@@ -273,6 +327,9 @@ class RecoveryGrantStatementV1:
             "recovery_execution_plan_digest": self.recovery_execution_plan_digest,
             "recovery_bundle_digest": self.recovery_bundle_digest,
             "incumbent_prestate_digest": self.incumbent_prestate_digest,
+            "incumbent_prestate_discriminator": (
+                self.incumbent_prestate_discriminator
+            ),
             "approval_policy_code": self.approval_policy_code,
             "approval_policy_version": self.approval_policy_version,
             "approval_decision_ref": self.approval_decision_ref,
@@ -302,6 +359,9 @@ class RecoveryGrantStatementV1:
             recovery_execution_plan_digest=self.recovery_execution_plan_digest,
             recovery_bundle_digest=self.recovery_bundle_digest,
             incumbent_prestate_digest=self.incumbent_prestate_digest,
+            incumbent_prestate_discriminator=(
+                self.incumbent_prestate_discriminator
+            ),
         )
 
 
@@ -355,6 +415,14 @@ _STATEMENT_KEYS = frozenset(
         "recovery_execution_plan_digest",
         "recovery_bundle_digest",
         "incumbent_prestate_digest",
+        # DELIBERATELY NOT REQUIRED AT PARSE. A grant written before this
+        # term must stay READABLE so it can be refused as historical with
+        # `PRESTATE_UNDISCRIMINATED`, which names what is wrong and what
+        # cannot be repaired. Requiring it here would make such a row
+        # unparseable instead, turning a precise verdict about provenance
+        # into a generic malformed-document error — and an operator would
+        # learn that the envelope was broken rather than that it predates
+        # the identity nobody can now supply for it.
         "approval_policy_code",
         "approval_policy_version",
         "approval_decision_ref",
@@ -466,6 +534,12 @@ def _parse_statement(value: object) -> RecoveryGrantStatementV1:
         recovery_execution_plan_digest=_text(row, "recovery_execution_plan_digest"),
         recovery_bundle_digest=_text(row, "recovery_bundle_digest"),
         incumbent_prestate_digest=_text(row, "incumbent_prestate_digest"),
+        # `or ""` is the HISTORICAL row, not a default: absence becomes the
+        # empty string the undiscriminated refusal is written against, and
+        # never the current identity.
+        incumbent_prestate_discriminator=(
+            row.get("incumbent_prestate_discriminator") or ""
+        ),
         approval_policy_code=_text(row, "approval_policy_code"),
         approval_policy_version=version,
         approval_decision_ref=_text(row, "approval_decision_ref"),
@@ -597,8 +671,39 @@ def verify_recovery_grant(
         )
 
     # Subject, term by term, each with its own code. Presence is not matching.
+    # THE DISCRIMINATOR IS CHECKED BEFORE THE DIGEST, and the order is the
+    # point rather than a style. A digest alone is 64 hex characters and cannot
+    # say which encoding produced it, so comparing it first would report
+    # "the prestate is not the one authorized" for a value whose provenance was
+    # never establishable. Three refusals, three destinations: a historical row
+    # nobody can execute, a version this deployment does not have, and a host
+    # holding the wrong incumbent.
+    granted_discriminator = str(statement.incumbent_prestate_discriminator).strip()
+    if not granted_discriminator:
+        raise _refused(
+            RecoveryGrantRefusalCode.PRESTATE_UNDISCRIMINATED,
+            "this grant carries no Foundation prestate discriminator, so its "
+            "stored digest cannot say which encoding produced it. The row is "
+            "HISTORICAL AND UNEXECUTABLE and is never backfilled as "
+            f"{PRESTATE_DISCRIMINATOR!r} by assumption — that would manufacture "
+            "provenance for a value whose provenance is exactly what is missing",
+        )
+    if granted_discriminator not in KNOWN_PRESTATE_DISCRIMINATORS:
+        raise _refused(
+            RecoveryGrantRefusalCode.PRESTATE_UNKNOWN_DISCRIMINATOR,
+            f"this grant names prestate encoding {granted_discriminator!r}, "
+            "which this version of Control cannot honour; it knows "
+            f"{sorted(KNOWN_PRESTATE_DISCRIMINATORS)}. Comparing under rules "
+            "this version does not have is not comparing — the repair is a "
+            "version, not a re-observation",
+        )
+
     for field, code in (
         ("product_code", RecoveryGrantRefusalCode.PRODUCT_MISMATCH),
+        (
+            "incumbent_prestate_discriminator",
+            RecoveryGrantRefusalCode.PRESTATE_UNKNOWN_DISCRIMINATOR,
+        ),
         ("target_id", RecoveryGrantRefusalCode.TARGET_MISMATCH),
         ("target_ref", RecoveryGrantRefusalCode.TARGET_MISMATCH),
         ("environment", RecoveryGrantRefusalCode.ENVIRONMENT_MISMATCH),

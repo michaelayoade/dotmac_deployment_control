@@ -55,6 +55,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dotmac_deployment_control import (
+    PRESTATE_DISCRIMINATOR,
     ApprovalEvidence,
     ApprovePlanCommand,
     AuthorizationEnvelopeDigestV1,
@@ -2090,6 +2091,7 @@ class TestTheRecoveryWindowCheckAgreesWithTheType:
                 recovery_execution_plan_digest="sha256:aa",
                 recovery_bundle_digest="sha256:bb",
                 incumbent_prestate_digest="sha256:cc",
+                incumbent_prestate_discriminator=PRESTATE_DISCRIMINATOR,
                 approval_policy_code="p",
                 approval_policy_version=1,
                 approval_decision_ref="d",

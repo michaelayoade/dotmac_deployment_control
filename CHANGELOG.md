@@ -5,6 +5,59 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — the prestate discriminator
+
+### Added
+
+- `FailedSystemObservationDigestV1`, a READ-ONLY digest type for the value
+  Foundation produces and Control signs. Named after the document it digests
+  rather than after Control's `incumbent_prestate_digest` field, per
+  Foundation's ruling: a digest named for a consumer's field would need
+  renaming the moment a second consumer stored it elsewhere, with the bytes
+  unchanged. It cannot construct, which enforces "Control implements no second
+  canonicalizer" structurally rather than by discipline.
+- `incumbent_prestate_discriminator` on `RecoveryGrantStatementV1` and
+  `RecoveryGrantSubject`, inside the canonical bytes and therefore SIGNED. A
+  digest alone is 64 hex characters and cannot say which encoding produced it;
+  `incumbent_prestate_digest NOT NULL` proves only that a string exists.
+- `PRESTATE_UNDISCRIMINATED` and `PRESTATE_UNKNOWN_DISCRIMINATOR`, distinct
+  from `PRESTATE_MISMATCH`. Three refusals with three destinations: a
+  historical row nobody can execute, a version this deployment does not have,
+  and a host holding a different incumbent.
+- `dc_0009_prestate_discriminator`, adding the column NULLABLE. `NOT NULL` with
+  a default would make absence unrepresentable and recreate, one column over
+  and in the same commit, the exact defect this repairs.
+
+### Changed
+
+- `verify_recovery_grant` checks the discriminator BEFORE the digest. Comparing
+  the digest first would report "not the authorized prestate" for a value whose
+  provenance was never establishable.
+- The discriminator is deliberately NOT required at parse. A grant predating
+  the term stays readable so it can be refused precisely as historical, rather
+  than failing as a malformed document.
+
+### Rename history — recorded here because Foundation's changelog does not carry it
+
+Foundation's discriminator was renamed before anything pinned it. An earlier
+spelling used `...incumbent_prestate...`, naming Control's FIELD; the published
+identity names the DOCUMENT it digests. **The old spelling is obsolete and is
+REFUSED, deliberately not aliased** — an alias would give one contract two valid
+spellings, which is the defect the rename removed. A reader meeting the old
+string in an archived transcript should conclude it is dead, not that both are
+valid. `tests/unit/test_recovery_grant_prestate.py` proves the refusal is active.
+
+### Note on Control's mirror
+
+Control does not depend on `dotmac-deployment-foundation` — every
+cross-repository coupling is cut at a value, which is what makes this module
+independently releasable — so the identity is mirrored, not imported.
+Foundation's frozen release canary asserts its identity strings, so the identity
+cannot CHANGE silently. That protection is asymmetric: nothing in Control's CI
+can detect a mirror that was WRONG WHEN WRITTEN, because Foundation is not
+installed here. The planted cases are what catch a transcription error, and
+nothing else does.
+
 ## 0.1.0a12 (published 2026-09-04) — recovery grants, and reads that reach a screen
 
 Published by run `33854964978` from protected main `8e8342bcbefc`; independent

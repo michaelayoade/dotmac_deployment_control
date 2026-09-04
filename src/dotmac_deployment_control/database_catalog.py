@@ -95,7 +95,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0008_recovery_grants",
+    lineage_head="dc_0009_prestate_discriminator",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -263,6 +263,18 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 ),
                 _column(
                     "updated_at", 18, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+                # dc_0009. Ordinal 19 because `ALTER TABLE ADD COLUMN` appends:
+                # it sits after the timestamps rather than beside the digest it
+                # describes, the same way dc_0007's four columns did.
+                #
+                # NULLABLE. Foundation owns the identity and Control requires
+                # it, but a row written before this term must remain
+                # DISTINGUISHABLE so it can be refused as historical. NOT NULL
+                # with a default would make absence unrepresentable and recreate
+                # the defect `incumbent_prestate_digest` shows one column over.
+                _column(
+                    "incumbent_prestate_discriminator", 19, _VARCHAR_128, nullable=True
                 ),
             ),
         ),
