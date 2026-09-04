@@ -46,6 +46,16 @@ _SCHEMA = "mod_deploy"
 _TABLE = "recovery_grants"
 
 
+def _grant(privileges: str, role: str) -> None:
+    """One GRANT, spelled out at the call site.
+
+    Same shape as `dc_0001`'s: the call sites stay literal so the module's
+    access-control surface remains greppable and statically checkable, which a
+    loop over a table tuple would not be.
+    """
+    op.execute(f"GRANT {privileges} ON {_SCHEMA}.{_TABLE} TO {role};")
+
+
 def upgrade() -> None:
     op.create_table(
         _TABLE,
@@ -121,6 +131,19 @@ def upgrade() -> None:
         ["target_id", "expires_at"],
         schema=_SCHEMA,
     )
+
+    # THE ACCESS SURFACE, stated here because creating a table without one
+    # leaves it readable by whatever the schema default allows. On this plane
+    # the REVOKE is the isolation (hard rule 27), and the online role's grant
+    # is what makes the table reachable at request time.
+    #
+    # SELECT, INSERT and UPDATE, and deliberately no DELETE: revocation is an
+    # UPDATE that sets `revoked_at`, and a role able to DELETE could erase the
+    # record of a withdrawal rather than make one.
+    _grant("SELECT, INSERT", "platform_api")
+    _grant("UPDATE", "platform_api")
+    _grant("SELECT, INSERT, UPDATE", "app_admin")
+    op.execute(f"REVOKE ALL ON {_SCHEMA}.{_TABLE} FROM app_user;")
 
 
 def downgrade() -> None:

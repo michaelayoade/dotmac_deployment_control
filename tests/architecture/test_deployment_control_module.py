@@ -224,6 +224,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             DeploymentTarget,
             ObservationAttempt,
             ObservationReceipt,
+            RecoveryGrant,
             Rollout,
             RolloutAttempt,
             TargetCredential,
@@ -237,6 +238,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             RolloutAttempt,
             ObservationReceipt,
             ObservationAttempt,
+            RecoveryGrant,
         )
         assert {m.__tablename__ for m in models} == set(module.platform_tables)
         assert all(m.__table__.schema == SCHEMA for m in models)
