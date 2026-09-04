@@ -38,6 +38,7 @@ from dotmac_kernel.models import Base
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control
 import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     AttemptOutcome,
@@ -440,7 +441,16 @@ class TestAnAdmittedObservationUpdatesState:
         assert receipt.signed_evidence_status == "verified_at_receipt"
         assert receipt.authorization_id is not None
         assert receipt.authorization_plan_id is not None
-        assert receipt.authorization_control_version == "0.1.0a11"
+        # The ISSUING distribution's own version, read from installed metadata --
+        # not a release number written here. A literal made this behavioural
+        # assertion fail on the version bump that published a12, which taught
+        # nothing about observations and would recur at every release.
+        issuing = dotmac_deployment_control.__version__
+        # Non-vacuous: `__version__` falls back to this sentinel in a source
+        # tree with no install, and comparing two sentinels would pass while
+        # proving the field was never populated from metadata at all.
+        assert issuing != "0.0.0+not-installed"
+        assert receipt.authorization_control_version == issuing
         assert receipt.authorization_envelope_digest is not None
         assert receipt.rollout_ref is not None
         assert receipt.operation == "deploy"
