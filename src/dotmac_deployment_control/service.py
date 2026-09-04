@@ -1098,6 +1098,45 @@ def _operation_is_executable(row: DeploymentPlan) -> bool | None:
     return operation in EXECUTOR_OPERATIONS
 
 
+def _execution_binding_standing(
+    row: DeploymentPlan,
+) -> facts.ExecutionBindingStanding:
+    """R5. Do the plan's PROPOSED and AUTHORIZED execution terms agree?
+
+    ONE decision, made here, because the four columns are all on `PlanView` and
+    the comparison a consumer reaches for is `proposed != authorized` -- which
+    reports a plan nobody has approved yet as a DIVERGED one. That is a
+    tampering-shaped finding about a plan that is waiting for a decision, and it
+    sends an operator to the wrong system. `UNAUTHORIZED` and `DIVERGES` are the
+    pair this function exists to keep apart.
+
+    ## Digests by VALUE, operations by stored TEXT, and both on purpose
+
+    The digests go through `_stored_execution_plan_digest`, so the comparison is
+    over `ExecutionPlanDigestV1` bytes rather than two spellings of one digest
+    (`test_digest_comparison_is_typed.py`).
+
+    The operations are compared as the stored strings, and deliberately NOT
+    through `require_operation`: that raises on a word outside the current
+    vocabulary, and a plans page that raises on a historical operation is the
+    same defect `operation_is_executable` avoids one field up. Both values are
+    this module's own writes and equality between them is total.
+    """
+    proposed = _stored_execution_plan_digest(
+        row, row.execution_plan_digest, term="execution plan digest"
+    )
+    if proposed is None or row.operation is None:
+        return facts.ExecutionBindingStanding.UNBOUND
+    authorized = _stored_execution_plan_digest(
+        row, row.authorized_execution_plan_digest, term="authorized execution plan"
+    )
+    if authorized is None or row.authorized_operation is None:
+        return facts.ExecutionBindingStanding.UNAUTHORIZED
+    if proposed != authorized or row.operation != row.authorized_operation:
+        return facts.ExecutionBindingStanding.DIVERGES
+    return facts.ExecutionBindingStanding.MATCHES
+
+
 def _plan_view(row: DeploymentPlan) -> facts.PlanView:
     descriptor = _frozen_descriptor_digest(row)
     return facts.PlanView(
@@ -1126,6 +1165,7 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         snapshot=dict(row.snapshot or {}),
         authorized_images=_frozen_image_set(row),
         operation_is_executable=_operation_is_executable(row),
+        execution_binding=_execution_binding_standing(row),
     )
 
 

@@ -17,6 +17,7 @@ Static and in-memory: no database, no network, no application startup.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any
@@ -694,3 +695,202 @@ class TestTheTemplatesDecideNothingAndInventNoDesignSystem:
         assert pattern.findall("{{ target.last_observed_at }}")
         assert "moment(" not in pattern.findall("{{ target.last_observed_at }}")[0]
         assert "moment(" in pattern.findall("{{ moment(target.last_observed_at) }}")[0]
+
+
+# ── The anti-rot ratchet ────────────────────────────────────────────────────
+#
+# THE ROT THIS CATCHES: a field is added to a view, the service fills it, the
+# tests assert its value, and no screen ever shows it. Nothing fails. The
+# module's read contract and the operator's read contract drift apart one field
+# at a time, and the drift is invisible because every individual change was
+# complete on its own terms.
+#
+# So the claim below is stated over `dataclasses.fields` rather than over a list
+# somebody maintains: every field of the two views these screens render either
+# appears in a template, or is named here with a REASON on the line. Authored
+# after R5 deliberately — written any earlier it would have enumerated fields
+# that had no column yet and failed on its own siblings, which is the point.
+
+#: The loop/context variable each view is bound to in the templates. The
+#: detector is qualified by it, because an unqualified `.id` would find
+#: `target.id` and pass `PlanView.id` on the strength of a different view's
+#: field.
+VIEW_BINDINGS: dict[str, str] = {"PlanView": "plan", "TargetView": "target"}
+
+#: Fields these screens deliberately do NOT render, each with its reason ON THE
+#: LINE. Kept small on purpose: this is the escape hatch, and an escape hatch
+#: nobody counts is where the rot goes.
+NOT_RENDERED: dict[str, dict[str, str]] = {
+    "PlanView": {
+        "id": (
+            "no route in this surface takes a plan id. `sequence` is the "
+            "operator's handle and `plan_digest` is the plan's identity; a "
+            "UUID column would be noise nobody reads."
+        ),
+        "target_id": (
+            "every row in this table belongs to the target the page is about. "
+            "Repeating it per row states one fact N times."
+        ),
+        "record_version": (
+            "an optimistic-concurrency coordinate. It says how many times the "
+            "row was written, which is not a fact about the deployment."
+        ),
+        "snapshot": (
+            "the canonical bytes are rendered in the propose panel, for the "
+            "plan being frozen, where they are the thing the digest is taken "
+            "over. A JSON document is not a table cell, and `plan_digest` is "
+            "this row's handle to exactly these bytes."
+        ),
+    },
+    "TargetView": {
+        "record_version": (
+            "as above -- concurrency, not deployment. The target's own history "
+            "is the arrivals and rollout tables."
+        ),
+    },
+}
+
+
+def _view_classes() -> dict[str, Any]:
+    from dotmac_deployment_control import facts
+
+    return {"PlanView": facts.PlanView, "TargetView": facts.TargetView}
+
+
+#: `{# ... #}`. Stripped before every scan below, because a template comment is
+#: prose about the code and not the code: a field named only in a comment must
+#: not count as rendered, and a rule quoting the shape it forbids must not trip
+#: over its own quotation.
+_JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.DOTALL)
+
+
+def _uncommented(path: Path) -> str:
+    return _JINJA_COMMENT.sub(" ", path.read_text(encoding="utf-8"))
+
+
+def _template_text() -> str:
+    return "\n".join(_uncommented(path) for path in sorted(TEMPLATES.glob("*.html")))
+
+
+def _unrendered(view: str, cls: Any, text: str) -> list[str]:
+    """Fields of `cls` that no template mentions through its bound name."""
+    binding = VIEW_BINDINGS[view]
+    return [
+        field.name
+        for field in dataclasses.fields(cls)
+        if f"{binding}.{field.name}" not in text
+    ]
+
+
+class TestEveryViewFieldReachesAScreenOrSaysWhyNot:
+    def test_there_is_something_to_check(self) -> None:
+        """Non-vacuity. A sweep over no fields and no templates passes."""
+        text = _template_text()
+        assert len(text) > 5_000
+        for cls in _view_classes().values():
+            assert len(dataclasses.fields(cls)) >= 15
+
+    @pytest.mark.parametrize("view", sorted(VIEW_BINDINGS))
+    def test_every_field_is_rendered_or_deliberately_not(self, view: str) -> None:
+        cls = _view_classes()[view]
+        missing = set(_unrendered(view, cls, _template_text()))
+        undeclared = sorted(missing - set(NOT_RENDERED[view]))
+        assert not undeclared, (
+            f"{view} carries {undeclared} and no screen renders them. The "
+            "module computes a fact the operator never sees, which is how a "
+            "read contract and a screen drift apart one field at a time. "
+            "Render it, or name it in NOT_RENDERED with the reason."
+        )
+
+    @pytest.mark.parametrize("view", sorted(VIEW_BINDINGS))
+    def test_the_exemption_list_names_only_fields_that_exist(self, view: str) -> None:
+        """A stale exemption is a silenced field nobody removed. It also hides
+        the next field that takes the same name."""
+        cls = _view_classes()[view]
+        names = {field.name for field in dataclasses.fields(cls)}
+        stale = sorted(set(NOT_RENDERED[view]) - names)
+        assert not stale, f"{view} exempts fields it no longer has: {stale}"
+
+    @pytest.mark.parametrize("view", sorted(VIEW_BINDINGS))
+    def test_no_exemption_is_still_true_by_accident(self, view: str) -> None:
+        """The other direction: a field named here that a screen DOES render.
+        Left in place, the exemption would go on excusing the next change that
+        removed the column."""
+        cls = _view_classes()[view]
+        missing = set(_unrendered(view, cls, _template_text()))
+        rendered_anyway = sorted(set(NOT_RENDERED[view]) - missing)
+        assert not rendered_anyway, (
+            f"{view} exempts {rendered_anyway}, and a template renders them. "
+            "Remove the exemption."
+        )
+
+    @pytest.mark.parametrize("view", sorted(VIEW_BINDINGS))
+    def test_every_exemption_states_a_reason(self, view: str) -> None:
+        for name, reason in NOT_RENDERED[view].items():
+            assert len(reason.split()) >= 8, (
+                f"{view}.{name} is exempt with no argument. An exemption states "
+                "an enforceable premise or the field is unmonitored rather "
+                "than exempt."
+            )
+
+    def test_the_exemption_count_only_moves_deliberately(self) -> None:
+        """TWO-DIRECTIONAL. Failing when the count RISES stops a new field being
+        silenced by appending a line; failing when it FALLS stops the ratchet
+        being loosened by a change that quietly rendered one and left the
+        number alone."""
+        counts = {view: len(names) for view, names in NOT_RENDERED.items()}
+        assert counts == {"PlanView": 4, "TargetView": 1}, (
+            f"the unrendered-field backlog moved to {counts}. Lower the number "
+            "in the same change that renders a field; raise it only with the "
+            "reason on the line and a reviewer who read it."
+        )
+
+    def test_the_detector_notices_a_field_no_template_renders(self) -> None:
+        """SENSITIVITY (ADR-0018). A check nobody has seen refuse is a name.
+
+        A synthetic view is used rather than the real ones, so the proof does
+        not depend on the current field set and cannot be silenced by the very
+        drift it watches.
+        """
+
+        @dataclasses.dataclass(frozen=True)
+        class _Probe:
+            target_ref: str = ""
+            #: Deliberately absent from every template.
+            never_rendered_anywhere: str = ""
+
+        found = _unrendered("TargetView", _Probe, _template_text())
+        assert found == ["never_rendered_anywhere"], found
+
+
+class TestNoTemplateLaundersATriStateThroughADefault:
+    """`{% for image in plan.authorized_images or () %}` is the one-character
+    change that undoes R1 and R5 on the screen.
+
+    `None` and `()` are different declarations — nobody said, versus nobody may
+    — and `or ()` renders both as an empty loop. Same for `or []` and `or {}`.
+    The receipt's image columns are a bare loop CORRECTLY, because their field
+    is `tuple[...] = ()` with no third state; the rule below is about the
+    defaulting, not the looping.
+    """
+
+    _DEFAULTED = re.compile(r"\bor\s*(?:\(\s*\)|\[\s*\]|\{\s*\})")
+
+    def test_no_template_defaults_an_empty_collection(self) -> None:
+        for path in sorted(TEMPLATES.glob("*.html")):
+            offenders = self._DEFAULTED.findall(_uncommented(path))
+            assert not offenders, (
+                f"{path.name} defaults a collection to empty: {offenders}. A "
+                "tri-state read through `or ()` is flattened to two states in "
+                "Jinja, where no type checker looks."
+            )
+
+    def test_that_detector_fires_against_the_planted_line(self) -> None:
+        """The exact expression the rule names, and the two spellings of it."""
+        assert self._DEFAULTED.findall(
+            "{% for image in plan.authorized_images or () %}"
+        )
+        assert self._DEFAULTED.findall("{% for x in target.desired_images or [] %}")
+        assert not self._DEFAULTED.findall(
+            "{% if images is none %}{% elif images|length == 0 %}"
+        )

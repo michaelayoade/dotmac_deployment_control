@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Generator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -67,11 +68,14 @@ from sqlalchemy.pool import StaticPool
 
 from dotmac_deployment_control import (
     DEPLOYMENT_CONTROL_SURFACE,
+    ApprovalEvidence,
+    ApprovePlanCommand,
     DeploymentPlan,
     DesiredDeployment,
     ProposePlanCommand,
     RegisterTargetCommand,
     SetDesiredStateCommand,
+    approve_plan,
     module,
     plan_digest_of,
     plan_snapshot,
@@ -662,3 +666,342 @@ def test_timestamps_render_as_explicit_utc_and_never_as_a_python_repr(
     assert response.status == 200, response.text
     assert "+00:00" not in response.text
     assert "datetime.datetime(" not in response.text
+
+
+# ── Three states in Python are three states on the screen ───────────────────
+#
+# THE FAILURE THIS SECTION EXISTS FOR is not a wrong value; it is a value that
+# is right in Python and flattened in Jinja. `PlanView.operation_is_executable`
+# is `bool | None`, `TargetView.desired_images` and `PlanView.authorized_images`
+# are `tuple | None`, and `ExecutionBindingStanding` has four members — and
+# every one of them collapses under `{% if value %}`, under
+# `{% for x in value or () %}`, and under a cell that renders an em dash for
+# anything falsy. Jinja is where the type checker stops looking.
+#
+# So every assertion below is on the RESPONSE BODY and states both directions:
+# the state that IS rendered, and the neighbouring state that must not be.
+# Asserting only the first passes against a template that renders one phrase for
+# two states.
+#
+# The rendered spans are matched with their closing tag (`>executable</span>`)
+# rather than as bare words, because "not executable" contains "executable" and
+# an assertion that could not tell them apart would be exactly the flattening it
+# is meant to catch.
+
+_NOT_DECLARED = ">not declared</span>"
+_NONE_AUTHORIZED = ">none authorized</span>"
+_EXECUTABLE = ">executable</span>"
+_NOT_EXECUTABLE = ">not executable</span>"
+_MATCHES = ">matches</span>"
+_DIVERGES = ">diverges</span>"
+_NOT_AUTHORIZED = ">not authorized</span>"
+_UNBOUND = ">unbound</span>"
+_NO_PLAN = ">no plan</span>"
+_AWAITING = ">awaiting a decision</span>"
+
+
+def _image(service: str = "api") -> dict[str, str]:
+    return {
+        "service": service,
+        "repository": f"registry.dotmac.io/{service}",
+        "digest": "sha256:" + "aa" * 32,
+    }
+
+
+def _target_with_images(db: Session, images: object):  # type: ignore[no-untyped-def]
+    """A target whose declared image set is exactly what the caller says.
+
+    `images` is passed through untouched so the three states reach the column:
+    `None` (never declared), `[]` (authorizes none) and a list.
+    """
+    view = register_target(
+        db,
+        RegisterTargetCommand(
+            command_id=str(uuid.uuid4()),
+            target_ref="edge-lagos-01",
+            subject_ref="tenant-1",
+            product_code="isp",
+            environment="production",
+        ),
+    )
+    set_desired_state(
+        db,
+        SetDesiredStateCommand(
+            command_id=str(uuid.uuid4()),
+            target_id=view.id,
+            desired=DesiredDeployment(
+                release_ref="release-1",
+                spec={"replicas": 2},
+                licence_ref="lic-1",
+                images=images,  # type: ignore[arg-type]
+            ),
+        ),
+    )
+    return view.id
+
+
+def _plan(db: Session, target_id, operation: str = "deploy", **extra: object):  # type: ignore[no-untyped-def]
+    fields: dict[str, object] = {
+        "command_id": str(uuid.uuid4()),
+        "target_id": target_id,
+        "operation": operation,
+        "descriptor_digest": _DESCRIPTOR,
+        "execution_plan_digest": _EXECUTION_PLAN,
+        "requires_approval": True,
+        "approval_policy_code": "deployment.production",
+        "approval_policy_version": 4,
+    }
+    fields.update(extra)
+    return propose_plan(db, ProposePlanCommand(**fields))  # type: ignore[arg-type]
+
+
+def _approve(db: Session, plan):  # type: ignore[no-untyped-def]
+    return approve_plan(
+        db,
+        ApprovePlanCommand(
+            command_id=str(uuid.uuid4()),
+            plan_id=plan.id,
+            evidence=ApprovalEvidence(
+                policy_code="deployment.production",
+                policy_version=4,
+                decision_ref=f"apr-{uuid.uuid4().hex[:8]}",
+                content_digest=plan.plan_digest or "",
+                decided_at=datetime(2026, 9, 4, 12, 0, tzinfo=UTC),
+                operation="deploy",
+                execution_plan_digest=_EXECUTION_PLAN,
+                decision_status="granted",
+            ),
+        ),
+    )
+
+
+class TestTheDeclaredImageSetRendersThreeWays:
+    """`None` is not `()`. Asserted on the fleet list, which renders the target's
+    image set and no plan's — so a phrase found there came from this column."""
+
+    def test_a_target_that_declared_nothing_says_so(self, db: Session) -> None:
+        _target_with_images(db, None)
+        response = call(_app(db, principal=_principal()), "GET", "/deployments")
+        assert response.status == 200, response.text
+        assert _NOT_DECLARED in response.text
+        assert _NONE_AUTHORIZED not in response.text, (
+            "an undeclared image set rendered as a deliberate empty one; the "
+            "screen told an operator this target authorizes no image when "
+            "nobody has said anything about images at all"
+        )
+
+    def test_a_target_that_declared_an_empty_set_says_THAT(self, db: Session) -> None:
+        _target_with_images(db, [])
+        response = call(_app(db, principal=_principal()), "GET", "/deployments")
+        assert response.status == 200, response.text
+        assert _NONE_AUTHORIZED in response.text
+        assert _NOT_DECLARED not in response.text, (
+            "a deliberate empty set rendered as 'nobody declared one' -- the "
+            "opposite flattening, and the one a `or ()` in the loop produces"
+        )
+
+    def test_a_declared_set_renders_the_images_and_neither_phrase(
+        self, db: Session
+    ) -> None:
+        """THE POSITIVE CONTROL for the two above. Without it both pass against
+        a column that renders one of those phrases unconditionally."""
+        _target_with_images(db, [_image()])
+        response = call(_app(db, principal=_principal()), "GET", "/deployments")
+        assert response.status == 200, response.text
+        assert "api=registry.dotmac.io/api@sha256:" + "aa" * 32 in response.text
+        assert _NOT_DECLARED not in response.text
+        assert _NONE_AUTHORIZED not in response.text
+
+    def test_the_plans_table_gives_the_frozen_set_its_own_three_way_branch(
+        self, db: Session
+    ) -> None:
+        """The plan's `authorized_images` is `| None` and the receipt's is not.
+
+        A plan frozen from a target that declared nothing must say `not
+        declared` in its own cell rather than render an empty one — which is
+        what `{% for image in plan.authorized_images or () %}` produces, and
+        what the receipt's columns may correctly do because their field has no
+        `None` state to lose.
+        """
+        target_id = _target_with_images(db, None)
+        _plan(db, target_id)
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        # Twice: the target's declared set and the plan's frozen copy of it.
+        assert response.text.count(_NOT_DECLARED) >= 2, (
+            "the plan's frozen image set rendered as an empty cell; an operator "
+            "cannot tell a plan that authorizes no image from one whose target "
+            "never declared a set"
+        )
+
+
+class TestExecutabilityRendersThreeWays:
+    """`None` is not `False`. The module says `False` when it knows the
+    counterparty cannot perform the operation, and `None` when the plan names
+    none to ask about — 'this can never run' versus 'nobody has said'."""
+
+    def test_a_deploy_plan_reads_executable(self, db: Session) -> None:
+        target_id = _target_with_images(db, [_image()])
+        _plan(db, target_id, operation="deploy")
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _EXECUTABLE in response.text
+        assert _NOT_EXECUTABLE not in response.text
+
+    def test_a_recover_plan_reads_NOT_executable_and_still_renders(
+        self, db: Session
+    ) -> None:
+        """The operation the pinned executor cannot perform. The page must show
+        it as inexecutable and must still be a page: a screen that raised on a
+        historical operation is the read-path-calls-the-write-gate defect
+        arriving one layer up."""
+        target_id = _target_with_images(db, [_image()])
+        _plan(db, target_id, operation="recover")
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _NOT_EXECUTABLE in response.text
+        assert _EXECUTABLE not in response.text
+
+    def test_a_plan_declaring_no_operation_reads_not_declared(
+        self, db: Session
+    ) -> None:
+        """The third state, and not a soft 'no'.
+
+        The target declares an image set on purpose: both image columns then
+        render images, so `not declared` on this page can only have come from
+        the executability cell.
+        """
+        target_id = _target_with_images(db, [_image()])
+        plan = _plan(db, target_id)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        row.operation = None
+        row.authorized_operation = None
+        db.flush()
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _NOT_DECLARED in response.text
+        assert _NOT_EXECUTABLE not in response.text, (
+            "a plan that names no operation rendered as one the executor "
+            "cannot perform"
+        )
+        assert _EXECUTABLE not in response.text
+
+
+class TestTheExecutionBindingRendersFourWays:
+    """`UNAUTHORIZED` must never render as `DIVERGES`.
+
+    They are the pair a `proposed != authorized` comparison merges, and they
+    send an operator to different systems: one to the approvals authority, the
+    other to whoever can edit this database.
+    """
+
+    def test_a_proposed_but_unapproved_plan_is_NOT_AUTHORIZED_not_DIVERGES(
+        self, db: Session
+    ) -> None:
+        """THE named condition."""
+        target_id = _target_with_images(db, [_image()])
+        _plan(db, target_id)
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _NOT_AUTHORIZED in response.text
+        assert _DIVERGES not in response.text, (
+            "a plan waiting for a decision rendered as an execution binding "
+            "that disagrees with itself -- a tampering-shaped finding about a "
+            "plan nothing is wrong with"
+        )
+        assert _MATCHES not in response.text
+
+    def test_an_approved_plan_MATCHES(self, db: Session) -> None:
+        """THE POSITIVE CONTROL. Three refusals above and no admission would
+        pass against a column that never says `matches`."""
+        target_id = _target_with_images(db, [_image()])
+        _approve(db, _plan(db, target_id))
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _MATCHES in response.text
+        assert _NOT_AUTHORIZED not in response.text
+        assert _DIVERGES not in response.text
+
+    def test_an_edited_authorization_DIVERGES(self, db: Session) -> None:
+        """Nothing in this package can write this row — `approve_plan` refuses
+        evidence that does not match what was proposed — so it is planted the
+        only way it can occur: by editing the database behind the module."""
+        target_id = _target_with_images(db, [_image()])
+        plan = _approve(db, _plan(db, target_id))
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        row.authorized_execution_plan_digest = "sha256:" + "9f" * 32
+        db.flush()
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _DIVERGES in response.text
+        assert _MATCHES not in response.text
+
+    def test_a_plan_binding_no_execution_is_UNBOUND(self, db: Session) -> None:
+        """A `0.1.0a7` row. Not a binding that failed — one that was never
+        made — and rendering it as a mismatch would report a schema-era absence
+        as an incident."""
+        target_id = _target_with_images(db, [_image()])
+        plan = _plan(db, target_id)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        row.execution_plan_digest = None
+        db.flush()
+        response = call(
+            _app(db, principal=_principal()), "GET", f"/deployments/{target_id}"
+        )
+        assert response.status == 200, response.text
+        assert _UNBOUND in response.text
+        assert _NOT_AUTHORIZED not in response.text
+        assert _DIVERGES not in response.text
+
+
+class TestTheApprovalStandingRendersFourWays:
+    """On the fleet list, where the question is which targets hold an undecided
+    or withdrawn authorization. `no plan` and `awaiting a decision` are the pair
+    that must not merge — the second is the one an operator is scanning for."""
+
+    def test_a_target_with_no_plan_says_no_plan(self, db: Session) -> None:
+        _target_with_images(db, [_image()])
+        response = call(_app(db, principal=_principal()), "GET", "/deployments")
+        assert response.status == 200, response.text
+        assert _NO_PLAN in response.text
+        assert _AWAITING not in response.text
+
+    def test_a_plan_carrying_no_decision_says_awaiting_a_decision(
+        self, db: Session
+    ) -> None:
+        target_id = _target_with_images(db, [_image()])
+        _plan(db, target_id)
+        response = call(_app(db, principal=_principal()), "GET", "/deployments")
+        assert response.status == 200, response.text
+        assert _AWAITING in response.text
+        assert _NO_PLAN not in response.text
+        assert ">granted</span>" not in response.text, (
+            "a plan carrying no decision rendered as an approved one -- an "
+            "authorization read out of a blank column"
+        )
+
+    def test_an_approved_plan_says_granted(self, db: Session) -> None:
+        target_id = _target_with_images(db, [_image()])
+        _approve(db, _plan(db, target_id))
+        response = call(_app(db, principal=_principal()), "GET", "/deployments")
+        assert response.status == 200, response.text
+        assert ">granted</span>" in response.text
+        assert _AWAITING not in response.text
+        assert _NO_PLAN not in response.text

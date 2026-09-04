@@ -45,10 +45,34 @@
   {{ ui.field("Desired revision", target.desired_revision) }}
   {{ ui.field("Licence", target.licence_ref) }}
   {{ ui.field("Brand profile", target.brand_profile_ref) }}
+  {#
+    Three states, spelled. An empty value here would say this target authorizes
+    no image, which is a real and different declaration from never having made
+    one — and the second is what a freshly registered target has.
+  #}
+  {{ ui.field("Authorized images", ui.image_set_text(target.desired_images)) }}
   {{ ui.field("Observed release", target.observed_release_ref) }}
   {{ ui.field("Observed revision", target.observed_revision) }}
+  {{ ui.field("Observed spec digest", ui.digest(target.observed_spec_digest)) }}
   {{ ui.field("Last observed", moment(target.last_observed_at)) }}
 </dl>
+{#
+  The desired spec, verbatim. This module interprets nothing inside it — the
+  shape is the product's deployment profile, not Control's — so it is shown as
+  the bytes it is rather than summarized into fields this module would have to
+  understand.
+#}
+<p style="margin:var(--dmui-space-sm) 0 var(--dmui-space-3xs) 0; color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+  Desired spec (opaque to this module):
+</p>
+<pre style="margin:0; padding:var(--dmui-space-sm);
+            overflow-x:auto;
+            background:var(--dmui-surface-secondary);
+            border:1px solid var(--dmui-border-subtle);
+            border-radius:var(--dmui-radius-sm);
+            font-family:var(--dmui-font-mono);
+            font-size:var(--dmui-font-size-xs);
+            color:var(--dmui-text-primary);">{{ target.desired_spec | tojson(indent=2) }}</pre>
 {% endcall %}
 
 {% call ui.panel("Reconciliation") %}
@@ -178,7 +202,7 @@
   reader it would mislead.
 #}
 {% if plans %}
-  {{ ui.table_open(["#", "Status", "Standing", "Desired rev", "Plan digest", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
+  {{ ui.table_open(["#", "Status", "Standing", "Desired rev", "Plan digest", "Descriptor digest", "Operation", "Executable", "Execution binding", "Proposed execution plan", "Authorized operation", "Authorized execution plan", "Authorized images", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
   {% for plan in plans %}
   <tr>
     {{ ui.cell(plan.sequence) }}
@@ -189,11 +213,18 @@
       read as the first for both.
     #}
     {% if plan.approval_decision_status == "revoked" %}
+    {#
+      The whole withdrawal, not only that one happened: which decision withdrew
+      it, when, and the human reason. A revocation an operator cannot attribute
+      reads exactly like a bug.
+    #}
     <td style="padding:var(--dmui-space-2xs);
                border-bottom:1px solid var(--dmui-border-subtle);
                color:var(--dmui-status-negative-foreground);">
       revoked{% if plan.approval_revocation_ref %}
       ({{ plan.approval_revocation_ref }}){% endif %}
+      <br>{{ moment(plan.approval_revoked_at) }}
+      {%- if plan.approval_revocation_reason %}<br>{{ plan.approval_revocation_reason }}{% endif %}
     </td>
     {% else %}
     {{ ui.cell(plan.approval_decision_status) }}
@@ -202,8 +233,46 @@
     <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
       {{ ui.digest(plan.plan_digest) }}
     </td>
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(plan.descriptor_digest) }}
+    </td>
+    {{ ui.cell(plan.operation) }}
+    {#
+      Whether the counterparty has published support for this operation.
+      `not declared` is a THIRD answer and not a soft "no": the module says
+      `False` when it knows the executor cannot perform the operation, and
+      `None` when the plan names none to ask about.
+    #}
+    {{ ui.executable(plan.operation_is_executable) }}
+    {#
+      The module's own verdict over the four terms to the right, so this screen
+      does not compare them itself. `not authorized` is deliberately not
+      `diverges`: a plan awaiting a decision has no authorized digest, and a
+      `!=` between the two columns would report it as an execution nobody
+      authorized.
+    #}
+    {{ ui.binding(plan.execution_binding) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(plan.execution_plan_digest) }}
+    </td>
+    {{ ui.cell(plan.authorized_operation) }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
+      {{ ui.digest(plan.authorized_execution_plan_digest) }}
+    </td>
+    {#
+      The set FROZEN inside the document `plan_digest` is taken over. Its own
+      three-way branch, unlike the receipt's columns below: this field is
+      `| None` and those are not.
+    #}
+    {{ ui.image_set(plan.authorized_images) }}
     {{ ui.cell(plan.requires_approval) }}
-    {{ ui.cell(plan.approval_policy_code) }}
+    {#
+      Code AND version. A policy is revised, and "approved under
+      deployment.production" says nothing about which revision decided it —
+      which is the whole of the emergency path (a one-person quorum is a policy
+      revision, not an absence of one).
+    #}
+    {{ ui.cell(plan.approval_policy_code ~ " v" ~ plan.approval_policy_version if plan.approval_policy_code else none) }}
     <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
       {{ ui.digest(plan.approval_decision_ref) }}
     </td>
