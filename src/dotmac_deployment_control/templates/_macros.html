@@ -72,3 +72,121 @@
              color:var(--dmui-text-primary);
              word-break:break-all;">{{ value if value is not none else "—" }}</code>
 {% endmacro %}
+
+{#
+  ── Three-state and four-state cells ──────────────────────────────────────
+
+  Everything below exists because a tri-state read through a two-state
+  `{% if %}` is flattened back to two states IN JINJA, where no type checker
+  looks. The Python side can carry `bool | None` and `tuple | None` perfectly
+  and still show an operator two answers where the module computed three.
+
+  So each macro below branches on EVERY state its value has, and none of them
+  uses truthiness: `{% if value %}` reads `False`, `None` and `()` as one thing,
+  and those are the exact pairs these fields exist to keep apart.
+#}
+
+{% macro image_set_text(images) %}
+{#
+  THREE states. `{% for image in images or () %}` collapses two of them, and is
+  the shape to refuse: `None` means no image set was ever declared, `()` means
+  the set authorizes NO image, deliberately. Both render empty under a bare
+  loop, and an operator cannot tell "nobody said" from "nobody may".
+
+  The receipt's own image columns ARE a bare loop, correctly: those fields are
+  `tuple[AuthorizedImage, ...] = ()` with no `None` state, so there is no third
+  answer to lose. This macro is for the two that are `| None`.
+
+  Written once and used from a table cell and from a definition list, so the
+  three states have ONE spelling rather than two that have to agree.
+#}
+{%- if images is none -%}
+<span style="color:var(--dmui-text-secondary);">not declared</span>
+{%- elif images|length == 0 -%}
+<span style="color:var(--dmui-status-warning-foreground);">none authorized</span>
+{%- else -%}
+<code style="font-family:var(--dmui-font-mono); font-size:var(--dmui-font-size-xs);
+             word-break:break-all;">
+  {%- for image in images -%}
+  {{ image.service }}={{ image.repository }}@{{ image.digest.canonical }}
+  {%- if not loop.last %}<br>{% endif -%}
+  {%- endfor -%}
+</code>
+{%- endif -%}
+{% endmacro %}
+
+{% macro image_set(images) %}
+<td style="padding:var(--dmui-space-2xs);
+           border-bottom:1px solid var(--dmui-border-subtle);
+           color:var(--dmui-text-primary);
+           vertical-align:top;">{{ image_set_text(images) }}</td>
+{% endmacro %}
+
+{% macro executable(value) %}
+{#
+  THREE states of `operation_is_executable`. `None` is NOT `False`: the module
+  says `False` when it knows the counterparty cannot perform the operation, and
+  `None` when the plan declares no operation to ask about. Rendering both as
+  "no" would tell an operator a plan can never run when nobody has yet said what
+  it would do.
+#}
+<td style="padding:var(--dmui-space-2xs);
+           border-bottom:1px solid var(--dmui-border-subtle);
+           vertical-align:top;">
+  {%- if value is none -%}
+  <span style="color:var(--dmui-text-secondary);">not declared</span>
+  {%- elif value -%}
+  <span style="color:var(--dmui-status-positive-foreground);">executable</span>
+  {%- else -%}
+  <span style="color:var(--dmui-status-negative-foreground);">not executable</span>
+  {%- endif -%}
+</td>
+{% endmacro %}
+
+{% macro binding(standing) %}
+{#
+  FOUR members of `ExecutionBindingStanding`, four cells. The pair that must
+  never merge is `unauthorized` and `diverges`: a plan waiting for a decision
+  has no authorized digest, so a `proposed != authorized` comparison calls it
+  "differs" — a tampering-shaped finding that sends an operator to the wrong
+  system. The module decided this; the branch below only spells it.
+#}
+<td style="padding:var(--dmui-space-2xs);
+           border-bottom:1px solid var(--dmui-border-subtle);
+           vertical-align:top;">
+  {%- if standing == "matches" -%}
+  <span style="color:var(--dmui-status-positive-foreground);">matches</span>
+  {%- elif standing == "diverges" -%}
+  <span style="color:var(--dmui-status-negative-foreground);">diverges</span>
+  {%- elif standing == "unauthorized" -%}
+  <span style="color:var(--dmui-status-warning-foreground);">not authorized</span>
+  {%- else -%}
+  <span style="color:var(--dmui-text-secondary);">unbound</span>
+  {%- endif -%}
+</td>
+{% endmacro %}
+
+{% macro approval_standing(value) %}
+{#
+  FOUR states of `current_plan_approval_status`, and the pair that must never
+  merge is `none` and `unrecorded`. "No plan has ever been proposed" and "a plan
+  exists and carries no decision" are different next actions, and a cell that
+  showed a dash for both would hide the second — which is the one an operator is
+  scanning the fleet to find.
+#}
+<td style="padding:var(--dmui-space-2xs);
+           border-bottom:1px solid var(--dmui-border-subtle);
+           vertical-align:top;">
+  {%- if value == "granted" -%}
+  <span style="color:var(--dmui-status-positive-foreground);">granted</span>
+  {%- elif value == "revoked" -%}
+  <span style="color:var(--dmui-status-negative-foreground);">revoked</span>
+  {%- elif value == "unrecorded" -%}
+  <span style="color:var(--dmui-status-warning-foreground);">awaiting a decision</span>
+  {%- elif value == "none" -%}
+  <span style="color:var(--dmui-text-secondary);">no plan</span>
+  {%- else -%}
+  <span style="color:var(--dmui-text-primary);">{{ value }}</span>
+  {%- endif -%}
+</td>
+{% endmacro %}

@@ -145,6 +145,44 @@ class TargetView:
     current_plan_approval_status: str = "none"
 
 
+class ExecutionBindingStanding(StrEnum):
+    """Whether a plan's PROPOSED execution binding and its AUTHORIZED one agree.
+
+    Computed by the OWNER, because the alternative is every surface computing it
+    from four columns -- and the obvious way to do that is
+    `proposed != authorized`, which is wrong in a way that reads as an incident.
+
+    FOUR members, and the pair that must never merge is `UNAUTHORIZED` and
+    `DIVERGES`. A two-valued comparison puts them together: a plan nobody has
+    approved yet has no authorized digest, so `!=` says "differs", and "differs"
+    on an execution binding reads as *the executor was authorized for something
+    other than what was proposed* -- a tampering-shaped finding about a plan
+    that is simply waiting for a decision. They send an operator to different
+    systems: `UNAUTHORIZED` to the approvals authority, `DIVERGES` to whoever
+    can edit this database.
+
+    `UNBOUND` is the third that a boolean loses. A `0.1.0a7` plan names no
+    execution at all; it is not a plan whose binding failed, and rendering it as
+    one would report a schema-era absence as a mismatch.
+    """
+
+    #: The plan names no execution to bind -- no operation, or no execution plan
+    #: digest. A `0.1.0a7` row. Refused a rollout, and not a fault.
+    UNBOUND = "unbound"
+    #: The plan is bound and nothing has authorized that binding yet. Also the
+    #: honest answer for an APPROVAL-EXEMPT plan: such a plan has no
+    #: authorization term, and copying the proposal into the authorized columns
+    #: to make the check look three-termed is exactly the weakening the
+    #: Foundation's `require_same_digest` refuses.
+    UNAUTHORIZED = "unauthorized"
+    #: Both terms present, both equal. The only member that authorizes anything.
+    MATCHES = "matches"
+    #: Both terms present and not equal. Nothing in this package can write this
+    #: -- `approve_plan` refuses evidence that does not match what was proposed
+    #: -- so a plan reading DIVERGES was edited outside the module.
+    DIVERGES = "diverges"
+
+
 @dataclass(frozen=True, slots=True)
 class PlanView:
     """A plan and its approval standing."""
@@ -204,6 +242,18 @@ class PlanView:
     #: `None` when no operation is declared: an undeclared operation is not an
     #: inexecutable one.
     operation_is_executable: bool | None = None
+    #: R5. Whether the four binding columns above agree, decided ONCE, here.
+    #:
+    #: The four terms are already on this view and a surface could compare them
+    #: -- which is the problem. `proposed != authorized` is the comparison a
+    #: reader reaches for, and it reports an unapproved plan as a diverged one.
+    #: See `ExecutionBindingStanding` for why that pair must stay apart.
+    #:
+    #: Defaulted to `UNBOUND` rather than `None`: a view built without this term
+    #: describes a plan that binds nothing, which is the safe reading and the
+    #: one a `0.1.0a7` row actually has. There is no fifth "not computed" state
+    #: to render.
+    execution_binding: ExecutionBindingStanding = ExecutionBindingStanding.UNBOUND
 
 
 # ── The approved-plan lookup ────────────────────────────────────────────────

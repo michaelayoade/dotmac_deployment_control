@@ -56,7 +56,7 @@
 
 {% call ui.panel("Deployment targets — showing " ~ result.targets|length ~ " of " ~ result.total) %}
 {% if result.targets %}
-  {{ ui.table_open(["Target", "Product", "Environment", "Status", "Desired release", "Desired rev", "Observed release", "Observed rev", "Last observed"]) }}
+  {{ ui.table_open(["Target", "Product", "Environment", "Status", "Approval standing", "Desired release", "Desired rev", "Authorized images", "Observed release", "Observed rev", "Last observed"]) }}
   {% for target in result.targets %}
   <tr>
     <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">
@@ -66,8 +66,17 @@
     {{ ui.cell(target.product_code) }}
     {{ ui.cell(target.environment) }}
     {{ ui.cell(target.status) }}
+    {#
+      The CURRENT plan's approval standing, projected by `list_targets` in the
+      same statement that built this page. Four states, and `no plan` is not
+      `awaiting a decision` — the fleet question this column answers is which
+      targets are holding an undecided or withdrawn authorization, and a cell
+      that merged those two would hide it.
+    #}
+    {{ ui.approval_standing(target.current_plan_approval_status) }}
     {{ ui.cell(target.desired_release_ref) }}
     {{ ui.cell(target.desired_revision) }}
+    {{ ui.image_set(target.desired_images) }}
     {{ ui.cell(target.observed_release_ref) }}
     {{ ui.cell(target.observed_revision) }}
     {{ ui.cell(moment(target.last_observed_at)) }}
