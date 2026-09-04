@@ -5,7 +5,13 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a12 (unreleased) — recovery grants, and reads that reach a screen
+## 0.1.0a12 (published 2026-09-04) — recovery grants, and reads that reach a screen
+
+Published by run `33854964978` from protected main `8e8342bcbefc`; independent
+verify run `33855190724` fetched both artifacts by name, matched their recorded
+digests, installed the wheel with its dependency graph, drove all fifteen
+behavioural canaries, and only then wrote the annotated tag. Exact coordinates
+and the adoption disposition are recorded in `docs/published-versions.json`.
 
 ### Added
 
