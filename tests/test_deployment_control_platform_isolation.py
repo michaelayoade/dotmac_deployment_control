@@ -306,6 +306,10 @@ def _insert_target(conn, **overrides: object) -> uuid.UUID:  # type: ignore[no-u
     params: dict[str, object] = {
         "id": uuid.uuid4(),
         "ref": f"tgt-{uuid.uuid4().hex[:10]}",
+        # Bound rather than literal so a seed can be isolated by
+        # `TargetFilter(product_code=...)`. Defaulted to exactly what every
+        # existing caller was already getting, so none of them change.
+        "product": "dotmac_sub",
     }
     params.update(overrides)
     conn.execute(
@@ -313,7 +317,7 @@ def _insert_target(conn, **overrides: object) -> uuid.UUID:  # type: ignore[no-u
             "INSERT INTO mod_deploy.deployment_targets ("
             " id, target_ref, subject_ref, product_code, environment, status,"
             " desired_revision, record_version"
-            ") VALUES (:id, :ref, 'acme', 'dotmac_sub', 'production',"
+            ") VALUES (:id, :ref, 'acme', :product, 'production',"
             " 'registered', 0, 1)"
         ),
         params,
@@ -2156,46 +2160,68 @@ class TestTheApprovalStandingProjectionHoldsOnPostgres:
     (`unrecorded`) that the writer cannot easily be made to produce on demand.
     """
 
+    #: The seed's own product code. `migrated_scratch` is MODULE-scoped, so this
+    #: database is shared with every other test in the file and accumulates
+    #: their targets. Filtering on a product nothing else uses makes the page
+    #: under test exactly the four rows seeded below -- which is what lets the
+    #: statement count be an equality instead of a bound.
+    PRODUCT = "pg-standing-fixture"
+
     @staticmethod
     def _session(url: str) -> Session:
         return sessionmaker(bind=create_engine(url), future=True)()
 
-    def _fleet(self, admin_url: str) -> dict[str, uuid.UUID]:
-        """One target per standing, seeded once."""
+    @classmethod
+    def _criteria(cls) -> TargetFilter:
+        return TargetFilter(product_code=cls.PRODUCT, page_size=200)
+
+    @pytest.fixture(scope="class")
+    def fleet(self, migrated_scratch) -> dict[str, uuid.UUID]:  # type: ignore[no-untyped-def]
+        """One target per standing, seeded ONCE for the class.
+
+        Class-scoped because `target_ref` is unique and the database outlives
+        each test: seeding per test collided on the second one. The four refs
+        are fixed rather than random so a failure names the state it is about.
+        """
+        admin_url, _, _ = migrated_scratch
         ids: dict[str, uuid.UUID] = {}
         engine = create_engine(admin_url)
         try:
             with engine.begin() as conn:
-                ids["none"] = _insert_target(conn, ref="pg-standing-none")
-                ids["unrecorded"] = _insert_target(conn, ref="pg-standing-unrecorded")
+                ids["none"] = _insert_target(
+                    conn, ref="pg-standing-none", product=self.PRODUCT
+                )
+                ids["unrecorded"] = _insert_target(
+                    conn, ref="pg-standing-unrecorded", product=self.PRODUCT
+                )
                 _insert_plan(conn, ids["unrecorded"])
-                ids["granted"] = _insert_target(conn, ref="pg-standing-granted")
+                ids["granted"] = _insert_target(
+                    conn, ref="pg-standing-granted", product=self.PRODUCT
+                )
                 _insert_plan(conn, ids["granted"], decision_status="granted")
-                ids["revoked"] = _insert_target(conn, ref="pg-standing-revoked")
+                ids["revoked"] = _insert_target(
+                    conn, ref="pg-standing-revoked", product=self.PRODUCT
+                )
                 _insert_plan(
-                    conn,
-                    ids["revoked"],
-                    decision_status="revoked",
-                    revoked=True,
+                    conn, ids["revoked"], decision_status="revoked", revoked=True
                 )
         finally:
             engine.dispose()
         return ids
 
-    def test_the_four_states_survive_the_real_dialect(self, migrated_scratch) -> None:  # type: ignore[no-untyped-def]
-        admin_url, platform_api_url, _ = migrated_scratch
-        self._fleet(admin_url)
+    def test_the_four_states_survive_the_real_dialect(  # type: ignore[no-untyped-def]
+        self, migrated_scratch, fleet
+    ) -> None:
+        _, platform_api_url, _ = migrated_scratch
 
         session = self._session(platform_api_url)
         try:
-            page = list_targets(session, TargetFilter(page_size=200))
+            page = list_targets(session, self._criteria())
         finally:
             session.close()
 
         standing = {
-            view.target_ref: view.current_plan_approval_status
-            for view in page.targets
-            if view.target_ref.startswith("pg-standing-")
+            view.target_ref: view.current_plan_approval_status for view in page.targets
         }
         assert standing == {
             "pg-standing-none": "none",
@@ -2204,9 +2230,8 @@ class TestTheApprovalStandingProjectionHoldsOnPostgres:
             "pg-standing-revoked": "revoked",
         }, standing
 
-    def test_the_page_reads_the_plans_table_once_on_postgres(
-        self,
-        migrated_scratch,  # type: ignore[no-untyped-def]
+    def test_the_page_reads_the_plans_table_once_on_postgres(  # type: ignore[no-untyped-def]
+        self, migrated_scratch, fleet
     ) -> None:
         """The SHAPE, on the dialect that will serve it.
 
@@ -2216,8 +2241,7 @@ class TestTheApprovalStandingProjectionHoldsOnPostgres:
         types, the dialect's handling of a correlated `LIMIT` — is exactly what
         is absent from the fast lane.
         """
-        admin_url, platform_api_url, _ = migrated_scratch
-        self._fleet(admin_url)
+        _, platform_api_url, _ = migrated_scratch
 
         session = self._session(platform_api_url)
         counted: list[str] = []
@@ -2229,21 +2253,20 @@ class TestTheApprovalStandingProjectionHoldsOnPostgres:
         bind = session.get_bind()
         event.listen(bind, "before_cursor_execute", _record)
         try:
-            page = list_targets(session, TargetFilter(page_size=200))
+            page = list_targets(session, self._criteria())
         finally:
             event.remove(bind, "before_cursor_execute", _record)
             session.close()
 
-        assert len(page.targets) >= 4
+        assert len(page.targets) == 4
         assert len(counted) == 1, (
             f"listing the fleet read deployment_plans {len(counted)} times on "
             "PostgreSQL. Every value would still be correct; the standing is "
             "being looked up per row."
         )
 
-    def test_the_single_read_agrees_with_the_page_on_postgres(
-        self,
-        migrated_scratch,  # type: ignore[no-untyped-def]
+    def test_the_single_read_agrees_with_the_page_on_postgres(  # type: ignore[no-untyped-def]
+        self, migrated_scratch, fleet
     ) -> None:
         """`get_target` and `list_targets` are written from ONE expression.
 
@@ -2252,16 +2275,15 @@ class TestTheApprovalStandingProjectionHoldsOnPostgres:
         inside a paged, ordered statement — so the agreement is checked where
         the rendering actually happens.
         """
-        admin_url, platform_api_url, _ = migrated_scratch
-        ids = self._fleet(admin_url)
+        _, platform_api_url, _ = migrated_scratch
 
         session = self._session(platform_api_url)
         try:
             page = {
                 view.target_ref: view.current_plan_approval_status
-                for view in list_targets(session, TargetFilter(page_size=200)).targets
+                for view in list_targets(session, self._criteria()).targets
             }
-            for state, target_id in ids.items():
+            for state, target_id in fleet.items():
                 single = get_target(session, target_id)
                 assert single is not None
                 assert single.current_plan_approval_status == page[single.target_ref], (
