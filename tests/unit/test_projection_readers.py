@@ -560,9 +560,7 @@ def _store_grant(
         recovery_execution_plan_digest=statement.recovery_execution_plan_digest,
         recovery_bundle_digest=statement.recovery_bundle_digest,
         incumbent_prestate_digest=statement.incumbent_prestate_digest,
-        incumbent_prestate_discriminator=(
-            statement.incumbent_prestate_discriminator
-        ),
+        incumbent_prestate_discriminator=(statement.incumbent_prestate_discriminator),
         grant_envelope=envelope,
         not_before=statement.not_before,
         issued_at=statement.issued_at,

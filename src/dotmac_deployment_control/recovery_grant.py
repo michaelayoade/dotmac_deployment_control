@@ -329,9 +329,7 @@ class RecoveryGrantStatementV1:
             "recovery_execution_plan_digest": self.recovery_execution_plan_digest,
             "recovery_bundle_digest": self.recovery_bundle_digest,
             "incumbent_prestate_digest": self.incumbent_prestate_digest,
-            "incumbent_prestate_discriminator": (
-                self.incumbent_prestate_discriminator
-            ),
+            "incumbent_prestate_discriminator": (self.incumbent_prestate_discriminator),
             "approval_policy_code": self.approval_policy_code,
             "approval_policy_version": self.approval_policy_version,
             "approval_decision_ref": self.approval_decision_ref,
@@ -361,9 +359,7 @@ class RecoveryGrantStatementV1:
             recovery_execution_plan_digest=self.recovery_execution_plan_digest,
             recovery_bundle_digest=self.recovery_bundle_digest,
             incumbent_prestate_digest=self.incumbent_prestate_digest,
-            incumbent_prestate_discriminator=(
-                self.incumbent_prestate_discriminator
-            ),
+            incumbent_prestate_discriminator=(self.incumbent_prestate_discriminator),
         )
 
 
@@ -417,14 +413,15 @@ _STATEMENT_KEYS = frozenset(
         "recovery_execution_plan_digest",
         "recovery_bundle_digest",
         "incumbent_prestate_digest",
-        # DELIBERATELY NOT REQUIRED AT PARSE. A grant written before this
-        # term must stay READABLE so it can be refused as historical with
-        # `PRESTATE_UNDISCRIMINATED`, which names what is wrong and what
-        # cannot be repaired. Requiring it here would make such a row
-        # unparseable instead, turning a precise verdict about provenance
-        # into a generic malformed-document error — and an operator would
-        # learn that the envelope was broken rather than that it predates
-        # the identity nobody can now supply for it.
+        # `incumbent_prestate_discriminator` is absent from this set ON
+        # PURPOSE and lives in `_OPTIONAL_STATEMENT_KEYS` below. A grant
+        # written before this term must stay READABLE so it can be refused
+        # as historical with `PRESTATE_UNDISCRIMINATED`, which names what is
+        # wrong and what cannot be repaired. Requiring it here would make
+        # such a row unparseable instead, turning a precise verdict about
+        # provenance into a generic malformed-document error — and an
+        # operator would learn that the envelope was broken rather than that
+        # it predates the identity nobody can now supply for it.
         "approval_policy_code",
         "approval_policy_version",
         "approval_decision_ref",
@@ -439,6 +436,14 @@ _STATEMENT_KEYS = frozenset(
         "public_key_fingerprint",
     }
 )
+
+#: PRESENT AND ACCEPTED, ABSENT AND ACCEPTED — required by neither the key
+#: check nor the dataclass, and required by `verify_recovery_grant` instead.
+#: The key check compares the key SET in both directions, so a term that is
+#: merely left out of `_STATEMENT_KEYS` is not optional: it is FORBIDDEN, and
+#: every grant issued since `as_mapping` began emitting it would be refused as
+#: carrying an unexpected key. Optionality has to be stated, and this is where.
+_OPTIONAL_STATEMENT_KEYS: Final = frozenset({"incumbent_prestate_discriminator"})
 
 
 def _timestamp(value: datetime) -> str:
@@ -513,9 +518,12 @@ def _parse_statement(value: object) -> RecoveryGrantStatementV1:
             RecoveryGrantRefusalCode.SCHEMA_MISMATCH,
             f"unsupported recovery grant version {row.get('version')!r}",
         )
-    if set(row) != _STATEMENT_KEYS:
-        missing = sorted(_STATEMENT_KEYS - set(row))
-        unexpected = sorted(str(key) for key in set(row) - _STATEMENT_KEYS)
+    keys = set(row)
+    missing = sorted(_STATEMENT_KEYS - keys)
+    unexpected = sorted(
+        str(key) for key in keys - _STATEMENT_KEYS - _OPTIONAL_STATEMENT_KEYS
+    )
+    if missing or unexpected:
         raise _refused(
             RecoveryGrantRefusalCode.MALFORMED,
             f"recovery grant statement keys differ: missing={missing}, "

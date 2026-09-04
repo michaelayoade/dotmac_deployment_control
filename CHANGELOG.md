@@ -35,7 +35,15 @@ changes, each called out here.
   provenance was never establishable.
 - The discriminator is deliberately NOT required at parse. A grant predating
   the term stays readable so it can be refused precisely as historical, rather
-  than failing as a malformed document.
+  than failing as a malformed document. Optionality is STATED
+  (`_OPTIONAL_STATEMENT_KEYS`) rather than left implicit: the statement's key
+  check compares the key set in both directions, so a term named in neither the
+  required set nor an optional one is not tolerated but FORBIDDEN, and every
+  grant carrying the new term would be refused as unexpected.
+- The database catalogue advances to `dc_0009_prestate_discriminator`, nine
+  revisions, eight tables and 134 columns — `recovery_grants` gains its
+  nineteenth column, nullable, appended by `ALTER TABLE ADD COLUMN` rather than
+  placed beside the digest it describes.
 
 ### Rename history — recorded here because Foundation's changelog does not carry it
 

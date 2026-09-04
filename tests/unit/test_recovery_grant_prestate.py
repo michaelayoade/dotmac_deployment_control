@@ -40,10 +40,11 @@ from dotmac_deployment_control.recovery_grant import (
     PRESTATE_DISCRIMINATOR,
     RecoveryGrantRefusalCode,
     RecoveryGrantRefusedError,
+    RecoveryGrantV1,
     issue_recovery_grant,
     verify_recovery_grant,
 )
-from tests.unit.test_recovery_grant import _Signer, _Verifier, _statement
+from tests.unit.test_recovery_grant import _Signer, _statement, _Verifier
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
 
@@ -58,9 +59,7 @@ OBSOLETE_DISCRIMINATOR = "dotmac.deployment_foundation.incumbent_prestate.v1"
 
 
 def _grant(**overrides: object) -> dict[str, object]:
-    return issue_recovery_grant(
-        _statement(**overrides), signer=_Signer()
-    ).as_mapping()
+    return issue_recovery_grant(_statement(**overrides), signer=_Signer()).as_mapping()
 
 
 def _refusal(grant: dict[str, object], subject_overrides: dict[str, object]):
@@ -129,6 +128,61 @@ def test_whitespace_is_not_a_discriminator() -> None:
     assert refusal.code is RecoveryGrantRefusalCode.PRESTATE_UNDISCRIMINATED
 
 
+def _without_the_discriminator() -> dict[str, object]:
+    """A stored envelope from before the term existed: the KEY is missing, not
+    empty. Built by removal because nothing can issue one any more -- which is
+    the point, since the rows this refusal is for were written by a Control
+    that had no such field."""
+    grant = _grant()
+    statement = dict(grant["statement"])  # type: ignore[arg-type]
+    del statement["incumbent_prestate_discriminator"]
+    return {"statement": statement, "signature": grant["signature"]}
+
+
+def test_a_statement_that_never_carried_the_key_is_read_then_refused() -> None:
+    """READABLE AND REFUSABLE, which is one property and not two.
+
+    The key check compares the statement's key SET, so a term named in neither
+    the required set nor an optional one is not tolerated -- it is FORBIDDEN,
+    in the direction nobody thinks about. Absence and presence therefore need
+    separate cases: the whole suite above exercises presence, and this is the
+    only place absence is stated at all.
+
+    The verdict, not merely the raising, is what is asserted. `MALFORMED` here
+    would send an operator to look for a corrupted envelope; the row is intact
+    and its provenance is what is missing, which is a different destination.
+    """
+    historical = _without_the_discriminator()
+
+    parsed = RecoveryGrantV1.parse(historical)
+    assert parsed.statement.incumbent_prestate_discriminator == ""
+
+    with pytest.raises(RecoveryGrantRefusedError) as refused:
+        verify_recovery_grant(
+            historical,
+            verifier=_Verifier(),
+            subject=_statement().subject,
+            at=NOW - timedelta(minutes=1),
+        )
+    assert refused.value.code is RecoveryGrantRefusalCode.PRESTATE_UNDISCRIMINATED
+    assert refused.value.code is not RecoveryGrantRefusalCode.MALFORMED
+
+
+def test_naming_one_optional_key_did_not_open_the_statement_to_others() -> None:
+    """SENSITIVITY for the case above. "Absence is tolerated" is one edit away
+    from "anything is tolerated", and a statement that accepted unknown keys
+    would let a document carry a term this version compares against nothing.
+    """
+    grant = _without_the_discriminator()
+    statement = dict(grant["statement"])  # type: ignore[arg-type]
+    statement["operation"] = "deploy"
+
+    with pytest.raises(RecoveryGrantRefusedError) as refused:
+        RecoveryGrantV1.parse({"statement": statement, "signature": grant["signature"]})
+    assert refused.value.code is RecoveryGrantRefusalCode.MALFORMED
+    assert "operation" in str(refused.value)
+
+
 # ── 2. unknown discriminator version, including the retired spelling ────────
 
 
@@ -174,9 +228,7 @@ def test_a_correct_discriminator_does_not_excuse_a_wrong_digest() -> None:
     """The discriminator says which rules produced the value; it says nothing
     about WHICH value. A check that stopped at the identity would authorize a
     recovery against any incumbent so long as its encoding was named."""
-    refusal = _refusal(
-        _grant(), {"incumbent_prestate_digest": "sha256:" + "d" * 64}
-    )
+    refusal = _refusal(_grant(), {"incumbent_prestate_digest": "sha256:" + "d" * 64})
     assert refusal.code is RecoveryGrantRefusalCode.PRESTATE_MISMATCH
 
 
