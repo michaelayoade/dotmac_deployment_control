@@ -411,7 +411,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0007_signed_dispatch_envelope",
+                revision="dc_0008_recovery_grants",
             ),
         )
         comparison = verify_module_database_catalog(
