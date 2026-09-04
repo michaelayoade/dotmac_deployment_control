@@ -82,6 +82,9 @@ from dotmac_deployment_control.authorization import (
     issue_authorization_envelope,
     verify_authorization_envelope,
 )
+from dotmac_deployment_control.counterparty import (
+    require_executable_operation,
+)
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
@@ -1877,6 +1880,13 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
                 "an approval of the other, and neither is inferred from the "
                 "other."
             )
+        # THE FENCE, at the moment the operation stops being a proposal. An
+        # operation the executor has not published support for is refused here
+        # rather than at dispatch, because a frozen authorization is what every
+        # later screen reads as settled.
+        require_executable_operation(
+            supplied_operation, where=f"plan {row.id} authorized operation"
+        )
         row.authorized_operation = supplied_operation.value
         # STORED AS RECEIVED, like the proposal above. `supplied_execution
         # .canonical` is provably the same text — the parser accepted only the
@@ -2175,6 +2185,12 @@ def request_rollout(
             execution_sequence=execution_sequence,
         )
         operation = plan.authorized_operation or plan.operation
+        # THE FENCE, at signing. A signature is the point past which this
+        # control plane's word travels on its own, so an operation no executor
+        # can honour must not acquire one.
+        require_executable_operation(
+            operation, where=f"authorization for plan {plan.id}"
+        )
         execution = plan.authorized_execution_plan_digest or plan.execution_plan_digest
         decision_status = (
             plan.approval_decision_status
@@ -2312,6 +2328,14 @@ def dispatch_attempt(
         ).scalar()
         attempt_no = int(highest or 0) + 1
         attempt_id = uuid4()
+        # THE FENCE, at dispatch. The last of the three points the vocabulary
+        # docstring names. An authorization frozen and signed before this
+        # release could still carry an operation the executor never gained, so
+        # the check is repeated here rather than assumed discharged upstream.
+        require_executable_operation(
+            authorization.statement.operation,
+            where=f"dispatch of rollout {rollout.id}",
+        )
         dispatch_envelope = issue_dispatch_envelope(
             authorization_envelope=authorization,
             dispatch_id=str(attempt_id),

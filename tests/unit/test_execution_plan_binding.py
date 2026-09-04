@@ -441,7 +441,17 @@ class TestTheOperationVocabularyIsClosed:
     """`deploy`, `rollback`, `recover`. An unknown value is REFUSED — never
     defaulted, and never inferred."""
 
-    def test_the_set_is_exactly_two_and_the_enum_agrees_with_it(self) -> None:
+    def test_the_enum_and_the_exported_set_are_one_vocabulary(self) -> None:
+        """Named for the INVARIANT, not the cardinality.
+
+        This was `test_the_set_is_exactly_two_and_the_enum_agrees_with_it` and
+        asserted three members from `0.1.0a10` onward -- the name encoded a
+        COUNT, and counts change. A name that states the relationship survives
+        the next membership change; a name that states the number is wrong the
+        moment the vocabulary moves, and it is wrong silently, because a
+        passing test is not read.
+        """
+        assert OPERATIONS == {member.value for member in DeploymentOperation}
         assert OPERATIONS == {"deploy", "rollback", "recover"}
         assert {member.value for member in DeploymentOperation} == OPERATIONS
 
