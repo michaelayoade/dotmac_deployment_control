@@ -112,9 +112,7 @@ def upgrade() -> None:
         ),
         schema=_SCHEMA,
     )
-    op.create_index(
-        "ix_recovery_grants_target", _TABLE, ["target_id"], schema=_SCHEMA
-    )
+    op.create_index("ix_recovery_grants_target", _TABLE, ["target_id"], schema=_SCHEMA)
     #: The standing read asks for a target's LIVE grants. Indexed on the two
     #: columns that question filters by, so the reader stays one statement.
     op.create_index(

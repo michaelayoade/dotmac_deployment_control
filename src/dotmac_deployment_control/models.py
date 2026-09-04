@@ -489,9 +489,7 @@ class RecoveryGrant(Base, TimestampMixin):
     not_before: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    issued_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
