@@ -43,7 +43,6 @@ from dotmac_deployment_control.recovery_grant import (
     issue_recovery_grant,
     verify_recovery_grant,
 )
-
 from tests.unit.test_recovery_grant import _Signer, _Verifier, _statement
 
 NOW = datetime(2026, 9, 4, 12, 0, tzinfo=UTC)
