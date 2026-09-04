@@ -516,8 +516,19 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
 # ── Isolation ───────────────────────────────────────────────────────────────
 
 
-def test_dc_0007_downgrades_to_the_exact_dc_0005_extent() -> None:
-    """The reverse path removes every a10/a11 fact, then reapplies cleanly."""
+def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
+    """The reverse path removes every post-`dc_0005` fact, then reapplies.
+
+    Named for the invariant rather than for whichever revision is head. It
+    was `test_dc_0007_...` and went one revision stale the moment `dc_0008`
+    landed -- the same way `test_the_set_is_exactly_two` did, and the same
+    fix: a name that states the relationship survives the next revision, a
+    name that states a number is wrong silently.
+
+    The head extent is 133 columns across eight tables; `dc_0005` is 105.
+    `dc_0008` drops `recovery_grants` entirely on the way down, so the
+    difference is the whole table rather than a column count drifting.
+    """
     from alembic import command
     from alembic.config import Config
 
@@ -548,7 +559,7 @@ def test_dc_0007_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 115
+                    == 133
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -598,7 +609,7 @@ def test_dc_0007_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 115
+                    == 133
                 )
         finally:
             admin.dispose()
