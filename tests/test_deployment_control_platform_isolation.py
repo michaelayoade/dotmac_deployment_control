@@ -73,12 +73,15 @@ from dotmac_deployment_control import (
     RevokePlanApprovalCommand,
     RuntimeIdentityV1,
     SetDesiredStateCommand,
+    TargetFilter,
     activate_credential,
     approve_plan,
     build_database_catalog_snapshot,
     dispatch_attempt,
     enrol_credential,
+    get_target,
     issue_execution_observation_envelope,
+    list_targets,
     module,
     propose_plan,
     record_observation,
@@ -318,16 +321,41 @@ def _insert_target(conn, **overrides: object) -> uuid.UUID:  # type: ignore[no-u
     return params["id"]  # type: ignore[return-value]
 
 
-def _insert_plan(conn, target_id: uuid.UUID) -> uuid.UUID:  # type: ignore[no-untyped-def]
+def _insert_plan(  # type: ignore[no-untyped-def]
+    conn,
+    target_id: uuid.UUID,
+    *,
+    sequence: int = 1,
+    decision_status: str | None = None,
+    revoked: bool = False,
+) -> uuid.UUID:
+    """A plan row, with the approval columns the standing projection reads.
+
+    The three keyword arguments are the difference between the four states
+    `current_plan_approval_status` distinguishes; written as raw SQL like every
+    other insert in this file, because what is under test is the READ and a row
+    the service wrote would only prove the service agrees with itself.
+    """
     plan_id = uuid.uuid4()
     conn.execute(
         text(
             "INSERT INTO mod_deploy.deployment_plans ("
             " id, target_id, sequence, status, desired_revision,"
-            " plan_digest, requires_approval, record_version"
-            ") VALUES (:id, :tid, 1, 'approved', 1, :digest, false, 1)"
+            " plan_digest, requires_approval, record_version,"
+            " approval_decision_status, approval_revoked_at,"
+            " approval_revocation_ref"
+            ") VALUES (:id, :tid, :seq, 'approved', 1, :digest, false, 1,"
+            " :decision, :revoked_at, :revocation_ref)"
         ),
-        {"id": plan_id, "tid": target_id, "digest": uuid.uuid4().hex},
+        {
+            "id": plan_id,
+            "tid": target_id,
+            "seq": sequence,
+            "digest": uuid.uuid4().hex,
+            "decision": decision_status,
+            "revoked_at": datetime(2026, 9, 4, 12, 0, tzinfo=UTC) if revoked else None,
+            "revocation_ref": "apr-rev-pg" if revoked else None,
+        },
     )
     return plan_id
 
@@ -2105,3 +2133,140 @@ class TestTheRecoveryWindowCheckAgreesWithTheType:
                     )
         finally:
             engine.dispose()
+
+
+# ── The approval-standing projection, on the dialect that will run it ───────
+
+
+class TestTheApprovalStandingProjectionHoldsOnPostgres:
+    """`list_targets` reads the current plan's approval standing as ONE
+    correlated scalar subquery on the statement that lists targets.
+
+    That statement is only ever exercised on SQLite by the unit suite, and a
+    correlated subquery is precisely the construct where the two dialects can
+    part company: SQLite is permissive about the types of the literals inside
+    the `CASE` and about a `LIMIT` in a correlated scalar subquery, and
+    PostgreSQL resolves parameter types for real. A projection that works in
+    the fast lane and raises at the consumer's first fleet page is the class of
+    defect this whole file exists for.
+
+    Rows are inserted as raw SQL rather than through the service. What is under
+    test is the READ; rows the writer produced would only prove the module
+    agrees with itself, and the four approval shapes below include one
+    (`unrecorded`) that the writer cannot easily be made to produce on demand.
+    """
+
+    @staticmethod
+    def _session(url: str) -> Session:
+        return sessionmaker(bind=create_engine(url), future=True)()
+
+    def _fleet(self, admin_url: str) -> dict[str, uuid.UUID]:
+        """One target per standing, seeded once."""
+        ids: dict[str, uuid.UUID] = {}
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                ids["none"] = _insert_target(conn, ref="pg-standing-none")
+                ids["unrecorded"] = _insert_target(conn, ref="pg-standing-unrecorded")
+                _insert_plan(conn, ids["unrecorded"])
+                ids["granted"] = _insert_target(conn, ref="pg-standing-granted")
+                _insert_plan(conn, ids["granted"], decision_status="granted")
+                ids["revoked"] = _insert_target(conn, ref="pg-standing-revoked")
+                _insert_plan(
+                    conn,
+                    ids["revoked"],
+                    decision_status="revoked",
+                    revoked=True,
+                )
+        finally:
+            engine.dispose()
+        return ids
+
+    def test_the_four_states_survive_the_real_dialect(self, migrated_scratch) -> None:  # type: ignore[no-untyped-def]
+        admin_url, platform_api_url, _ = migrated_scratch
+        self._fleet(admin_url)
+
+        session = self._session(platform_api_url)
+        try:
+            page = list_targets(session, TargetFilter(page_size=200))
+        finally:
+            session.close()
+
+        standing = {
+            view.target_ref: view.current_plan_approval_status
+            for view in page.targets
+            if view.target_ref.startswith("pg-standing-")
+        }
+        assert standing == {
+            "pg-standing-none": "none",
+            "pg-standing-unrecorded": "unrecorded",
+            "pg-standing-granted": "granted",
+            "pg-standing-revoked": "revoked",
+        }, standing
+
+    def test_the_page_reads_the_plans_table_once_on_postgres(
+        self,
+        migrated_scratch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """The SHAPE, on the dialect that will serve it.
+
+        The unit suite asserts this against SQLite. It is repeated here because
+        a per-row lookup and a correlated subquery return identical values, and
+        the thing that would make them differ — the planner, the parameter
+        types, the dialect's handling of a correlated `LIMIT` — is exactly what
+        is absent from the fast lane.
+        """
+        admin_url, platform_api_url, _ = migrated_scratch
+        self._fleet(admin_url)
+
+        session = self._session(platform_api_url)
+        counted: list[str] = []
+
+        def _record(_conn, _cursor, statement, *_rest):  # type: ignore[no-untyped-def]
+            if "deployment_plans" in statement:
+                counted.append(statement)
+
+        bind = session.get_bind()
+        event.listen(bind, "before_cursor_execute", _record)
+        try:
+            page = list_targets(session, TargetFilter(page_size=200))
+        finally:
+            event.remove(bind, "before_cursor_execute", _record)
+            session.close()
+
+        assert len(page.targets) >= 4
+        assert len(counted) == 1, (
+            f"listing the fleet read deployment_plans {len(counted)} times on "
+            "PostgreSQL. Every value would still be correct; the standing is "
+            "being looked up per row."
+        )
+
+    def test_the_single_read_agrees_with_the_page_on_postgres(
+        self,
+        migrated_scratch,  # type: ignore[no-untyped-def]
+    ) -> None:
+        """`get_target` and `list_targets` are written from ONE expression.
+
+        Two SQL renderings of one CASE could still be built differently by the
+        dialect — one inside a `SELECT ... FROM targets WHERE id = ?`, the other
+        inside a paged, ordered statement — so the agreement is checked where
+        the rendering actually happens.
+        """
+        admin_url, platform_api_url, _ = migrated_scratch
+        ids = self._fleet(admin_url)
+
+        session = self._session(platform_api_url)
+        try:
+            page = {
+                view.target_ref: view.current_plan_approval_status
+                for view in list_targets(session, TargetFilter(page_size=200)).targets
+            }
+            for state, target_id in ids.items():
+                single = get_target(session, target_id)
+                assert single is not None
+                assert single.current_plan_approval_status == page[single.target_ref], (
+                    f"the page and the single read disagree about {state} on "
+                    "PostgreSQL"
+                )
+        finally:
+            session.close()

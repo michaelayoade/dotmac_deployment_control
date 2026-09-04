@@ -115,9 +115,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import os
 import re
 import sys
 import sysconfig
+import tempfile
 import traceback
 import uuid
 from collections.abc import Callable
@@ -2258,6 +2260,142 @@ def canary_web_surface_ships_its_templates() -> str:
     return f"{len(present)} templates under namespace {templates.namespace!r} at {root}"
 
 
+def canary_web_surface_templates_render_their_states() -> str:
+    """The SHIPPED templates render every state their views can hold.
+
+    `web_surface_ships_its_templates` proves the files are inside the wheel. It
+    cannot notice a wheel that shipped an OLD `_macros.html` — the filenames are
+    the same, the surface composes, every behavioural canary passes, and the
+    fleet page renders one answer where the module computed three. Package data
+    is the part of this distribution with no `__version__` of its own, so it is
+    the part that has to be executed rather than counted.
+
+    ## Executed from somewhere else on purpose
+
+    `_TEMPLATE_ROOT` resolves by PACKAGE PATH — `Path(__file__).parent /
+    "templates"` — precisely because a wheel lives outside any assembly's
+    working directory. A relative lookup would find the templates whenever the
+    canary happened to run from a checkout and find nothing in production. So
+    this runs from an empty temporary directory, and states first that the
+    obvious relative path finds nothing there: without that, `is_dir()` on a
+    package-resolved root proves the property in a place it could not fail.
+
+    ## The property, stated as distinctness rather than as prose
+
+    Each macro is rendered once per state its value can hold, and every state
+    must produce a DIFFERENT rendering. That is exactly the tri-state contract
+    — `None` is not `()`, `None` is not `False`, `UNAUTHORIZED` is not
+    `DIVERGES` — and it does not hard-code the operator wording, which is
+    presentation this canary has no business pinning.
+    """
+    from jinja2 import Environment, FileSystemLoader
+
+    module = __import__(IMPORT_NAME)
+    surface = module.DEPLOYMENT_CONTROL_SURFACE
+    templates = surface.templates
+    if templates is None:
+        raise CanaryFailure("the composed surface declares no template package")
+    root = Path(templates.root).resolve()
+
+    origin = Path.cwd()
+    with tempfile.TemporaryDirectory() as elsewhere:
+        os.chdir(elsewhere)
+        try:
+            if Path("templates").exists():
+                raise CanaryFailure(
+                    "a `templates` directory exists in the scratch working "
+                    "directory, so a relative resolution would succeed here and "
+                    "this canary could not tell the two apart"
+                )
+            if not root.is_dir():
+                raise CanaryFailure(
+                    f"the declared template root {root} is not a directory when "
+                    "the process runs from somewhere other than a checkout. "
+                    "This is the production case: a consuming assembly's "
+                    "working directory is its own, and the kernel validates "
+                    "this exact path at startup."
+                )
+            env = Environment(loader=FileSystemLoader(str(root)), autoescape=True)
+            macros = env.get_template("_macros.html").module
+        finally:
+            os.chdir(origin)
+
+    rendered = prove_states_render_distinctly(macros, module)
+    summary = ", ".join(f"{name}:{count}" for name, count in sorted(rendered.items()))
+    return f"shipped macros render every state distinctly ({summary}) from {root}"
+
+
+def prove_states_render_distinctly(macros: Any, module: Any) -> dict[str, int]:
+    """THE RULE, separated from where the templates were found.
+
+    Public so `tests/architecture/test_artifact_canaries.py` can drive it
+    against a PLANTED `_macros.html` whose branches are collapsed. A canary
+    nobody has seen refuse is a step name (ADR-0018), and this one cannot be
+    proven sensitive by pointing it at the real package — where it passes.
+    """
+    image = module.AuthorizedImage(
+        "api",
+        "registry.dotmac.io/api",
+        module.ImageDigestV1.parse("sha256:" + "aa" * 32),
+    )
+    standing = module.ExecutionBindingStanding
+    cases: dict[str, tuple[Any, tuple[Any, ...]]] = {
+        # `None` (never declared) / `()` (authorizes none) / the set.
+        "image_set": (getattr(macros, "image_set", None), (None, (), (image,))),
+        # `None` (no operation declared) / cannot / can.
+        "executable": (getattr(macros, "executable", None), (None, False, True)),
+        "binding": (
+            getattr(macros, "binding", None),
+            (
+                standing.UNBOUND,
+                standing.UNAUTHORIZED,
+                standing.MATCHES,
+                standing.DIVERGES,
+            ),
+        ),
+        "approval_standing": (
+            getattr(macros, "approval_standing", None),
+            ("none", "unrecorded", "granted", "revoked"),
+        ),
+    }
+    rendered: dict[str, int] = {}
+    for name, (macro, states) in cases.items():
+        if macro is None:
+            raise CanaryFailure(
+                f"the shipped `_macros.html` has no `{name}` macro. The wheel "
+                "carries package data older than the code that renders through "
+                "it, and every screen using it would flatten its states."
+            )
+        outputs = [str(macro(state)) for state in states]
+        if len(set(outputs)) != len(states):
+            raise CanaryFailure(
+                f"`{name}` renders {len(states)} distinct states as "
+                f"{len(set(outputs))} distinct outputs. A tri-state read "
+                "through a two-state `{% if %}` is flattened in Jinja, where no "
+                "type checker looks: the module computes the distinction and "
+                "the operator never sees it."
+            )
+        rendered[name] = len(states)
+
+    image_macro = cases["image_set"][0]
+    if str(image_macro(None)) == str(image_macro(())):
+        raise CanaryFailure(
+            "an undeclared image set and a deliberately empty one render "
+            "identically — `nobody said` shown as `nobody may`"
+        )
+    binding_macro = cases["binding"][0]
+    if str(binding_macro(standing.UNAUTHORIZED)) == str(
+        binding_macro(standing.DIVERGES)
+    ):
+        raise CanaryFailure(
+            "an unapproved plan and a diverged binding render identically. "
+            "That is the `proposed != authorized` comparison arriving on the "
+            "screen: a plan waiting for a decision shown as an execution "
+            "nobody authorized."
+        )
+    return rendered
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 
@@ -2322,6 +2460,10 @@ def main(argv: list[str] | None = None) -> int:
         # The browser surface's package data, which only an installed
         # artifact can be asked about.
         ("web_surface_ships_its_templates", canary_web_surface_ships_its_templates),
+        (
+            "web_surface_templates_render_their_states",
+            canary_web_surface_templates_render_their_states,
+        ),
     ]
 
     print(f"artifact canaries — {DISTRIBUTION} {args.expect_version}")
