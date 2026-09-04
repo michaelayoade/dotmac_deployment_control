@@ -136,6 +136,23 @@ class OperationRefusedError(DeploymentControlError):
     """
 
 
+class OperationNotExecutableError(DeploymentControlError):
+    """The operation is a member of this vocabulary and the EXECUTOR cannot honour it.
+
+    Deliberately NOT a subclass of `OperationRefusedError`. The two say opposite
+    things about the same word: `OperationRefusedError` means the word is not an
+    operation at all, and this means it is one that the counterparty has not
+    published support for. Existing `except OperationRefusedError` handlers turn
+    an unparsable word into a typed disposition, and this must not be swallowed
+    by them -- an operation Control could authorize but no executor can perform
+    is a different fact from a misspelling, and it needs its own answer.
+
+    Raised only where an authorization is FROZEN, SIGNED or DISPATCHED. Never on
+    the read path: a stored operation still parses, because a row written by an
+    earlier version must stay readable.
+    """
+
+
 class ImageSetRefusedError(DeploymentControlError):
     """An authorized image set cannot be read, or is not a set.
 
