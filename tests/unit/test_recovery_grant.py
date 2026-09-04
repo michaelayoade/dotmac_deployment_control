@@ -271,3 +271,62 @@ def test_a_signer_of_another_purpose_cannot_sign_a_recovery() -> None:
             "k", "ed25519", "fp", purpose="deployment_authorization"
         )
     assert refused.value.code is RecoveryGrantRefusalCode.PURPOSE_MISMATCH
+
+
+# ── a recovery failure can never be reported as a deployment fault ──────────
+
+
+def test_recovery_refusals_are_not_deployment_refusals_in_either_direction() -> None:
+    """The same decision `OperationNotExecutableError` needed, generalised.
+
+    `service.py`, `web.py`, `dispatch_envelope.py` and
+    `execution_observation.py` all carry broad `except DeploymentControlError`
+    handlers, and several narrower `except OperationRefusedError` ones that turn
+    an unparsable word into a typed disposition. If a recovery refusal
+    subclassed any deployment refusal, one of those would silently downgrade
+    "this grant does not authorize this recovery" into "that operation is not a
+    word" -- two facts with nothing in common and very different next actions.
+
+    Asserted in BOTH directions, because a later refactor could invert the
+    hierarchy just as easily as extend it.
+    """
+    from dotmac_deployment_control.dispatch_envelope import (
+        DispatchEnvelopeRefusedError,
+    )
+    from dotmac_deployment_control.ports import (
+        DeploymentControlError,
+        OperationNotExecutableError,
+        OperationRefusedError,
+    )
+
+    deployment_refusals = (
+        OperationRefusedError,
+        OperationNotExecutableError,
+        AuthorizationEnvelopeRefusedError,
+        DispatchEnvelopeRefusedError,
+    )
+    for other in deployment_refusals:
+        assert not issubclass(RecoveryGrantRefusedError, other), other.__name__
+        assert not issubclass(other, RecoveryGrantRefusedError), other.__name__
+
+    # They share only the root every refusal in this package shares, which is
+    # what keeps a caller able to catch "this command was refused" at all.
+    assert issubclass(RecoveryGrantRefusedError, DeploymentControlError)
+
+
+def test_catching_an_operation_refusal_does_not_catch_a_recovery_refusal() -> None:
+    """The non-inheritance, exercised rather than only asserted structurally."""
+    from dotmac_deployment_control.ports import OperationRefusedError
+
+    with pytest.raises(RecoveryGrantRefusedError):
+        try:
+            verify_recovery_grant(
+                _grant(),
+                verifier=_Verifier(),
+                subject=dataclasses.replace(_statement().subject, target_id="ELSE"),
+                at=NOW,
+            )
+        except OperationRefusedError as swallowed:  # pragma: no cover - must not run
+            raise AssertionError(
+                "a recovery refusal was caught as an operation refusal"
+            ) from swallowed
