@@ -46,14 +46,23 @@ _SCHEMA = "mod_deploy"
 _TABLE = "recovery_grants"
 
 
-def _grant(privileges: str, role: str) -> None:
+def _grant(privileges: str, table: str, role: str) -> None:
     """One GRANT, spelled out at the call site.
 
-    Same shape as `dc_0001`'s: the call sites stay literal so the module's
-    access-control surface remains greppable and statically checkable, which a
-    loop over a table tuple would not be.
+    The signature matches `dc_0001`'s exactly, and that is load-bearing rather
+    than tidy: the access-surface gate reads migration SOURCE and greps for
+    `_grant("...", "<table>", "<role>")`. An `f"...{_TABLE}..."` form hides the
+    table name from a static reader, so the statement would be correct and
+    invisible -- which is worse than absent, because the gate would report the
+    surface as unstated while it silently existed.
     """
-    op.execute(f"GRANT {privileges} ON {_SCHEMA}.{_TABLE} TO {role};")
+    op.execute(f"GRANT {privileges} ON {_SCHEMA}.{table} TO {role};")
+
+
+def _revoke(table: str) -> None:
+    """Revoke everything from the tenant app role. On this plane the revoke IS
+    the isolation (hard rule 27)."""
+    op.execute(f"REVOKE ALL ON {_SCHEMA}.{table} FROM app_user;")
 
 
 def upgrade() -> None:
@@ -140,10 +149,10 @@ def upgrade() -> None:
     # SELECT, INSERT and UPDATE, and deliberately no DELETE: revocation is an
     # UPDATE that sets `revoked_at`, and a role able to DELETE could erase the
     # record of a withdrawal rather than make one.
-    _grant("SELECT, INSERT", "platform_api")
-    _grant("UPDATE", "platform_api")
-    _grant("SELECT, INSERT, UPDATE", "app_admin")
-    op.execute(f"REVOKE ALL ON {_SCHEMA}.{_TABLE} FROM app_user;")
+    _grant("SELECT, INSERT", "recovery_grants", "platform_api")
+    _grant("UPDATE", "recovery_grants", "platform_api")
+    _grant("SELECT, INSERT, UPDATE", "recovery_grants", "app_admin")
+    _revoke("recovery_grants")
 
 
 def downgrade() -> None:
