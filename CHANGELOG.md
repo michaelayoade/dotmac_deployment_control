@@ -5,6 +5,74 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a12 (unreleased) — recovery grants, and reads that reach a screen
+
+### Added
+
+- `RecoveryGrantV1`, a separately-signed document authorizing ONE recovery under
+  the purpose `deployment_recovery`. It binds the bundle being restored from,
+  the incumbent the target was on when that bundle was taken, and the window the
+  restoration may run in — none of which a deployment authorization has a place
+  for. There is no `operation` field: `schema` identifies the document and
+  refuses any other before a field is compared, and `purpose` binds the signer,
+  so a deployment authorization presented here is refused as a schema mismatch
+  rather than as whichever field happens to be missing.
+- `RecoveryStanding`, five answers that are not collapsed into "unavailable":
+  `ABSENT`, `NOT_YET_VALID`, `EXPIRED`, `REVOKED` and `UNRESOLVED` (a grant
+  exists and does not authorize THIS recovery). Each binding term — product,
+  target, environment, recovery-plan digest, bundle digest, incumbent digest —
+  is compared rather than merely required to be present, and carries its own
+  refusal code, so an operator is not sent round the loop once per field during
+  an incident. No path consults a deployment authorization: a dead deployment
+  authorization is not weak recovery authority, it is none.
+- `dc_0008_recovery_grants`, which stores the exact signed envelope as the
+  authority. The product, environment and three digests beside it are a lookup
+  projection and are never consulted to decide whether a grant authorizes
+  anything, so a drifted lookup column can make a grant hard to FIND and cannot
+  make a bad one VERIFY. Revocation is a state change — `revoked_at` withdraws a
+  grant and the row stays, because a trail that erases its withdrawn entries
+  cannot answer who revoked this and when.
+- Four owner-computed read projections over the fleet — approval standing, the
+  execution binding, operation executability, and the authorized image set —
+  each answering by total function rather than by a write-path gate that raises
+  on a historical vocabulary word.
+- `ExecutionBindingStanding`, four members. `UNAUTHORIZED` and `DIVERGES` are
+  separate because `proposed != authorized` reports an unapproved plan as one
+  the executor was authorized differently for, and those send an operator to
+  different systems. `UNBOUND` is the third a boolean loses: a `0.1.0a7` plan
+  names no execution at all, and reporting a schema-era absence as a mismatch is
+  the same false incident one shape up.
+- A browser surface rendering every state each projection can answer, with
+  explicit branches rather than truthiness — `{% if value %}` reads `False`,
+  `None` and `()` as one thing, and `{% for x in value or () %}` merges "nobody
+  declared a set" with "this authorizes no image".
+- An anti-rot ratchet over `dataclasses.fields` for both read views: each field
+  is rendered through its bound name or exempt with a reason on the line, and
+  the exemption count is two-directional.
+- Two canaries in the environments that can see them. The installed-wheel canary
+  RENDERS the shipped macros and requires each state to render distinctly —
+  package data is the only part of this distribution with no `__version__`, so a
+  wheel carrying an older `_macros.html` passes every check that counts files.
+  It runs from a working directory that is not a checkout and states first that
+  the naive relative path finds nothing there. The PostgreSQL canary proves the
+  correlated standing subquery resolves on the real dialect, returns all four
+  states, and reads the plans table exactly once for a page of any size.
+
+### Changed
+
+- Authorizing an operation the executor cannot honour is refused at the
+  authorization, not discovered at dispatch.
+- A recovery may not be `approval_exempt`, which deployment authorizations
+  accept. An exempt recovery is a destructive act with no approval evidence, and
+  approval evidence is one of the things this grant exists to bind — a
+  deliberate tightening.
+- The database catalogue advances to `dc_0008_recovery_grants`, eight revisions,
+  with `recovery_grants` declared in `manifest.platform_tables` and joining both
+  `TABLES` and `MUTABLE_TABLES` in the isolation canary across all seven
+  privileges.
+- Fifteen behavioural canaries run against the installed wheel, up from
+  fourteen.
+
 ## 0.1.0a11 (published 2026-09-03) — signed dispatch attempt
 
 Published by run `33802000337` from protected main `98b2a257f418`;
