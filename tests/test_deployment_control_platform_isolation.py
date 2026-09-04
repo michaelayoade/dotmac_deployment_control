@@ -2019,6 +2019,15 @@ class TestTheRecoveryWindowCheckAgreesWithTheType:
         ("2026-09-04T12:00Z", "2026-09-04T12:00Z", "2026-09-04T11:00Z", False),
     )
 
+    @pytest.fixture
+    def admin_url(self, migrated_scratch) -> str:  # type: ignore[no-untyped-def]
+        """Same shape as the sibling class's. `admin_url` is CLASS-scoped in
+        this file rather than module-scoped, so a new class does not inherit
+        it -- which is how these five arrived as setup ERRORS rather than
+        assertion failures, and why the extent they were meant to check was
+        never reached."""
+        return migrated_scratch[0]
+
     @pytest.mark.parametrize(
         ("not_before", "issued_at", "expires_at", "accepted"), WINDOWS
     )
