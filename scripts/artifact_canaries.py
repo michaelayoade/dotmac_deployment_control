@@ -81,7 +81,7 @@ replay, changed-byte conflict, enrolled-key verification and purpose separation.
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0008` one, eight tables and 133 columns, because
+extent below is the POST-`dc_0009` one, eight tables and 134 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -94,12 +94,12 @@ carry it?). a7's own record says so, and
 
 * `database_catalogue_as_published` — the installed distribution publishes the
                              exact catalogue: module identity, all eight table
-                             identities, all 133 columns by name, ordinal, type
+                             identities, all 134 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
                              in this file, because `len(tables) == 8 and
-                             len(columns) == 133` passes on eight wrong tables.
+                             len(columns) == 134` passes on eight wrong tables.
 * `catalogue_digest_binds`  — the canonical digest is the sha256 of the document
                              the artifact serialises, the bytes round-trip, and
                              a one-byte change is REFUSED against that digest.
@@ -1111,7 +1111,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0008` extent, eight tables and 133 columns, and
+# literal below is the POST-`dc_0009` extent, eight tables and 134 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1121,7 +1121,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
 # `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins.
 #
 # THE COUNTS ARE NOT THE CONTRACT. A canary asserting `len(tables) == 8 and
-# len(columns) == 133` passes against a catalogue holding eight wrong tables, and
+# len(columns) == 134` passes against a catalogue holding eight wrong tables, and
 # this programme keeps finding and repairing exactly that check. So the whole
 # canonical structure is written out below — every table name, every column
 # name, its physical ordinal, its PostgreSQL type identity AND rendered
@@ -1162,7 +1162,7 @@ CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0008_recovery_grants"
+CATALOGUE_LINEAGE_HEAD = "dc_0009_prestate_discriminator"
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
 #: single values rather than per-table, because "the module owns all eight and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
@@ -1305,6 +1305,10 @@ CATALOGUE_TABLES: tuple[
             ("record_version", 16, _INT, False, ""),
             ("created_at", 17, _TS, False, "now()"),
             ("updated_at", 18, _TS, False, "now()"),
+            # dc_0009, and NULLABLE: a row written before Foundation's
+            # prestate encoding identity existed stays distinguishable, so it
+            # can be refused as historical rather than read as current.
+            ("incumbent_prestate_discriminator", 19, _V128, True, ""),
         ),
     ),
     (
@@ -1379,7 +1383,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 133: this module declares no domain,
+            # BASE and `pg_catalog` for all 134: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
@@ -1641,12 +1645,12 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
       lineage head;
     * all eight table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 133 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 134 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
 
-    The counts are the least of it. `len(tables) == 8 and len(columns) == 133`
+    The counts are the least of it. `len(tables) == 8 and len(columns) == 134`
     passes on seven wrong tables, and the whole structure is compared instead.
     """
     import json

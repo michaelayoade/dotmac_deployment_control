@@ -55,6 +55,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 from dotmac_deployment_control import (
+    PRESTATE_DISCRIMINATOR,
     ApprovalEvidence,
     ApprovePlanCommand,
     AuthorizationEnvelopeDigestV1,
@@ -443,7 +444,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0008_recovery_grants",
+                revision="dc_0009_prestate_discriminator",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -557,7 +558,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 133 columns across eight tables; `dc_0005` is 105.
+    The head extent is 134 columns across eight tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, so the
     difference is the whole table rather than a column count drifting.
     """
@@ -591,7 +592,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 133
+                    == 134
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -641,7 +642,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 133
+                    == 134
                 )
         finally:
             admin.dispose()
@@ -2090,6 +2091,7 @@ class TestTheRecoveryWindowCheckAgreesWithTheType:
                 recovery_execution_plan_digest="sha256:aa",
                 recovery_bundle_digest="sha256:bb",
                 incumbent_prestate_digest="sha256:cc",
+                incumbent_prestate_discriminator=PRESTATE_DISCRIMINATOR,
                 approval_policy_code="p",
                 approval_policy_version=1,
                 approval_decision_ref="d",

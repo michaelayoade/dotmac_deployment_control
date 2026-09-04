@@ -111,6 +111,7 @@ from dotmac_deployment_control.digests import (
     DescriptorDigestV1,
     DispatchEnvelopeDigestV1,
     ExecutionPlanDigestV1,
+    FailedSystemObservationDigestV1,
     ImageDigestV1,
     ObservationEnvelopeDigestV1,
     ObservedExecutionStateDigestV1,
@@ -240,6 +241,7 @@ from dotmac_deployment_control.ports import (
     TransitionRefusedError,
 )
 from dotmac_deployment_control.recovery_grant import (
+    PRESTATE_DISCRIMINATOR,
     RECOVERY_GRANT_SCHEMA,
     RECOVERY_GRANT_VERSION,
     RECOVERY_PURPOSE,
@@ -349,6 +351,7 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "PRESTATE_DISCRIMINATOR",
     "ALGORITHM",
     "APPROVAL_DECISION_STATUSES",
     "AUDIT_ACTION_CREDENTIAL",
@@ -453,6 +456,7 @@ __all__ = [
     "ExecutionObservationVerifier",
     "ExecutionPlanBindingError",
     "ExecutionPlanDigestV1",
+    "FailedSystemObservationDigestV1",
     "ExpectedStateError",
     "ImageDigestV1",
     "ImageSetRefusedError",

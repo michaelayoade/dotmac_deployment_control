@@ -75,6 +75,7 @@ from dotmac_deployment_control.models import (
     Rollout,
 )
 from dotmac_deployment_control.recovery_grant import (
+    PRESTATE_DISCRIMINATOR,
     RECOVERY_PURPOSE,
     RecoveryGrantRefusalCode,
     RecoveryGrantSignature,
@@ -525,6 +526,7 @@ def _recovery_statement(target, **overrides: object) -> RecoveryGrantStatementV1
         "recovery_execution_plan_digest": _RECOVERY_PLAN,
         "recovery_bundle_digest": _BUNDLE,
         "incumbent_prestate_digest": _PRESTATE,
+        "incumbent_prestate_discriminator": PRESTATE_DISCRIMINATOR,
         "approval_policy_code": "recovery.standard",
         "approval_policy_version": 1,
         "approval_decision_ref": "dec-rec-1",
@@ -558,6 +560,7 @@ def _store_grant(
         recovery_execution_plan_digest=statement.recovery_execution_plan_digest,
         recovery_bundle_digest=statement.recovery_bundle_digest,
         incumbent_prestate_digest=statement.incumbent_prestate_digest,
+        incumbent_prestate_discriminator=(statement.incumbent_prestate_discriminator),
         grant_envelope=envelope,
         not_before=statement.not_before,
         issued_at=statement.issued_at,
@@ -728,6 +731,7 @@ class TestTheUnavailableStatesAreDistinguishable:
             recovery_execution_plan_digest=_RECOVERY_PLAN,
             recovery_bundle_digest="sha256:" + "ee" * 32,
             incumbent_prestate_digest=_PRESTATE,
+            incumbent_prestate_discriminator=PRESTATE_DISCRIMINATOR,
         )
         result = recovery_standing_for_target(
             db, target.id, verifier=_Verifier(), subject=other

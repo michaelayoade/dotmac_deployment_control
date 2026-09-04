@@ -58,6 +58,14 @@ DIGEST_ATTRIBUTES = frozenset(
         # spellings disagree in the one place a disagreement is read as "the
         # executor ran something nobody authorized".
         "execution_plan_digest",
+        # The three digests a RECOVERY grant binds. Added with the prestate
+        # discriminator work, and the omission mattered: `recovery_grant.py`
+        # passed this scan while comparing all three as text, because none of
+        # these names was here AND the comparison is reached through `getattr`
+        # (below). Two independent blind spots over one loop.
+        "recovery_execution_plan_digest",
+        "recovery_bundle_digest",
+        "incumbent_prestate_digest",
         "authorized_execution_plan_digest",
         # The exact inbound observation bytes and canonical receipt bytes are
         # now Control-computed values. They are no longer opaque caller tokens.
@@ -95,6 +103,12 @@ def _is_digest_text(node: ast.expr) -> str | None:
         )
         if name in DIGEST_TEXT_CALLS:
             return f"{name}()"
+        # `getattr(statement, "plan_digest")` is an attribute access wearing a
+        # call, and the AST shows nothing this scanner recognised until now.
+        if name == "getattr" and len(node.args) >= 2:
+            attr = node.args[1]
+            if isinstance(attr, ast.Constant) and attr.value in DIGEST_ATTRIBUTES:
+                return f"getattr(..., {attr.value!r})"
     # `row.plan_digest or ""` — the `or` does not launder the operand.
     if isinstance(node, ast.BoolOp):
         for value in node.values:
@@ -314,6 +328,48 @@ def test_the_detector_catches_the_exact_a4_expressions(
     offenders = string_digest_comparisons(planted)
     assert offenders, "the a4 expression was not detected"
     assert any(expected in offender for offender in offenders), offenders
+
+
+def test_the_detector_catches_a_getattr_digest_comparison() -> None:
+    """SENSITIVITY for the `getattr` arm. Widening a scanner and observing that
+    it still passes proves only that it still passes."""
+    planted = 'if getattr(row, "incumbent_prestate_digest") != authorized:\n    pass\n'
+    offenders = string_digest_comparisons(planted)
+    assert offenders, "the detector cannot see a digest reached through getattr"
+
+
+def test_the_loop_variable_getattr_form_is_declared_unmonitored() -> None:
+    """The residual blind spot, STATED rather than implied covered.
+
+    `verify_recovery_grant` compares its bound terms in a loop:
+
+        for field, code in (("product_code", ...), ...):
+            if getattr(statement, field) != getattr(subject, field):
+
+    `field` is a loop variable, so no digest NAME appears at the comparison and
+    the arm above -- which matches only a literal second argument -- cannot see
+    it. Detecting this needs constant propagation over the tuple, which is a
+    real analysis and not one this scanner performs.
+
+    Declared here instead of quietly excluded, per ADR-0018: a guard states an
+    enforceable premise or the region is unmonitored rather than exempt. What
+    keeps the loop honest today is that its digest terms are opaque
+    caller-supplied strings with no second encoding in play -- the comparison is
+    correct precisely because neither side canonicalizes. The moment a
+    canonically encoded value meets the other spelling, this becomes the a4
+    defect, and the repair is a typed comparison at that site rather than a
+    cleverer scanner.
+    """
+    planted = (
+        "for field in FIELDS:\n"
+        "    if getattr(statement, field) != getattr(subject, field):\n"
+        "        pass\n"
+    )
+    assert not string_digest_comparisons(planted), (
+        "the loop-variable form is now visible to the detector -- delete this "
+        "test and the paragraph in `recovery_grant.py` that cites it, rather "
+        "than leaving a declared blind spot that has been closed"
+    )
 
 
 def test_the_detector_catches_a_string_comparison_of_the_new_binding() -> None:

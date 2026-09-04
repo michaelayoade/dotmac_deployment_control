@@ -481,6 +481,34 @@ class ImageDigestV1(_ReceivedSha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class FailedSystemObservationDigestV1(_ReceivedSha256Digest):
+    """`sha256(canonical FailedSystemObservationV1 bytes)` — the Foundation's.
+
+    Named after the DOCUMENT it digests, not after the field Control stores it
+    in. Control's column is `incumbent_prestate_digest`, which describes the
+    ROLE the value plays here; this names what the value IS. Foundation ruled
+    that split, and it is the same one `ExecutionPlanDigestV1` draws: a digest
+    named for a consumer's field would have to be renamed the moment a second
+    consumer stored it elsewhere, with the bytes unchanged.
+
+    READ-ONLY, and that is the whole point rather than a detail inherited from
+    the base. Foundation exclusively canonicalizes `FailedSystemObservationV1`;
+    Platform's INSTALLED ADAPTER computes this value; Control stores, signs and
+    compares it. A type that cannot construct enforces that structurally — there
+    is no method here to reach for when threading the value through two places
+    starts to feel inconvenient, which is exactly when a local canonicalizer
+    gets written. A second canonicalizer is a second answer: it agrees today,
+    diverges on the first shape change, and the resulting refusal names neither
+    side.
+
+    A distinct type, so no other binding can be satisfied by a value that merely
+    arrives in the right shape. Four sha256 digests reach a recovery grant — the
+    recovery plan's, the bundle manifest's, the descriptor's and this one — and
+    a dataclass compares unequal across types.
+    """
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionPlanDigestV1(_ReceivedSha256Digest):
     """`sha256(canonical FoundationExecutionPlanV1 bytes)` — the Foundation's.
 
@@ -538,6 +566,7 @@ __all__ = [
     "DispatchEnvelopeDigestV1",
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
+    "FailedSystemObservationDigestV1",
     "ImageDigestV1",
     "ObservationEnvelopeDigestV1",
     "ObservedExecutionStateDigestV1",

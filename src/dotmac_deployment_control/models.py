@@ -483,6 +483,18 @@ class RecoveryGrant(Base, TimestampMixin):
     )
     recovery_bundle_digest: Mapped[str] = mapped_column(String(128), nullable=False)
     incumbent_prestate_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: NULLABLE, and deliberately so. Foundation owns this identity; Control
+    #: requires it. Declaring it NOT NULL with a default would make ABSENCE
+    #: unrepresentable — the exact defect `incumbent_prestate_digest` already
+    #: demonstrates one column to the left, where NOT NULL proves only that a
+    #: string exists and cannot distinguish a produced digest from an
+    #: unproduced one. A row predating this term must stay distinguishable so
+    #: it can be refused as historical; a default would manufacture its
+    #: provenance and cost the refusal its subject in the same migration that
+    #: bought it.
+    incumbent_prestate_discriminator: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     #: The signed document, verbatim. NOT NULL: a row without one is a claim of
     #: authority with nothing behind it.
     grant_envelope: Mapped[dict[str, Any]] = mapped_column(_JSON_DOC, nullable=False)

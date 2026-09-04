@@ -18,6 +18,7 @@ from dotmac_deployment_control.authorization import (
     verify_authorization_envelope,
 )
 from dotmac_deployment_control.recovery_grant import (
+    PRESTATE_DISCRIMINATOR,
     RECOVERY_PURPOSE,
     RecoveryGrantRefusalCode,
     RecoveryGrantRefusedError,
@@ -60,6 +61,7 @@ def _statement(**overrides: object) -> RecoveryGrantStatementV1:
         "recovery_execution_plan_digest": "sha256:" + "a" * 64,
         "recovery_bundle_digest": "sha256:" + "b" * 64,
         "incumbent_prestate_digest": "sha256:" + "c" * 64,
+        "incumbent_prestate_discriminator": PRESTATE_DISCRIMINATOR,
         "approval_policy_code": "recovery.standard",
         "approval_policy_version": 1,
         "approval_decision_ref": "dec-1",
