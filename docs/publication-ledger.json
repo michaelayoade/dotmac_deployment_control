@@ -26,11 +26,5 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {
-    "0.1.0a12": {
-      "status": "declared-not-published",
-      "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "Adds a separately-signed recovery grant with its own persistence, four owner-computed read projections over the deployment fleet, and a browser surface that renders every state each of them can answer."
-    }
-  }
+  "unpublished": {}
 }
