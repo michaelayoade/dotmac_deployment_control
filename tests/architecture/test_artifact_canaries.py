@@ -27,6 +27,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -87,6 +88,14 @@ EXPECTED_CANARIES = (
     # proves and NOT by a version: this was written as "0.1.0a7" while a7 was
     # pending, and a7 shipped without it.
     "web_surface_ships_its_templates",
+    # Shipping the FILES is not shipping the CONTRACT. Package data is the only
+    # part of this distribution with no `__version__` of its own, so a wheel
+    # carrying an older `_macros.html` composes, imports, passes every canary
+    # above, and renders one answer where the module computed three. This one
+    # executes the shipped macros from a working directory that is not a
+    # checkout -- the production case -- and requires each state to render
+    # distinctly.
+    "web_surface_templates_render_their_states",
 )
 
 #: Every virtualenv `ci.yml` may run the canaries with, and what each proves.
@@ -800,3 +809,94 @@ def test_the_runner_prints_the_environment_it_proved() -> None:
     printed = ast.dump(main)
     assert "sys.path" in _source()
     assert "'sys.path:'" in printed or '"sys.path:"' in printed
+
+
+# ── the rendering canary actually refuses a flattened macro ─────────────────
+
+#: A `_macros.html` whose branches are collapsed exactly the way a real one
+#: would be: `{% if value %}` for a tri-state and one wording for two members of
+#: the four. It is otherwise a valid template — the rule under test is about the
+#: OUTPUT, not about the file being broken.
+_FLATTENED_MACROS = """
+{% macro image_set(images) %}
+<td>{% for image in images or () %}{{ image.service }}{% endfor %}</td>
+{% endmacro %}
+
+{% macro executable(value) %}
+<td>{% if value %}yes{% else %}no{% endif %}</td>
+{% endmacro %}
+
+{% macro binding(standing) %}
+<td>{% if standing == "matches" %}matches{% else %}not matching{% endif %}</td>
+{% endmacro %}
+
+{% macro approval_standing(value) %}
+<td>{{ value }}</td>
+{% endmacro %}
+"""
+
+
+def _macros_from(source: str, tmp_path: Path) -> Any:
+    from jinja2 import Environment, FileSystemLoader
+
+    (tmp_path / "_macros.html").write_text(source, encoding="utf-8")
+    env = Environment(loader=FileSystemLoader(str(tmp_path)), autoescape=True)
+    return env.get_template("_macros.html").module
+
+
+def test_the_rendering_canary_refuses_a_flattened_macro(tmp_path: Path) -> None:
+    """THE SENSITIVITY PROOF for the package-data canary.
+
+    Pointed at the real package it passes, which is what a check that has never
+    refused looks like from the outside. So a `_macros.html` with the exact
+    collapses this rule exists to catch is planted and the REAL rule is driven
+    against it.
+    """
+    import dotmac_deployment_control as module
+
+    macros = _macros_from(_FLATTENED_MACROS, tmp_path)
+    with pytest.raises(canaries.CanaryFailure) as raised:
+        canaries.prove_states_render_distinctly(macros, module)
+    # NAMED. "it refused" would pass on a rule that refuses everything; the
+    # message must identify a macro that actually lost a state.
+    assert "image_set" in str(raised.value) or "executable" in str(
+        raised.value
+    ), raised.value
+
+
+def test_the_rendering_canary_admits_the_shipped_macros(tmp_path: Path) -> None:
+    """THE POSITIVE CONTROL. A rule seen only refusing may refuse everything.
+
+    The repository's own `_macros.html` is loaded from a copy, so this asserts
+    the rule's verdict on real content rather than re-running the canary's
+    path-resolution.
+    """
+    import shutil
+
+    import dotmac_deployment_control as module
+
+    source = Path(module.__file__ or "").resolve().parent / "templates"
+    shutil.copy(source / "_macros.html", tmp_path / "_macros.html")
+    macros = _macros_from(
+        (tmp_path / "_macros.html").read_text(encoding="utf-8"), tmp_path
+    )
+    assert canaries.prove_states_render_distinctly(macros, module) == {
+        "image_set": 3,
+        "executable": 3,
+        "binding": 4,
+        "approval_standing": 4,
+    }
+
+
+def test_the_rendering_canary_refuses_macros_that_are_simply_absent(
+    tmp_path: Path,
+) -> None:
+    """A wheel carrying package data older than the code that renders through it
+    has no such macro at all. That is a different failure from a flattened one
+    and gets its own words."""
+    import dotmac_deployment_control as module
+
+    macros = _macros_from("{% macro unrelated() %}x{% endmacro %}", tmp_path)
+    with pytest.raises(canaries.CanaryFailure) as raised:
+        canaries.prove_states_render_distinctly(macros, module)
+    assert "package data older" in str(raised.value), raised.value
