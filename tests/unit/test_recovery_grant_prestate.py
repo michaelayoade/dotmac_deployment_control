@@ -34,6 +34,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+
 from dotmac_deployment_control.recovery_grant import (
     KNOWN_PRESTATE_DISCRIMINATORS,
     PRESTATE_DISCRIMINATOR,

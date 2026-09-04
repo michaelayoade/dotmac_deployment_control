@@ -55,6 +55,7 @@ does not acquire them retroactively on every engine.
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "dc_0009_prestate_discriminator"

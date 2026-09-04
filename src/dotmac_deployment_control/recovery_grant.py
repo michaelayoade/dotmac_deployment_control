@@ -101,7 +101,9 @@ _MAX_TEXT = 512
 #: planted cases in `tests/unit/test_recovery_grant_prestate.py` and by nothing
 #: else. Stated plainly rather than implied, on the same rule as any other
 #: guard: say what it establishes and what it leaves unmonitored.
-PRESTATE_DISCRIMINATOR: Final = "dotmac.deployment_foundation.failed_system_observation.v1"
+PRESTATE_DISCRIMINATOR: Final = (
+    "dotmac.deployment_foundation.failed_system_observation.v1"
+)
 
 #: Every discriminator THIS version can honour. Closed, which is what makes an
 #: unknown one refusable — accepting any string would trust a producer nobody
