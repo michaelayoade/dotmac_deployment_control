@@ -53,6 +53,7 @@ _VARCHAR_60 = _base_type("varchar", "character varying(60)")
 _VARCHAR_120 = _base_type("varchar", "character varying(120)")
 _VARCHAR_128 = _base_type("varchar", "character varying(128)")
 _VARCHAR_200 = _base_type("varchar", "character varying(200)")
+_VARCHAR_500 = _base_type("varchar", "character varying(500)")
 _INTEGER = _base_type("int4", "integer")
 _BOOLEAN = _base_type("bool", "boolean")
 _TIMESTAMPTZ = _base_type("timestamptz", "timestamp with time zone")
@@ -94,7 +95,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0007_signed_dispatch_envelope",
+    lineage_head="dc_0008_recovery_grants",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -230,6 +231,39 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column("execution_sequence", 13, _INTEGER, nullable=True),
                 _column("attempt_no", 14, _INTEGER, nullable=True),
                 _column("observed_state_digest", 15, _VARCHAR_128, nullable=True),
+            ),
+        ),
+        _table(
+            "recovery_grants",
+            (
+                _column("id", 1, _UUID, nullable=False),
+                _column("grant_id", 2, _VARCHAR_200, nullable=False),
+                _column("target_id", 3, _UUID, nullable=False),
+                _column("product_code", 4, _VARCHAR_120, nullable=False),
+                _column("environment", 5, _VARCHAR_60, nullable=False),
+                _column(
+                    "recovery_execution_plan_digest", 6, _VARCHAR_128, nullable=False
+                ),
+                _column("recovery_bundle_digest", 7, _VARCHAR_128, nullable=False),
+                _column("incumbent_prestate_digest", 8, _VARCHAR_128, nullable=False),
+                # The signed document itself. The five columns above are a
+                # lookup projection of terms inside it; this is the authority.
+                _column("grant_envelope", 9, _JSONB, nullable=False),
+                _column("not_before", 10, _TIMESTAMPTZ, nullable=False),
+                _column("issued_at", 11, _TIMESTAMPTZ, nullable=False),
+                _column("expires_at", 12, _TIMESTAMPTZ, nullable=False),
+                # Revocation is a state change; the row stays so the trail can
+                # still answer who withdrew this grant and when.
+                _column("revoked_at", 13, _TIMESTAMPTZ, nullable=True),
+                _column("revocation_ref", 14, _VARCHAR_200, nullable=True),
+                _column("revocation_reason", 15, _VARCHAR_500, nullable=True),
+                _column("record_version", 16, _INTEGER, nullable=False),
+                _column(
+                    "created_at", 17, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+                _column(
+                    "updated_at", 18, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
             ),
         ),
         _table(

@@ -36,7 +36,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # `relative_to(REPO_ROOT)` offender messages below still read sensibly.
 PACKAGE_ROOT = REPO_ROOT
 SRC = PACKAGE_ROOT / "src/dotmac_deployment_control"
-MIGRATION = SRC / "migrations/versions/dc_0001_deployment_control.py"
+#: EVERY migration, not only the root. This read `dc_0001` alone, which was
+#: right while that file created every table -- and silently stopped being right
+#: the moment a later revision added one. `dc_0003` through `dc_0007` appended
+#: only COLUMNS, so the gap was never exercised; `dc_0008` adds `recovery_grants`
+#: and would have escaped the access-surface gate entirely, since the gate
+#: iterates `module.platform_tables` and looked for the literal in a file that
+#: could never contain it. A guard scoped to one file does not cover its
+#: siblings.
+MIGRATIONS = sorted((SRC / "migrations/versions").glob("dc_*.py"))
 
 #: The three tables whose whole value is that nobody can adjust them.
 EVIDENCE_TABLES = ("rollout_attempts", "observation_attempts", "observation_receipts")
@@ -46,6 +54,9 @@ MUTABLE_TABLES = (
     "target_credentials",
     "deployment_plans",
     "rollouts",
+    # Revocation UPDATEs a grant in place rather than deleting it, so the
+    # lifecycle genuinely mutates this one.
+    "recovery_grants",
 )
 
 SIBLING_ROOTS = frozenset(
@@ -224,6 +235,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             DeploymentTarget,
             ObservationAttempt,
             ObservationReceipt,
+            RecoveryGrant,
             Rollout,
             RolloutAttempt,
             TargetCredential,
@@ -237,6 +249,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             RolloutAttempt,
             ObservationReceipt,
             ObservationAttempt,
+            RecoveryGrant,
         )
         assert {m.__tablename__ for m in models} == set(module.platform_tables)
         assert all(m.__table__.schema == SCHEMA for m in models)
@@ -322,7 +335,11 @@ class TestNoTransportCameAcross:
         } <= fields
 
     def test_no_migration_column_is_transport_shaped(self) -> None:
-        sql = MIGRATION.read_text()
+        # Every migration, for the same reason the access-surface gate reads
+        # every migration: a transport-shaped column added by a later revision
+        # is exactly as wrong as one added by the root, and scoping this to
+        # `dc_0001` made it unable to say so.
+        sql = "\n".join(path.read_text() for path in MIGRATIONS)
         columns = set(re.findall(r'sa\.Column\(\s*"([a-z_0-9]+)"', sql))
         assert not (columns & self._TRANSPORT_NAMES), columns & self._TRANSPORT_NAMES
 
@@ -549,7 +566,8 @@ class TestTheAuditActionsAreDeclaredAndConsumed:
 class TestTheMigrationStatesItsWholeAccessSurface:
     @pytest.fixture
     def sql(self) -> str:
-        return MIGRATION.read_text()
+        assert MIGRATIONS, "no migrations found; every assertion below would pass"
+        return "\n".join(path.read_text() for path in MIGRATIONS)
 
     def test_every_table_is_revoked_from_the_tenant_app_role(self, sql: str) -> None:
         for table in module.platform_tables:
@@ -573,7 +591,7 @@ class TestTheMigrationStatesItsWholeAccessSurface:
                 assert "UPDATE" not in privileges, (table, role)
                 assert "DELETE" not in privileges, (table, role)
 
-    def test_the_four_mutable_tables_do_grant_update_to_the_online_role(
+    def test_every_mutable_table_grants_update_to_the_online_role(
         self, sql: str
     ) -> None:
         """The other half: withholding UPDATE from a table whose lifecycle lives

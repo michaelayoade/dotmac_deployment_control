@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0007 structure declaration."""
+"""The module publishes one exact post-dc_0008 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,18 +32,25 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0007_signed_dispatch_envelope",
+            revision="dc_0008_recovery_grants",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0007_signed_dispatch_envelope"
+    assert database_catalog.lineage_head == "dc_0008_recovery_grants"
 
 
-def test_catalogue_has_exact_seven_table_115_column_extent() -> None:
-    """Seven tables and 115 columns after `dc_0007`.
+def test_catalogue_has_exact_eight_table_133_column_extent() -> None:
+    """Eight tables and 133 columns after `dc_0008`.
+
+    `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns.
+    Recovery authority is a document rather than a flag, so the table holds
+    the signed envelope plus the terms a reader needs to FIND the right
+    grant -- and the count is asserted per table as well as in total for the
+    same reason as below: a sum kept right by moving a column between tables
+    would hide exactly the change worth seeing.
 
     a7 published 95, `dc_0003` took it to 99. `dc_0004` adds four to
     `deployment_plans` (the approval's standing and its withdrawal) and ONE to
@@ -65,11 +72,12 @@ def test_catalogue_has_exact_seven_table_115_column_extent() -> None:
         "deployment_targets": 22,
         "observation_attempts": 15,
         "observation_receipts": 15,
+        "recovery_grants": 18,
         "rollout_attempts": 12,
         "rollouts": 12,
         "target_credentials": 15,
     }
-    assert sum(counts.values()) == 115
+    assert sum(counts.values()) == 133
 
 
 def test_dc_0005_appends_the_portable_authorization_to_the_rollout() -> None:
@@ -240,7 +248,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0007_signed_dispatch_envelope",
+                revision="dc_0008_recovery_grants",
             ),
         )
 
@@ -256,5 +264,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 115
+    assert sum(len(table.columns) for table in restored.tables) == 133
     assert {table.plane.value for table in restored.tables} == {"platform"}

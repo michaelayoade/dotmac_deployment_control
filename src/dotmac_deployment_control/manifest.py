@@ -107,6 +107,7 @@ module = ModuleManifest(
         "rollout_attempts",
         "observation_receipts",
         "observation_attempts",
+        "recovery_grants",
     ),
     requires=(IDEMPOTENCY_LEDGER_V1.name, PLATFORM_AUDIT_LOG_V1.name),
     #: The operator's browser surface, on the kernel's CONTRACT-V2 shape.

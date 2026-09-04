@@ -99,6 +99,7 @@ _CREDENTIALS = "target_credentials"
 _PLANS = "deployment_plans"
 _ROLLOUTS = "rollouts"
 _ATTEMPTS = "rollout_attempts"
+_RECOVERY_GRANTS = "recovery_grants"
 _OBS_ATTEMPTS = "observation_attempts"
 _OBS_RECEIPTS = "observation_receipts"
 
@@ -413,6 +414,91 @@ class TargetCredential(Base, TimestampMixin):
     target: Mapped[DeploymentTarget] = relationship(
         lambda: DeploymentTarget, back_populates="credentials"
     )
+
+
+class RecoveryGrant(Base, TimestampMixin):
+    """Authority to RESTORE a target, stored as the exact document that grants it.
+
+    A recovery is not a deployment with a different word in a field, so it is
+    not authorized by one. `RecoveryGrantV1` is the document; this is where one
+    lives so a surface can ASK whether a target may be recovered instead of
+    assembling the answer from parts.
+
+    ## `grant_envelope` is the authority; the columns beside it are for lookup
+
+    Verification re-derives canonical bytes from the envelope and checks the
+    signature over those. The subject terms duplicated into columns exist so a
+    reader can find the right grant in one statement, and are never consulted
+    to decide whether it authorizes anything -- a drifted lookup column can
+    therefore make a grant hard to find, and cannot make a bad one verify.
+
+    ## Revocation is a state change
+
+    `revoked_at` withdraws a grant and the row stays. An authorization trail
+    that erases its withdrawn entries cannot answer "who revoked this, and
+    when", which is asked precisely when something has gone wrong.
+    `RecoveryStanding.REVOKED` is a verdict about a row that exists.
+    """
+
+    __tablename__ = _RECOVERY_GRANTS
+    __table_args__ = (
+        UniqueConstraint("grant_id", name="uq_recovery_grants_grant_id"),
+        CheckConstraint(
+            "record_version >= 1", name="ck_recovery_grants_record_version"
+        ),
+        # BACKSTOP, not a second decision. `RecoveryGrantStatementV1.__post_init__`
+        # OWNS the window invariant; this enforces the identical predicate for
+        # callers that never construct the type -- raw SQL, a repair script, a
+        # migration. Two statements of one rule can drift silently, so
+        # `test_the_database_refuses_exactly_what_the_type_refuses` walks the
+        # boundary cases in the PostgreSQL tier and fails the day either half
+        # moves. Do not delete one as redundant: the reason they agree is
+        # checked, not assumed.
+        CheckConstraint(
+            "not_before <= issued_at AND issued_at < expires_at",
+            name="ck_recovery_grants_window",
+        ),
+        # A withdrawal has a moment or it has not happened.
+        CheckConstraint(
+            "(revoked_at IS NULL AND revocation_ref IS NULL)"
+            " OR (revoked_at IS NOT NULL AND revocation_ref IS NOT NULL)",
+            name="ck_recovery_grants_revocation_is_dated",
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    id: Mapped[UUID] = uuid_pk()
+    #: The identifier carried INSIDE the signed statement, so a revocation
+    #: names the same grant the signer named.
+    grant_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    product_code: Mapped[str] = mapped_column(String(120), nullable=False)
+    environment: Mapped[str] = mapped_column(String(60), nullable=False)
+    recovery_execution_plan_digest: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    recovery_bundle_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    incumbent_prestate_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: The signed document, verbatim. NOT NULL: a row without one is a claim of
+    #: authority with nothing behind it.
+    grant_envelope: Mapped[dict[str, Any]] = mapped_column(_JSON_DOC, nullable=False)
+    not_before: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revocation_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    revocation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    record_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
 class DeploymentPlan(Base, TimestampMixin):
