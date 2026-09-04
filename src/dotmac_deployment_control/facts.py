@@ -125,6 +125,24 @@ class TargetView:
     observed_revision: int | None = None
     last_observed_at: datetime | None = None
     desired_spec: Mapping[str, Any] = field(default_factory=dict)
+    #: R1. THE DECLARED IMAGE SET, projected so a consumer never parses a plan
+    #: document to learn it.
+    #:
+    #: Three states, and the defence is that there is only ONE implementation
+    #: of them: this is read through `images.image_set_from_payload`, the same
+    #: parser the plan's frozen set goes through, rather than re-derived here.
+    #: `None` means no set has been declared and must not be read as "no
+    #: images"; `()` means it authorizes none, deliberately; a tuple is the set.
+    desired_images: tuple[AuthorizedImage, ...] | None = None
+    #: R4. The approval standing of this target's CURRENT plan, projected in the
+    #: same statement that lists targets. Without it, "which targets hold a
+    #: revoked approval?" is an N+1 join performed by the consumer.
+    #:
+    #: Four states and they are not interchangeable: `"none"` (no plan at all),
+    #: `"unrecorded"` (a plan exists and carries no decision), `"revoked"`, or
+    #: the recorded status itself. `unrecorded` must never collapse into
+    #: `granted` -- that is reading an authorization out of a blank column.
+    current_plan_approval_status: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +192,18 @@ class PlanView:
     #: or its target never declared one. A caller must not read that as an
     #: empty set, which is why the lookup refuses it rather than answering.
     authorized_images: tuple[AuthorizedImage, ...] | None = None
+    #: R3. Whether the counterparty has published support for this plan's
+    #: operation, so a surface can say "this can never produce a receipt"
+    #: without re-deriving a pin whose whole purpose is not to drift.
+    #:
+    #: Derived by SET MEMBERSHIP against `EXECUTOR_OPERATIONS`, never by calling
+    #: `require_executable_operation` -- that is the write-path gate and its own
+    #: signature says "never for reading". Calling it here would make every
+    #: historical `recover` plan raise on the plans page.
+    #:
+    #: `None` when no operation is declared: an undeclared operation is not an
+    #: inexecutable one.
+    operation_is_executable: bool | None = None
 
 
 # ── The approved-plan lookup ────────────────────────────────────────────────

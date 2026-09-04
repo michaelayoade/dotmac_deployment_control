@@ -64,7 +64,7 @@ from dotmac_kernel.messaging import enqueue_platform_event, process_once_platfor
 # This module never imports `dotmac_kernel.db` or constructs an engine. Every
 # operation receives a caller-owned Session; target-row serialization now owns
 # the observation race, so no kernel transaction helper is needed here either.
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
@@ -83,6 +83,7 @@ from dotmac_deployment_control.authorization import (
     verify_authorization_envelope,
 )
 from dotmac_deployment_control.counterparty import (
+    EXECUTOR_OPERATIONS,
     require_executable_operation,
 )
 from dotmac_deployment_control.digests import (
@@ -129,6 +130,7 @@ from dotmac_deployment_control.models import (
     ObservationDisposition,
     ObservationReceipt,
     PlanStatus,
+    RecoveryGrant,
     Rollout,
     RolloutAttempt,
     RolloutStatus,
@@ -154,6 +156,13 @@ from dotmac_deployment_control.ports import (
     OperationRefusedError,
     PlanRefusedError,
     TransitionRefusedError,
+)
+from dotmac_deployment_control.recovery_grant import (
+    RecoveryGrantV1,
+    RecoveryGrantVerifier,
+    RecoveryStandingResult,
+    RecoverySubject,
+    recovery_standing,
 )
 
 #: The audit actions this module declares and writes. Four, split by SUBJECT
@@ -993,7 +1002,55 @@ def _audit_and_emit(
     )
 
 
-def _target_view(row: DeploymentTarget) -> facts.TargetView:
+#: R4. The current plan's approval standing, as ONE correlated subquery on the
+#: statement that lists targets. A per-row lookup would satisfy the field's
+#: description and defeat its purpose -- the N+1 relocated into the ORM, passing
+#: any test that only checks the value.
+#:
+#: The outer `coalesce(..., "none")` is NOT the `COALESCE(status, 'granted')`
+#: this must never be. That one reads an authorization out of a blank column;
+#: this one distinguishes "no plan exists" from every state a plan can be in,
+#: and `unrecorded` stays its own answer.
+def _approval_standing_subquery() -> Any:
+    return func.coalesce(
+        select(
+            case(
+                (
+                    DeploymentPlan.approval_revoked_at.is_not(None),
+                    literal("revoked"),
+                ),
+                (
+                    DeploymentPlan.approval_decision_status.is_(None),
+                    literal("unrecorded"),
+                ),
+                else_=DeploymentPlan.approval_decision_status,
+            )
+        )
+        .where(DeploymentPlan.target_id == DeploymentTarget.id)
+        .order_by(DeploymentPlan.sequence.desc())
+        .limit(1)
+        .correlate(DeploymentTarget)
+        .scalar_subquery(),
+        literal("none"),
+    )
+
+
+def _approval_standing_for(db: Session, target_id: UUID) -> str:
+    """R4 for ONE target, sharing the CASE with the paged projection.
+
+    Written from `_approval_standing_subquery()` rather than beside it, so the
+    single read and the page cannot answer the same question differently.
+    """
+    return str(
+        db.execute(
+            select(_approval_standing_subquery())
+            .select_from(DeploymentTarget)
+            .where(DeploymentTarget.id == target_id)
+        ).scalar_one()
+    )
+
+
+def _target_view(row: DeploymentTarget, *, approval_standing: str) -> facts.TargetView:
     return facts.TargetView(
         id=row.id,
         target_ref=row.target_ref,
@@ -1011,7 +1068,34 @@ def _target_view(row: DeploymentTarget) -> facts.TargetView:
         observed_revision=row.observed_revision,
         last_observed_at=row.last_observed_at,
         desired_spec=dict(row.desired_spec or {}),
+        # R1. Through the parser that already owns the three states, so
+        # `None` (undeclared) cannot collapse into `()` (declared empty).
+        # The defence is that there is ONE implementation of the contract,
+        # not that this call site handles `None` correctly.
+        desired_images=image_set_from_payload(
+            row.desired_images, where=f"target {row.id} desired images"
+        ),
+        current_plan_approval_status=approval_standing,
     )
+
+
+def _operation_is_executable(row: DeploymentPlan) -> bool | None:
+    """R3. Can the counterparty perform what this plan names?
+
+    SET MEMBERSHIP, deliberately, and never `require_executable_operation`:
+    that is the freeze/sign/dispatch gate and its own signature says "never for
+    reading". Calling it here would make every historical `recover` plan raise
+    on the plans page -- a record that becomes unreadable when a counterparty
+    changes is a record that rewrites itself.
+
+    `None` when no operation is declared. An undeclared operation is not an
+    inexecutable one, and `False` would say a plan nobody has described is one
+    nobody can run.
+    """
+    operation = row.authorized_operation or row.operation
+    if operation is None:
+        return None
+    return operation in EXECUTOR_OPERATIONS
 
 
 def _plan_view(row: DeploymentPlan) -> facts.PlanView:
@@ -1041,6 +1125,7 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         superseded_by_id=row.superseded_by_id,
         snapshot=dict(row.snapshot or {}),
         authorized_images=_frozen_image_set(row),
+        operation_is_executable=_operation_is_executable(row),
     )
 
 
@@ -1219,7 +1304,8 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
         command_type=SCOPE_REGISTER_TARGET,
         handler=handler,
     )
-    return _target_view(_load_target(db, UUID(str(outcome.result["id"]))))
+    target = _load_target(db, UUID(str(outcome.result["id"])))
+    return _target_view(target, approval_standing=_approval_standing_for(db, target.id))
 
 
 def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.TargetView:
@@ -1298,7 +1384,10 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
         command_type=SCOPE_SET_DESIRED,
         handler=handler,
     )
-    return _target_view(_load_target(db, command.target_id))
+    return _target_view(
+        _load_target(db, command.target_id),
+        approval_standing=_approval_standing_for(db, command.target_id),
+    )
 
 
 def suspend_target(db: Session, command: TargetTransitionCommand) -> facts.TargetView:
@@ -1381,7 +1470,10 @@ def _target_transition(
     process_once_platform(
         db, command_id=command.command_id, command_type=scope, handler=handler
     )
-    return _target_view(_load_target(db, command.target_id))
+    return _target_view(
+        _load_target(db, command.target_id),
+        approval_standing=_approval_standing_for(db, command.target_id),
+    )
 
 
 # ── Credentials ─────────────────────────────────────────────────────────────
@@ -3387,22 +3479,110 @@ def list_targets(
     total = db.execute(
         select(func.count()).select_from(DeploymentTarget).where(*conditions)
     ).scalar_one()
-    rows = (
-        db.execute(
-            select(DeploymentTarget)
-            .where(*conditions)
-            .order_by(DeploymentTarget.target_ref)
-            .offset((criteria.page - 1) * criteria.page_size)
-            .limit(criteria.page_size)
-        )
-        .scalars()
-        .all()
-    )
+    # ONE statement for the page AND its standing. A per-row lookup here would
+    # be the N+1 this projection exists to remove, relocated into the ORM --
+    # correct in value and wrong in shape, and invisible to any test that only
+    # checks the value.
+    rows = db.execute(
+        select(DeploymentTarget, _approval_standing_subquery())
+        .where(*conditions)
+        .order_by(DeploymentTarget.target_ref)
+        .offset((criteria.page - 1) * criteria.page_size)
+        .limit(criteria.page_size)
+    ).all()
     return facts.TargetPage(
-        targets=tuple(_target_view(row) for row in rows),
+        targets=tuple(
+            _target_view(row, approval_standing=str(standing)) for row, standing in rows
+        ),
         total=int(total),
         page=criteria.page,
         page_size=criteria.page_size,
+    )
+
+
+def _latest_recovery_grant_row(db: Session, target_id: UUID) -> RecoveryGrant | None:
+    """The target's most recent recovery grant ROW, or none.
+
+    One statement of "which grant is current", so the parsed reader and the
+    standing check cannot end up looking at different grants for one target.
+    """
+    return db.execute(
+        select(RecoveryGrant)
+        .where(RecoveryGrant.target_id == target_id)
+        .order_by(RecoveryGrant.issued_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def grant_for_target(db: Session, target_id: UUID) -> RecoveryGrantV1 | None:
+    """R6. The target's most recent recovery grant, PARSED.
+
+    Returns the type, never the stored mapping: a caller holding a raw envelope
+    would be one restringification away from verifying a restatement instead of
+    the document. `None` means no grant has ever been recorded for this target,
+    which is a different fact from one that exists and does not authorize.
+    """
+    row = _latest_recovery_grant_row(db, target_id)
+    return None if row is None else RecoveryGrantV1.parse(row.grant_envelope)
+
+
+def revoked_grant_ids_for_target(db: Session, target_id: UUID) -> frozenset[str]:
+    """R6. Which of this target's grants have been withdrawn.
+
+    Derived from THIS module's own rows and never taken as a caller argument.
+    A revocation set supplied by a consumer would let the consumer decide
+    whether a withdrawal counted, which is the decision the `revoked_at` column
+    exists to own.
+    """
+    rows = db.execute(
+        select(RecoveryGrant.grant_id).where(
+            RecoveryGrant.target_id == target_id,
+            RecoveryGrant.revoked_at.is_not(None),
+        )
+    ).scalars()
+    return frozenset(str(value) for value in rows)
+
+
+def recovery_standing_for_target(
+    db: Session,
+    target_id: UUID,
+    *,
+    verifier: RecoveryGrantVerifier,
+    subject: RecoverySubject,
+) -> RecoveryStandingResult:
+    """R6. May THIS recovery run against this target, and if not, why not.
+
+    The session-taking read a surface needs, so no consumer assembles the answer
+    from parts. It reads only `recovery_grants`: a deployment authorization
+    cannot appear here even indirectly, which is why an expired deployment
+    authorization with no recovery grant reads ABSENT and never EXPIRED.
+    EXPIRED would say a recovery grant existed and timed out.
+
+    `subject` is the CALLER's. There is deliberately no builder for it: the
+    bundle and prestate digests are the Foundation's values and Control must not
+    invent them -- a subject this module assembled would be Control deciding
+    what is being recovered.
+
+    The verdict is `recovery_standing`'s, returned unchanged. One decision, one
+    owner; this function supplies the stored document and the revocation set and
+    decides nothing itself.
+
+    It reads the row rather than reusing `grant_for_target`, deliberately: that
+    reader PARSES, and a stored envelope that no longer parses would raise here
+    instead of reading UNRESOLVED. A surface that crashes on a malformed grant
+    has lost the ability to say the grant is malformed.
+
+    `at` is this module's clock, not the default `datetime.now`. Two clocks in
+    one module means the standing a surface displays and the standing a writer
+    records can disagree about the same instant.
+    """
+    row = _latest_recovery_grant_row(db, target_id)
+    return recovery_standing(
+        None if row is None else row.grant_envelope,
+        verifier=verifier,
+        subject=subject,
+        at=_control_now(),
+        revoked_grant_ids=revoked_grant_ids_for_target(db, target_id),
     )
 
 
@@ -3843,7 +4023,9 @@ def require_approved_plan(
 
 def get_target(db: Session, target_id: UUID) -> facts.TargetView | None:
     row = db.get(DeploymentTarget, target_id)
-    return _target_view(row) if row is not None else None
+    if row is None:
+        return None
+    return _target_view(row, approval_standing=_approval_standing_for(db, row.id))
 
 
 def get_plan(db: Session, plan_id: UUID) -> facts.PlanView | None:
