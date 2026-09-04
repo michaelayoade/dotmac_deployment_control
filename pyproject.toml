@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dotmac-deployment-control"
-version = "0.1.0a11"
+version = "0.1.0a12"
 description = "DotMac Deployment Control — desired deployment intent, immutable plans, approval-gated rollouts, authenticated target acknowledgements and drift reconciliation for licensed deployments (ADR-0057 § 3)"
 authors = ["DotMac"]
 readme = "README.md"

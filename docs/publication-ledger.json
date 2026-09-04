@@ -5,9 +5,9 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "EMPTY, and that is the correct state: every declared version is published.",
+    "The sole row is the version this tree declares and has not yet published.",
     "",
-    "The 0.1.0a11 row that sat here between the declaration and the publication",
+    "The 0.1.0a12 row is that declaration. The 0.1.0a11 row that preceded it",
     "was removed by the RECORDER, as a8 through a10 were — the gesture a human",
     "forgot twice (a4 by six silent hours, a7 loudly at every open pull request)",
     "is now the verify run's own last act.",
@@ -16,7 +16,8 @@
     "published, verified, and refused for adoption; 0.1.0a6 through 0.1.0a10",
     "remain published and verified; 0.1.0a11 is published, verified, carries the",
     "purpose-separated signed concrete dispatch attempt, and is the version to",
-    "pin. All of them live in docs/published-versions.json,",
+    "pin until a12 is verified. All of them live in",
+    "docs/published-versions.json,",
     "each superseding disposition APPENDED to its original record rather than",
     "replacing it.",
     "",
@@ -25,5 +26,11 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a12": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "Adds a separately-signed recovery grant with its own persistence, four owner-computed read projections over the deployment fleet, and a browser surface that renders every state each of them can answer."
+    }
+  }
 }
