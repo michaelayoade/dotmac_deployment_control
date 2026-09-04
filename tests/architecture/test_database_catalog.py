@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0007 structure declaration."""
+"""The module publishes one exact post-dc_0008 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0007_signed_dispatch_envelope",
+            revision="dc_0008_recovery_grants",
         ),
     )
 
@@ -240,7 +240,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0007_signed_dispatch_envelope",
+                revision="dc_0008_recovery_grants",
             ),
         )
 

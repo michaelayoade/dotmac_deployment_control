@@ -153,6 +153,7 @@ TABLES = (
     "rollout_attempts",
     "observation_receipts",
     "observation_attempts",
+    "recovery_grants",
 )
 EVIDENCE_TABLES = ("rollout_attempts", "observation_attempts", "observation_receipts")
 MUTABLE_TABLES = (
@@ -160,6 +161,9 @@ MUTABLE_TABLES = (
     "target_credentials",
     "deployment_plans",
     "rollouts",
+    # Revocation UPDATEs a grant in place; it does not delete one. The row is
+    # the record of the withdrawal.
+    "recovery_grants",
 )
 
 #: All seven. A revoke that covers six is not a revoke.
@@ -1944,3 +1948,140 @@ class _NoExceptionContext:
 
     def __exit__(self, *exc_info: object) -> bool:
         return False
+
+
+def _insert_recovery_grant(  # type: ignore[no-untyped-def]
+    conn, target_id: uuid.UUID, *, not_before: str, issued_at: str, expires_at: str
+) -> uuid.UUID:
+    grant_id = uuid.uuid4()
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.recovery_grants ("
+            " id, grant_id, target_id, product_code, environment,"
+            " recovery_execution_plan_digest, recovery_bundle_digest,"
+            " incumbent_prestate_digest, grant_envelope,"
+            " not_before, issued_at, expires_at, record_version"
+            ") VALUES (:id, :grant_id, :target_id, 'dotmac_sub', 'production',"
+            " 'sha256:aa', 'sha256:bb', 'sha256:cc', '{}'::jsonb,"
+            " :not_before, :issued_at, :expires_at, 1)"
+        ),
+        {
+            "id": grant_id,
+            "grant_id": f"g-{grant_id.hex[:10]}",
+            "target_id": target_id,
+            "not_before": not_before,
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+        },
+    )
+    return grant_id
+
+
+class TestTheRecoveryWindowCheckAgreesWithTheType:
+    """Two statements of one rule, proved equivalent rather than assumed.
+
+    `RecoveryGrantStatementV1.__post_init__` OWNS the window invariant. The
+    `ck_recovery_grants_window` CHECK is a backstop for callers that never
+    construct the type -- raw SQL, a repair script, a migration -- and is not a
+    second decision, because it cannot reach a different verdict about the same
+    predicate.
+
+    It CAN drift, though, and that is the hazard worth a test: relax one half
+    and the other refuses rows its partner accepts, surfacing as an opaque
+    IntegrityError far from the cause. So the boundary is walked here, in the
+    tier where the CHECK actually exists, and the day either half moves this
+    fails.
+    """
+
+    #: `(not_before, issued_at, expires_at, the type accepts it)`. Each invalid
+    #: case sits adjacent to a valid one, because a boundary test that only
+    #: samples the middle of each range cannot see an off-by-one.
+    WINDOWS = (
+        ("2026-09-04T11:55Z", "2026-09-04T12:00Z", "2026-09-04T14:00Z", True),
+        # not_before == issued_at is the closed lower bound, and valid.
+        ("2026-09-04T12:00Z", "2026-09-04T12:00Z", "2026-09-04T14:00Z", True),
+        # issued_at == expires_at is the open upper bound, and is not.
+        ("2026-09-04T11:55Z", "2026-09-04T12:00Z", "2026-09-04T12:00Z", False),
+        # not_before after issued_at.
+        ("2026-09-04T12:01Z", "2026-09-04T12:00Z", "2026-09-04T14:00Z", False),
+        # expires_at before not_before, which fails both halves at once.
+        ("2026-09-04T12:00Z", "2026-09-04T12:00Z", "2026-09-04T11:00Z", False),
+    )
+
+    @pytest.mark.parametrize(
+        ("not_before", "issued_at", "expires_at", "accepted"), WINDOWS
+    )
+    def test_the_database_refuses_exactly_what_the_type_refuses(
+        self,
+        admin_url: str,
+        not_before: str,
+        issued_at: str,
+        expires_at: str,
+        accepted: bool,
+    ) -> None:
+        from datetime import datetime
+
+        from dotmac_deployment_control.ports import DeploymentControlError
+        from dotmac_deployment_control.recovery_grant import RecoveryGrantStatementV1
+
+        def _instant(value: str) -> datetime:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+        # What the TYPE says about this window.
+        try:
+            RecoveryGrantStatementV1(
+                grant_id="g",
+                product_code="dotmac_sub",
+                target_id="t",
+                target_ref="r",
+                environment="production",
+                recovery_execution_plan_digest="sha256:aa",
+                recovery_bundle_digest="sha256:bb",
+                incumbent_prestate_digest="sha256:cc",
+                approval_policy_code="p",
+                approval_policy_version=1,
+                approval_decision_ref="d",
+                approval_decision_status="granted",
+                approved_at=_instant(not_before),
+                not_before=_instant(not_before),
+                issued_at=_instant(issued_at),
+                expires_at=_instant(expires_at),
+                control_version="0.0.0",
+                key_id="k",
+                algorithm="ed25519",
+                public_key_fingerprint="fp",
+            )
+            type_accepts = True
+        except DeploymentControlError:
+            type_accepts = False
+
+        assert type_accepts is accepted, (
+            "the fixture's own expectation disagrees with the type, so this "
+            "comparison would prove nothing"
+        )
+
+        # What the DATABASE says about the same window.
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                target_id = _insert_target(conn)
+            if accepted:
+                with engine.begin() as conn:
+                    _insert_recovery_grant(
+                        conn,
+                        target_id,
+                        not_before=not_before,
+                        issued_at=issued_at,
+                        expires_at=expires_at,
+                    )
+            else:
+                with engine.begin() as conn, pytest.raises(DBAPIError):
+                    _insert_recovery_grant(
+                        conn,
+                        target_id,
+                        not_before=not_before,
+                        issued_at=issued_at,
+                        expires_at=expires_at,
+                    )
+        finally:
+            engine.dispose()
