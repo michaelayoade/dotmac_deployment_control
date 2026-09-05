@@ -49,6 +49,22 @@ changes, each called out here.
   property belongs to whoever holds the store, and that region is UNMONITORED
   rather than covered.
 
+### What the counterparty gains, and what it does not
+
+Control owns the type. The Deployment Foundation gains a VERIFIER over these
+canonical bytes and consumes the replay coordinate — and nothing else. It does
+not define `RehearsalGrantV1`, does not gain an `OPERATIONS` member, and does
+not learn to mint one. The asymmetry is the same one the deployment
+authorization already has: the party that executes may check whether the act in
+hand is the act that was authorized; it may never decide that it was.
+
+`FOUNDATION_STEP_KINDS` is a MIRROR of the counterparty's published step
+vocabulary, not an import — Control does not depend on
+`dotmac-deployment-foundation` and must not start. What protects the mirror and
+what does not is stated at the constant: the closure always runs against the
+literal, and the installed distribution is compared only where it is
+importable, which this repository's CI is not.
+
 ## Unreleased — the prestate discriminator
 
 ### Added
