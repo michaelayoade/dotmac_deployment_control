@@ -5,6 +5,50 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — the rehearsal grant
+
+### Added
+
+- `rehearsal_grant.py` — `RehearsalGrantV1`, a Control-owned typed
+  authorization for a rehearsal whose purpose is to PROVOKE A REFUSAL. Lane 3
+  item 8 is *"Rollback, provoked rather than simulated"*, and the only
+  authorization Control could issue for it was a `deploy`: a production
+  deployment authorization for an act whose entire purpose is to fail.
+- `AuthorizedProvocationV1` — WHICH refusal may be provoked
+  (`ProvocableRefusal`, closed) and WHERE (a step from the counterparty's
+  published vocabulary, mirrored as `FOUNDATION_STEP_KINDS` with its source
+  coordinate). Required and undefaulted: there is no provocation-less shape of
+  this grant.
+- `ProvokedTerminal`, DERIVED from the refusal rather than declared beside it
+  and emitted into the signed document, re-derived on parse. This is what
+  separates the grant from a boolean: a deployment authorization permits an act
+  that may succeed, and this one authorizes an act that must refuse. A document
+  naming a refusal and a contradicting outcome authorizes neither.
+- `single_use_reference` — the replay coordinate, inside the canonical bytes.
+  A re-presentable grant is a second execution authority.
+- `CandidateArtifactRef` — the rehearsed bytes by repository, run id and
+  artifact id. An artifact id is unique only within its repository, so all
+  three are the identity.
+
+### Not changed, deliberately
+
+- **No `rehearse` member was added to `DeploymentOperation`.** The Foundation
+  added `recover` to its `OPERATIONS` tuple and withdrew it one commit later,
+  recording that *"an executor existing is not the test; an executor for THE
+  NAMED ACT is."* A member in the deployment vocabulary reaches the deployment
+  executor, the deployment receipt shape and an operation-agnostic settlement,
+  all built for an act that is supposed to succeed. A rehearsal is a different
+  document, exactly as a recovery is.
+- No migration, no version bump, no settlement path. `settle_attempt` settles
+  on OUTCOME and never reads the operation, so a rehearsal whose provoked
+  refusal fired would settle as a FAILED deployment — recording the rehearsal's
+  success as a failure. A rehearsal settlement contract does not exist and is
+  not invented here.
+- No durable consumption store. `verify_rehearsal_grant` refuses a replay
+  coordinate it is TOLD was spent; nothing here can know. The at-most-once
+  property belongs to whoever holds the store, and that region is UNMONITORED
+  rather than covered.
+
 ## Unreleased — the prestate discriminator
 
 ### Added
