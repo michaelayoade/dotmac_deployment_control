@@ -811,8 +811,28 @@ def test_foundation_step_vocabulary_drift_is_silent_when_nothing_changed() -> No
     catch a comparator that always reports SOMETHING (e.g. one that compared
     object identity instead of set membership, or hashed the sets instead of
     diffing them): it would fail this test even though nothing has drifted.
+
+    DIAGNOSED, not papered over: `frozenset(FOUNDATION_STEP_KINDS)` is not a
+    fresh object. CPython's `frozenset(x)` returns `x` ITSELF when `x` is
+    already an exact `frozenset` — a documented optimization, sound only
+    because a frozenset is immutable — so the original `is not` assertion here
+    compared the module constant against itself and always passed for a
+    reason that had nothing to do with this comparator. A generator
+    expression forces a genuine rebuild (`frozenset` cannot special-case an
+    iterator it has not yet consumed), which is what makes `observed` an
+    actually distinct object carrying the identical elements — a real,
+    non-vacuous near miss rather than one that happened to type-check.
+
+    This repair does not weaken the test into a same-object no-op the other
+    direction either: `test_foundation_step_vocabulary_drift_names_a_step_the_
+    mirror_lacks` plants a genuine extra member on a freshly-built frozenset
+    and asserts the drift NAMES it, so a comparator that always returned
+    `frozenset()` (which would make THIS test pass trivially) fails that one.
+    Passing both is only possible for an implementation that is actually a
+    working set-symmetric-difference.
     """
-    observed = frozenset(FOUNDATION_STEP_KINDS)  # equal by value, not identity
+    observed = frozenset(step for step in FOUNDATION_STEP_KINDS)
     assert observed is not FOUNDATION_STEP_KINDS
+    assert observed == FOUNDATION_STEP_KINDS
     drift = foundation_step_vocabulary_drift(observed)
     assert drift == frozenset()
