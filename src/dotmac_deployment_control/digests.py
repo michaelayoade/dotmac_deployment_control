@@ -558,6 +558,78 @@ class DescriptorDigestV1(_ReceivedSha256Digest):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class FoundationArtifactDigestV1(_ReceivedSha256Digest):
+    """`sha256` of the installed `dotmac-deployment-foundation` WHEEL FILE.
+
+    Michael's ruling on the chain this value sits in the middle of:
+
+        Control-verified CandidateArtifact -> signed grant digest ->
+        HostSource PEP 610 digest -> candidate receipt digest
+
+    `(repository, run_id, artifact_id)` — :class:`CandidateArtifactRef`'s other
+    three fields — LOCATE the evidence; this digest IDENTIFIES the bytes. They
+    are different jobs and both belong on the grant, which is why this is a
+    fourth field rather than a replacement for the other three.
+
+    ## Four subjects that are the WRONG one, and why each is
+
+    The far end of this chain is the Foundation's own `host_source.py`
+    (`michaelayoade/dotmac_starter_mt`, branch `feat/host-source-artifact-digest`
+    at commit `a58a8ccb137a4000184b125afbd6edb595b59eee`), which reads this exact
+    value from PEP 610's `direct_url.json` ->
+    `archive_info.hashes.sha256` — the sha256 of the wheel FILE, computed once
+    in CI. Four other digests exist in the same fleet, in the same 64-lowercase-
+    hex shape, and none of them is this one:
+
+    * the **workflow ZIP** digest is of GitHub's archive CONTAINER — the zip
+      `actions/upload-artifact` produces — not the wheel it contains;
+    * the **source-tree** digest (`launcher._package_digest`, over the
+      package's own `.py` files) is of the INPUTS the wheel was built from, not
+      the built artifact;
+    * the **installed-content** digest
+      (`InstalledArtifact.installed_content_digest`, over `RECORD`'s declared
+      file set) is of the UNPACKED tree — a different subject wearing the same
+      64 hex characters, and host_source.py's own docstring names this
+      explicitly as the mistake it exists to stop, "one directory to the left";
+    * the **plan** digest (`ExecutionPlanDigestV1`/`PlanDigestV1`) identifies a
+      deployment PLAN, an unrelated document — already refused by type here,
+      since a dataclass compares unequal across types.
+
+    ## What this type does NOT establish, stated rather than implied
+
+    A digest is 32 bytes with no marker saying which of the five subjects above
+    produced it. This class refuses anything that is not
+    `sha256:<64 lowercase hex>` and refuses every OTHER already-typed digest by
+    construction (`PlanDigestV1("sha256:" + "a"*64) != FoundationArtifactDigestV1
+    ("sha256:" + "a"*64)` even over identical bytes, because a dataclass
+    compares unequal across types) — but a bare STRING carrying a source-tree or
+    workflow-ZIP digest that happens to be well-formed 64-lowercase-hex sha256
+    text is, at this type's boundary, indistinguishable from a genuine wheel
+    digest. Nothing about the bytes themselves says which of the five subjects
+    produced them.
+
+    What DOES catch the wrong-subject case is the same doctrine every other
+    term in this grant already follows — **binding is by comparison, never by
+    presence** — and it catches it only when the two sides of the comparison
+    disagree. If a caller supplies the wrong-subject digest as BOTH the grant's
+    bound value and the subject's presented value, this module has no way to
+    notice, because the two subjects it is being asked to compare are not
+    values it can independently verify — verifying that a given digest really
+    is the WHEEL's is `host_source.require_host_source`'s job, upstream of this
+    module, never this parser's. This is an honest limit, not a gap being
+    closed quietly.
+
+    ## Why READ-ONLY
+
+    Control does not build the Foundation's wheel and holds none of its bytes,
+    for the identical reason `ImageDigestV1` and `ExecutionPlanDigestV1` inherit
+    the same base: a value this module cannot possibly compute must not carry a
+    constructor that pretends otherwise, so `FoundationArtifactDigestV1.over_json
+    (...)` is an `AttributeError` rather than a plausible-looking number.
+    """
+
+
 __all__ = [
     "ALGORITHM",
     "AuthorizationEnvelopeDigestV1",
@@ -567,6 +639,7 @@ __all__ = [
     "DigestEncodingError",
     "ExecutionPlanDigestV1",
     "FailedSystemObservationDigestV1",
+    "FoundationArtifactDigestV1",
     "ImageDigestV1",
     "ObservationEnvelopeDigestV1",
     "ObservedExecutionStateDigestV1",
