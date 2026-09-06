@@ -68,10 +68,28 @@ that it is performed.
 
 ## Binding is by comparison, never by presence
 
-Every subject term — target, candidate artifact, execution plan digest, and the
-provocation itself — is compared against what the caller states it is about to
-rehearse, term by term, each with its own refusal code. A grant that CARRIES a
+Every subject term — target, candidate artifact (repository, run, artifact id
+AND `foundation_artifact_digest`), execution plan digest, and the provocation
+itself — is compared against what the caller states it is about to rehearse,
+term by term, each with its own refusal code. A grant that CARRIES a
 provocation is not thereby a grant FOR that provocation.
+
+`foundation_artifact_digest` closes a question `CandidateArtifactRef` used to
+leave open: Michael's ruling is that binding both the location
+(repository/run/artifact id) and the digest does not give one artifact two
+identities, because they answer different questions — `(repository, run_id,
+artifact_id)` LOCATES the evidence, the digest IDENTIFIES the bytes. See
+`CandidateArtifactRef` and `dotmac_deployment_control.digests
+.FoundationArtifactDigestV1` for the chain this binds
+(Control-verified CandidateArtifact -> signed grant digest -> HostSource PEP
+610 digest -> candidate receipt digest) and for the honest limit: a
+well-formed `sha256:<64 lowercase hex>` string carrying the WRONG subject's
+digest (a workflow-ZIP digest, a source-tree digest, an installed-content
+digest) is not structurally distinguishable from a genuine wheel digest at
+this module's boundary. What this module CAN and DOES do is refuse two
+presented digests that disagree; it cannot independently verify that either
+one is a digest of the right subject in the first place — that is
+`host_source.require_host_source`'s job, upstream of this grant.
 
 ## Single use
 
@@ -91,13 +109,16 @@ it is UNMONITORED rather than covered.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Final, Protocol, runtime_checkable
 
-from dotmac_deployment_control.digests import ExecutionPlanDigestV1
+from dotmac_deployment_control.digests import (
+    ExecutionPlanDigestV1,
+    FoundationArtifactDigestV1,
+)
 from dotmac_deployment_control.ports import DeploymentControlError, DigestEncodingError
 
 __all__ = [
@@ -121,6 +142,7 @@ __all__ = [
     "RehearsalStanding",
     "RehearsalStandingResult",
     "RehearsalSubject",
+    "foundation_step_vocabulary_drift",
     "issue_rehearsal_grant",
     "rehearsal_standing",
     "verify_rehearsal_grant",
@@ -143,9 +165,28 @@ _MAX_TEXT = 512
 #: `<repository>@<commit>:<path>`, an immutable coordinate rather than a branch,
 #: on the same rule `counterparty.py` states: a claim about SOURCE at a commit,
 #: deliberately not a claim about a published wheel.
+#:
+#: UPDATED from `98435a0c076d4e62f4d6e2c486a3f4ff81290a6d`. That commit's
+#: `StepKind` had 25 members and NEITHER `apply_exposure` NOR
+#: `restore_exposure` — the defect this update repairs: a grant naming either
+#: step was structurally impossible to construct, which made the one
+#: provocation this module exists for (Lane 3 item 8, at the step where
+#: exposure is reconciled) inexpressible whenever that was the step under
+#: test. Both steps were added at `6147618a918b8a56a39af022b5c3a3657e8a2c88`
+#: ("one executor, one caller-held lock, and a second acquisition that refuses
+#: itself", #653) and are still present, unchanged, at `main`'s tip when this
+#: was last read, `3f666ea10160f1bb806a6a8f5a9de88597e0b137` — the commit this
+#: pin now names.
+#:
+#: NOT A CLAIM OF PUBLICATION. `dotmac-deployment-foundation` is published to
+#: the private Forgejo registry, and the highest tag that registry has ever
+#: cut is `dotmac-deployment-foundation-v0.2.0a2` — `apply_exposure` and
+#: `restore_exposure` exist only on `main`'s SOURCE, unreleased, which is
+#: exactly why this stays a source-commit pin rather than a dependency pin: a
+#: version constraint on an unpublished distribution would resolve to nothing.
 FOUNDATION_STEP_KIND_SOURCE: Final = (
     "michaelayoade/dotmac_starter_mt"
-    "@98435a0c076d4e62f4d6e2c486a3f4ff81290a6d"
+    "@3f666ea10160f1bb806a6a8f5a9de88597e0b137"
     ":packages/dotmac-deployment-foundation/src/"
     "dotmac_deployment_foundation/engine/plan.py"
 )
@@ -158,6 +199,22 @@ FOUNDATION_STEP_KIND_SOURCE: Final = (
 #: VALUE, exactly as `recovery_grant.PRESTATE_DISCRIMINATOR` and
 #: `counterparty.EXECUTOR_OPERATIONS` are.
 #:
+#: WHY THIS STAYS A MIRROR RATHER THAN A DEPENDENCY. The obvious stronger
+#: mechanism — add `dotmac-deployment-foundation` as a pinned dev dependency
+#: purely so the comparison test below always runs instead of skipping — was
+#: considered and rejected FOR NOW, honestly rather than silently: the
+#: distribution is not published past `0.2.0a2` (see the source-provenance
+#: comment above), which does not contain either new step, so pinning a real
+#: released version could not exercise the comparison this repair is for
+#: anyway, and a dev dependency on an unpublished source tree is not a
+#: dependency on a "published Foundation contract" — it would be this same
+#: source mirror wearing a `pyproject.toml` entry. Revisit this the day a
+#: Foundation release actually publishes `apply_exposure`/`restore_exposure`:
+#: pinning THAT version as a dev-only comparison dependency would then be
+#: strictly stronger than this literal, because it could fail on a real,
+#: reproducible install rather than only when a human happens to run the suite
+#: with Foundation checked out beside this repository.
+#:
 #: WHAT PROTECTS THIS MIRROR, AND WHAT DOES NOT. Nothing in this repository's CI
 #: compares these strings against their source, because the Foundation is not
 #: installed here — and the alternative usually chosen, import-it-if-present,
@@ -166,8 +223,16 @@ FOUNDATION_STEP_KIND_SOURCE: Final = (
 #: always runs against the literal, and
 #: `tests/unit/test_rehearsal_grant.py::test_the_step_vocabulary_matches_the_
 #: installed_executor_when_one_is_present` compares it wherever the Foundation
-#: IS importable. A transcription error at authoring time is caught by that
-#: comparison and by nothing else.
+#: IS importable — which, in THIS repository's own CI, is NEVER; that
+#: comparison is UNMONITORED here today, not merely best-effort, and is stated
+#: as such rather than implied to be covered. `foundation_step_vocabulary_drift`
+#: below is the part of the mechanism that DOES run unconditionally: it is the
+#: pure comparison the installed-Foundation test calls, factored out so its OWN
+#: sensitivity — that it NAMES an extra member and stays SILENT on an
+#: unchanged one — is provable with a synthetic vocabulary in every run,
+#: independent of whether the real distribution is ever present. A
+#: transcription error at AUTHORING time is caught by neither of these; it is
+#: caught only by a reviewer reading this pin against the source it cites.
 #:
 #: A step ABSENT here is refused rather than passed through. Accepting an
 #: unknown step would let a grant name a place the executor has no step for,
@@ -196,11 +261,43 @@ FOUNDATION_STEP_KINDS: Final[frozenset[str]] = frozenset(
         "stabilise",
         "product_postflight",
         "bootstrap_principals",
+        #: Added by this repair. Absent from the mirror under the previous pin
+        #: (`98435a0c...`); their absence was exactly the defect this update
+        #: fixes — see the module docstring's "the step vocabulary is a stale
+        #: mirror" history.
+        "apply_exposure",
+        "restore_exposure",
         "record_evidence",
         "prune_images",
         "release_lock",
     }
 )
+
+
+def foundation_step_vocabulary_drift(observed: Iterable[str]) -> frozenset[str]:
+    """Symmetric difference between an observed vocabulary and the mirror.
+
+    PURE, and that purity is the point: this function does not need Foundation
+    installed to be exercised, so ITS sensitivity — that it names a step the
+    mirror lacks and stays silent when nothing has changed — can be proven with
+    a synthetic vocabulary unconditionally, in every CI run, rather than only
+    in the one environment (never, today) where the real distribution happens
+    to be importable.
+
+    `tests/unit/test_rehearsal_grant.py` uses this in two ways: the real
+    cross-repository check calls it against `dotmac_deployment_foundation
+    .engine.plan.StepKind` when that is importable (best-effort, currently
+    UNREACHABLE in this repository's own CI — see `FOUNDATION_STEP_KINDS`'s
+    docstring); a second, unconditional test calls it against a synthetic
+    frozenset to prove the comparison itself is not a check that cannot fail.
+
+    An empty result means agreement. A non-empty result names every member
+    that is in exactly one of the two sets — new to the counterparty, or
+    retired from it — without saying which side is the stale one; that
+    judgement stays with whoever reads the finding, the same restraint
+    `counterparty.py`'s `unexecutable_operations` takes toward `recover`.
+    """
+    return frozenset(observed) ^ FOUNDATION_STEP_KINDS
 
 
 class ProvokedTerminal(StrEnum):
@@ -370,27 +467,66 @@ class RehearsalGrantVerifier(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CandidateArtifactRef:
-    """The bytes the rehearsal is OF, by run and artifact id.
+    """The bytes the rehearsal is OF, by run, artifact id AND digest.
 
-    Michael's terms. An artifact id is unique only within the repository that
-    ran the workflow, so the repository is part of the identity rather than
-    context — the pair alone names nothing.
+    Michael's ruling closed the question this type used to leave open. An
+    artifact id is unique only within the repository that ran the workflow, so
+    `repository` is part of the identity rather than context — but
+    `(repository, run_id, artifact_id)` alone LOCATES evidence; it does not
+    IDENTIFY bytes. `foundation_artifact_digest` does that job, and both belong
+    here because they answer different questions:
 
-    THE IDENTITY GAP THIS DOES NOT CLOSE, stated rather than left for a reader
-    to discover. The counterparty's `RehearsalReceipt.v1` identifies the bytes
-    it executed by `foundation_artifact_digest`, a sha256, and carries no run or
-    artifact id at all. So this reference and that receipt cannot be compared
-    directly; the mapping between them lives in the candidate's own
-    `CandidateArtifact.v1`, which records `repository`, `run_id`, `artifact_id`
-    and `sha256` together. Whether the grant should ALSO bind the digest — or
-    whether binding both would give one artifact two identities, which is the
-    defect this codebase has paid for before — is an open decision and is not
-    taken here.
+        Control-verified CandidateArtifact -> signed grant digest ->
+        HostSource PEP 610 digest -> candidate receipt digest
+
+    This is NOT the "one artifact, two identities" defect this codebase has
+    paid for before (see `counterparty.py`'s history of `recover`, and
+    `digests.py`'s whole reason for existing). That defect was ONE VALUE
+    computed two ways and compared as strings. This is one artifact with one
+    location (repository/run/artifact id — how a human or a workflow FINDS the
+    bytes) and one content identity (the digest — what the bytes ARE), carried
+    together because a rehearsal grant needs both: the location to say which
+    build, the digest to say which exact bytes, so a re-run of the same
+    workflow producing different bytes cannot satisfy a grant issued for the
+    first run's bytes by matching only the location.
+
+    `foundation_artifact_digest` is parsed with `FoundationArtifactDigestV1`,
+    which is READ-ONLY (no `over_json`) for the same reason `ExecutionPlanDigestV1`
+    is: Control does not build the Foundation's wheel and cannot recompute this
+    value, only receive, bind, and compare it. See that type's docstring for
+    the four subjects this digest must NOT be (the workflow ZIP, the source
+    tree, the installed content, the deployment plan) and for the honest limit
+    on how much a well-formed sha256 string alone can prove.
+
+    THE IDENTITY GAP THIS STILL DOES NOT CLOSE, stated rather than left for a
+    reader to discover. The counterparty's `RehearsalReceipt.v1` identifies the
+    bytes it executed by `foundation_artifact_digest` alone and carries no run
+    or artifact id at all, so a receipt and a bare `(repository, run_id,
+    artifact_id)` triple still cannot be compared directly by THAT route — the
+    receipt is compared against the digest carried here, not against the
+    location fields, which is exactly why both are on this type rather than
+    only one of them.
     """
 
     repository: str
     run_id: str
     artifact_id: str
+    #: `sha256:<64 lowercase hex>` of the Foundation WHEEL FILE, in the same
+    #: unit `FoundationArtifactDigestV1` and the counterparty's
+    #: `RehearsalReceipt.v1.foundation_artifact_digest` and its own
+    #: `HostSource.artifact_digest` all use. Validated on construction so a
+    #: malformed value is refused before a grant can be built around it.
+    foundation_artifact_digest: str
+
+    def __post_init__(self) -> None:
+        try:
+            FoundationArtifactDigestV1.parse(self.foundation_artifact_digest)
+        except DigestEncodingError as error:
+            raise _refused(
+                RehearsalGrantRefusalCode.MALFORMED,
+                "foundation_artifact_digest is not a canonical "
+                f"sha256:<64 lowercase hex> digest: {error}",
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +601,13 @@ class RehearsalGrantStatementV1:
     candidate_repository: str
     candidate_run_id: str
     candidate_artifact_id: str
+    #: `FoundationArtifactDigestV1` — see `CandidateArtifactRef` for the chain
+    #: this closes: Control-verified CandidateArtifact -> signed grant digest
+    #: -> HostSource PEP 610 digest -> candidate receipt digest. Identifies the
+    #: bytes; `candidate_repository`/`candidate_run_id`/`candidate_artifact_id`
+    #: locate the evidence. Both are required — neither substitutes for the
+    #: other.
+    candidate_foundation_artifact_digest: str
     #: `ExecutionPlanDigestV1` — the counterparty's execution plan digest, so
     #: the middle term is real here too. Parsed with that exact type, which is
     #: strict and has no `over_json`: Control never recomputes this value.
@@ -543,6 +686,9 @@ class RehearsalGrantStatementV1:
             "candidate_repository": self.candidate_repository,
             "candidate_run_id": self.candidate_run_id,
             "candidate_artifact_id": self.candidate_artifact_id,
+            "candidate_foundation_artifact_digest": (
+                self.candidate_foundation_artifact_digest
+            ),
             "execution_plan_digest": self.execution_plan_digest,
             "provocation_refusal": self.provocation_refusal.value,
             "provocation_at_step": self.provocation_at_step,
@@ -585,6 +731,7 @@ class RehearsalGrantStatementV1:
             repository=self.candidate_repository,
             run_id=self.candidate_run_id,
             artifact_id=self.candidate_artifact_id,
+            foundation_artifact_digest=self.candidate_foundation_artifact_digest,
         )
 
     @property
@@ -647,6 +794,7 @@ _STATEMENT_KEYS: Final[frozenset[str]] = frozenset(
         "candidate_repository",
         "candidate_run_id",
         "candidate_artifact_id",
+        "candidate_foundation_artifact_digest",
         "execution_plan_digest",
         "provocation_refusal",
         "provocation_at_step",
@@ -813,6 +961,9 @@ def _parse_statement(value: object) -> RehearsalGrantStatementV1:
         candidate_repository=_text(row, "candidate_repository"),
         candidate_run_id=_text(row, "candidate_run_id"),
         candidate_artifact_id=_text(row, "candidate_artifact_id"),
+        candidate_foundation_artifact_digest=_text(
+            row, "candidate_foundation_artifact_digest"
+        ),
         execution_plan_digest=_text(row, "execution_plan_digest"),
         provocation_refusal=refusal,
         provocation_at_step=_text(row, "provocation_at_step"),
