@@ -100,7 +100,7 @@ def test_agreeing_readings_are_the_near_miss_that_stays_silent() -> None:
 
 def test_a_non_mapping_is_refused() -> None:
     with pytest.raises(CandidateArtifactRefusedError):
-        CandidateArtifactV1.parse("not-a-mapping")  # type: ignore[arg-type]
+        CandidateArtifactV1.parse("not-a-mapping")
 
 
 def test_the_wrong_schema_is_refused() -> None:
