@@ -115,6 +115,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Final, Protocol, runtime_checkable
 
+from dotmac_deployment_control.candidate_artifact import CandidateArtifactV1
 from dotmac_deployment_control.digests import (
     ExecutionPlanDigestV1,
     FoundationArtifactDigestV1,
@@ -1007,9 +1008,47 @@ class RehearsalStandingResult:
 
 
 def issue_rehearsal_grant(
-    statement: RehearsalGrantStatementV1, *, signer: RehearsalGrantSigner
+    statement: RehearsalGrantStatementV1,
+    *,
+    signer: RehearsalGrantSigner,
+    candidate: CandidateArtifactV1,
 ) -> RehearsalGrantV1:
-    """Sign a rehearsal grant. Takes the TYPE, never a mapping."""
+    """Sign a rehearsal grant. Takes the TYPE, never a mapping — and never a
+    bare digest string.
+
+    `candidate` must be validated `CandidateArtifactV1` evidence
+    (`dotmac_deployment_control.candidate_artifact`). That type's ONLY
+    constructor is `.parse`, which requires TWO independently-sourced digest
+    readings — the build's own attestation and HostSource's PEP 610
+    observation — to already agree. This function then requires the
+    STATEMENT's own candidate terms to match that evidence's typed accessors
+    EXACTLY before it will sign anything: a caller cannot hand-type a digest
+    into the statement and separately supply an unrelated, validly-parsed
+    `CandidateArtifactV1` hoping the two are never compared. They are, here,
+    before the first byte is signed — which is what closes the path a bare
+    string used to have straight into a signed grant.
+    """
+    if not isinstance(candidate, CandidateArtifactV1):
+        raise _refused(
+            RehearsalGrantRefusalCode.MALFORMED,
+            "issuance requires validated CandidateArtifactV1 evidence, not a "
+            f"bare value ({type(candidate).__name__}). There is no path from "
+            "an arbitrary hex string to a signed rehearsal grant",
+        )
+    evidenced = CandidateArtifactRef(
+        repository=candidate.repository,
+        run_id=candidate.run_id,
+        artifact_id=candidate.artifact_id,
+        foundation_artifact_digest=candidate.foundation_artifact_digest.canonical,
+    )
+    if statement.candidate != evidenced:
+        raise _refused(
+            RehearsalGrantRefusalCode.CANDIDATE_MISMATCH,
+            f"the statement names candidate {statement.candidate} and the "
+            f"supplied evidence is {evidenced}. Issuance refuses to sign a "
+            "statement whose candidate terms do not match the validated "
+            "evidence it was given",
+        )
     if not isinstance(signer, RehearsalGrantSigner):
         raise _refused(
             RehearsalGrantRefusalCode.PURPOSE_MISMATCH,

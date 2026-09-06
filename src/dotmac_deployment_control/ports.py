@@ -236,6 +236,18 @@ class DescriptorBindingError(DeploymentControlError):
     """
 
 
+class CandidateArtifactRefusedError(DeploymentControlError):
+    """`CandidateArtifact.v1` evidence is malformed, incomplete, or its two
+    independently-sourced digest readings disagree.
+
+    Distinct from `DigestEncodingError`: that one means a single digest
+    STRING could not be read; this one means a whole EVIDENCE DOCUMENT is not
+    trustworthy enough to hand a digest out of -- either because a required
+    field is missing, or because the build's own attested digest and
+    HostSource's independently observed digest name different bytes.
+    """
+
+
 class DigestEncodingError(DeploymentControlError):
     """A digest could not be READ. Deliberately not an `ApprovalRefusedError`.
 
@@ -416,6 +428,7 @@ __all__ = [
     "ApprovalEvidence",
     "ApprovalRefusedError",
     "ApprovedPlanRefusedError",
+    "CandidateArtifactRefusedError",
     "DeliveryIntent",
     "DeploymentControlError",
     "DescriptorBindingError",

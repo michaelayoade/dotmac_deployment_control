@@ -29,6 +29,11 @@ from dotmac_deployment_control.authorization import (
     AuthorizationEnvelopeRefusedError,
     verify_authorization_envelope,
 )
+from dotmac_deployment_control.candidate_artifact import (
+    CANDIDATE_ARTIFACT_SCHEMA,
+    CANDIDATE_ARTIFACT_VERSION,
+    CandidateArtifactV1,
+)
 from dotmac_deployment_control.counterparty import EXECUTOR_OPERATIONS
 from dotmac_deployment_control.digests import (
     ExecutionPlanDigestV1,
@@ -39,7 +44,10 @@ from dotmac_deployment_control.operations import (
     DeploymentOperation,
     require_operation,
 )
-from dotmac_deployment_control.ports import DigestEncodingError, OperationRefusedError
+from dotmac_deployment_control.ports import (
+    DigestEncodingError,
+    OperationRefusedError,
+)
 from dotmac_deployment_control.recovery_grant import (
     RecoveryGrantRefusalCode,
     RecoveryGrantRefusedError,
@@ -124,8 +132,37 @@ def _statement(**overrides: object) -> RehearsalGrantStatementV1:
     return RehearsalGrantStatementV1(**fields)  # type: ignore[arg-type]
 
 
-def _grant(**overrides: object) -> dict[str, Any]:
-    return issue_rehearsal_grant(_statement(**overrides), signer=_Signer()).as_mapping()
+def _candidate_evidence(
+    *, foundation_artifact_digest: str = FOUNDATION_ARTIFACT_DIGEST
+) -> CandidateArtifactV1:
+    """Validated evidence matching `_statement()`'s default candidate terms.
+
+    `host_observed_digest` defaults to the SAME value as
+    `foundation_artifact_digest` — the two independent readings agreeing is
+    the ordinary case this fixture represents. A test that needs them to
+    DISAGREE builds the mapping directly rather than through this helper.
+    """
+    return CandidateArtifactV1.parse(
+        {
+            "schema": CANDIDATE_ARTIFACT_SCHEMA,
+            "version": CANDIDATE_ARTIFACT_VERSION,
+            "repository": "michaelayoade/dotmac_starter_mt",
+            "run_id": "33780438726",
+            "artifact_id": "9903418260",
+            "foundation_artifact_digest": foundation_artifact_digest,
+            "host_observed_digest": foundation_artifact_digest,
+        }
+    )
+
+
+def _grant(
+    *, candidate: CandidateArtifactV1 | None = None, **overrides: object
+) -> dict[str, Any]:
+    return issue_rehearsal_grant(
+        _statement(**overrides),
+        signer=_Signer(),
+        candidate=candidate if candidate is not None else _candidate_evidence(),
+    ).as_mapping()
 
 
 # ── the admitting case, first, because everything else depends on it ────────
@@ -353,7 +390,9 @@ def test_a_grant_naming_the_exposure_steps_is_admitted_end_to_end(step: str) -> 
     not the same claim as a grant being issuable and verifiable end to end.
     """
     statement = _statement(provocation_at_step=step)
-    envelope = issue_rehearsal_grant(statement, signer=_Signer()).as_mapping()
+    envelope = issue_rehearsal_grant(
+        statement, signer=_Signer(), candidate=_candidate_evidence()
+    ).as_mapping()
     verified = verify_rehearsal_grant(
         envelope, verifier=_Verifier(), subject=statement.subject, at=NOW
     )
@@ -529,26 +568,90 @@ def test_a_malformed_foundation_artifact_digest_is_refused_before_any_comparison
         assert refused.value.code is RehearsalGrantRefusalCode.MALFORMED
 
 
-def test_a_digest_of_the_wrong_subject_is_not_structurally_distinguishable() -> None:
+# ── issuance requires validated evidence, never a bare hex string ──────────
+
+
+def test_a_grant_built_from_validated_evidence_is_admitted() -> None:
+    """NON-VACUITY / ADMIT CONTROL for the evidence-gated issuance path.
+
+    Read this one first: every refusal test below would pass trivially if
+    `issue_rehearsal_grant(..., candidate=...)` could never succeed at all.
+    """
+    envelope = _grant()  # `_grant()` already supplies real evidence
+    verify_rehearsal_grant(
+        envelope, verifier=_Verifier(), subject=_statement().subject, at=NOW
+    )
+
+
+def test_issuance_refuses_a_bare_value_in_place_of_evidence() -> None:
+    """THE FREE-HEX-STRING CLOSURE, direct form.
+
+    `issue_rehearsal_grant` takes `candidate` as a REQUIRED keyword argument
+    typed `CandidateArtifactV1`. Passing anything else — a bare string, even
+    one that is a perfectly well-formed `sha256:<64 lowercase hex>` value — is
+    refused before a single field is compared, because `isinstance` is checked
+    before anything else in the function body.
+    """
+    statement = _statement()
+    for bare in (
+        FOUNDATION_ARTIFACT_DIGEST,
+        "sha256:" + "1" * 64,
+        {"sha256": FOUNDATION_ARTIFACT_DIGEST},
+        None,
+    ):
+        with pytest.raises(RehearsalGrantRefusedError) as refused:
+            issue_rehearsal_grant(statement, signer=_Signer(), candidate=bare)
+        assert refused.value.code is RehearsalGrantRefusalCode.MALFORMED
+
+
+def test_issuance_refuses_evidence_whose_terms_disagree_with_the_statement() -> None:
+    """THE FREE-HEX-STRING CLOSURE, the indirect form.
+
+    A caller cannot smuggle a hand-typed digest through by ALSO producing a
+    validly-parsed `CandidateArtifactV1` for a DIFFERENT artifact and hoping
+    issuance never compares the two. It does.
+    """
+    statement = _statement(candidate_foundation_artifact_digest="sha256:" + "7" * 64)
+    mismatched_evidence = _candidate_evidence(
+        foundation_artifact_digest="sha256:" + "8" * 64
+    )
+    with pytest.raises(RehearsalGrantRefusedError) as refused:
+        issue_rehearsal_grant(
+            statement, signer=_Signer(), candidate=mismatched_evidence
+        )
+    assert refused.value.code is RehearsalGrantRefusalCode.CANDIDATE_MISMATCH
+
+
+def test_syntax_alone_cannot_establish_digest_subject() -> None:
     """THE HONEST FINDING. Say plainly what this module cannot tell.
 
-    A source-tree digest, a workflow-ZIP digest and a genuine wheel digest are
-    all `sha256:<64 lowercase hex>` — the same shape, the same type once
-    parsed, nothing in the bytes naming which of the four forbidden subjects
-    (or the one correct one) produced them. This module's comparison catches
-    DISAGREEMENT between what the grant names and what the caller presents; it
-    cannot catch two sides agreeing on the WRONG subject, because verifying
-    that a digest is of the wheel and not of the source tree is
-    `host_source.require_host_source`'s job, upstream of this parser, never
-    this one's.
+    RE-DESCRIBED after `CandidateArtifactV1` was added: SYNTAX ALONE cannot
+    establish digest subject — that part of the finding stands unchanged, a
+    source-tree digest, a workflow-ZIP digest and a genuine wheel digest are
+    all `sha256:<64 lowercase hex>`, the same shape, the same type once
+    parsed. What is NARROWER now is that this is no longer the whole story:
+    validated `CandidateArtifactV1` evidence CAN close the ordinary failure —
+    a caller hand-typing a plausible digest — because `parse()` requires two
+    INDEPENDENT readings to agree, and a hand-typed value only ever appears on
+    one side of a real independent comparison.
 
-    This test proves the limitation rather than papering over it: a
-    consistently-wrong digest (playing the role of a source-tree digest that
-    both the grant and the caller mistakenly agree is "the" digest) is
-    ADMITTED, exactly as a genuine wheel digest would be, because nothing here
-    can tell the difference.
+    What this test proves is the remaining, narrower gap: two INDEPENDENT
+    processes (the build and the host) can still both, independently,
+    correctly compute the digest of the WRONG SUBJECT — e.g. both hash the
+    same source-tree archive rather than the same wheel, an operational
+    mistake elsewhere in the pipeline rather than a hand-typed value here.
+    Their agreement is genuine and this module cannot tell it apart from
+    agreement on the right subject, because verifying that a digest is of the
+    wheel and not of the source tree is `host_source.require_host_source`'s
+    job, upstream of both `CandidateArtifactV1.parse` and this module, never
+    either one's.
     """
     consistently_wrong_but_well_formed = "sha256:" + "5" * 64
+    # Both independent readings agree on the SAME wrong subject -- this is
+    # what `CandidateArtifactV1.parse` cannot refuse, and is the point.
+    evidence = _candidate_evidence(
+        foundation_artifact_digest=consistently_wrong_but_well_formed
+    )
     statement = _statement(
         candidate_foundation_artifact_digest=consistently_wrong_but_well_formed
     )
@@ -562,7 +665,9 @@ def test_a_digest_of_the_wrong_subject_is_not_structurally_distinguishable() -> 
     # No refusal: two sides agreeing on the WRONG subject is indistinguishable,
     # at this boundary, from two sides agreeing on the right one.
     verify_rehearsal_grant(
-        issue_rehearsal_grant(statement, signer=_Signer()).as_mapping(),
+        issue_rehearsal_grant(
+            statement, signer=_Signer(), candidate=evidence
+        ).as_mapping(),
         verifier=_Verifier(),
         subject=asked,
         at=NOW,
