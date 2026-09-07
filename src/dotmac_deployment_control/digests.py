@@ -708,14 +708,16 @@ class FoundationArtifactDigestV1(_ReceivedSha256Digest):
 
 __all__ = [
     "ALGORITHM",
-    "AuthorizationEnvelopeDigestV1",
     "DIGEST_BYTES",
+    "AuthorizationEnvelopeDigestV1",
+    "ControlPlanDigestV1",
     "DescriptorDigestV1",
-    "DispatchEnvelopeDigestV1",
     "DigestEncodingError",
+    "DispatchEnvelopeDigestV1",
     "ExecutionPlanDigestV1",
     "FailedSystemObservationDigestV1",
     "FoundationArtifactDigestV1",
+    "HealthEvidenceDigestV1",
     "ImageDigestV1",
     "ObservationEnvelopeDigestV1",
     "ObservedExecutionStateDigestV1",

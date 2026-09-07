@@ -95,23 +95,6 @@ from dotmac_deployment_control.authorization import (
     issue_authorization_envelope,
     verify_authorization_envelope,
 )
-from dotmac_deployment_control.candidate_artifact import (
-    CANDIDATE_ARTIFACT_ALGORITHM,
-    CANDIDATE_ARTIFACT_SCHEMA,
-    CANDIDATE_ARTIFACT_SUBJECT,
-    CANDIDATE_ARTIFACT_VERSION,
-    CandidateArtifactV1,
-)
-from dotmac_deployment_control.counterparty import (
-    EXECUTOR_DISTRIBUTION,
-    EXECUTOR_OPERATIONS,
-    require_executable_operation,
-    unexecutable_operations,
-)
-from dotmac_deployment_control.database_catalog import database_catalog
-from dotmac_deployment_control.database_catalog_snapshot import (
-    build_database_catalog_snapshot,
-)
 from dotmac_deployment_control.authorization_v3 import (
     AUTHORIZATION_V3_PURPOSE,
     AUTHORIZATION_V3_SCHEMA,
@@ -129,6 +112,23 @@ from dotmac_deployment_control.authorization_v3 import (
     issue_authorization_envelope_v3,
     parse_signed_health_evidence_document,
     verify_authorization_envelope_v3,
+)
+from dotmac_deployment_control.candidate_artifact import (
+    CANDIDATE_ARTIFACT_ALGORITHM,
+    CANDIDATE_ARTIFACT_SCHEMA,
+    CANDIDATE_ARTIFACT_SUBJECT,
+    CANDIDATE_ARTIFACT_VERSION,
+    CandidateArtifactV1,
+)
+from dotmac_deployment_control.counterparty import (
+    EXECUTOR_DISTRIBUTION,
+    EXECUTOR_OPERATIONS,
+    require_executable_operation,
+    unexecutable_operations,
+)
+from dotmac_deployment_control.database_catalog import database_catalog
+from dotmac_deployment_control.database_catalog_snapshot import (
+    build_database_catalog_snapshot,
 )
 from dotmac_deployment_control.digests import (
     ALGORITHM,

@@ -120,6 +120,7 @@ import base64
 import binascii
 import json
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -150,16 +151,16 @@ from dotmac_deployment_control.images import (
 from dotmac_deployment_control.ports import DeploymentControlError, DigestEncodingError
 
 __all__ = [
+    "AUTHORIZATION_V3_PURPOSE",
     "AUTHORIZATION_V3_SCHEMA",
     "AUTHORIZATION_V3_VERSION",
-    "AUTHORIZATION_V3_PURPOSE",
     "DEPLOYMENT_HEALTH_EVIDENCE_SCHEMA",
     "HEALTH_EVIDENCE_PURPOSE",
+    "AuthorizationEnvelopeV3",
     "AuthorizationEnvelopeV3RefusalCode",
     "AuthorizationEnvelopeV3RefusedError",
     "AuthorizationStatementV3",
     "AuthorizationSubjectV3",
-    "AuthorizationEnvelopeV3",
     "HealthEvidenceVerifier",
     "ParsedHealthEvidenceDocument",
     "control_plan_digest_preimage",
@@ -1319,7 +1320,9 @@ def _installed_control_version() -> str:
     return _bounded_text(value, field="control_version")
 
 
-def _exact_mapping(value: object, keys: set[str], *, where: str) -> Mapping[str, Any]:
+def _exact_mapping(
+    value: object, keys: AbstractSet[str], *, where: str
+) -> Mapping[str, Any]:
     if value is None:
         raise _refused(
             AuthorizationEnvelopeV3RefusalCode.MALFORMED, f"{where} is absent"
