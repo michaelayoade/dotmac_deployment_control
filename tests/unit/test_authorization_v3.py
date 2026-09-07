@@ -30,7 +30,11 @@ from dotmac_deployment_control import (
     AuthorizationSubjectV3,
     control_plan_digest_preimage,
     issue_authorization_envelope_v3,
+    parse_signed_health_evidence_document,
     verify_authorization_envelope_v3,
+)
+from dotmac_deployment_control.authorization_v3 import (
+    CONTROL_PLAN_DIGEST_EXCLUDED_FIELDS,
 )
 from tests.authorization_support import SIGNER, VERIFIER, TestAuthorizationSigner
 from tests.health_evidence_support import (
@@ -90,13 +94,14 @@ def _fields(**overrides: object) -> dict[str, object]:
 def _evidence_document(
     *,
     roster: tuple[str, ...] = _ROSTER,
+    evaluated_at: datetime = _NOW - timedelta(minutes=1),
     valid_until: datetime = _NOW + timedelta(hours=1),
     key_id: str = REAL_HEALTH_EVIDENCE_KEY_ID,
     signature_override: bytes | None = None,
 ) -> dict[str, object]:
     components = [build_component(code) for code in roster]
     return build_signed_health_evidence_document(
-        evaluated_at=_NOW - timedelta(minutes=1),
+        evaluated_at=evaluated_at,
         valid_until=valid_until,
         components=components,
         key_id=key_id,
@@ -262,6 +267,22 @@ def test_reject_tampering_a_mutated_outer_statement_fails_signature_verification
     envelope = _issued()
     mapping = envelope.as_mapping()
     mapping["statement"]["target_id"] = "a-different-target-entirely"
+    with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
+        verify_authorization_envelope_v3(
+            mapping,
+            verifier=VERIFIER,
+            expected_subject=_matching_subject(envelope),
+            at=_NOW,
+        )
+    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.SIGNATURE_INVALID
+
+
+def test_a_forged_future_evidence_field_earns_no_semantic_diagnostic() -> None:
+    envelope = _issued()
+    mapping = envelope.as_mapping()
+    mapping["statement"]["health_evidence_evaluated_at"] = (
+        _NOW + timedelta(minutes=1)
+    ).isoformat()
     with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
         verify_authorization_envelope_v3(
             mapping,
@@ -579,6 +600,39 @@ def test_control_expiry_inside_the_evidence_window_stays_silent() -> None:
     )
 
 
+def test_evidence_evaluated_at_issued_at_is_admissible() -> None:
+    envelope = issue_authorization_envelope_v3(
+        _fields(),
+        evidence_document=_evidence_document(evaluated_at=_NOW),
+        required_component_roster=_ROSTER,
+        evidence_verifier=HEALTH_EVIDENCE_VERIFIER,
+        signer=SIGNER,
+    )
+    verify_authorization_envelope_v3(
+        envelope,
+        verifier=VERIFIER,
+        expected_subject=_matching_subject(envelope),
+        at=_NOW,
+    )
+
+
+@pytest.mark.parametrize(
+    "evaluated_at",
+    [_NOW + timedelta(minutes=1), _NOW + timedelta(hours=2)],
+    ids=["after-issued-at", "after-valid-until"],
+)
+def test_future_evidence_is_refused_at_issuance(evaluated_at: datetime) -> None:
+    with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
+        issue_authorization_envelope_v3(
+            _fields(),
+            evidence_document=_evidence_document(evaluated_at=evaluated_at),
+            required_component_roster=_ROSTER,
+            evidence_verifier=HEALTH_EVIDENCE_VERIFIER,
+            signer=SIGNER,
+        )
+    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.EVIDENCE_FUTURE_DATED
+
+
 def test_a_verification_instant_past_the_evidence_valid_until_is_refused() -> None:
     envelope = _issued()
     with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
@@ -591,15 +645,95 @@ def test_a_verification_instant_past_the_evidence_valid_until_is_refused() -> No
     assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.EVIDENCE_EXPIRED
 
 
+def test_control_expiry_before_the_evidence_boundary_is_distinct() -> None:
+    envelope = _issued(expires_at=_NOW + timedelta(minutes=10))
+    with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
+        verify_authorization_envelope_v3(
+            envelope,
+            verifier=VERIFIER,
+            expected_subject=_matching_subject(envelope),
+            at=_NOW + timedelta(minutes=15),
+        )
+    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.EXPIRED
+
+
+def test_future_evidence_is_refused_before_authorization_not_yet_valid() -> None:
+    envelope = _issued()
+    with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
+        verify_authorization_envelope_v3(
+            envelope,
+            verifier=VERIFIER,
+            expected_subject=_matching_subject(envelope),
+            at=_NOW - timedelta(minutes=2),
+        )
+    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.EVIDENCE_FUTURE_DATED
+
+
 # ── control_plan_digest is derivable structurally: sanity over the whole statement ─
 
 
-def test_control_plan_digest_moves_when_any_bound_term_changes() -> None:
+def test_control_plan_digest_excludes_exactly_self_reference() -> None:
+    assert CONTROL_PLAN_DIGEST_EXCLUDED_FIELDS == {"control_plan_digest"}
+
+
+def test_control_plan_digest_changes_for_each_non_excluded_field() -> None:
     envelope = _issued()
-    changed = _issued(target_ref="a-different-ref")
-    assert (
-        changed.statement.control_plan_digest != envelope.statement.control_plan_digest
+    mapping = envelope.statement.as_mapping()
+    bound_fields = set(mapping) - CONTROL_PLAN_DIGEST_EXCLUDED_FIELDS
+    assert bound_fields
+    for field in bound_fields:
+        mutated = dict(mapping)
+        value = mutated[field]
+        if isinstance(value, str):
+            mutated[field] = value + "-changed"
+        elif isinstance(value, int):
+            mutated[field] = value + 1
+        elif value is None:
+            mutated[field] = "changed"
+        elif isinstance(value, list):
+            mutated[field] = list(reversed(value))
+        else:
+            raise AssertionError(
+                f"unhandled serialized field type for {field}: {value!r}"
+            )
+        assert _compute_digest(mutated) != envelope.statement.control_plan_digest, field
+
+
+def _compute_digest(mapping: dict[str, object]) -> str:
+    from dotmac_deployment_control.digests import ControlPlanDigestV1, canonical_json
+
+    return ControlPlanDigestV1.over_bytes(
+        canonical_json(control_plan_digest_preimage(mapping))
+    ).canonical
+
+
+def test_reordered_signed_evidence_and_required_roster_normalize_identically() -> None:
+    reordered_evidence = build_signed_health_evidence_document(
+        evaluated_at=_NOW - timedelta(minutes=1),
+        valid_until=_NOW + timedelta(hours=1),
+        components=[build_component(code) for code in reversed(_ROSTER)],
+        preserve_component_order=True,
     )
+    assert parse_signed_health_evidence_document(
+        reordered_evidence
+    ).component_codes == tuple(reversed(_ROSTER))
+    first = issue_authorization_envelope_v3(
+        _fields(),
+        evidence_document=reordered_evidence,
+        required_component_roster=_ROSTER,
+        evidence_verifier=HEALTH_EVIDENCE_VERIFIER,
+        signer=SIGNER,
+    )
+    second = issue_authorization_envelope_v3(
+        _fields(),
+        evidence_document=reordered_evidence,
+        required_component_roster=tuple(reversed(_ROSTER)),
+        evidence_verifier=HEALTH_EVIDENCE_VERIFIER,
+        signer=SIGNER,
+    )
+    assert first.statement.required_component_roster == _ROSTER
+    assert second.statement.required_component_roster == _ROSTER
+    assert first.statement.control_plan_digest == second.statement.control_plan_digest
 
 
 def test_no_caller_supplied_control_plan_digest_is_ever_accepted() -> None:

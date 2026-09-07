@@ -3,8 +3,8 @@
 **FIXTURE-SHAPED, named as such.** `build_evidence_bytes` MIRRORS the
 canonicalization `dotmac_platform_health.evidence.canonical_health_evidence_bytes`
 documents (Starter PR #665, branch `feat/platform-health-canonical-evidence`) —
-sort_keys, fixed-width UTC timestamps, components re-sorted by
-`component_code` — on the same terms `rehearsal_grant.FOUNDATION_STEP_KINDS`
+sort_keys and fixed-width UTC timestamps — on the same terms
+`rehearsal_grant.FOUNDATION_STEP_KINDS`
 mirrors Foundation's published step vocabulary: a VALUE mirror, not an import,
 because `dotmac-platform-health` is independently released and Control must
 not depend on it (see `SIBLING_ROOTS` in
@@ -70,13 +70,18 @@ def build_evidence_bytes(
     evaluated_at: datetime,
     valid_until: datetime,
     components: list[dict[str, object]],
+    preserve_component_order: bool = False,
 ) -> bytes:
-    """Mirror of `canonical_health_evidence_bytes`. See module docstring."""
+    """Mirror of canonical evidence; preserve order only for non-canonical tests."""
     payload = {
         "schema": DEPLOYMENT_HEALTH_EVIDENCE_SCHEMA,
         "evaluated_at": _canonical_instant(evaluated_at),
         "valid_until": _canonical_instant(valid_until),
-        "components": sorted(components, key=lambda c: c["component_code"]),
+        "components": (
+            components
+            if preserve_component_order
+            else sorted(components, key=lambda c: c["component_code"])
+        ),
     }
     return json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -97,12 +102,16 @@ def build_signed_health_evidence_document(
     components: list[dict[str, object]],
     key_id: str = REAL_HEALTH_EVIDENCE_KEY_ID,
     signature_override: bytes | None = None,
+    preserve_component_order: bool = False,
 ) -> dict[str, object]:
     """Control's OWN wire shape — see
     `authorization_v3.parse_signed_health_evidence_document`.
     """
     canonical_bytes = build_evidence_bytes(
-        evaluated_at=evaluated_at, valid_until=valid_until, components=components
+        evaluated_at=evaluated_at,
+        valid_until=valid_until,
+        components=components,
+        preserve_component_order=preserve_component_order,
     )
     signature = (
         signature_override

@@ -29,7 +29,9 @@ stage, over the SAME frozen evidence this module binds. What Control DOES do
 is narrower and structural: verify the evidence is genuinely signed by an
 enrolled Platform Health key, verify its roster is EXACTLY the roster this
 deployment requires, bind its digest immutably into a signed statement, and
-refuse to authorize past the evidence's own `valid_until`.
+refuse evidence evaluated after the statement's issuance, after its own
+`valid_until`, or after the presentation instant. Control also refuses to
+authorize past the evidence's own `valid_until`.
 
 ## The wire shape Control reads, and why it is Control's own
 
@@ -803,6 +805,30 @@ class AuthorizationSubjectV3:
     execution_plan_digest: str
 
 
+def _require_evidence_temporal_order(statement: AuthorizationStatementV3) -> None:
+    """Refuse semantic evidence time travel after authenticity is established.
+
+    Issuance calls this before signing. Verification calls it only after the
+    outer Control signature verifies, so a forged envelope earns no semantic
+    field diagnostics merely because its JSON parses.
+    """
+    evaluated = _aware_utc(
+        statement.health_evidence_evaluated_at,
+        field="health_evidence_evaluated_at",
+    )
+    issued = _aware_utc(statement.issued_at, field="issued_at")
+    valid_until = _aware_utc(
+        statement.health_evidence_valid_until,
+        field="health_evidence_valid_until",
+    )
+    if evaluated > issued or evaluated > valid_until:
+        raise _refused(
+            AuthorizationEnvelopeV3RefusalCode.EVIDENCE_FUTURE_DATED,
+            "health evidence evaluated_at must not be later than issued_at "
+            "or valid_until",
+        )
+
+
 # ── `control_plan_digest`: explicit canonical preimage and exclusion ───────
 
 #: The frozen exclusion set for the `control_plan_digest` preimage.
@@ -1001,6 +1027,7 @@ def issue_authorization_envelope_v3(
     # This is what makes issuance and verification compute the digest over
     # the identical representation, always.
     placeholder_statement = _parse_statement_v3(provisional)
+    _require_evidence_temporal_order(placeholder_statement)
     derived_digest = _compute_control_plan_digest(placeholder_statement.as_mapping())
     provisional["control_plan_digest"] = derived_digest
 
@@ -1047,8 +1074,9 @@ def verify_authorization_envelope_v3(
     """Authority for THIS deployment, or a refusal naming the term that failed.
 
     Order: authenticity of Control's own signature first (a forged envelope
-    earns no field-level diagnostics), then window and approval standing —
-    properties of the envelope — then `control_plan_digest`
+    earns no field-level diagnostics), then reject evidence evaluated after
+    the presentation instant before judging the authorization's own window,
+    then approval standing — properties of the envelope — then `control_plan_digest`
     re-derivation, then the subject, term by term, each with its own code.
     If `evidence_document_for_tamper_check` is supplied, its digest is
     RECOMPUTED from the bytes handed in and compared against the bound
@@ -1074,17 +1102,21 @@ def verify_authorization_envelope_v3(
             "statement",
         )
 
+    _require_evidence_temporal_order(statement)
     issued = _aware_utc(statement.issued_at, field="issued_at")
     expires = _aware_utc(statement.expires_at, field="expires_at")
+    evaluated = _aware_utc(
+        statement.health_evidence_evaluated_at, field="health_evidence_evaluated_at"
+    )
+    if evaluated > now:
+        raise _refused(
+            AuthorizationEnvelopeV3RefusalCode.EVIDENCE_FUTURE_DATED,
+            "the bound health evidence was evaluated after the presentation instant",
+        )
     if now < issued:
         raise _refused(
             AuthorizationEnvelopeV3RefusalCode.NOT_YET_VALID,
             "the authorization was presented before its issued_at instant",
-        )
-    if now >= expires:
-        raise _refused(
-            AuthorizationEnvelopeV3RefusalCode.EXPIRED,
-            "the authorization has reached its expires_at instant",
         )
     valid_until = _aware_utc(
         statement.health_evidence_valid_until, field="health_evidence_valid_until"
@@ -1093,6 +1125,11 @@ def verify_authorization_envelope_v3(
         raise _refused(
             AuthorizationEnvelopeV3RefusalCode.EVIDENCE_EXPIRED,
             "the bound health evidence reached its own valid_until instant",
+        )
+    if now >= expires:
+        raise _refused(
+            AuthorizationEnvelopeV3RefusalCode.EXPIRED,
+            "the authorization has reached its expires_at instant",
         )
     _require_standing_approval(statement)
 
