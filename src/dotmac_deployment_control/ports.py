@@ -109,6 +109,31 @@ class ExpectedStateError(DeploymentControlError):
         )
 
 
+class FoundationStepVocabularySourceError(DeploymentControlError):
+    """Foundation's pinned step-vocabulary SOURCE could not be read or parsed.
+
+    Deliberately distinct from `FoundationStepVocabularyDriftError`: "I could
+    not read what is at the pinned coordinate" and "I read it, and it
+    disagrees with the mirror" are different findings needing different
+    repairs, on the same split `DigestEncodingError` draws from a content
+    mismatch. Covers BOTH the coordinate being unreachable (network failure,
+    wrong commit, renamed path) and the source being unparsable in a way this
+    gate's narrow AST reader does not support (a `StepKind` member whose value
+    is not a bare string literal, or no `StepKind` class found at all) — the
+    gate refuses rather than silently skipping a member it cannot read.
+    """
+
+
+class FoundationStepVocabularyDriftError(DeploymentControlError):
+    """Foundation's pinned SOURCE vocabulary disagrees with the mirror.
+
+    Raised for ANY non-empty symmetric difference — a member added, a member
+    removed, or (the case a subset or count check would miss) a same-count
+    RENAME, which is simultaneously one addition and one removal. Complete set
+    equality is the only agreement this error accepts as none.
+    """
+
+
 class PlanRefusedError(DeploymentControlError):
     """A plan cannot be built or approved as asked."""
 
@@ -208,6 +233,18 @@ class DescriptorBindingError(DeploymentControlError):
 
     The descriptor and execution plan are different documents. Keeping this
     refusal distinct prevents an operator from repairing the wrong producer.
+    """
+
+
+class CandidateArtifactRefusedError(DeploymentControlError):
+    """`CandidateArtifact.v1` evidence is malformed, incomplete, or its two
+    independently-sourced digest readings disagree.
+
+    Distinct from `DigestEncodingError`: that one means a single digest
+    STRING could not be read; this one means a whole EVIDENCE DOCUMENT is not
+    trustworthy enough to hand a digest out of -- either because a required
+    field is missing, or because the build's own attested digest and
+    HostSource's independently observed digest name different bytes.
     """
 
 
@@ -391,6 +428,7 @@ __all__ = [
     "ApprovalEvidence",
     "ApprovalRefusedError",
     "ApprovedPlanRefusedError",
+    "CandidateArtifactRefusedError",
     "DeliveryIntent",
     "DeploymentControlError",
     "DescriptorBindingError",
@@ -398,6 +436,8 @@ __all__ = [
     "DigestEncodingError",
     "ExecutionPlanBindingError",
     "ExpectedStateError",
+    "FoundationStepVocabularyDriftError",
+    "FoundationStepVocabularySourceError",
     "ImageSetRefusedError",
     "ObservationRefusedError",
     "OperationRefusedError",
