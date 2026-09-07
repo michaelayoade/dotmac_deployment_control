@@ -947,14 +947,27 @@ def issue_authorization_envelope_v3(
         "required_component_roster": list(required),
         "health_evidence_evaluated_at": _timestamp(parsed_evidence.evaluated_at),
         "health_evidence_valid_until": _timestamp(parsed_evidence.valid_until),
-        # Placeholder only long enough to build a mapping to derive from —
-        # `control_plan_digest_preimage` strips this key by name regardless
-        # of its value, and `_parse_statement_v3` below is what actually
-        # constructs the signed statement, using the DERIVED value, never
-        # this one.
+        # Placeholder only long enough to build a NORMALIZED statement to
+        # derive from. `control_plan_digest_preimage` strips this key by
+        # name regardless of its value, so its value here is irrelevant.
         "control_plan_digest": "sha256:" + "0" * 64,
     }
-    derived_digest = _compute_control_plan_digest(provisional)
+    # `provisional` still carries FIELDS AS THE CALLER SUPPLIED THEM —
+    # `authorized_images` in whatever order the caller happened to list
+    # them, for one. `AuthorizationStatementV3.as_mapping()` is what
+    # PRODUCES the normalized form (canonical image order, canonicalized
+    # timestamps) that a verifier reconstructs `control_plan_digest` from
+    # (`verify_authorization_envelope_v3` calls
+    # `_compute_control_plan_digest(statement.as_mapping())`, never over a
+    # caller's raw fields). Computing the digest from `provisional` directly
+    # would therefore disagree with the SAME statement's own re-derivation
+    # the moment a caller's field order differs from the canonical one --
+    # parse once (with the placeholder), derive from that parsed
+    # statement's OWN `as_mapping()`, then parse again with the real value.
+    # This is what makes issuance and verification compute the digest over
+    # the identical representation, always.
+    placeholder_statement = _parse_statement_v3(provisional)
+    derived_digest = _compute_control_plan_digest(placeholder_statement.as_mapping())
     provisional["control_plan_digest"] = derived_digest
 
     statement = _parse_statement_v3(provisional)
