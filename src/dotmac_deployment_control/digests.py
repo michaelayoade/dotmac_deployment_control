@@ -390,6 +390,82 @@ class DispatchEnvelopeDigestV1(_ReceivedSha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class HealthEvidenceDigestV1(_ReceivedSha256Digest):
+    """`sha256` of the EXACT canonical `DeploymentHealthEvidence.v1` bytes
+    Platform Health signed — never a digest this module recomputes from a
+    separately-parsed mapping.
+
+    ## Why this is a RECEIVED digest, never a computed one
+
+    Platform Health owns `canonical_health_evidence_bytes` (sort_keys,
+    fixed-width UTC timestamps, components re-sorted by `component_code`) in
+    `dotmac_platform_health.evidence`, a package this one must not import
+    (ADR-0070's 2026-09-07 amendment). Giving this type an `over_json`
+    constructor would make Control a SECOND canonicalizer of a document it does
+    not own — exactly the defect `ExecutionPlanDigestV1`'s docstring names: two
+    implementations that agree today and diverge the first time either side's
+    serialization changes, with the disagreement then misread as tampering.
+    Control instead hashes the RAW BYTES it was actually handed
+    (`over_bytes`), and reads fields out of those same bytes with `json.loads`
+    for comparison — never by re-serializing a parsed view.
+
+    ## What this type is not
+
+    Not `PlanDigestV1` (Control's own frozen desired-state snapshot), not
+    `ExecutionPlanDigestV1` (the Foundation's execution plan), not
+    `DescriptorDigestV1` (the Foundation's descriptor). A dataclass compares
+    unequal across types, so none of them can satisfy a health-evidence-digest
+    binding by arriving in the right shape, and this one cannot satisfy theirs.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> HealthEvidenceDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the evidence bytes must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
+class ControlPlanDigestV1(_ReceivedSha256Digest):
+    """The identity of ONE bound V3 authorization statement, computed by
+    Control and re-derivable by anyone holding the full statement.
+
+    ## Not a second name for `PlanDigestV1`
+
+    `PlanDigestV1` is the identity of a frozen DESIRED-STATE SNAPSHOT — it
+    exists before any authorization is issued and would be unchanged if the
+    same plan were authorized twice. `control_plan_digest` is the identity of
+    the BOUND AUTHORIZATION STATEMENT ITSELF: target, environment, product,
+    lease, approval, operation, release, authorized images,
+    `plan_digest`/`descriptor_digest`/`execution_plan_digest`,
+    `health_evidence_digest` and the required component roster, all folded
+    together. Two authorizations issued from the identical `PlanDigestV1` for
+    two different targets, or under two different leases, carry the SAME
+    `plan_digest` and DIFFERENT `control_plan_digest` values — which is exactly
+    what makes this the value Platform CP composes against and Foundation
+    later pins, rather than a synonym for the plan snapshot's own digest.
+
+    ## How it is derived, and how a reader re-derives it
+
+    Computed with `over_bytes` over the canonical JSON of the V3 statement
+    mapping with `control_plan_digest` itself REMOVED — never present in the
+    payload it is a digest of, which is what keeps the value non-self-
+    referential. A reader holding a full, verified `AuthorizationStatementV3`
+    strips that one key, canonicalizes with the same `canonical_json` every
+    other digest here uses, hashes, and must recover the identical value; this
+    is what "canonical and re-derivable" means for this type. See
+    `authorization_v3.py` for the one place that removal and computation
+    happens — never duplicated.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> ControlPlanDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the statement bytes must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class PublicKeyFingerprintV1(_ReceivedSha256Digest):
     """Fingerprint of canonical decoded public-key bytes.
 
