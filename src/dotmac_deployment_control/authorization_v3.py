@@ -59,33 +59,41 @@ revocation registry and refuse an unenrolled or revoked key before returning
 `True`) rather than travelling as extra wire fields this module would have to
 invent on Platform Health's behalf.
 
-## `product_code` / `environment` are CONTROL terms, not invented Foundation ones
+## `product_code` / `environment`: Control terms, spelled differently by Foundation
 
 Both already exist, unchanged, on `AuthorizationStatementV2` — Control has
 owned this vocabulary since the a10 statement, and V3 inherits it rather than
-inventing it. Foundation's descriptor/execution-plan contracts, as read for
-this task, carry neither field; nothing in this module asks Foundation for
-them, and nothing here manufactures a Foundation-side field to hold them.
+inventing it. Foundation's `ProductDeploymentSpec` DOES carry the same two
+concepts, but under different names: `product: str` and `environment: str`
+(`dotmac_deployment_foundation/spec.py:2258-2259`) — `environment` happens to
+match; Control's `product_code` and Foundation's `product` name the same
+concept differently. Cross-validating the two sides against each other is a
+named Foundation follow-up (Michael's ruling), not something this module
+does: V3 signs Control's own terms and does not read, import, or reconcile
+against Foundation's spec.
 
-## "Lease": named honestly as an inferred mapping, not a new authority
+## `rollout_ref` and `execution_sequence` are NOT a lease
 
-The brief this module was built from asks V3 to bind a "lease" subject term.
-No `Lease` type or `lease_id` field exists anywhere in Control's persisted
-model, Foundation's descriptor/execution-plan contracts, or Platform Health's
-evidence contract — `rehearsal_grant.RehearsalGrantStatementV1.lease_id` is
-the only prior use of the word in this repository, and it is an OPAQUE
-caller-supplied string that verify_rehearsal_grant does not even compare at
-subject-binding time. Rather than inventing a new authoritative concept to
-answer the word literally, this module maps "lease" onto the coordinate
-Control ALREADY owns and derives for exactly this purpose — the pair already
-present on `AuthorizationStatementV2`: `rollout_ref` (which rollout) and
-`execution_sequence` (Control's own monotonic per-target execution
-coordinate, i.e. which attempt under that rollout). Both are Control-derived,
-never caller-typed strings standing in for something Foundation should own.
-`AuthorizationEnvelopeV3RefusalCode.LEASE_MISMATCH` names the comparison arm;
-it does not name a new field. If "lease" was meant to reference some other,
-not-yet-declared concept, that is an open question for Michael, recorded as
-such rather than resolved by invention here.
+An earlier draft of this module mapped the brief's "lease" subject term onto
+`(rollout_ref, execution_sequence)`, flagged as an inferred mapping rather
+than an invented field, and asked whether that mapping was right. Michael's
+ruling: it was the right restraint (no field was invented) but the wrong
+name. Foundation already owns the real lease —
+`HOST_LEASE_SCHEMA = "HostLease.v2"`
+(`dotmac_deployment_foundation/lease.py:76`), which carries a mandatory
+`authorization_run_id: str` (`lease.py:112`) and is bound at EXECUTION time
+through that field. No authorization contract anywhere — not V1, not V2, not
+this V3 — carries `lease_id`, confirmed by grep across Foundation's
+authorization modules.
+
+So `(rollout_ref, execution_sequence)` is not a lease at all; it is Control's
+own pair of terms — WHICH rollout, and WHICH attempt under that rollout —
+that this statement was issued for, unrelated to Foundation's
+`HostLease.v2`. `AuthorizationEnvelopeV3RefusalCode.ROLLOUT_MISMATCH` and
+`EXECUTION_SEQUENCE_MISMATCH` name exactly those two terms, separately, and
+neither name nor implies a lease. `HostLease.v2` remains a SEPARATE
+execution-time prerequisite, checked through `authorization_run_id`,
+entirely outside this module's binding.
 
 ## `control_plan_digest` — canonical preimage and exclusion, made structural
 
@@ -255,10 +263,19 @@ class AuthorizationEnvelopeV3RefusalCode(StrEnum):
     PRODUCT_MISMATCH = "authorization_v3_product_mismatch"
     ENVIRONMENT_MISMATCH = "authorization_v3_environment_mismatch"
     TARGET_MISMATCH = "authorization_v3_target_mismatch"
-    #: `(rollout_ref, execution_sequence)` — see the module docstring's
-    #: "Lease" section for why this pair, and not a new field, is what this
-    #: code compares.
-    LEASE_MISMATCH = "authorization_v3_lease_mismatch"
+    #: `rollout_ref` names WHICH rollout this authorization was issued under.
+    #: Deliberately NOT named "lease": Foundation's actual execution lease is
+    #: `HostLease.v2` (`dotmac_deployment_foundation/lease.py`), bound through
+    #: `authorization_run_id` at execution time, not through a subject term
+    #: Control signs. See the module docstring's "rollout_ref and
+    #: execution_sequence are not a lease" section.
+    ROLLOUT_MISMATCH = "authorization_v3_rollout_mismatch"
+    #: `execution_sequence` names WHICH attempt under that rollout. Compared
+    #: separately from `ROLLOUT_MISMATCH`: the two terms answer different
+    #: questions ("which rollout" vs. "which attempt of it") and a caller
+    #: told which one disagreed does not have to re-derive it from a combined
+    #: message.
+    EXECUTION_SEQUENCE_MISMATCH = "authorization_v3_execution_sequence_mismatch"
     APPROVAL_MISMATCH = "authorization_v3_approval_mismatch"
     OPERATION_MISMATCH = "authorization_v3_operation_mismatch"
     RELEASE_MISMATCH = "authorization_v3_release_mismatch"
@@ -763,9 +780,11 @@ class AuthorizationStatementV3:
 class AuthorizationSubjectV3:
     """What the caller says a V3 envelope is standing authority FOR.
 
-    Compared against the signed statement term by term at verify time — the
-    "lease" pair is `(rollout_ref, execution_sequence)`; see the module
-    docstring.
+    Compared against the signed statement term by term at verify time.
+    `rollout_ref` (which rollout) and `execution_sequence` (which attempt
+    under it) are NOT a lease — see the module docstring's "rollout_ref and
+    execution_sequence are not a lease" section for `HostLease.v2`, the real
+    one, which belongs to Foundation.
     """
 
     product_code: str
@@ -1152,18 +1171,21 @@ def verify_authorization_envelope_v3(
                 f"request is {field}={asked!r}",
             )
 
-    if (
-        statement.rollout_ref != expected_subject.rollout_ref
-        or statement.execution_sequence != expected_subject.execution_sequence
-    ):
+    if statement.rollout_ref != expected_subject.rollout_ref:
         raise _refused(
-            AuthorizationEnvelopeV3RefusalCode.LEASE_MISMATCH,
-            "the authorization binds rollout_ref="
-            f"{statement.rollout_ref!r} execution_sequence="
-            f"{statement.execution_sequence} and this request is rollout_ref="
-            f"{expected_subject.rollout_ref!r} "
-            f"execution_sequence={expected_subject.execution_sequence}. A "
-            "lease held for one rollout attempt is not authority under another",
+            AuthorizationEnvelopeV3RefusalCode.ROLLOUT_MISMATCH,
+            f"the authorization binds rollout_ref={statement.rollout_ref!r} and "
+            f"this request is rollout_ref={expected_subject.rollout_ref!r}. "
+            "Authority granted for one rollout is not authority under another",
+        )
+    if statement.execution_sequence != expected_subject.execution_sequence:
+        raise _refused(
+            AuthorizationEnvelopeV3RefusalCode.EXECUTION_SEQUENCE_MISMATCH,
+            "the authorization binds execution_sequence="
+            f"{statement.execution_sequence} and this request is "
+            f"execution_sequence={expected_subject.execution_sequence}. "
+            "Authority granted for one execution attempt under a rollout is "
+            "not authority for another attempt under the same rollout",
         )
 
     if (

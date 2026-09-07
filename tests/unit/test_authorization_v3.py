@@ -462,7 +462,7 @@ def test_the_one_caller_control_with_a_permissive_verifier_stub() -> None:
     )
 
 
-# ── Reject substitution: product / environment / target / lease / approval ─
+# ── Reject substitution: product / environment / target / rollout+sequence / approval
 
 
 def test_reject_substitution_wrong_product() -> None:
@@ -498,9 +498,11 @@ def test_reject_substitution_wrong_target() -> None:
     assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.TARGET_MISMATCH
 
 
-def test_reject_substitution_wrong_lease() -> None:
-    """ "Lease" = `(rollout_ref, execution_sequence)` — see authorization_v3's
-    module docstring for why this pair, not a new field, is what binds it."""
+def test_reject_substitution_wrong_execution_sequence() -> None:
+    """`rollout_ref`/`execution_sequence` are NOT a lease (Michael's ruling):
+    Foundation's real lease is `HostLease.v2`, bound through
+    `authorization_run_id` at execution time. This module compares its own
+    rollout/attempt coordinate, and the refusal codes say exactly that."""
     envelope = _issued()
     subject = _matching_subject(envelope)
     wrong = replace(subject, execution_sequence=999)
@@ -508,14 +510,21 @@ def test_reject_substitution_wrong_lease() -> None:
         verify_authorization_envelope_v3(
             envelope, verifier=VERIFIER, expected_subject=wrong, at=_NOW
         )
-    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.LEASE_MISMATCH
+    assert (
+        caught.value.code
+        is AuthorizationEnvelopeV3RefusalCode.EXECUTION_SEQUENCE_MISMATCH
+    )
 
+
+def test_reject_substitution_wrong_rollout() -> None:
+    envelope = _issued()
+    subject = _matching_subject(envelope)
     wrong_rollout = replace(subject, rollout_ref="a-different-rollout")
     with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
         verify_authorization_envelope_v3(
             envelope, verifier=VERIFIER, expected_subject=wrong_rollout, at=_NOW
         )
-    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.LEASE_MISMATCH
+    assert caught.value.code is AuthorizationEnvelopeV3RefusalCode.ROLLOUT_MISMATCH
 
 
 def test_reject_substitution_wrong_approval() -> None:
