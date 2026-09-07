@@ -80,6 +80,17 @@ SIBLING_ROOTS = frozenset(
         "dotmac_ui",
         "app",
         "vendor_cp",
+        # ADR-0070's 2026-09-07 amendment: Control verifies Platform Health's
+        # signed evidence as a SUPPLIED DOCUMENT (authorization_v3.py's own
+        # wire parser) and must never import the producer that authors it.
+        # "The import-linter must forbid those dependencies explicitly;
+        # dependency absence alone is unmonitored" — this entry is that
+        # explicit forbidding, not a claim that an import was ever attempted.
+        "dotmac_platform_health",
+        # Symmetric reasoning for the downstream verifier: Control signs an
+        # offline document FOR Foundation to verify later and must not import
+        # Foundation's own execution/descriptor code to do it.
+        "dotmac_deployment_foundation",
     }
 )
 
