@@ -143,9 +143,7 @@ def test_genuine_evidence_correctly_bound_produces_a_v3_authorization() -> None:
 # ── control_plan_digest: canonical preimage, explicit exclusion ────────────
 
 
-def test_control_plan_digest_is_stable_regardless_of_a_planted_self_reference() -> (
-    None
-):
+def test_control_plan_digest_is_stable_regardless_of_a_planted_self_reference() -> None:
     """`control_plan_digest` must never be inside the bytes it is a digest of.
 
     Plants the field, with THREE different values, directly inside the
@@ -188,7 +186,7 @@ def test_control_plan_digest_is_not_a_second_name_for_the_plan_digest() -> None:
 
 
 def test_control_plan_digest_is_re_derivable_by_an_independent_reader() -> None:
-    """"Canonical and re-derivable": ANY holder of the full mapping recomputes it."""
+    """ "Canonical and re-derivable": ANY holder of the full mapping recomputes it."""
     from dotmac_deployment_control.digests import ControlPlanDigestV1, canonical_json
 
     envelope = _issued()
@@ -439,9 +437,7 @@ def test_the_one_caller_negative_control() -> None:
     )
 
 
-def test_the_one_caller_control_with_a_permissive_verifier_stub() -> (
-    None
-):
+def test_the_one_caller_control_with_a_permissive_verifier_stub() -> None:
     """A degenerate verifier that always returns True is not this module's job to
     prevent —
     it is why `HealthEvidenceVerifier` is INJECTED rather than trusted by
@@ -503,7 +499,7 @@ def test_reject_substitution_wrong_target() -> None:
 
 
 def test_reject_substitution_wrong_lease() -> None:
-    """"Lease" = `(rollout_ref, execution_sequence)` — see authorization_v3's
+    """ "Lease" = `(rollout_ref, execution_sequence)` — see authorization_v3's
     module docstring for why this pair, not a new field, is what binds it."""
     envelope = _issued()
     subject = _matching_subject(envelope)
@@ -560,8 +556,7 @@ def test_control_expiry_may_not_extend_past_the_evidence_valid_until() -> None:
             signer=SIGNER,
         )
     assert (
-        caught.value.code
-        is AuthorizationEnvelopeV3RefusalCode.EVIDENCE_WINDOW_EXCEEDED
+        caught.value.code is AuthorizationEnvelopeV3RefusalCode.EVIDENCE_WINDOW_EXCEEDED
     )
 
 
