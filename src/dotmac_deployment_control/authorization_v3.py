@@ -20,8 +20,10 @@ its own schema version, its own refusal codes, its own `parse`, and its own
 
 Control does not decide whether any component is healthy, does not compute
 freshness, and does not import `dotmac_platform_health` (constraint, not
-oversight — the import-linter contract enforces it; see
-`tests/architecture/test_platform_health_independence.py`). "Every state
+oversight — `dotmac_platform_health` and `dotmac_deployment_foundation` are
+both entries in `SIBLING_ROOTS`,
+`tests/architecture/test_deployment_control_module.py`'s existing
+`TestTheModuleImportsNoSibling` sweep, which this task added). "Every state
 healthy, every freshness fresh" is Foundation's ADMISSION decision at a later
 stage, over the SAME frozen evidence this module binds. What Control DOES do
 is narrower and structural: verify the evidence is genuinely signed by an
@@ -97,8 +99,8 @@ could be made to collide by adjusting the field the reader is not looking at.
 `control_plan_digest_preimage` is the ONE function that builds the preimage,
 and the exclusion is structural rather than a comment someone has to
 remember: it is a set-difference filter, `control_plan_digest` is the first
-and (today) only excluded key, and `_assert_preimage_excludes_control_plan_digest`
-re-checks the filter held before any byte is hashed. The **canonical
+and (today) only excluded key, and `control_plan_digest_preimage` itself
+re-asserts the filter held before returning. The **canonical
 preimage** is exactly: `AuthorizationStatementV3.as_mapping()` with the
 `control_plan_digest` key removed, encoded with `digests.canonical_json`
 (`json.dumps(..., sort_keys=True, separators=(",", ":")).encode("utf-8")`) —
@@ -106,7 +108,8 @@ the identical encoding every other digest in this package uses. A reader
 holding a full, verified statement recovers the SAME preimage by calling
 `control_plan_digest_preimage` on `as_mapping()` themselves; that is what
 "canonical and re-derivable" means for this value, and
-`test_authorization_v3.py::test_control_plan_digest_is_stable_regardless_of_a_planted_self_referential_value`
+`test_authorization_v3.py::
+test_control_plan_digest_is_stable_regardless_of_a_planted_self_reference`
 proves the value does not move even when a caller tries to plant a
 `control_plan_digest` field inside the mapping being hashed.
 """
@@ -197,7 +200,9 @@ _MAX_TEXT = 512
 _HEALTH_STATE_KEYS = frozenset(
     {"component_code", "observation_id", "observed_at", "state", "freshness"}
 )
-_HEALTH_EVIDENCE_KEYS = frozenset({"schema", "evaluated_at", "valid_until", "components"})
+_HEALTH_EVIDENCE_KEYS = frozenset(
+    {"schema", "evaluated_at", "valid_until", "components"}
+)
 
 
 class AuthorizationEnvelopeV3RefusalCode(StrEnum):
@@ -449,7 +454,8 @@ def parse_signed_health_evidence_document(
     if not isinstance(document, dict) or set(document) != _HEALTH_EVIDENCE_KEYS:
         raise _refused(
             AuthorizationEnvelopeV3RefusalCode.EVIDENCE_MALFORMED,
-            f"health evidence document keys differ from {sorted(_HEALTH_EVIDENCE_KEYS)}",
+            "health evidence document keys differ from "
+            f"{sorted(_HEALTH_EVIDENCE_KEYS)}",
         )
     if document.get("schema") != DEPLOYMENT_HEALTH_EVIDENCE_SCHEMA:
         raise _refused(
@@ -457,8 +463,12 @@ def parse_signed_health_evidence_document(
             f"unsupported evidence schema {document.get('schema')!r}, expected "
             f"{DEPLOYMENT_HEALTH_EVIDENCE_SCHEMA!r}",
         )
-    evaluated_at = _parse_evidence_instant(document.get("evaluated_at"), field="evaluated_at")
-    valid_until = _parse_evidence_instant(document.get("valid_until"), field="valid_until")
+    evaluated_at = _parse_evidence_instant(
+        document.get("evaluated_at"), field="evaluated_at"
+    )
+    valid_until = _parse_evidence_instant(
+        document.get("valid_until"), field="valid_until"
+    )
     components = document.get("components")
     if not isinstance(components, list):
         raise _refused(
@@ -717,7 +727,9 @@ class AuthorizationStatementV3:
             "public_key_fingerprint": self.public_key_fingerprint,
             "health_evidence_digest": self.health_evidence_digest,
             "required_component_roster": list(self.required_component_roster),
-            "health_evidence_evaluated_at": _timestamp(self.health_evidence_evaluated_at),
+            "health_evidence_evaluated_at": _timestamp(
+                self.health_evidence_evaluated_at
+            ),
             "health_evidence_valid_until": _timestamp(self.health_evidence_valid_until),
             "control_plan_digest": self.control_plan_digest,
         }
@@ -783,7 +795,9 @@ CONTROL_PLAN_DIGEST_EXCLUDED_FIELDS: Final[frozenset[str]] = frozenset(
 )
 
 
-def control_plan_digest_preimage(statement_mapping: Mapping[str, Any]) -> dict[str, Any]:
+def control_plan_digest_preimage(
+    statement_mapping: Mapping[str, Any],
+) -> dict[str, Any]:
     """THE canonical preimage for `control_plan_digest` — the only builder.
 
     - **Bytes**: `digests.canonical_json` over this function's return value —
@@ -1072,7 +1086,9 @@ def verify_authorization_envelope_v3(
         )
 
     if evidence_document_for_tamper_check is not None:
-        parsed = parse_signed_health_evidence_document(evidence_document_for_tamper_check)
+        parsed = parse_signed_health_evidence_document(
+            evidence_document_for_tamper_check
+        )
         if parsed.digest.canonical != statement.health_evidence_digest:
             raise _refused(
                 AuthorizationEnvelopeV3RefusalCode.EVIDENCE_DIGEST_MISMATCH,
@@ -1084,14 +1100,22 @@ def verify_authorization_envelope_v3(
             )
 
     for field, expected_field, code in (
-        ("product_code", "product_code", AuthorizationEnvelopeV3RefusalCode.PRODUCT_MISMATCH),
+        (
+            "product_code",
+            "product_code",
+            AuthorizationEnvelopeV3RefusalCode.PRODUCT_MISMATCH,
+        ),
         (
             "environment",
             "environment",
             AuthorizationEnvelopeV3RefusalCode.ENVIRONMENT_MISMATCH,
         ),
         ("target_id", "target_id", AuthorizationEnvelopeV3RefusalCode.TARGET_MISMATCH),
-        ("target_ref", "target_ref", AuthorizationEnvelopeV3RefusalCode.TARGET_MISMATCH),
+        (
+            "target_ref",
+            "target_ref",
+            AuthorizationEnvelopeV3RefusalCode.TARGET_MISMATCH,
+        ),
         (
             "operation",
             "operation",
@@ -1102,7 +1126,11 @@ def verify_authorization_envelope_v3(
             "release_ref",
             AuthorizationEnvelopeV3RefusalCode.RELEASE_MISMATCH,
         ),
-        ("plan_digest", "plan_digest", AuthorizationEnvelopeV3RefusalCode.PLAN_MISMATCH),
+        (
+            "plan_digest",
+            "plan_digest",
+            AuthorizationEnvelopeV3RefusalCode.PLAN_MISMATCH,
+        ),
         (
             "descriptor_digest",
             "descriptor_digest",
@@ -1139,7 +1167,8 @@ def verify_authorization_envelope_v3(
 
     if (
         statement.approval_decision_ref != expected_subject.approval_decision_ref
-        or statement.approval_decision_status != expected_subject.approval_decision_status
+        or statement.approval_decision_status
+        != expected_subject.approval_decision_status
     ):
         raise _refused(
             AuthorizationEnvelopeV3RefusalCode.APPROVAL_MISMATCH,
@@ -1292,7 +1321,9 @@ def _installed_control_version() -> str:
 
 def _exact_mapping(value: object, keys: set[str], *, where: str) -> Mapping[str, Any]:
     if value is None:
-        raise _refused(AuthorizationEnvelopeV3RefusalCode.MALFORMED, f"{where} is absent")
+        raise _refused(
+            AuthorizationEnvelopeV3RefusalCode.MALFORMED, f"{where} is absent"
+        )
     if not isinstance(value, Mapping):
         raise _refused(
             AuthorizationEnvelopeV3RefusalCode.MALFORMED,
@@ -1386,7 +1417,8 @@ def _timestamp(value: datetime | None) -> str | None:
 def _aware_utc(value: datetime, *, field: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise _refused(
-            AuthorizationEnvelopeV3RefusalCode.MALFORMED, f"{field} must carry a timezone"
+            AuthorizationEnvelopeV3RefusalCode.MALFORMED,
+            f"{field} must carry a timezone",
         )
     return value.astimezone(UTC)
 

@@ -143,7 +143,7 @@ def test_genuine_evidence_correctly_bound_produces_a_v3_authorization() -> None:
 # ── control_plan_digest: canonical preimage, explicit exclusion ────────────
 
 
-def test_control_plan_digest_is_stable_regardless_of_a_planted_self_referential_value() -> (
+def test_control_plan_digest_is_stable_regardless_of_a_planted_self_reference() -> (
     None
 ):
     """`control_plan_digest` must never be inside the bytes it is a digest of.
@@ -385,7 +385,7 @@ def test_evidence_with_an_extra_component_is_also_a_roster_mismatch() -> None:
     )
 
 
-def test_roster_order_has_no_meaning_and_a_reordered_exact_roster_stays_silent() -> None:
+def test_roster_order_has_no_meaning_and_a_reordered_roster_stays_silent() -> None:
     """Near-miss control: the ONLY thing that matters is the SET of codes."""
     issue_authorization_envelope_v3(
         _fields(),
@@ -439,10 +439,11 @@ def test_the_one_caller_negative_control() -> None:
     )
 
 
-def test_the_one_caller_negative_control_even_with_a_permissive_looking_verifier_stub() -> (
+def test_the_one_caller_control_with_a_permissive_verifier_stub() -> (
     None
 ):
-    """A degenerate verifier that always returns True is not this module's job to prevent —
+    """A degenerate verifier that always returns True is not this module's job to
+    prevent —
     it is why `HealthEvidenceVerifier` is INJECTED rather than trusted by
     presence. This test proves the converse sensitivity: swap in a verifier
     that ALWAYS says yes, and the one-caller case now (correctly, for that
@@ -537,7 +538,10 @@ def test_a_matching_subject_stays_silent() -> None:
     never be refused, or every substitution test above would be meaningless."""
     envelope = _issued()
     verify_authorization_envelope_v3(
-        envelope, verifier=VERIFIER, expected_subject=_matching_subject(envelope), at=_NOW
+        envelope,
+        verifier=VERIFIER,
+        expected_subject=_matching_subject(envelope),
+        at=_NOW,
     )
 
 
@@ -548,7 +552,9 @@ def test_control_expiry_may_not_extend_past_the_evidence_valid_until() -> None:
     with pytest.raises(AuthorizationEnvelopeV3RefusedError) as caught:
         issue_authorization_envelope_v3(
             _fields(expires_at=_NOW + timedelta(hours=2)),
-            evidence_document=_evidence_document(valid_until=_NOW + timedelta(minutes=30)),
+            evidence_document=_evidence_document(
+                valid_until=_NOW + timedelta(minutes=30)
+            ),
             required_component_roster=_ROSTER,
             evidence_verifier=HEALTH_EVIDENCE_VERIFIER,
             signer=SIGNER,

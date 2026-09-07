@@ -98,7 +98,9 @@ def build_signed_health_evidence_document(
     key_id: str = REAL_HEALTH_EVIDENCE_KEY_ID,
     signature_override: bytes | None = None,
 ) -> dict[str, object]:
-    """Control's OWN wire shape — see `authorization_v3.parse_signed_health_evidence_document`."""
+    """Control's OWN wire shape — see
+    `authorization_v3.parse_signed_health_evidence_document`.
+    """
     canonical_bytes = build_evidence_bytes(
         evaluated_at=evaluated_at, valid_until=valid_until, components=components
     )
@@ -118,7 +120,9 @@ def build_signed_health_evidence_document(
 
 
 class TestHealthEvidenceVerifier:
-    """Accepts ONLY a signature genuinely produced under `REAL_HEALTH_EVIDENCE_KEY_ID`."""
+    """Accepts ONLY a signature genuinely produced under
+    `REAL_HEALTH_EVIDENCE_KEY_ID`.
+    """
 
     __test__ = False
 
