@@ -27,12 +27,30 @@ one for the same `host_id`.** The enforcement is that the incarnation IS the
 attester-key fingerprint — there is no separate `incarnation_id` counter for
 a rebuild to leave behind unincremented. `evaluate_enrolment` refuses any
 fingerprint whose registry status is `REVOKED` or `SUPERSEDED`, permanently
-and for any host; this module exposes no operation that clears either
-status. See the module docstring's "The incarnation IS the attester-key
-fingerprint" and "What makes an old incarnation unusable" sections for the
-full reasoning, including the two alternatives considered (a Fleet
-provisioning epoch; a host-derived value like machine-id) and why each was
-set aside.
+and for any host; no *function* in this module performs or requests that
+reversal (a caller's OWN registry can of course still be written to
+directly — `FingerprintRecord` is a plain exported dataclass, and nothing
+stops a caller from constructing `FingerprintRecord(host, ACTIVE)` in its
+own storage; the guarantee is only about what this module's functions do).
+See the module docstring's "The incarnation IS the attester-key fingerprint"
+and "What makes an old incarnation unusable" sections for the full
+reasoning, including the two alternatives considered (a Fleet provisioning
+epoch; a host-derived value like machine-id) and why each was set aside.
+
+**Two integrity checks make this hold under adversarial or buggy input, not
+just the happy path** (added after independent review found both gaps):
+`evaluate_enrolment` judges the PRESENTED fingerprint's own global status
+before it judges the target host's local binding, so a revoked or
+superseded fingerprint is named precisely (`FINGERPRINT_REVOKED` /
+`FINGERPRINT_SUPERSEDED`) even when presented to a host that separately
+already has an active attester — see "Evaluation order" in the module
+docstring. And a rotation's `supersedes_fingerprint` is independently
+cross-checked against `known_fingerprints` (present, `ACTIVE`, and
+recorded against the SAME host) rather than trusted from `active_by_host`
+alone — otherwise a rotation for host B naming a fingerprint
+`active_by_host` (wrongly, or adversarially) claims is B's could retire
+host A's real attester permanently. See "The serious one" in the review
+history below.
 
 ## MEASURED vs INFERRED
 
@@ -64,16 +82,21 @@ not a replacement for this binding and not a prerequisite for it.
 1. Whether the wire form of an incarnation is the bare fingerprint text
    (`sha256:<hex>`, what this module produces today) or a composite
    `urn:dotmac:host:<host_id>:<fingerprint>`.
-2. Whether Fleet's `host_id` slug alphabet (this module currently validates
-   a DNS-label shape: lowercase alphanumerics and hyphens, 1-63 characters)
-   is a closed grammar Control validates against, or an open string Control
-   merely bounds in length.
-3. Whether a future Fleet provisioning epoch becomes a third bound term in
+2. Whether a future Fleet provisioning epoch becomes a third bound term in
    that grammar or stays Fleet-internal metadata this contract never sees.
 
 These need a decision from whoever holds authority over both the Control and
-Foundation repositories (and Fleet, if question 2 is answered "closed
-grammar"); this slice does not resolve them and does not need to.
+Foundation repositories; this slice does not resolve them and does not need
+to.
+
+**Retired, not open:** whether Fleet's `host_id` slug alphabet is a closed
+DNS-label grammar (`require_host_id`'s current behaviour) or an open string
+this module should only bound in length. An independent review checked
+`require_host_id`'s grammar against all 26 Fleet hosts and every one
+matches — the closed grammar is safe to freeze. (It was validated against
+only three example slugs when this module was first written; the earlier
+version of this document listed this as open on that narrower basis, which
+was too little evidence for the claim it was making.)
 
 ## No table added here
 
@@ -111,21 +134,86 @@ have.
   `DeploymentControlError`) and a specific, distinct
   `HostAttesterEnrolmentRefusalCode` — no condition is folded behind another
   condition's code.
-- `test_evidence_signed_by_the_old_key_is_refused_after_rebuild`: the
-  rotation property. Proves the identical statement shape is admitted BEFORE
-  a rotation (near-miss, silent), then proves the exact same old fingerprint
-  is refused with `FINGERPRINT_SUPERSEDED` AFTER the rotation (plant, named)
-  — isolating the cause to the rotation rather than an unrelated invariant.
+- `test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing`:
+  the rotation property. Proves a legitimate, unrelated use of the
+  fingerprint is admitted BEFORE a rotation (near-miss, silent), then proves
+  the exact same old fingerprint is refused with `FINGERPRINT_SUPERSEDED`
+  AFTER the rotation, both for re-enrolment and for a standing query (plant,
+  named) — isolating the cause to that one branch of `evaluate_enrolment`
+  rather than an unrelated invariant. (Renamed from an earlier
+  "...evidence signed by the old key..." name that overstated what this
+  module checks: it has no signature-evidence verification path of its own.)
 - `test_two_hosts_cannot_share_an_incarnation` /
-  `test_two_enrolments_of_the_same_host_cannot_share_a_fingerprint`: the two
+  `test_a_superseded_fingerprint_is_also_refused_across_hosts` /
+  `test_two_enrolments_of_the_same_host_cannot_share_a_fingerprint`: the
   requested uniqueness proofs, with distinct codes
-  (`FINGERPRINT_REUSED_ACROSS_HOSTS` vs `FINGERPRINT_ALREADY_ENROLLED`).
+  (`FINGERPRINT_REUSED_ACROSS_HOSTS` for the cross-host case regardless of
+  whether the existing record is `ACTIVE` or `SUPERSEDED`, vs
+  `FINGERPRINT_ALREADY_ENROLLED` for the same-host case). The same-host case
+  is reachable only because the fingerprint's own status is judged BEFORE
+  the host's binding — see "Evaluation order" below.
+- `test_a_revoked_fingerprint_is_reported_before_the_host_block`: the
+  ordering property directly. A `REVOKED` fingerprint presented to an
+  ALREADY-enrolled host reports `FINGERPRINT_REVOKED`, never
+  `HOST_ALREADY_ENROLLED` — which would be true but silent about the more
+  urgent fact.
+- `test_a_rotation_cannot_retire_another_hosts_key`: THE serious property
+  from review. `active_by_host` alone is never trusted for the most
+  destructive operation this module can request; a rotation whose
+  `supersedes_fingerprint` is independently recorded, by
+  `known_fingerprints`, as a DIFFERENT host's active attester is refused
+  with `SUPERSEDES_FINGERPRINT_WRONG_HOST`, with a same-shape legitimate
+  rotation kept silent as the near-miss.
+  `test_supersedes_fingerprint_unknown_is_refused` /
+  `test_supersedes_fingerprint_not_active_is_refused` cover the same
+  cross-check's other two arms, each with its own code.
 - `test_a_revoked_fingerprint_is_refused_with_its_own_distinct_code`: proves
   `REVOKED` and `SUPERSEDED` are not merged behind one code.
 - `test_revocation_cannot_reclaim_a_spent_marker` /
-  `test_registry_disagreement_is_refused_not_trusted`: the finality
-  properties, including that a registry disagreement is refused rather than
-  trusted.
+  `test_registry_disagreement_is_refused_not_trusted` /
+  `test_a_fingerprint_active_for_this_host_with_no_active_by_host_entry` /
+  `test_wrong_host_is_distinct_from_registry_disagreement`: the finality and
+  standing-vocabulary properties — `WRONG_HOST`, `NOT_ACTIVE_FOR_HOST` and
+  `REGISTRY_DISAGREEMENT` are three distinct `HostAttesterStanding` members
+  for three different operator actions, not one composite condition.
+
+## `evaluate_enrolment` requires a VERIFIED statement, by convention only
+
+`evaluate_enrolment` takes `HostAttesterEnrolmentStatementV1` directly, not
+a verified `HostAttesterEnrolmentV1` envelope — unlike
+`recovery_grant.verify_recovery_grant` and
+`rehearsal_grant.verify_rehearsal_grant`, which authenticate a signature and
+apply the caller-supplied revocation/consumption set in the SAME call. That
+split means every field `evaluate_enrolment` reads is caller-fabricable
+unless the caller itself only ever passes it
+`verify_host_attester_enrolment(...).statement`. This is now stated
+explicitly in both functions' docstrings; it is a documented caller
+obligation, not something the type system enforces.
+
+## Not evaluated in this version: proof of possession
+
+`FingerprintStatus` (`ACTIVE | SUPERSEDED | REVOKED`) is deliberately
+smaller than the existing `TargetCredential`'s `CredentialStatus`
+(`PENDING | ACTIVE | RETIRED | REVOKED`, `models.py:125-139`) —
+`SUPERSEDED` is `RETIRED` renamed for this contract's vocabulary, but there
+is no `PENDING`. `service.py:1755-1758` names what `PENDING` protects for
+`TargetCredential`: proof of possession before a key is trusted, without
+which anyone reaching the enrolment endpoint could enrol a key it does not
+hold. This module's registry types carry no such state today. Reconciling
+the two status vocabularies — and deciding whether host-attester enrolment
+needs its own possession proof before the durable table lands — is left
+open for whoever designs that table.
+
+## No expiry window on the statement
+
+`verify_host_attester_enrolment` carries no `at` parameter. An earlier
+version accepted one and silently discarded it — worse than no parameter,
+since an authority-shaped argument that does nothing reads as a check that
+is performed. `HostAttesterEnrolmentStatementV1` has no `not_before`/
+`expires_at` (unlike `RecoveryGrantStatementV1`/`RehearsalGrantStatementV1`)
+because an attester key's validity is bounded by rotation, not by time; if
+that changes, `at` is reintroduced bound to a real window, not restored as
+a no-op.
 
 ## Not wired into the package's public surface
 
