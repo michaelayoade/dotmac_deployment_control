@@ -47,7 +47,12 @@ SRC = PACKAGE_ROOT / "src/dotmac_deployment_control"
 MIGRATIONS = sorted((SRC / "migrations/versions").glob("dc_*.py"))
 
 #: The three tables whose whole value is that nobody can adjust them.
-EVIDENCE_TABLES = ("rollout_attempts", "observation_attempts", "observation_receipts")
+EVIDENCE_TABLES = (
+    "rollout_attempts",
+    "rollout_attempt_settlements",
+    "observation_attempts",
+    "observation_receipts",
+)
 #: The four the lifecycle legitimately mutates.
 MUTABLE_TABLES = (
     "deployment_targets",
@@ -571,6 +576,44 @@ class TestTheAuditActionsAreDeclaredAndConsumed:
             assert f"action={name}" in service_source, name
 
 
+class TestImmutableAttemptEvidenceIsNeverExplicitlyForUpdate:
+    def test_no_service_query_applies_for_update_to_rollout_attempts(self) -> None:
+        """FK enforcement may lock; service queries must not ask FOR UPDATE."""
+        source = (SRC / "service.py").read_text()
+        tree = ast.parse(source)
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "with_for_update"
+            ):
+                continue
+            query = ast.get_source_segment(source, node.func.value) or ""
+            if "RolloutAttempt" in query:
+                offenders.append(node.lineno)
+        assert not offenders, offenders
+
+
+class TestRolloutViewUsesOneSnapshotQuery:
+    def test_rollout_view_executes_exactly_one_statement(self) -> None:
+        source = (SRC / "service.py").read_text()
+        tree = ast.parse(source)
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_rollout_view"
+        )
+        executes = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "execute"
+        ]
+        assert len(executes) == 1
+
+
 # ── The migration ───────────────────────────────────────────────────────────
 
 
@@ -592,7 +635,7 @@ class TestTheMigrationStatesItsWholeAccessSurface:
                 rf'_grant\("[A-Z, ]*SELECT[A-Z, ]*", "{table}", "platform_api"\)', sql
             ), table
 
-    def test_the_three_evidence_tables_grant_no_update_or_delete_to_any_role(
+    def test_the_evidence_tables_grant_no_update_or_delete_to_any_role(
         self, sql: str
     ) -> None:
         for table in EVIDENCE_TABLES:
@@ -612,11 +655,12 @@ class TestTheMigrationStatesItsWholeAccessSurface:
                 rf'_grant\("[A-Z, ]*UPDATE[A-Z, ]*", "{table}", "platform_api"\)', sql
             ), table
 
-    def test_the_append_only_trigger_covers_all_three_evidence_tables(
-        self, sql: str
-    ) -> None:
+    def test_the_append_only_trigger_covers_all_evidence_tables(self, sql: str) -> None:
         for table in EVIDENCE_TABLES:
             assert f"BEFORE UPDATE OR DELETE ON mod_deploy.{table}" in sql
+
+    def test_the_settlement_evidence_also_refuses_truncate(self, sql: str) -> None:
+        assert "BEFORE TRUNCATE ON mod_deploy.rollout_attempt_settlements" in sql
 
     def test_the_claim_proof_checks_are_declared_in_the_migration(
         self, sql: str

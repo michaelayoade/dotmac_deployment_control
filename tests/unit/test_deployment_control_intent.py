@@ -83,7 +83,11 @@ from dotmac_deployment_control import (
     snapshot_digest,
     suspend_target,
 )
-from dotmac_deployment_control.models import Rollout, RolloutAttempt
+from dotmac_deployment_control.models import (
+    Rollout,
+    RolloutAttempt,
+    RolloutAttemptSettlement,
+)
 from tests.authorization_support import SIGNER, VERIFIER
 from tests.dispatch_support import DISPATCH_SIGNER, TestDispatchSigner
 from tests.execution_observation_support import observation_public_key_b64
@@ -909,6 +913,49 @@ class TestSettlingAnAttempt:
         assert stored.authorization_envelope == before
         assert "authorization_envelope" not in SettleAttemptCommand.__dataclass_fields__
 
+    def test_settlement_preserves_issuance_and_drives_the_returned_projection(
+        self, db
+    ) -> None:
+        """A delivery report appends outcome evidence; it cannot edit issuance."""
+        rollout = self._dispatched(db)
+        attempt = db.query(RolloutAttempt).filter_by(rollout_id=rollout.id).one()
+        issuance = (
+            attempt.outcome,
+            attempt.integrator_ref,
+            attempt.error_code,
+            attempt.detail,
+            attempt.settled_at,
+        )
+
+        view = settle_attempt(
+            db,
+            SettleAttemptCommand(
+                command_id=_cmd(),
+                rollout_id=rollout.id,
+                attempt_no=attempt.attempt_no,
+                outcome=AttemptOutcome.FAILED.value,
+                integrator_ref="ig-immutable-issuance",
+                error_code="transport_refused",
+                detail="provider-neutral diagnostic",
+            ),
+        )
+
+        db.refresh(attempt)
+        assert (
+            attempt.outcome,
+            attempt.integrator_ref,
+            attempt.error_code,
+            attempt.detail,
+            attempt.settled_at,
+        ) == issuance
+        settlement = (
+            db.query(RolloutAttemptSettlement).filter_by(attempt_id=attempt.id).one()
+        )
+        assert settlement.outcome == AttemptOutcome.FAILED.value
+        assert settlement.integrator_ref == "ig-immutable-issuance"
+        assert view.attempts[0].outcome == AttemptOutcome.FAILED.value
+        assert view.attempts[0].error_code == "transport_refused"
+
     def test_revoking_the_approval_does_not_rewrite_an_issued_authorization(
         self, db
     ) -> None:
@@ -1062,12 +1109,30 @@ class TestCancelIsNotManualRepair:
         """Leaving an attempt PENDING would block the next dispatch forever on a
         rollout nobody is waiting for."""
         rollout = self._dispatched(db)
+        attempt = db.query(RolloutAttempt).filter_by(rollout_id=rollout.id).one()
+        issuance = (
+            attempt.outcome,
+            attempt.integrator_ref,
+            attempt.error_code,
+            attempt.detail,
+            attempt.settled_at,
+        )
         view = cancel_rollout(
             db, RolloutTransitionCommand(_cmd(), rollout.id, reason="withdrawn")
         )
         assert view.status == RolloutStatus.CANCELLED.value
         assert view.completed_at is not None
         assert view.attempts[0].outcome == AttemptOutcome.CANCELLED.value
+        db.refresh(attempt)
+        assert (
+            attempt.outcome,
+            attempt.integrator_ref,
+            attempt.error_code,
+            attempt.detail,
+            attempt.settled_at,
+        ) == issuance
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
 
     def test_manual_repair_keeps_the_rollout_open(self, db) -> None:
         """A cancelled rollout is not wanted; a repairing one is wanted and

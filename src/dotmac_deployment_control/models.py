@@ -5,7 +5,7 @@ what a fleet of deployments should run is a control-plane act; the deployments
 themselves are separate applications that learn what to do through the
 Integrator, never by reading this schema (ADR-0024).
 
-## Seven tables, and the two pairings that matter
+## Nine tables, and the two pairings that matter
 
 Most of these are the obvious decomposition — target, credential, plan, rollout,
 attempt. Two are not:
@@ -23,11 +23,11 @@ signature. Those are the tripwires.
 So: an append-only log of ATTEMPTS (every arrival, whatever happens to it) and
 one canonical RECEIPT per idempotency key.
 
-**`rollouts` and `rollout_attempts` are a pair for the same reason in a
-different domain.** A rollout is the DECISION to converge a target on a plan; an
-attempt is one execution of it. Retrying does not change the decision, and
-collapsing them would make "how many times did we try?" and "what did we decide?"
-one column that answers neither.
+**`rollouts`, `rollout_attempts` and `rollout_attempt_settlements` separate
+decision, issuance and outcome.** A rollout is the DECISION to converge a target
+on a plan; an attempt is immutable issuance evidence for one execution; its
+settlement is separately appended terminal evidence. Retrying does not change
+the decision, and a late report cannot rewrite the dispatch that made it possible.
 
 ## A claim and a proof never share a column
 
@@ -99,6 +99,7 @@ _CREDENTIALS = "target_credentials"
 _PLANS = "deployment_plans"
 _ROLLOUTS = "rollouts"
 _ATTEMPTS = "rollout_attempts"
+_ATTEMPT_SETTLEMENTS = "rollout_attempt_settlements"
 _RECOVERY_GRANTS = "recovery_grants"
 _OBS_ATTEMPTS = "observation_attempts"
 _OBS_RECEIPTS = "observation_receipts"
@@ -722,6 +723,11 @@ class RolloutAttempt(Base, TimestampMixin):
         index=True,
     )
     attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Legacy physical issuance field, NOT the current outcome. New issuance
+    #: rows retain ``pending`` here because the immutable attempt is evidence of
+    #: dispatch, not the mutable-looking outcome record. Service ``AttemptView``
+    #: is the supported current projection, built from a fresh settlement query;
+    #: dc_0010 copies terminal legacy values there without rewriting issuance.
     outcome: Mapped[str] = mapped_column(
         String(20), nullable=False, default=AttemptOutcome.PENDING.value
     )
@@ -741,6 +747,45 @@ class RolloutAttempt(Base, TimestampMixin):
     dispatch_envelope: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
 
     rollout: Mapped[Rollout] = relationship(lambda: Rollout, back_populates="attempts")
+    settlement: Mapped[RolloutAttemptSettlement | None] = relationship(
+        lambda: RolloutAttemptSettlement,
+        back_populates="attempt",
+        uselist=False,
+    )
+
+
+class RolloutAttemptSettlement(Base, TimestampMixin):
+    """The sole appended terminal outcome for one immutable rollout attempt.
+
+    ``attempt_id`` is unique rather than a mutable state flag: it is the
+    database race arbiter for independently submitted terminal reports.  The
+    row is append-only just like its issuance row; correcting a report means
+    recording a new rollout attempt, never editing evidence.
+    """
+
+    __tablename__ = _ATTEMPT_SETTLEMENTS
+    __table_args__ = (
+        UniqueConstraint("attempt_id", name="uq_rollout_attempt_settlements_attempt"),
+        CheckConstraint("outcome <> 'pending'", name="ck_attempt_settlements_terminal"),
+        schema_table_args(SCHEMA),
+    )
+
+    id: Mapped[UUID] = uuid_pk()
+    attempt_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_ATTEMPTS}.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    integrator_ref: Mapped[str | None] = mapped_column(String(200))
+    error_code: Mapped[str | None] = mapped_column(String(60))
+    detail: Mapped[str | None] = mapped_column(Text)
+    #: Legacy terminal evidence may not have recorded a settlement time.  NULL
+    #: preserves that unknown rather than claiming dispatch/creation time.
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    attempt: Mapped[RolloutAttempt] = relationship(
+        lambda: RolloutAttempt, back_populates="settlement"
+    )
 
 
 class ObservationReceipt(Base, TimestampMixin):
@@ -877,6 +922,7 @@ __all__ = [
     "PlanStatus",
     "Rollout",
     "RolloutAttempt",
+    "RolloutAttemptSettlement",
     "RolloutStatus",
     "SignatureStatus",
     "TargetCredential",

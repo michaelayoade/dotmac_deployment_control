@@ -13,8 +13,9 @@ locked target; it is not itself authentication. No production caller exists. It
 does not accept an envelope, verifier or standing assertion from an untrusted
 caller.
 
-Within one caller-owned transaction, Control locks target, plan, rollout and
-attempt in the same order as approval revocation; parses and compares the exact
+Within one caller-owned transaction, Control locks target, plan and the mutable
+rollout in the same order as approval revocation, then reads immutable attempt
+evidence without explicit `FOR UPDATE`; parses and compares the exact
 stored authorization/dispatch coordinate; checks target liveness, rollout and
 attempt state, authorization lifetime, and current approval standing; then calls
 Kernel `execute_once_platform`. Its key is the stored signed dispatch id, its
@@ -37,12 +38,15 @@ The permanent-cut-off rule above was proven, on real PostgreSQL, for approval
 revocation. It applies identically to `cancel_rollout` (and
 `require_manual_repair`, its sibling transition) and to `settle_attempt`:
 
-- `settle_attempt` locks the rollout, then the exact attempt row it is
-  settling, `FOR UPDATE` — the same rollout-then-attempt relative order
-  consumption locks in — before deciding.
+- `settle_attempt` locks the mutable rollout decision before reading immutable
+  issuance evidence and INSERTing one append-only settlement row. It never
+  explicitly `FOR UPDATE` locks or updates either evidence table (FK key-share
+  locks may still occur). `UNIQUE (attempt_id)` is the final race arbiter for
+  competing terminal reports.
 - `_rollout_transition` (used by `cancel_rollout` and `require_manual_repair`)
   locks the rollout `FOR UPDATE` first, and, when it is cancelling in-flight
-  attempts, locks each still-PENDING attempt `FOR UPDATE` before touching it.
+  attempts, reads each still-pending issuance attempt after that rollout lock
+  before appending its cancellation settlement.
 
 If cancel or settle reaches the rollout lock first, a concurrent consumption
 blocks, then re-reads the now-committed rollout/attempt state and refuses
@@ -62,8 +66,9 @@ is the sole evidence for that.
 
 Scoped to this boundary — `_stage_dispatch_consumption`, `revoke_plan_approval`,
 `settle_attempt`, and `_rollout_transition` (`cancel_rollout`/
-`require_manual_repair`) — not a module-wide claim. Every lock THESE take is
-an explicit `SELECT ... FOR UPDATE`, and every check that follows a wait
+`require_manual_repair`) — not a module-wide claim. Every application-directed
+serialization lock THESE take is an explicit `SELECT ... FOR UPDATE` (FK
+referential-integrity locks may still occur), and every check that follows a wait
 re-reads the row (`populate_existing=True`) rather than trusting a value read
 before the wait. That makes this boundary correct at PostgreSQL's default
 READ COMMITTED — its floor — and it remains correct, unchanged, at

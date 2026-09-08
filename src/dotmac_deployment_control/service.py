@@ -62,11 +62,13 @@ from uuid import UUID, uuid4
 from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.idempotency import IdempotencyConflict, execute_once_platform
 from dotmac_kernel.messaging import enqueue_platform_event, process_once_platform
+from dotmac_kernel.transactions import conflict_savepoint
 
 # This module never imports `dotmac_kernel.db` or constructs an engine. Every
 # operation receives a caller-owned Session; target-row serialization now owns
 # the observation race, so no kernel transaction helper is needed here either.
 from sqlalchemy import case, func, literal, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
@@ -135,6 +137,7 @@ from dotmac_deployment_control.models import (
     RecoveryGrant,
     Rollout,
     RolloutAttempt,
+    RolloutAttemptSettlement,
     RolloutStatus,
     SignatureStatus,
     TargetCredential,
@@ -281,11 +284,13 @@ def _stage_dispatch_consumption(
     authentication. Control has no such adapter today, therefore this function
     alone MUST NOT be used to launch.
 
-    The joined ``FOR UPDATE`` read serializes consumption with approval
-    revocation.  A revocation committed first refuses even a previously signed
-    dispatch; a consumption commit first is the irrevocable authority cut-off.
-    Recovery is a newly signed dispatch attempt, never a reset or expiry of this
-    marker.
+    The target, plan and mutable rollout locks serialize consumption with
+    approval revocation, settlement and cancellation. A revocation committed
+    first refuses even a previously signed dispatch; a consumption commit first
+    is the irrevocable authority cut-off. Service queries do not explicitly
+    apply ``FOR UPDATE`` to issuance evidence; FK enforcement may still take
+    referential-integrity locks. Recovery is a newly signed dispatch attempt,
+    never a reset or expiry of this marker.
     """
     locator = db.execute(
         select(RolloutAttempt.rollout_id).where(RolloutAttempt.id == attempt_id)
@@ -296,7 +301,7 @@ def _stage_dispatch_consumption(
             f"dispatch attempt {attempt_id} does not exist",
         )
     # Match the established revocation lock order (target, then plan) before
-    # locking rollout/attempt.  It makes approval-revocation and consumption a
+    # locking the mutable rollout. It makes approval-revocation and consumption a
     # serialized choice rather than a deadlock lottery.
     rollout_locator = db.execute(
         select(Rollout.target_id, Rollout.plan_id).where(Rollout.id == locator)
@@ -326,7 +331,6 @@ def _stage_dispatch_consumption(
     attempt = db.execute(
         select(RolloutAttempt)
         .where(RolloutAttempt.id == attempt_id)
-        .with_for_update()
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if rollout is None or attempt is None or attempt.rollout_id != rollout.id:
@@ -387,10 +391,11 @@ def _stage_dispatch_consumption(
             _DispatchConsumptionRefusalCode.ROLLOUT_NOT_OPEN,
             f"rollout {rollout.rollout_ref} is {rollout.status!r}",
         )
-    if attempt.outcome != AttemptOutcome.PENDING.value:
+    settlement = _load_attempt_settlement(db, attempt.id)
+    if settlement is not None:
         raise _DispatchConsumptionRefusedError(
             _DispatchConsumptionRefusalCode.ATTEMPT_NOT_PENDING,
-            f"attempt {attempt.id} is {attempt.outcome!r}",
+            f"attempt {attempt.id} is {settlement.outcome!r}",
         )
     if plan.requires_approval and (
         plan.status != PlanStatus.APPROVED.value
@@ -1175,14 +1180,13 @@ def _load_rollout(session: Session, rollout_id: UUID) -> Rollout:
 
 
 def _load_rollout_for_update(session: Session, rollout_id: UUID) -> Rollout:
-    """Lock a rollout row, at the same position `_stage_dispatch_consumption`
-    locks it in the target->plan->rollout->attempt order.
+    """Lock the mutable rollout decision before reading immutable attempts.
 
-    Any caller that goes on to lock the rollout's own attempts (directly or via
-    `_load_pending_attempts_for_update`) MUST call this first: consumption
-    always locks rollout before attempt, and a caller that reversed the order
-    would turn a benign wait into a live deadlock opportunity instead of the
-    intended serialize-then-refuse.
+    Consumption, dispatch, settlement and cancellation all serialize on this
+    row. Service queries never explicitly apply ``FOR UPDATE`` to attempt
+    issuance or settlement evidence: their roles only hold SELECT/INSERT, and
+    their unique coordinates plus append-only triggers are the concurrent-write
+    boundary. PostgreSQL may still take FK referential-integrity locks.
     """
     row = session.execute(
         select(Rollout)
@@ -1195,24 +1199,46 @@ def _load_rollout_for_update(session: Session, rollout_id: UUID) -> Rollout:
     return row
 
 
-def _load_pending_attempts_for_update(
-    session: Session, rollout_id: UUID
-) -> list[RolloutAttempt]:
-    """Lock every still-PENDING attempt of an already rollout-locked rollout.
-
-    Caller MUST hold the rollout's own lock (`_load_rollout_for_update`) first
-    -- see that function's docstring for why the order is load-bearing.
-    """
+def _load_pending_attempts(session: Session, rollout_id: UUID) -> list[RolloutAttempt]:
+    """Read un-settled issuance attempts after locking their rollout decision."""
     return list(
         session.execute(
             select(RolloutAttempt)
             .where(
                 RolloutAttempt.rollout_id == rollout_id,
-                RolloutAttempt.outcome == AttemptOutcome.PENDING.value,
+                ~select(RolloutAttemptSettlement.id)
+                .where(RolloutAttemptSettlement.attempt_id == RolloutAttempt.id)
+                .exists(),
             )
-            .with_for_update()
             .execution_options(populate_existing=True)
         ).scalars()
+    )
+
+
+def _load_attempt_settlement(
+    session: Session, attempt_id: UUID
+) -> RolloutAttemptSettlement | None:
+    """Fresh settlement lookup; relationship state is never an admission fact."""
+    return session.execute(
+        select(RolloutAttemptSettlement).where(
+            RolloutAttemptSettlement.attempt_id == attempt_id
+        )
+    ).scalar_one_or_none()
+
+
+def _attempt_view(
+    attempt: RolloutAttempt, settlement: RolloutAttemptSettlement | None
+) -> facts.AttemptView:
+    return facts.AttemptView(
+        attempt_no=attempt.attempt_no,
+        outcome=(
+            AttemptOutcome.PENDING.value if settlement is None else settlement.outcome
+        ),
+        integrator_ref=None if settlement is None else settlement.integrator_ref,
+        error_code=None if settlement is None else settlement.error_code,
+        detail=None if settlement is None else settlement.detail,
+        dispatched_at=attempt.dispatched_at,
+        settled_at=None if settlement is None else settlement.settled_at,
     )
 
 
@@ -1447,12 +1473,34 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
     )
 
 
-def _rollout_view(row: Rollout) -> facts.RolloutView:
+def _rollout_view(session: Session, row: Rollout) -> facts.RolloutView:
+    # One statement is load-bearing at READ COMMITTED: separate parent, attempt
+    # and settlement reads can combine different committed moments into one
+    # impossible view.
+    records = session.execute(
+        select(Rollout, RolloutAttempt, RolloutAttemptSettlement)
+        .outerjoin(RolloutAttempt, RolloutAttempt.rollout_id == Rollout.id)
+        .outerjoin(
+            RolloutAttemptSettlement,
+            RolloutAttemptSettlement.attempt_id == RolloutAttempt.id,
+        )
+        .where(Rollout.id == row.id)
+        .order_by(RolloutAttempt.attempt_no)
+        .execution_options(populate_existing=True)
+    ).all()
+    assert records
+    row = records[0][0]
     envelope = (
         None
         if row.authorization_envelope is None
         else _parse_historical_authorization_envelope(row.authorization_envelope)
     )
+    attempts = tuple(record[1] for record in records if record[1] is not None)
+    settlements = {
+        attempt.id: settlement
+        for _rollout, attempt, settlement in records
+        if attempt is not None and settlement is not None
+    }
     return facts.RolloutView(
         id=row.id,
         rollout_ref=row.rollout_ref,
@@ -1464,16 +1512,7 @@ def _rollout_view(row: Rollout) -> facts.RolloutView:
         reason=row.reason,
         completed_at=row.completed_at,
         attempts=tuple(
-            facts.AttemptView(
-                attempt_no=attempt.attempt_no,
-                outcome=attempt.outcome,
-                integrator_ref=attempt.integrator_ref,
-                error_code=attempt.error_code,
-                detail=attempt.detail,
-                dispatched_at=attempt.dispatched_at,
-                settled_at=attempt.settled_at,
-            )
-            for attempt in row.attempts
+            _attempt_view(attempt, settlements.get(attempt.id)) for attempt in attempts
         ),
     )
 
@@ -2665,7 +2704,7 @@ def request_rollout(
         command_type=SCOPE_REQUEST_ROLLOUT,
         handler=handler,
     )
-    return _rollout_view(_load_rollout(db, UUID(str(outcome.result["id"]))))
+    return _rollout_view(db, _load_rollout(db, UUID(str(outcome.result["id"]))))
 
 
 def dispatch_attempt(
@@ -2722,7 +2761,9 @@ def dispatch_attempt(
         pending = session.execute(
             select(RolloutAttempt).where(
                 RolloutAttempt.rollout_id == rollout.id,
-                RolloutAttempt.outcome == AttemptOutcome.PENDING.value,
+                ~select(RolloutAttemptSettlement.id)
+                .where(RolloutAttemptSettlement.attempt_id == RolloutAttempt.id)
+                .exists(),
             )
         ).scalar_one_or_none()
         if pending is not None:
@@ -2757,6 +2798,9 @@ def dispatch_attempt(
             id=attempt_id,
             rollout_id=rollout.id,
             attempt_no=attempt_no,
+            # The legacy column remains physically NOT NULL for pre-dc_0010
+            # rows, but it is immutable issuance history now.  Current outcome
+            # is derived only from a separately appended settlement.
             outcome=AttemptOutcome.PENDING.value,
             dispatched_at=dispatched_at,
             dispatch_envelope=dispatch_envelope.as_mapping(),
@@ -2891,11 +2935,8 @@ def settle_attempt(db: Session, command: SettleAttemptCommand) -> facts.RolloutV
     """
 
     def handler(session: Session) -> Mapping[str, object]:
-        # Locked rollout-then-attempt, the same relative order
-        # `_stage_dispatch_consumption` locks in: whichever of settlement or
-        # consumption reaches this rollout first now genuinely blocks the
-        # other at the lock, rather than at an incidental later UPDATE whose
-        # ordering the unit-of-work does not promise.
+        # The mutable rollout lock is the serialization boundary shared with
+        # consumption and cancellation. Issuance evidence stays lock-free.
         rollout = _load_rollout_for_update(session, command.rollout_id)
         attempt = session.execute(
             select(RolloutAttempt)
@@ -2903,17 +2944,18 @@ def settle_attempt(db: Session, command: SettleAttemptCommand) -> facts.RolloutV
                 RolloutAttempt.rollout_id == rollout.id,
                 RolloutAttempt.attempt_no == command.attempt_no,
             )
-            .with_for_update()
             .execution_options(populate_existing=True)
         ).scalar_one_or_none()
         if attempt is None:
             raise TransitionRefusedError(
                 f"rollout {rollout.rollout_ref} has no attempt {command.attempt_no}"
             )
-        if attempt.outcome != AttemptOutcome.PENDING.value:
+        existing_settlement = _load_attempt_settlement(session, attempt.id)
+        if existing_settlement is not None:
             raise TransitionRefusedError(
                 f"attempt {command.attempt_no} of rollout {rollout.rollout_ref} "
-                f"already settled as {attempt.outcome!r}; an attempt records what "
+                f"already settled as {existing_settlement.outcome!r}; an attempt "
+                "records what "
                 "happened once"
             )
         if command.outcome not in {
@@ -2925,16 +2967,37 @@ def settle_attempt(db: Session, command: SettleAttemptCommand) -> facts.RolloutV
             raise TransitionRefusedError(
                 f"{command.outcome!r} is not a settled attempt outcome"
             )
-        attempt.outcome = command.outcome
-        attempt.integrator_ref = command.integrator_ref
-        attempt.error_code = command.error_code
-        attempt.detail = command.detail
-        attempt.settled_at = command.settled_at or datetime.now(UTC)
+        settled_at = command.settled_at or datetime.now(UTC)
+        # The unique attempt coordinate, rather than an UPDATE or a lock on
+        # settlement evidence, arbitrates a second terminal report.  The
+        # savepoint leaves the caller's rollout/tenant transaction usable when
+        # PostgreSQL reports the honest unique conflict.
+        try:
+            with conflict_savepoint(session):
+                settlement = RolloutAttemptSettlement(
+                    id=uuid4(),
+                    attempt_id=attempt.id,
+                    outcome=command.outcome,
+                    integrator_ref=command.integrator_ref,
+                    error_code=command.error_code,
+                    detail=command.detail,
+                    settled_at=settled_at,
+                )
+                # Associate in memory as well as by foreign key: the return
+                # projection is built in this same Session after the command.
+                attempt.settlement = settlement
+                session.add(settlement)
+                session.flush()
+        except IntegrityError as exc:
+            raise TransitionRefusedError(
+                f"attempt {command.attempt_no} of rollout {rollout.rollout_ref} "
+                "already settled; the first settlement is immutable evidence"
+            ) from exc
 
         event_type = facts.ROLLOUT_FAILED_V1
         if command.outcome == AttemptOutcome.SUCCEEDED.value:
             rollout.status = RolloutStatus.SUCCEEDED.value
-            rollout.completed_at = attempt.settled_at
+            rollout.completed_at = settled_at
             rollout.record_version += 1
             event_type = facts.ROLLOUT_SUCCEEDED_V1
         elif command.outcome == AttemptOutcome.TIMED_OUT.value:
@@ -2970,7 +3033,7 @@ def settle_attempt(db: Session, command: SettleAttemptCommand) -> facts.RolloutV
         command_type=SCOPE_SETTLE,
         handler=handler,
     )
-    return _rollout_view(_load_rollout(db, command.rollout_id))
+    return _rollout_view(db, _load_rollout(db, command.rollout_id))
 
 
 def cancel_rollout(db: Session, command: RolloutTransitionCommand) -> facts.RolloutView:
@@ -3015,12 +3078,8 @@ def _rollout_transition(
     settle: bool,
 ) -> facts.RolloutView:
     def handler(session: Session) -> Mapping[str, object]:
-        # Locked rollout-then-attempt, the same relative order
-        # `_stage_dispatch_consumption` locks in -- see
-        # `_load_rollout_for_update`'s docstring. Without this, an unlocked
-        # read here could decide to cancel/repair a rollout that a concurrent
-        # consumption is mid-authorizing, and only the later, incidental
-        # UPDATE would happen to serialize the two.
+        # The mutable rollout lock serializes this decision with consumption
+        # and dispatch; attempts are immutable evidence and are not locked.
         row = _load_rollout_for_update(session, command.rollout_id)
         _require_expected(
             row.rollout_ref,
@@ -3036,20 +3095,28 @@ def _rollout_transition(
         # Locked (not the lazy `row.attempts` relationship) for the same
         # reason the rollout row above is: a caller of THIS command deciding
         # from an unlocked read.
-        pending_attempts = (
-            _load_pending_attempts_for_update(session, row.id) if settle else []
-        )
+        pending_attempts = _load_pending_attempts(session, row.id) if settle else []
         previous = row.status
         row.status = to.value
         row.reason = command.reason
+        completed_at: datetime | None = None
         if settle:
-            row.completed_at = datetime.now(UTC)
+            completed_at = datetime.now(UTC)
+            row.completed_at = completed_at
         row.record_version += 1
         # Any in-flight attempt goes with the decision: leaving one PENDING would
         # block the next dispatch forever on a rollout nobody is waiting for.
-        for attempt in pending_attempts:
-            attempt.outcome = AttemptOutcome.CANCELLED.value
-            attempt.settled_at = row.completed_at
+        if pending_attempts:
+            assert completed_at is not None
+            for attempt in pending_attempts:
+                settlement = RolloutAttemptSettlement(
+                    id=uuid4(),
+                    attempt_id=attempt.id,
+                    outcome=AttemptOutcome.CANCELLED.value,
+                    settled_at=completed_at,
+                )
+                attempt.settlement = settlement
+                session.add(settlement)
         session.flush()
         _audit_and_emit(
             session,
@@ -3070,7 +3137,7 @@ def _rollout_transition(
     process_once_platform(
         db, command_id=command.command_id, command_type=scope, handler=handler
     )
-    return _rollout_view(_load_rollout(db, command.rollout_id))
+    return _rollout_view(db, _load_rollout(db, command.rollout_id))
 
 
 # ── Observations ────────────────────────────────────────────────────────────
@@ -4379,7 +4446,7 @@ def get_plan(db: Session, plan_id: UUID) -> facts.PlanView | None:
 
 def get_rollout(db: Session, rollout_id: UUID) -> facts.RolloutView | None:
     row = db.get(Rollout, rollout_id)
-    return _rollout_view(row) if row is not None else None
+    return _rollout_view(db, row) if row is not None else None
 
 
 def plans_for_target(db: Session, target_id: UUID) -> tuple[facts.PlanView, ...]:
@@ -4422,7 +4489,7 @@ def rollouts_for_target(db: Session, target_id: UUID) -> tuple[facts.RolloutView
         .scalars()
         .all()
     )
-    return tuple(_rollout_view(row) for row in rows)
+    return tuple(_rollout_view(db, row) for row in rows)
 
 
 def observation_log(

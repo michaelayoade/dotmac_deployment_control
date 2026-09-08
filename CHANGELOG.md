@@ -28,6 +28,16 @@ changes, each called out here.
 
 ## Unreleased — cancel and settle join the dispatch-consumption lock order
 
+### Changed
+
+- **Rollout attempt settlement is now append-only evidence.**
+  `dc_0010_attempt_settlements` adds `rollout_attempt_settlements`, one
+  immutable terminal row per immutable issuance attempt. `settle_attempt` and
+  cancellation insert that row instead of updating `rollout_attempts`; the
+  unique `attempt_id` arbitrates competing terminal reports and conflicts are
+  returned as an already-settled refusal. Existing terminal rows are copied
+  into the new relation without rewriting the old issuance evidence.
+
 ### Fixed
 
 `settle_attempt` and `cancel_rollout`/`require_manual_repair`
@@ -56,17 +66,19 @@ durable-state defects, both closed by this change:
   outbox rows, and a rollout status decided by whichever flushed last.
   `process_once_platform`'s idempotency keys on `command_id`, so it does not
   and cannot catch two DIFFERENT commands settling the same attempt.
-  `settle_attempt` now locks the rollout, then the exact attempt row it is
+  `settle_attempt` locks the rollout, then the exact issuance attempt it is
   settling (not "its PENDING attempts" — `settle_attempt` settles one named
-  attempt), `FOR UPDATE` before checking `outcome`, so the loser of the race
-  blocks and then correctly refuses `attempt ... already settled`.
+  attempt), checks a fresh settlement projection after the rollout lock. The
+  terminal record itself is never explicitly `FOR UPDATE` locked or updated;
+  its unique `attempt_id`
+  is the durable final arbiter, so the loser correctly refuses
+  `attempt ... already settled`.
 
-Both fixes lock rollout-then-attempt, the same relative order
-`_stage_dispatch_consumption` already locks in (target→plan→rollout→
-attempt) — a genuine subsequence of one consistent global order, not a
-second, competing one. `require_manual_repair` (`settle=False`) locks the
-rollout only; it does not cancel or otherwise touch any attempt, so it takes
-no attempt lock.
+Both fixes lock the mutable rollout, the shared decision boundary after
+consumption's target→plan locks. Service queries never explicitly apply
+`FOR UPDATE` to issuance or settlement rows (FK referential-integrity locks may
+still occur); `require_manual_repair`
+(`settle=False`) therefore reads no attempt at all.
 
 ### Documented, not changed
 
