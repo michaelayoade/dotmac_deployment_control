@@ -3115,9 +3115,12 @@ def test_cancel_wins_the_lock_race_and_consumption_refuses_rollout_not_open(
         attempt = evidence.execute(
             select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
         ).scalar_one()
+        # `.settlement` is a lazy relationship, unlike the plain columns
+        # above -- it must be read while `evidence` is still open, or it
+        # raises DetachedInstanceError instead of proving anything.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
     assert marker_count == 0
-    assert attempt.settlement is not None
-    assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
 
 
 def test_consumption_wins_the_lock_race_and_cancel_still_records_its_own_outcome(
@@ -3217,13 +3220,15 @@ def test_consumption_wins_the_lock_race_and_cancel_still_records_its_own_outcome
         attempt = evidence.execute(
             select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
         ).scalar_one()
+        # `.settlement` is a lazy relationship and must be read before
+        # `evidence` closes, unlike the plain columns asserted below.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
     # The marker is untouched -- consumption's authority cut-off is permanent.
     assert marker.expires_at is None
     assert marker.result["attempt_id"] == str(attempt_id)
     # The cancel still applies its own decision on top of it.
     assert rollout.status == "cancelled"
-    assert attempt.settlement is not None
-    assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
 
 
 def test_settle_wins_the_lock_race_and_consumption_refuses_attempt_not_pending(
@@ -3334,8 +3339,10 @@ def test_settle_wins_the_lock_race_and_consumption_refuses_attempt_not_pending(
             select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
         ).scalar_one()
         assert marker_count == 0
-    assert attempt.settlement is not None
-    assert attempt.settlement.outcome == AttemptOutcome.FAILED.value
+        # `.settlement` is a lazy relationship and must be read before
+        # `evidence` closes.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.FAILED.value
 
 
 def test_two_settlements_serialize_on_rollout_and_loser_refuses_once(
@@ -3515,8 +3522,10 @@ def test_consumption_wins_the_lock_race_and_settle_still_records_its_own_outcome
         attempt = evidence.execute(
             select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
         ).scalar_one()
+        # `.settlement` is a lazy relationship and must be read before
+        # `evidence` closes, unlike the plain columns asserted below.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.SUCCEEDED.value
     assert marker.expires_at is None
     assert marker.result["attempt_id"] == str(attempt_id)
     assert rollout.status == "succeeded"
-    assert attempt.settlement is not None
-    assert attempt.settlement.outcome == AttemptOutcome.SUCCEEDED.value

@@ -3106,6 +3106,18 @@ def _rollout_transition(
         row.record_version += 1
         # Any in-flight attempt goes with the decision: leaving one PENDING would
         # block the next dispatch forever on a rollout nobody is waiting for.
+        #
+        # `_load_pending_attempts` above is an unlocked read, same as
+        # `settle_attempt`'s: another writer (a concurrent `settle_attempt`,
+        # most plausibly) can append that attempt's real terminal settlement
+        # between that read and this insert. `uq_rollout_attempt_settlements_
+        # attempt` is what catches it, exactly as it does for settle_attempt --
+        # and, symmetrically, it must be absorbed by a savepoint here too, or
+        # a race that is supposed to leave one attempt's OWN outcome standing
+        # instead aborts the whole cancel/repair transaction with a raw
+        # IntegrityError. Losing this race is not a reason to refuse the
+        # transition: the other writer's settlement is the terminal one for
+        # that attempt, and this rollout is still being cancelled/repaired.
         if pending_attempts:
             assert completed_at is not None
             for attempt in pending_attempts:
@@ -3115,8 +3127,13 @@ def _rollout_transition(
                     outcome=AttemptOutcome.CANCELLED.value,
                     settled_at=completed_at,
                 )
+                try:
+                    with conflict_savepoint(session):
+                        session.add(settlement)
+                        session.flush()
+                except IntegrityError:
+                    continue
                 attempt.settlement = settlement
-                session.add(settlement)
         session.flush()
         _audit_and_emit(
             session,
