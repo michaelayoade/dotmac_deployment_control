@@ -213,6 +213,36 @@ property only: it is derived from the signed envelope and is not a second field
 that a transport can change independently. An executor verifies both the
 authorization and dispatch through `verify_dispatch_envelope` before execution.
 
+### Online single-use dispatch consumption
+
+Portable verification remains offline-capable; launch authority is not. Control
+has an internal, non-admitting staging seam which locks the persisted attempt,
+rollout, plan and target in the same transaction, parses and cross-checks the
+stored envelope coordinates and current Control standing, then writes the
+no-expiry Kernel ledger marker under
+`deployment.consume_dispatch_challenge.v1`. It does not verify an envelope
+signature at this seam: the stored rows are trusted Control state. The Kernel
+fingerprint is bare SHA-256 hex; the typed canonical digest remains in the
+ledger result.
+
+There is deliberately no public consumption endpoint and no caller-supplied
+verifier, standing assertion or authenticated-target constructor. This module
+does not currently contain the trusted composition adapter that authenticates a
+presenting executor, independently resolves and passes the expected target
+coordinate, and owns an after-commit launch. That adapter must derive the target
+id from the Control-stored credential selected by successful presenter
+authentication and load the target reference from the corresponding target row;
+neither coordinate may come from the presented envelope. Therefore staging is
+not a launch grant and this package must not launch from it. A future adapter
+must invoke staging only after independently authenticating and resolving the
+stored attempt, and must launch only after its transaction commits.
+
+Approval revocation committed before consumption refuses even a previously
+signed dispatch. A successful consumption commit is the authority cut-off;
+interruption afterwards remains refused. Recovery is a newly signed attempt,
+never marker reset or expiry. This is single-use authority consumption, not
+at-most-once external deployment: Integrator/outbox still owns delivery.
+
 ## Signed target execution observation
 
 `ExecutionObservationEnvelopeV1` is the return trust direction. The target

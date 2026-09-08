@@ -5,6 +5,27 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — staged dispatch-consumption boundary
+
+### Added
+
+- An internal staged-consumption seam which locks the persisted attempt,
+  rollout, plan and target in the existing Control transaction order, checks
+  the exact stored envelopes and current standing, then uses Kernel
+  `execute_once_platform` under `deployment.consume_dispatch_challenge.v1`.
+  The marker never expires; its fingerprint is bare SHA-256 hex and its result
+  retains the typed canonical dispatch digest.
+
+### Not changed, deliberately
+
+- There is no public consumption API, caller-supplied verifier/standing claim,
+  authentication constructor, launch grant or after-commit adapter. Control
+  currently stages only: trusted composition is still required to authenticate
+  the executor and launch after commit. A committed approval revocation refuses
+  even a prior dispatch; a committed consumption is final and recovery requires
+  a newly signed attempt. This is not external delivery, and adds no table or
+  migration; Integrator/outbox continues to own delivery and retry.
+
 ## Unreleased — the rehearsal grant
 
 ### Added

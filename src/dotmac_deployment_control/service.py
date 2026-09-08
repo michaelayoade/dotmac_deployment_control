@@ -55,10 +55,12 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
 from dotmac_kernel.audit import write_platform_audit_event
+from dotmac_kernel.idempotency import IdempotencyConflict, execute_once_platform
 from dotmac_kernel.messaging import enqueue_platform_event, process_once_platform
 
 # This module never imports `dotmac_kernel.db` or constructs an engine. Every
@@ -146,6 +148,7 @@ from dotmac_deployment_control.ports import (
     ApprovalRefusedError,
     ApprovedPlanRefusedError,
     DeliveryIntent,
+    DeploymentControlError,
     DescriptorBindingError,
     DesiredDeployment,
     DigestEncodingError,
@@ -193,11 +196,237 @@ SCOPE_SETTLE = "deployment.settle_attempt"
 SCOPE_CANCEL_ROLLOUT = "deployment.cancel_rollout"
 SCOPE_OBSERVE = "deployment.record_observation"
 
+# Internal only.  This names a single-use launch-authority consumption, not an
+# Integrator delivery retry.  Its marker deliberately has no expiry or reset.
+_SCOPE_CONSUME_DISPATCH_CHALLENGE = "deployment.consume_dispatch_challenge.v1"
+
 _ENTITY_TARGET = "deployment_target"
 _ENTITY_CREDENTIAL = "target_credential"
 _ENTITY_PLAN = "deployment_plan"
 _ENTITY_ROLLOUT = "rollout"
 _ENTITY_OBSERVATION = "deployment_observation"
+
+
+class _DispatchConsumptionRefusalCode(StrEnum):
+    """Internal non-admission outcomes for trusted composition only."""
+
+    ATTEMPT_UNRESOLVED = "dispatch_consumption_attempt_unresolved"
+    ENVELOPE_MISMATCH = "dispatch_consumption_envelope_mismatch"
+    EXPIRED = "dispatch_consumption_authorization_expired"
+    TARGET_NOT_LIVE = "dispatch_consumption_target_not_live"
+    ROLLOUT_NOT_OPEN = "dispatch_consumption_rollout_not_open"
+    ATTEMPT_NOT_PENDING = "dispatch_consumption_attempt_not_pending"
+    APPROVAL_NOT_STANDING = "dispatch_consumption_approval_not_standing"
+    ALREADY_CONSUMED = "dispatch_consumption_already_consumed"
+    INTEGRITY_CONFLICT = "dispatch_consumption_integrity_conflict"
+
+
+class _DispatchConsumptionRefusedError(TransitionRefusedError):
+    """An internal staged-consumption refusal with a stable reason code."""
+
+    def __init__(self, code: _DispatchConsumptionRefusalCode, detail: str) -> None:
+        self.code = code
+        self.detail = detail
+        super().__init__(f"{code.value}: {detail}")
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedDispatchTarget:
+    """Coordinate independently resolved by a future trusted adapter.
+
+    This type does not authenticate anybody. A future composition must derive
+    ``target_id`` from the Control-stored credential selected by successful
+    presenter authentication, then load ``target_ref`` from that target row.
+    Neither value may come from the presented envelope. No production caller of
+    the private staging seam exists today.
+    """
+
+    target_id: UUID
+    target_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StagedDispatchConsumption:
+    """A flushed ledger stage, explicitly NOT evidence of a committed launch.
+
+    This service receives a transaction owned by its caller and never commits.
+    The only safe follow-on is for a trusted adapter, after that owner confirms
+    commit, to launch the already-authenticated target.  No such adapter exists
+    in this module, so this type is intentionally private and non-admitting.
+    """
+
+    attempt_id: UUID
+    dispatch_id: str
+    dispatch_digest: DispatchEnvelopeDigestV1
+
+
+def _stage_dispatch_consumption(
+    db: Session, *, attempt_id: UUID, expected_target: _ExpectedDispatchTarget
+) -> _StagedDispatchConsumption:
+    """Stage one exact persisted dispatch for post-commit launch.
+
+    This is deliberately not a public presentation API.  It accepts no caller
+    supplied envelope, verifier, or standing claim. A trusted composition must
+    authenticate a presenting executor, derive ``expected_target.target_id`` from
+    the authenticated Control credential and ``target_ref`` from the corresponding
+    target row, own the transaction, and call this internal seam. Neither
+    coordinate may come from the presented envelope. This type itself is not
+    authentication. Control has no such adapter today, therefore this function
+    alone MUST NOT be used to launch.
+
+    The joined ``FOR UPDATE`` read serializes consumption with approval
+    revocation.  A revocation committed first refuses even a previously signed
+    dispatch; a consumption commit first is the irrevocable authority cut-off.
+    Recovery is a newly signed dispatch attempt, never a reset or expiry of this
+    marker.
+    """
+    locator = db.execute(
+        select(RolloutAttempt.rollout_id).where(RolloutAttempt.id == attempt_id)
+    ).scalar_one_or_none()
+    if locator is None:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ATTEMPT_UNRESOLVED,
+            f"dispatch attempt {attempt_id} does not exist",
+        )
+    # Match the established revocation lock order (target, then plan) before
+    # locking rollout/attempt.  It makes approval-revocation and consumption a
+    # serialized choice rather than a deadlock lottery.
+    rollout_locator = db.execute(
+        select(Rollout.target_id, Rollout.plan_id).where(Rollout.id == locator)
+    ).one_or_none()
+    if rollout_locator is None:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ATTEMPT_UNRESOLVED,
+            f"dispatch attempt {attempt_id} names no rollout",
+        )
+    target = _load_target_for_update(db, rollout_locator.target_id)
+    if (target.id, target.target_ref) != (
+        expected_target.target_id,
+        expected_target.target_ref,
+    ):
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.TARGET_NOT_LIVE,
+            "the independently resolved target coordinate does not match the "
+            "locked dispatch target",
+        )
+    plan = _load_plan_for_update(db, rollout_locator.plan_id)
+    rollout = db.execute(
+        select(Rollout)
+        .where(Rollout.id == locator)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    attempt = db.execute(
+        select(RolloutAttempt)
+        .where(RolloutAttempt.id == attempt_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if rollout is None or attempt is None or attempt.rollout_id != rollout.id:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ATTEMPT_UNRESOLVED,
+            f"dispatch attempt {attempt_id} no longer resolves coherently",
+        )
+    if attempt.dispatch_envelope is None or rollout.authorization_envelope is None:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+            "a pre-signed-dispatch record cannot become launch authority",
+        )
+    try:
+        dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+        authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    except DeploymentControlError as exc:
+        # Parsing a persisted envelope is still an admission boundary: malformed
+        # history is evidence to retain, never a substitute for authority.
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+            "the persisted authorization or dispatch envelope is unreadable",
+        ) from exc
+    digest = DispatchEnvelopeDigestV1.over_bytes(dispatch.canonical_bytes)
+    statement = dispatch.statement
+    expected = {
+        "dispatch_id": str(attempt.id),
+        "attempt_no": attempt.attempt_no,
+        "authorization_id": str(rollout.id),
+        "authorization_plan_id": str(plan.id),
+        "rollout_ref": rollout.rollout_ref,
+        "target_id": str(target.id),
+        "target_ref": target.target_ref,
+        "execution_sequence": rollout.execution_sequence,
+        "authorization_envelope_digest": AuthorizationEnvelopeDigestV1.over_bytes(
+            authorization.canonical_bytes
+        ).canonical,
+    }
+    for field, expected_value in expected.items():
+        if getattr(statement, field) != expected_value:
+            raise _DispatchConsumptionRefusedError(
+                _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+                f"the stored dispatch does not bind this attempt's {field}",
+            )
+
+    now = _control_now()
+    if now >= _as_utc(authorization.statement.expires_at):
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.EXPIRED,
+            "the stored authorization has expired before consumption",
+        )
+    if target.status != TargetStatus.ACTIVE.value:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.TARGET_NOT_LIVE,
+            f"target {target.target_ref} is {target.status!r}",
+        )
+    if rollout.status in TERMINAL_ROLLOUT_STATUSES:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ROLLOUT_NOT_OPEN,
+            f"rollout {rollout.rollout_ref} is {rollout.status!r}",
+        )
+    if attempt.outcome != AttemptOutcome.PENDING.value:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ATTEMPT_NOT_PENDING,
+            f"attempt {attempt.id} is {attempt.outcome!r}",
+        )
+    if plan.requires_approval and (
+        plan.status != PlanStatus.APPROVED.value
+        or plan.approval_decision_status != ApprovalDecisionStatus.GRANTED.value
+    ):
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING,
+            "approval revocation committed before consumption withdraws launch "
+            "authority even though the dispatch remains immutable history",
+        )
+
+    try:
+        outcome = execute_once_platform(
+            db,
+            scope=_SCOPE_CONSUME_DISPATCH_CHALLENGE,
+            key=statement.dispatch_id,
+            # Kernel fingerprints are deliberately bare 64-hex.  The typed,
+            # canonical digest remains in the durable receipt and return type.
+            fingerprint=digest.digest.hex(),
+            expires_at=None,
+            operation_name=_SCOPE_CONSUME_DISPATCH_CHALLENGE,
+            operation=lambda _session: {
+                "attempt_id": str(attempt.id),
+                "dispatch_id": statement.dispatch_id,
+                "dispatch_digest": digest.canonical,
+            },
+        )
+    except IdempotencyConflict as exc:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.INTEGRITY_CONFLICT,
+            "the dispatch id has a different persisted envelope fingerprint",
+        ) from exc
+    if outcome.replayed:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ALREADY_CONSUMED,
+            "the dispatch was already consumed; recovery requires a newly "
+            "signed attempt",
+        )
+    return _StagedDispatchConsumption(
+        attempt_id=attempt.id,
+        dispatch_id=statement.dispatch_id,
+        dispatch_digest=digest,
+    )
 
 
 # ── Commands ────────────────────────────────────────────────────────────────
@@ -2092,11 +2321,11 @@ def revoke_plan_approval(
 
     ## What it cannot reach
 
-    A rollout already dispatched. Revoking an approval does not un-deploy
-    anything and this function does not pretend otherwise — it moves the
-    authorization, and converging the fleet back is a new plan and a new
-    decision. Saying so here rather than leaving a reader to assume the
-    stronger thing.
+    A consumption that already committed. Before consumption, revocation
+    withdraws launch authority even for an already-dispatched immutable record.
+    After consumption, it may record future standing but does not undo or
+    reclaim the permanent marker or any external effect. Converging the fleet
+    back remains a new plan and new decision.
     """
 
     effective_at = _control_now()
