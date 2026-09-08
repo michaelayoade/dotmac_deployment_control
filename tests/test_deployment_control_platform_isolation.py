@@ -52,7 +52,7 @@ from dotmac_kernel.product_database_catalog import (
 )
 from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import DBAPIError, ProgrammingError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
 import dotmac_deployment_control.service as control_service
@@ -60,6 +60,7 @@ from dotmac_deployment_control import (
     PRESTATE_DISCRIMINATOR,
     ApprovalEvidence,
     ApprovePlanCommand,
+    AttemptOutcome,
     AuthorizationEnvelopeDigestV1,
     AuthorizationEnvelopeV2,
     CredentialTransitionCommand,
@@ -74,14 +75,19 @@ from dotmac_deployment_control import (
     RegisterTargetCommand,
     RequestRolloutCommand,
     RevokePlanApprovalCommand,
+    RolloutTransitionCommand,
     RuntimeIdentityV1,
     SetDesiredStateCommand,
+    SettleAttemptCommand,
     TargetFilter,
+    TransitionRefusedError,
     activate_credential,
     approve_plan,
     build_database_catalog_snapshot,
+    cancel_rollout,
     dispatch_attempt,
     enrol_credential,
+    get_rollout,
     get_target,
     issue_execution_observation_envelope,
     list_targets,
@@ -93,6 +99,7 @@ from dotmac_deployment_control import (
     revoke_credential,
     revoke_plan_approval,
     set_desired_state,
+    settle_attempt,
     spec_digest,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
@@ -101,6 +108,7 @@ from dotmac_deployment_control.models import (
     DeploymentTarget,
     Rollout,
     RolloutAttempt,
+    RolloutAttemptSettlement,
     TargetCredential,
 )
 from tests.authorization_support import SIGNER, VERIFIER
@@ -157,11 +165,17 @@ TABLES = (
     "deployment_plans",
     "rollouts",
     "rollout_attempts",
+    "rollout_attempt_settlements",
     "observation_receipts",
     "observation_attempts",
     "recovery_grants",
 )
-EVIDENCE_TABLES = ("rollout_attempts", "observation_attempts", "observation_receipts")
+EVIDENCE_TABLES = (
+    "rollout_attempts",
+    "rollout_attempt_settlements",
+    "observation_attempts",
+    "observation_receipts",
+)
 MUTABLE_TABLES = (
     "deployment_targets",
     "target_credentials",
@@ -446,7 +460,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0009_prestate_discriminator",
+                revision="dc_0010_attempt_settlements",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -560,7 +574,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 134 columns across eight tables; `dc_0005` is 105.
+    The head extent is 143 columns across nine tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, so the
     difference is the whole table rather than a column count drifting.
     """
@@ -594,7 +608,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 134
+                    == 143
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -644,8 +658,123 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 134
+                    == 143
                 )
+        finally:
+            admin.dispose()
+    finally:
+        if previous_migration_url is None:
+            os.environ.pop("MIGRATION_DATABASE_URL", None)
+        else:
+            os.environ["MIGRATION_DATABASE_URL"] = previous_migration_url
+        setup.dispose()
+        with server.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"
+                ),
+                {"n": name},
+            )
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        server.dispose()
+
+
+def test_dc_0010_copies_terminal_legacy_attempt_without_rewriting_issuance() -> None:
+    """A historical terminal outcome becomes new evidence, never a source edit."""
+    from alembic import command
+    from alembic.config import Config
+
+    superuser = _superuser_url()
+    name = f"deploy_settlement_{uuid.uuid4().hex[:10]}"
+    server = create_engine(superuser, isolation_level="AUTOCOMMIT")
+    previous_migration_url = os.environ.get("MIGRATION_DATABASE_URL")
+    with server.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}"'))
+    setup = create_engine(_url_for(superuser, name), isolation_level="AUTOCOMMIT")
+    try:
+        with setup.connect() as conn:
+            conn.execute(text("ALTER SCHEMA public OWNER TO app_admin"))
+            conn.execute(text(f'GRANT CREATE ON DATABASE "{name}" TO app_admin'))
+        admin_url = _url_for(superuser, name, user="app_admin")
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        os.environ["MIGRATION_DATABASE_URL"] = admin_url
+        command.upgrade(cfg, "dc_0009_prestate_discriminator")
+        admin = create_engine(admin_url)
+        try:
+            attempt_id = uuid.uuid4()
+            with admin.begin() as conn:
+                target_id = _insert_target(conn)
+                plan_id, rollout_id = uuid.uuid4(), uuid.uuid4()
+                attempt_id = uuid.uuid4()
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.deployment_plans ("
+                        "id, target_id, sequence, status, desired_revision, "
+                        "plan_digest, "
+                        "requires_approval, record_version) VALUES "
+                        "(:id, :target, 1, 'approved', 1, :digest, false, 1)"
+                    ),
+                    {"id": plan_id, "target": target_id, "digest": uuid.uuid4().hex},
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rollouts ("
+                        "id, rollout_ref, target_id, plan_id, status, record_version) "
+                        "VALUES (:id, :ref, :target, :plan, 'failed', 1)"
+                    ),
+                    {
+                        "id": rollout_id,
+                        "ref": f"rol-{uuid.uuid4().hex[:8]}",
+                        "target": target_id,
+                        "plan": plan_id,
+                    },
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rollout_attempts ("
+                        "id, rollout_id, attempt_no, outcome, integrator_ref, "
+                        "error_code, "
+                        "detail, settled_at) VALUES "
+                        "(:id, :rollout, 1, 'failed', 'ig-legacy', 'legacy_failure', "
+                        "'preserved legacy evidence', NULL)"
+                    ),
+                    {"id": attempt_id, "rollout": rollout_id},
+                )
+                before = conn.execute(
+                    text(
+                        "SELECT outcome, integrator_ref, error_code, detail, "
+                        "settled_at, "
+                        "created_at, updated_at FROM mod_deploy.rollout_attempts "
+                        "WHERE id = :id"
+                    ),
+                    {"id": attempt_id},
+                ).one()
+            command.upgrade(cfg, "heads")
+            with admin.connect() as conn:
+                after = conn.execute(
+                    text(
+                        "SELECT outcome, integrator_ref, error_code, detail, "
+                        "settled_at, "
+                        "created_at, updated_at FROM mod_deploy.rollout_attempts "
+                        "WHERE id = :id"
+                    ),
+                    {"id": attempt_id},
+                ).one()
+                settlements = conn.execute(
+                    text(
+                        "SELECT outcome, integrator_ref, error_code, detail, "
+                        "settled_at FROM mod_deploy.rollout_attempt_settlements "
+                        "WHERE attempt_id = :id"
+                    ),
+                    {"id": attempt_id},
+                ).all()
+            assert tuple(after) == tuple(before)
+            assert [tuple(row) for row in settlements] == [tuple(before[:5])]
+            with pytest.raises(RuntimeError, match="refuses to discard"):
+                command.downgrade(cfg, "dc_0009_prestate_discriminator")
         finally:
             admin.dispose()
     finally:
@@ -932,6 +1061,42 @@ class _HoldOneTargetLock:
         self.acquired.set()
         if not self.release.wait(timeout=30):
             raise AssertionError("the target-lock holder was never released")
+
+
+class _HoldOneRolloutLock:
+    """Pause one named worker after PostgreSQL grants the ROLLOUT row lock.
+
+    Distinct from `_HoldOneTargetLock`: `settle_attempt` and
+    `_rollout_transition` (`cancel_rollout`/`require_manual_repair`) lock the
+    rollout, never the target or plan, so a gate keyed on the target row would
+    never fire for them and this race would silently go unexercised.
+    """
+
+    def __init__(self) -> None:
+        self.holder_thread_id: int | None = None
+        self.acquired = threading.Event()
+        self.release = threading.Event()
+
+    def after_cursor_execute(
+        self,
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if threading.get_ident() != self.holder_thread_id:
+            return
+        normalised = " ".join(statement.lower().split())
+        if (
+            "from mod_deploy.rollouts" not in normalised
+            or "for update" not in normalised
+        ):
+            return
+        self.acquired.set()
+        if not self.release.wait(timeout=30):
+            raise AssertionError("the rollout-lock holder was never released")
 
 
 def _wait_until_postgres_reports_lock(engine: Engine, backend_pid: int) -> None:
@@ -1635,6 +1800,7 @@ class TestTheEvidenceTablesAreAppendOnlyAgainstEveryRole:
             with engine.begin() as conn:
                 target_id = _insert_target(conn)
                 plan_id, rollout_id = uuid.uuid4(), uuid.uuid4()
+                attempt_id = uuid.uuid4()
                 conn.execute(
                     text(
                         "INSERT INTO mod_deploy.deployment_plans ("
@@ -1664,11 +1830,46 @@ class TestTheEvidenceTablesAreAppendOnlyAgainstEveryRole:
                         " id, rollout_id, attempt_no, outcome"
                         ") VALUES (:id, :rid, 1, 'failed')"
                     ),
-                    {"id": uuid.uuid4(), "rid": rollout_id},
+                    {"id": attempt_id, "rid": rollout_id},
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rollout_attempt_settlements ("
+                        "id, attempt_id, outcome) VALUES (:id, :attempt, 'failed')"
+                    ),
+                    {"id": uuid.uuid4(), "attempt": attempt_id},
+                )
+                pending_attempt_id = uuid.uuid4()
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rollout_attempts ("
+                        "id, rollout_id, attempt_no, outcome) "
+                        "VALUES (:id, :rollout, 2, 'pending')"
+                    ),
+                    {"id": pending_attempt_id, "rollout": rollout_id},
                 )
             with engine.begin() as conn, pytest.raises(DBAPIError, match="append-only"):
                 conn.execute(
                     text("UPDATE mod_deploy.rollout_attempts SET outcome = 'succeeded'")
+                )
+            for statement in (
+                "UPDATE mod_deploy.rollout_attempt_settlements "
+                "SET outcome = 'succeeded'",
+                "DELETE FROM mod_deploy.rollout_attempt_settlements",
+                "TRUNCATE mod_deploy.rollout_attempt_settlements",
+            ):
+                with (
+                    engine.begin() as conn,
+                    pytest.raises(DBAPIError, match="append-only"),
+                ):
+                    conn.execute(text(statement))
+            with engine.begin() as conn, pytest.raises(DBAPIError, match="check"):
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rollout_attempt_settlements ("
+                        "id, attempt_id, outcome) VALUES (:id, :attempt, 'pending')"
+                    ),
+                    {"id": uuid.uuid4(), "attempt": pending_attempt_id},
                 )
         finally:
             engine.dispose()
@@ -2351,6 +2552,163 @@ def test_dispatch_consumption_rollback_and_commit_interruption(
         )
 
 
+def test_consumption_refuses_a_settlement_after_its_session_cached_no_relation(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """Admission reads the database, not an old ``attempt.settlement`` cache."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as stale:
+        cached = stale.get(RolloutAttempt, attempt_id)
+        assert cached is not None
+        assert cached.settlement is None
+        rollout_id = cached.rollout_id
+        with sessions() as settler:
+            settle_attempt(
+                settler,
+                SettleAttemptCommand(
+                    command_id=f"stale-cache-{uuid.uuid4()}",
+                    rollout_id=rollout_id,
+                    attempt_no=cached.attempt_no,
+                    outcome=AttemptOutcome.CANCELLED.value,
+                ),
+            )
+            settler.commit()
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                stale, attempt_id=attempt_id, expected_target=expected_target
+            )
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.ATTEMPT_NOT_PENDING
+        )
+        stale.rollback()
+    with Session(engine) as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE,
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+    assert marker_count == 0
+
+
+def test_rollout_view_refreshes_cached_decision_and_attempt_projection(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A view never combines stale rollout status with fresh child evidence."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as stale:
+        rollout = stale.execute(
+            select(Rollout).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+        assert rollout.status == "dispatched"
+        with sessions() as settler:
+            settle_attempt(
+                settler,
+                SettleAttemptCommand(
+                    command_id=f"stale-view-{uuid.uuid4()}",
+                    rollout_id=rollout.id,
+                    attempt_no=1,
+                    outcome=AttemptOutcome.SUCCEEDED.value,
+                ),
+            )
+            settler.commit()
+        view = get_rollout(stale, rollout.id)
+        assert view is not None
+        assert view.status == "succeeded"
+        assert view.attempts[0].outcome == AttemptOutcome.SUCCEEDED.value
+
+
+def test_settlement_unique_conflict_blocks_then_preserves_the_outer_transaction(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """The database race arbiter is real; savepoint recovery stays usable.
+
+    This proves PostgreSQL's unique conflict and the transaction shape used by
+    the service. The service-level translation is unreachable under the rollout
+    serialization lock: its losing caller observes the committed settlement at
+    the fresh precheck and raises `TransitionRefusedError` before INSERT.
+    """
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    first = sessions()
+    second = sessions()
+    ready = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    outer_usable: list[bool] = []
+    backend_pids: dict[str, int] = {}
+
+    try:
+        first.add(
+            RolloutAttemptSettlement(
+                id=uuid.uuid4(),
+                attempt_id=attempt_id,
+                outcome=AttemptOutcome.CANCELLED.value,
+            )
+        )
+        first.flush()
+
+        def lose_unique_race() -> None:
+            try:
+                backend_pids["loser"] = int(
+                    second.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                ready.set()
+                with pytest.raises(IntegrityError):
+                    with second.begin_nested():
+                        second.add(
+                            RolloutAttemptSettlement(
+                                id=uuid.uuid4(),
+                                attempt_id=attempt_id,
+                                outcome=AttemptOutcome.FAILED.value,
+                            )
+                        )
+                        second.flush()
+                outer_usable.append(
+                    second.execute(
+                        select(RolloutAttempt.id).where(RolloutAttempt.id == attempt_id)
+                    ).scalar_one()
+                    == attempt_id
+                )
+                second.commit()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                release.set()
+
+        loser = threading.Thread(target=lose_unique_race)
+        loser.start()
+        assert ready.wait(timeout=20), "unique-conflict worker did not start"
+        _wait_until_postgres_reports_lock(engine, backend_pids["loser"])
+        first.commit()
+        assert release.wait(timeout=30), "unique-conflict worker did not finish"
+        loser.join(timeout=30)
+        assert not loser.is_alive(), "unique-conflict worker deadlocked"
+    finally:
+        first.close()
+        second.close()
+    assert errors == [], errors
+    assert outer_usable == [True]
+    with Session(engine) as evidence:
+        assert (
+            evidence.execute(
+                select(func.count())
+                .select_from(RolloutAttemptSettlement)
+                .where(RolloutAttemptSettlement.attempt_id == attempt_id)
+            ).scalar_one()
+            == 1
+        )
+
+
 def test_dispatch_consumption_race_serializes_on_the_target_lock(
     observation_race: tuple[Engine, str, str, str],
 ) -> None:
@@ -2644,3 +3002,530 @@ def test_consumption_wins_the_lock_race_and_later_revocation_cannot_reclaim_it(
             )
         ).scalar_one()
         assert marker_after.id == marker.id
+
+
+# ── Cancel/settle join the dispatch-consumption lock order ──────────────────
+#
+# `settle_attempt` and `_rollout_transition` (`cancel_rollout`,
+# `require_manual_repair`) used to read the rollout and its attempts
+# UNLOCKED, and relied only on the incidental order of their eventual UPDATE
+# statements to serialize against a concurrent `_stage_dispatch_consumption`.
+# Both now take the mutable rollout `FOR UPDATE` lock. These four tests are the
+# revocation races above, replayed for cancel and settle: the gate below fires
+# on the ROLLOUT row, since service queries never explicitly `FOR UPDATE`
+# immutable attempt evidence.
+
+
+def test_cancel_wins_the_lock_race_and_consumption_refuses_rollout_not_open(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A cancel holding the rollout lock closes the rollout before consumption
+    can read it; consumption never stages a marker."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        rollout_id = lookup.execute(
+            select(Rollout.id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+    gate = _HoldOneRolloutLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def cancel_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["canceller"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                cancel_rollout(
+                    db,
+                    RolloutTransitionCommand(
+                        command_id=f"cancel-race-{uuid.uuid4()}",
+                        rollout_id=rollout_id,
+                        reason="withdrawn before dispatch resolves",
+                    ),
+                )
+                db.commit()
+                outcomes["canceller"] = "cancelled"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def consume_second() -> None:
+        try:
+            with sessions() as db:
+                try:
+                    backend_pids["consumer"] = int(
+                        db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                    )
+                    control_service._stage_dispatch_consumption(
+                        db,
+                        attempt_id=attempt_id,
+                        expected_target=expected_target,
+                    )
+                    db.commit()
+                    outcomes["consumer"] = "consumed"
+                except control_service._DispatchConsumptionRefusedError as exc:
+                    db.rollback()
+                    outcomes["consumer"] = exc.code.value
+        except BaseException as exc:
+            errors.append(exc)
+
+    canceller = threading.Thread(target=cancel_first)
+    consumer = threading.Thread(target=consume_second)
+    try:
+        canceller.start()
+        assert gate.acquired.wait(timeout=20), "canceller did not lock the rollout"
+        consumer.start()
+        deadline = time.monotonic() + 10
+        while "consumer" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "consumer" in backend_pids, "consumer did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["consumer"])
+        gate.release.set()
+        for worker in (canceller, consumer):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "cancel-first race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"cancel-first thread failed: {errors!r}"
+    assert outcomes == {
+        "canceller": "cancelled",
+        "consumer": (
+            control_service._DispatchConsumptionRefusalCode.ROLLOUT_NOT_OPEN.value
+        ),
+    }
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+        attempt = evidence.execute(
+            select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
+        ).scalar_one()
+        # `.settlement` is a lazy relationship, unlike the plain columns
+        # above -- it must be read while `evidence` is still open, or it
+        # raises DetachedInstanceError instead of proving anything.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
+    assert marker_count == 0
+
+
+def test_consumption_wins_the_lock_race_and_cancel_still_records_its_own_outcome(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A committed consumption is the permanent cut-off; a cancel that loses
+    the lock race to it still applies, but reclaims nothing.
+
+    This is the ONE outcome the review flagged as inferred rather than proven:
+    the attempt ends CANCELLED even though its dispatch was, moments earlier,
+    irrevocably authorized. The marker is the surviving proof of that
+    authorization -- asserted unchanged below.
+    """
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        rollout_id = lookup.execute(
+            select(Rollout.id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+    gate = _HoldOneRolloutLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def consume_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["consumer"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                control_service._stage_dispatch_consumption(
+                    db,
+                    attempt_id=attempt_id,
+                    expected_target=expected_target,
+                )
+                db.commit()
+                outcomes["consumer"] = "consumed"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def cancel_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["canceller"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                cancel_rollout(
+                    db,
+                    RolloutTransitionCommand(
+                        command_id=f"cancel-race-{uuid.uuid4()}",
+                        rollout_id=rollout_id,
+                        reason="operator gives up after dispatch",
+                    ),
+                )
+                db.commit()
+                outcomes["canceller"] = "cancelled"
+        except BaseException as exc:
+            errors.append(exc)
+
+    consumer = threading.Thread(target=consume_first)
+    canceller = threading.Thread(target=cancel_second)
+    try:
+        consumer.start()
+        assert gate.acquired.wait(timeout=20), "consumer did not lock the rollout"
+        canceller.start()
+        deadline = time.monotonic() + 10
+        while "canceller" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "canceller" in backend_pids, "canceller did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["canceller"])
+        gate.release.set()
+        for worker in (consumer, canceller):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "consumption-first cancel race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"consumption-first cancel thread failed: {errors!r}"
+    assert outcomes == {"consumer": "consumed", "canceller": "cancelled"}
+    with sessions() as evidence:
+        marker = evidence.execute(
+            select(PlatformIdempotencyRecord).where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+        rollout = evidence.execute(
+            select(Rollout).where(Rollout.id == rollout_id)
+        ).scalar_one()
+        attempt = evidence.execute(
+            select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
+        ).scalar_one()
+        # `.settlement` is a lazy relationship and must be read before
+        # `evidence` closes, unlike the plain columns asserted below.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.CANCELLED.value
+    # The marker is untouched -- consumption's authority cut-off is permanent.
+    assert marker.expires_at is None
+    assert marker.result["attempt_id"] == str(attempt_id)
+    # The cancel still applies its own decision on top of it.
+    assert rollout.status == "cancelled"
+
+
+def test_settle_wins_the_lock_race_and_consumption_refuses_attempt_not_pending(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A settle holding the rollout lock resolves the attempt before
+    consumption can read it as still PENDING.
+
+    The settled outcome is FAILED, not SUCCEEDED/CANCELLED: those two also
+    terminalize the ROLLOUT (`TERMINAL_ROLLOUT_STATUSES`), which would make
+    consumption refuse on `ROLLOUT_NOT_OPEN` first and never exercise the
+    attempt-level `ATTEMPT_NOT_PENDING` check this test is about.
+    """
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        rollout_id = lookup.execute(
+            select(Rollout.id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+    gate = _HoldOneRolloutLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def settle_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["settler"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                settle_attempt(
+                    db,
+                    SettleAttemptCommand(
+                        command_id=f"settle-race-{uuid.uuid4()}",
+                        rollout_id=rollout_id,
+                        attempt_no=1,
+                        outcome=AttemptOutcome.FAILED.value,
+                        error_code="transport_error",
+                    ),
+                )
+                db.commit()
+                outcomes["settler"] = "settled"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def consume_second() -> None:
+        try:
+            with sessions() as db:
+                try:
+                    backend_pids["consumer"] = int(
+                        db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                    )
+                    control_service._stage_dispatch_consumption(
+                        db,
+                        attempt_id=attempt_id,
+                        expected_target=expected_target,
+                    )
+                    db.commit()
+                    outcomes["consumer"] = "consumed"
+                except control_service._DispatchConsumptionRefusedError as exc:
+                    db.rollback()
+                    outcomes["consumer"] = exc.code.value
+        except BaseException as exc:
+            errors.append(exc)
+
+    settler = threading.Thread(target=settle_first)
+    consumer = threading.Thread(target=consume_second)
+    try:
+        settler.start()
+        assert gate.acquired.wait(timeout=20), "settler did not lock the rollout"
+        consumer.start()
+        deadline = time.monotonic() + 10
+        while "consumer" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "consumer" in backend_pids, "consumer did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["consumer"])
+        gate.release.set()
+        for worker in (settler, consumer):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "settle-first race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"settle-first thread failed: {errors!r}"
+    assert outcomes == {
+        "settler": "settled",
+        "consumer": (
+            control_service._DispatchConsumptionRefusalCode.ATTEMPT_NOT_PENDING.value
+        ),
+    }
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+        attempt = evidence.execute(
+            select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
+        ).scalar_one()
+        assert marker_count == 0
+        # `.settlement` is a lazy relationship and must be read before
+        # `evidence` closes.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.FAILED.value
+
+
+def test_two_settlements_serialize_on_rollout_and_loser_refuses_once(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """Two command ids cannot produce two terminal effects for one attempt."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        rollout_id = lookup.execute(
+            select(Rollout.id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+    gate = _HoldOneRolloutLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def settle(name: str, outcome: AttemptOutcome, *, hold: bool) -> None:
+        try:
+            with sessions() as db:
+                if hold:
+                    gate.holder_thread_id = threading.get_ident()
+                backend_pids[name] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                try:
+                    settle_attempt(
+                        db,
+                        SettleAttemptCommand(
+                            command_id=f"two-settle-{name}-{uuid.uuid4()}",
+                            rollout_id=rollout_id,
+                            attempt_no=1,
+                            outcome=outcome.value,
+                        ),
+                    )
+                    db.commit()
+                    outcomes[name] = "settled"
+                except TransitionRefusedError as exc:
+                    db.rollback()
+                    assert "already settled" in str(exc)
+                    outcomes[name] = "already_settled"
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(
+        target=settle, args=("first", AttemptOutcome.FAILED), kwargs={"hold": True}
+    )
+    second = threading.Thread(
+        target=settle, args=("second", AttemptOutcome.TIMED_OUT), kwargs={"hold": False}
+    )
+    try:
+        first.start()
+        assert gate.acquired.wait(timeout=20), "first settler did not lock rollout"
+        second.start()
+        deadline = time.monotonic() + 10
+        while "second" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "second" in backend_pids, "second settler did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["second"])
+        gate.release.set()
+        for worker in (first, second):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "two-settlement race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+    assert errors == [], errors
+    assert outcomes == {"first": "settled", "second": "already_settled"}
+    with sessions() as evidence:
+        assert (
+            evidence.execute(
+                select(func.count())
+                .select_from(RolloutAttemptSettlement)
+                .where(RolloutAttemptSettlement.attempt_id == attempt_id)
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_consumption_wins_the_lock_race_and_settle_still_records_its_own_outcome(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A committed consumption is the permanent cut-off; a settle that loses
+    the lock race to it still records what the executor reported.
+
+    Symmetric to the cancel case above: consumption never writes
+    immutable attempt issuance, so a settle that resumes after it sees the attempt
+    still PENDING and applies its own outcome without conflict -- the marker
+    stays the sole evidence the dispatch was consumed.
+    """
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        rollout_id = lookup.execute(
+            select(Rollout.id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+    gate = _HoldOneRolloutLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def consume_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["consumer"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                control_service._stage_dispatch_consumption(
+                    db,
+                    attempt_id=attempt_id,
+                    expected_target=expected_target,
+                )
+                db.commit()
+                outcomes["consumer"] = "consumed"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def settle_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["settler"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                settle_attempt(
+                    db,
+                    SettleAttemptCommand(
+                        command_id=f"settle-race-{uuid.uuid4()}",
+                        rollout_id=rollout_id,
+                        attempt_no=1,
+                        outcome=AttemptOutcome.SUCCEEDED.value,
+                    ),
+                )
+                db.commit()
+                outcomes["settler"] = "settled"
+        except BaseException as exc:
+            errors.append(exc)
+
+    consumer = threading.Thread(target=consume_first)
+    settler = threading.Thread(target=settle_second)
+    try:
+        consumer.start()
+        assert gate.acquired.wait(timeout=20), "consumer did not lock the rollout"
+        settler.start()
+        deadline = time.monotonic() + 10
+        while "settler" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "settler" in backend_pids, "settler did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["settler"])
+        gate.release.set()
+        for worker in (consumer, settler):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "consumption-first settle race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"consumption-first settle thread failed: {errors!r}"
+    assert outcomes == {"consumer": "consumed", "settler": "settled"}
+    with sessions() as evidence:
+        marker = evidence.execute(
+            select(PlatformIdempotencyRecord).where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+        rollout = evidence.execute(
+            select(Rollout).where(Rollout.id == rollout_id)
+        ).scalar_one()
+        attempt = evidence.execute(
+            select(RolloutAttempt).where(RolloutAttempt.id == attempt_id)
+        ).scalar_one()
+        # `.settlement` is a lazy relationship and must be read before
+        # `evidence` closes, unlike the plain columns asserted below.
+        assert attempt.settlement is not None
+        assert attempt.settlement.outcome == AttemptOutcome.SUCCEEDED.value
+    assert marker.expires_at is None
+    assert marker.result["attempt_id"] == str(attempt_id)
+    assert rollout.status == "succeeded"

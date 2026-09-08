@@ -591,11 +591,11 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Seven tables and 115 columns, held as the LITERAL's own shape. A future
+    """Nine tables and 143 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
-    assert canaries.CATALOGUE_TABLE_COUNT == 8
-    assert canaries.CATALOGUE_COLUMN_COUNT == 134
+    assert canaries.CATALOGUE_TABLE_COUNT == 9
+    assert canaries.CATALOGUE_COLUMN_COUNT == 143
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):

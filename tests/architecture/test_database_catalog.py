@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0009 structure declaration."""
+"""The module publishes one exact post-dc_0010 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,18 +32,18 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0009_prestate_discriminator",
+            revision="dc_0010_attempt_settlements",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0009_prestate_discriminator"
+    assert database_catalog.lineage_head == "dc_0010_attempt_settlements"
 
 
-def test_catalogue_has_exact_eight_table_134_column_extent() -> None:
-    """Eight tables and 134 columns after `dc_0009`.
+def test_catalogue_has_exact_nine_table_143_column_extent() -> None:
+    """Nine tables and 143 columns after `dc_0010`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
     `dc_0009` appends the nineteenth: Foundation's identity for the encoding
@@ -76,10 +76,11 @@ def test_catalogue_has_exact_eight_table_134_column_extent() -> None:
         "observation_receipts": 15,
         "recovery_grants": 19,
         "rollout_attempts": 12,
+        "rollout_attempt_settlements": 9,
         "rollouts": 12,
         "target_credentials": 15,
     }
-    assert sum(counts.values()) == 134
+    assert sum(counts.values()) == 143
 
 
 def test_dc_0005_appends_the_portable_authorization_to_the_rollout() -> None:
@@ -250,7 +251,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0009_prestate_discriminator",
+                revision="dc_0010_attempt_settlements",
             ),
         )
 
@@ -266,5 +267,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 134
+    assert sum(len(table.columns) for table in restored.tables) == 143
     assert {table.plane.value for table in restored.tables} == {"platform"}

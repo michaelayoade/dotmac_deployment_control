@@ -7,6 +7,7 @@ whose final type differs from the root revision, and
 ``dc_0003_execution_plan_binding`` appends the four columns that bind a plan to
 the Foundation's execution plan and to a declared operation. ``dc_0007``
 appends the exact signed dispatch to the append-only attempt that it names.
+``dc_0010`` adds immutable settlement evidence beside that issuance.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -95,7 +96,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0009_prestate_discriminator",
+    lineage_head="dc_0010_attempt_settlements",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -276,6 +277,20 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "incumbent_prestate_discriminator", 19, _VARCHAR_128, nullable=True
                 ),
+            ),
+        ),
+        _table(
+            "rollout_attempt_settlements",
+            (
+                _column("id", 1, _UUID, nullable=False),
+                _column("attempt_id", 2, _UUID, nullable=False),
+                _column("outcome", 3, _VARCHAR_20, nullable=False),
+                _column("integrator_ref", 4, _VARCHAR_200, nullable=True),
+                _column("error_code", 5, _VARCHAR_60, nullable=True),
+                _column("detail", 6, _TEXT, nullable=True),
+                _column("settled_at", 7, _TIMESTAMPTZ, nullable=True),
+                _column("created_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
+                _column("updated_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
             ),
         ),
         _table(

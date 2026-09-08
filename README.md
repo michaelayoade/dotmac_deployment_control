@@ -63,9 +63,12 @@ and the unique constraint forbids inserting it. Updating the first row breaks
 append-only semantics *and* discards the conflicting bytes. It also leaves nowhere
 for an arrival that never resolved to an identity at all.
 
-**`rollouts` + `rollout_attempts`.** A rollout is the *decision*; an attempt is one
-*execution*. Retrying does not change the decision, and one column for both
-answers neither "how many times did we try?" nor "what did we decide?".
+**`rollouts` + `rollout_attempts` + `rollout_attempt_settlements`.** A rollout is
+the *decision*; an attempt is immutable issuance evidence for one *execution*;
+its one terminal settlement is separate append-only evidence. Retrying does not
+change the decision, and no later delivery report rewrites the issuance record.
+`rollout_attempts.outcome` is retained only as legacy physical issuance data;
+the service's `AttemptView` is the supported current-outcome projection.
 
 ## Distinctions the vocabulary keeps
 
@@ -313,8 +316,10 @@ there plus one on `deployment_targets`, and
 `dc_0005_portable_authorization` appends the immutable signed authorization to
 `rollouts`; `dc_0006_observation_key_identity` adds typed verification identity
 and the monotonic execution coordinates; `dc_0007_signed_dispatch_envelope`
-appends the signed attempt document. The CURRENT declaration is seven tables
-and 115 columns. The 95
+appends the signed attempt document. `dc_0008_recovery_grants` adds the eighth
+table, `dc_0009_prestate_discriminator` appends its nineteenth column, and
+`dc_0010_attempt_settlements` adds terminal settlement evidence beside immutable
+issuance. The CURRENT declaration is nine tables and 143 columns. The 95
 above is a fact about the published a7 wheel and stays as one.
 
 `dc_0004` adds no image column to `deployment_plans`, deliberately. A plan's

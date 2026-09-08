@@ -105,6 +105,7 @@ module = ModuleManifest(
         "deployment_plans",
         "rollouts",
         "rollout_attempts",
+        "rollout_attempt_settlements",
         "observation_receipts",
         "observation_attempts",
         "recovery_grants",

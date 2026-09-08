@@ -26,6 +26,84 @@ changes, each called out here.
   rather than a race against it — see `docs/HOST_ATTESTER_ENROLMENT.md`.
   Does not build a Foundation verifier or a Platform caller.
 
+## Unreleased — cancel and settle join the dispatch-consumption lock order
+
+### Changed
+
+- **Rollout attempt settlement is now append-only evidence.**
+  `dc_0010_attempt_settlements` adds `rollout_attempt_settlements`, one
+  immutable terminal row per immutable issuance attempt. `settle_attempt` and
+  cancellation insert that row instead of updating `rollout_attempts`; the
+  unique `attempt_id` arbitrates competing terminal reports and conflicts are
+  returned as an already-settled refusal. Existing terminal rows are copied
+  into the new relation without rewriting the old issuance evidence.
+
+### Fixed
+
+`settle_attempt` and `cancel_rollout`/`require_manual_repair`
+(`_rollout_transition`) previously decided from an UNLOCKED `session.get`
+read of the rollout, with no re-read after any wait. `cancel_rollout` also
+cancelled in-flight attempts through the lazy, unlocked `row.attempts`
+relationship. That was not merely an ordering nicety — it was two live
+durable-state defects, both closed by this change:
+
+- **A cancelled rollout could keep a permanently PENDING attempt.** No lock
+  contention was even required: `cancel_rollout` reads the rollout as
+  non-terminal and lazy-loads its (empty) attempt set; a concurrent
+  `dispatch_attempt` then opens attempt #2 PENDING and commits; the
+  cancel's `UPDATE rollouts SET status='cancelled'` applies without
+  conflict. The result — a `cancelled` rollout owning an attempt stuck
+  PENDING forever — is exactly the state this module's own dispatch-side
+  invariant exists to prevent. `cancel_rollout`/`require_manual_repair` now
+  lock the rollout `FOR UPDATE` before reading its status, so a concurrent
+  `dispatch_attempt` (which locks the same rollout row before inserting)
+  genuinely blocks and then refuses once it re-reads a terminal status.
+- **`settle_attempt` had a lost update.** Two settlements of the SAME
+  attempt under different `command_id`s — realistically a timeout sweeper
+  racing a late executor callback — both read the attempt as PENDING from
+  unlocked snapshots, both passed the `outcome != PENDING` guard, and the
+  second `UPDATE` silently overwrote the first: two audit events, two
+  outbox rows, and a rollout status decided by whichever flushed last.
+  `process_once_platform`'s idempotency keys on `command_id`, so it does not
+  and cannot catch two DIFFERENT commands settling the same attempt.
+  `settle_attempt` locks the rollout, then the exact issuance attempt it is
+  settling (not "its PENDING attempts" — `settle_attempt` settles one named
+  attempt), checks a fresh settlement projection after the rollout lock. The
+  terminal record itself is never explicitly `FOR UPDATE` locked or updated;
+  its unique `attempt_id`
+  is the durable final arbiter, so the loser correctly refuses
+  `attempt ... already settled`.
+
+Both fixes lock the mutable rollout, the shared decision boundary after
+consumption's target→plan locks. Service queries never explicitly apply
+`FOR UPDATE` to issuance or settlement rows (FK referential-integrity locks may
+still occur); `require_manual_repair`
+(`settle=False`) therefore reads no attempt at all.
+
+### Documented, not changed
+
+- Consumption committing first was already, and remains, the permanent
+  authorization cut-off (see `docs/DISPATCH_CONSUMPTION.md`): a `cancel` or
+  `settle` that loses the lock race still records its own outcome afterward
+  (e.g. an attempt marked `cancelled` whose dispatch was, moments earlier,
+  irrevocably consumed). That record is a status update, not a reversal — the
+  idempotency marker and dispatch history remain the sole evidence a launch
+  was authorized, and only a newly signed attempt lets convergence continue.
+  This consequence previously applied to approval revocation only, on paper;
+  it is now named for cancel/settle too, and covered by PostgreSQL tests
+  proving both lock orderings for each.
+- The seam is written to be safe at PostgreSQL READ COMMITTED (its floor;
+  every lock and re-read is explicit and repeated after each wait) and
+  remains safe at SERIALIZABLE; this was previously unstated in `src/`.
+
+### Renamed
+
+- The dispatch-consumption refusal previously filed under `TARGET_NOT_LIVE`
+  for an independently resolved coordinate that names a *different* target
+  than the locked one is now `COORDINATE_MISMATCH` — a distinct fault from a
+  real, locked target that is not `ACTIVE`. Internal-only code; no production
+  caller exists yet.
+
 ## Unreleased — staged dispatch-consumption boundary
 
 ### Added
