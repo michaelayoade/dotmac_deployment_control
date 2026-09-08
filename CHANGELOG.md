@@ -26,6 +26,43 @@ changes, each called out here.
   rather than a race against it — see `docs/HOST_ATTESTER_ENROLMENT.md`.
   Does not build a Foundation verifier or a Platform caller.
 
+## Unreleased — cancel and settle join the dispatch-consumption lock order
+
+### Fixed
+
+- `settle_attempt` and `cancel_rollout`/`require_manual_repair`
+  (`_rollout_transition`) now lock the rollout, then its still-PENDING
+  attempts, `FOR UPDATE` before deciding — the same rollout-then-attempt
+  relative order `_stage_dispatch_consumption` already locks in. Previously
+  both read the rollout and its attempts unlocked and relied on the
+  incidental order of the eventual `UPDATE` statements to serialize against a
+  concurrent consumption; that was not a discipline the code enforced, only
+  one it happened to follow.
+
+### Documented, not changed
+
+- Consumption committing first was already, and remains, the permanent
+  authorization cut-off (see `docs/DISPATCH_CONSUMPTION.md`): a `cancel` or
+  `settle` that loses the lock race still records its own outcome afterward
+  (e.g. an attempt marked `cancelled` whose dispatch was, moments earlier,
+  irrevocably consumed). That record is a status update, not a reversal — the
+  idempotency marker and dispatch history remain the sole evidence a launch
+  was authorized, and only a newly signed attempt lets convergence continue.
+  This consequence previously applied to approval revocation only, on paper;
+  it is now named for cancel/settle too, and covered by PostgreSQL tests
+  proving both lock orderings for each.
+- The seam is written to be safe at PostgreSQL READ COMMITTED (its floor;
+  every lock and re-read is explicit and repeated after each wait) and
+  remains safe at SERIALIZABLE; this was previously unstated in `src/`.
+
+### Renamed
+
+- The dispatch-consumption refusal previously filed under `TARGET_NOT_LIVE`
+  for an independently resolved coordinate that names a *different* target
+  than the locked one is now `COORDINATE_MISMATCH` — a distinct fault from a
+  real, locked target that is not `ACTIVE`. Internal-only code; no production
+  caller exists yet.
+
 ## Unreleased — staged dispatch-consumption boundary
 
 ### Added

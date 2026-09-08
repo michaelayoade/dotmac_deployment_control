@@ -60,6 +60,7 @@ from dotmac_deployment_control import (
     PRESTATE_DISCRIMINATOR,
     ApprovalEvidence,
     ApprovePlanCommand,
+    AttemptOutcome,
     AuthorizationEnvelopeDigestV1,
     AuthorizationEnvelopeV2,
     CredentialTransitionCommand,
@@ -74,12 +75,15 @@ from dotmac_deployment_control import (
     RegisterTargetCommand,
     RequestRolloutCommand,
     RevokePlanApprovalCommand,
+    RolloutTransitionCommand,
     RuntimeIdentityV1,
     SetDesiredStateCommand,
+    SettleAttemptCommand,
     TargetFilter,
     activate_credential,
     approve_plan,
     build_database_catalog_snapshot,
+    cancel_rollout,
     dispatch_attempt,
     enrol_credential,
     get_target,
@@ -93,6 +97,7 @@ from dotmac_deployment_control import (
     revoke_credential,
     revoke_plan_approval,
     set_desired_state,
+    settle_attempt,
     spec_digest,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
@@ -932,6 +937,39 @@ class _HoldOneTargetLock:
         self.acquired.set()
         if not self.release.wait(timeout=30):
             raise AssertionError("the target-lock holder was never released")
+
+
+class _HoldOneRolloutLock:
+    """Pause one named worker after PostgreSQL grants the ROLLOUT row lock.
+
+    Distinct from `_HoldOneTargetLock`: `settle_attempt` and
+    `_rollout_transition` (`cancel_rollout`/`require_manual_repair`) lock the
+    rollout, never the target or plan, so a gate keyed on the target row would
+    never fire for them and this race would silently go unexercised.
+    """
+
+    def __init__(self) -> None:
+        self.holder_thread_id: int | None = None
+        self.acquired = threading.Event()
+        self.release = threading.Event()
+
+    def after_cursor_execute(
+        self,
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if threading.get_ident() != self.holder_thread_id:
+            return
+        normalised = " ".join(statement.lower().split())
+        if "from mod_deploy.rollouts" not in normalised or "for update" not in normalised:
+            return
+        self.acquired.set()
+        if not self.release.wait(timeout=30):
+            raise AssertionError("the rollout-lock holder was never released")
 
 
 def _wait_until_postgres_reports_lock(engine: Engine, backend_pid: int) -> None:

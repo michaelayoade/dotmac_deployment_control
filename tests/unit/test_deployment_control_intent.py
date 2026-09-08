@@ -1290,11 +1290,15 @@ class TestDispatchConsumptionStaging:
         other = _desired(db, _target(db).id)
         supplied = control_service._ExpectedDispatchTarget(other.id, other.target_ref)
 
-        with pytest.raises(control_service._DispatchConsumptionRefusedError):
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
             control_service._stage_dispatch_consumption(
                 db, attempt_id=attempt.id, expected_target=supplied
             )
 
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.COORDINATE_MISMATCH
+        )
         assert (
             db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).count()
             == 0

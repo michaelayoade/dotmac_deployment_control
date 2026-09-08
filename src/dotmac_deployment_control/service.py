@@ -213,6 +213,13 @@ class _DispatchConsumptionRefusalCode(StrEnum):
     ATTEMPT_UNRESOLVED = "dispatch_consumption_attempt_unresolved"
     ENVELOPE_MISMATCH = "dispatch_consumption_envelope_mismatch"
     EXPIRED = "dispatch_consumption_authorization_expired"
+    #: The caller's INDEPENDENTLY RESOLVED coordinate names a different target
+    #: than the one this attempt's rollout is locked against. Distinct from
+    #: `TARGET_NOT_LIVE`: this is a wrong-caller fault raised before any status
+    #: is even read, that one is a real target that is not ACTIVE. Filing both
+    #: under one code would make "which of two reasons was this?" unanswerable
+    #: from the refusal alone.
+    COORDINATE_MISMATCH = "dispatch_consumption_coordinate_mismatch"
     TARGET_NOT_LIVE = "dispatch_consumption_target_not_live"
     ROLLOUT_NOT_OPEN = "dispatch_consumption_rollout_not_open"
     ATTEMPT_NOT_PENDING = "dispatch_consumption_attempt_not_pending"
@@ -305,7 +312,7 @@ def _stage_dispatch_consumption(
         expected_target.target_ref,
     ):
         raise _DispatchConsumptionRefusedError(
-            _DispatchConsumptionRefusalCode.TARGET_NOT_LIVE,
+            _DispatchConsumptionRefusalCode.COORDINATE_MISMATCH,
             "the independently resolved target coordinate does not match the "
             "locked dispatch target",
         )
@@ -1165,6 +1172,48 @@ def _load_rollout(session: Session, rollout_id: UUID) -> Rollout:
     if row is None:
         raise TransitionRefusedError(f"rollout {rollout_id} not found")
     return row
+
+
+def _load_rollout_for_update(session: Session, rollout_id: UUID) -> Rollout:
+    """Lock a rollout row, at the same position `_stage_dispatch_consumption`
+    locks it in the target->plan->rollout->attempt order.
+
+    Any caller that goes on to lock the rollout's own attempts (directly or via
+    `_load_pending_attempts_for_update`) MUST call this first: consumption
+    always locks rollout before attempt, and a caller that reversed the order
+    would turn a benign wait into a live deadlock opportunity instead of the
+    intended serialize-then-refuse.
+    """
+    row = session.execute(
+        select(Rollout)
+        .where(Rollout.id == rollout_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if row is None:
+        raise TransitionRefusedError(f"rollout {rollout_id} not found")
+    return row
+
+
+def _load_pending_attempts_for_update(
+    session: Session, rollout_id: UUID
+) -> list[RolloutAttempt]:
+    """Lock every still-PENDING attempt of an already rollout-locked rollout.
+
+    Caller MUST hold the rollout's own lock (`_load_rollout_for_update`) first
+    -- see that function's docstring for why the order is load-bearing.
+    """
+    return list(
+        session.execute(
+            select(RolloutAttempt)
+            .where(
+                RolloutAttempt.rollout_id == rollout_id,
+                RolloutAttempt.outcome == AttemptOutcome.PENDING.value,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalars()
+    )
 
 
 def _require_expected(
@@ -2842,12 +2891,20 @@ def settle_attempt(db: Session, command: SettleAttemptCommand) -> facts.RolloutV
     """
 
     def handler(session: Session) -> Mapping[str, object]:
-        rollout = _load_rollout(session, command.rollout_id)
+        # Locked rollout-then-attempt, the same relative order
+        # `_stage_dispatch_consumption` locks in: whichever of settlement or
+        # consumption reaches this rollout first now genuinely blocks the
+        # other at the lock, rather than at an incidental later UPDATE whose
+        # ordering the unit-of-work does not promise.
+        rollout = _load_rollout_for_update(session, command.rollout_id)
         attempt = session.execute(
-            select(RolloutAttempt).where(
+            select(RolloutAttempt)
+            .where(
                 RolloutAttempt.rollout_id == rollout.id,
                 RolloutAttempt.attempt_no == command.attempt_no,
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).scalar_one_or_none()
         if attempt is None:
             raise TransitionRefusedError(
@@ -2958,7 +3015,13 @@ def _rollout_transition(
     settle: bool,
 ) -> facts.RolloutView:
     def handler(session: Session) -> Mapping[str, object]:
-        row = _load_rollout(session, command.rollout_id)
+        # Locked rollout-then-attempt, the same relative order
+        # `_stage_dispatch_consumption` locks in -- see
+        # `_load_rollout_for_update`'s docstring. Without this, an unlocked
+        # read here could decide to cancel/repair a rollout that a concurrent
+        # consumption is mid-authorizing, and only the later, incidental
+        # UPDATE would happen to serialize the two.
+        row = _load_rollout_for_update(session, command.rollout_id)
         _require_expected(
             row.rollout_ref,
             status=row.status,
@@ -2970,6 +3033,12 @@ def _rollout_transition(
             raise TransitionRefusedError(
                 f"rollout {row.rollout_ref} is {row.status!r} and is settled"
             )
+        # Locked (not the lazy `row.attempts` relationship) for the same
+        # reason the rollout row above is: a caller of THIS command deciding
+        # from an unlocked read.
+        pending_attempts = (
+            _load_pending_attempts_for_update(session, row.id) if settle else []
+        )
         previous = row.status
         row.status = to.value
         row.reason = command.reason
@@ -2978,10 +3047,9 @@ def _rollout_transition(
         row.record_version += 1
         # Any in-flight attempt goes with the decision: leaving one PENDING would
         # block the next dispatch forever on a rollout nobody is waiting for.
-        for attempt in row.attempts:
-            if attempt.outcome == AttemptOutcome.PENDING.value and settle:
-                attempt.outcome = AttemptOutcome.CANCELLED.value
-                attempt.settled_at = row.completed_at
+        for attempt in pending_attempts:
+            attempt.outcome = AttemptOutcome.CANCELLED.value
+            attempt.settled_at = row.completed_at
         session.flush()
         _audit_and_emit(
             session,
