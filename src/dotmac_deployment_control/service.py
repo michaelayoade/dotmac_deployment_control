@@ -3401,6 +3401,13 @@ def _execution_observation_disposition(
         authorization_id = UUID(statement.authorization_id)
     except ValueError:
         return ObservationDisposition.UNBOUND_REPORT.value, None, None
+    # Unlocked deliberately, not merely unguarded: every rollout/attempt column
+    # read below (`rollout_ref`, `target_id`, `execution_sequence`,
+    # `attempt_no`) is issuance evidence, frozen at INSERT and never mutated by
+    # settle/cancel/consumption -- see "immutable issuance evidence" on
+    # `Rollout`. This function never reads `status` or `outcome`, so it needs
+    # no lock ordering of its own; it is correct because of what it reads, not
+    # because of when it reads it.
     rollout = session.get(Rollout, authorization_id)
     if (
         rollout is None

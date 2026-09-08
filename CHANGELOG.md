@@ -30,14 +30,43 @@ changes, each called out here.
 
 ### Fixed
 
-- `settle_attempt` and `cancel_rollout`/`require_manual_repair`
-  (`_rollout_transition`) now lock the rollout, then its still-PENDING
-  attempts, `FOR UPDATE` before deciding — the same rollout-then-attempt
-  relative order `_stage_dispatch_consumption` already locks in. Previously
-  both read the rollout and its attempts unlocked and relied on the
-  incidental order of the eventual `UPDATE` statements to serialize against a
-  concurrent consumption; that was not a discipline the code enforced, only
-  one it happened to follow.
+`settle_attempt` and `cancel_rollout`/`require_manual_repair`
+(`_rollout_transition`) previously decided from an UNLOCKED `session.get`
+read of the rollout, with no re-read after any wait. `cancel_rollout` also
+cancelled in-flight attempts through the lazy, unlocked `row.attempts`
+relationship. That was not merely an ordering nicety — it was two live
+durable-state defects, both closed by this change:
+
+- **A cancelled rollout could keep a permanently PENDING attempt.** No lock
+  contention was even required: `cancel_rollout` reads the rollout as
+  non-terminal and lazy-loads its (empty) attempt set; a concurrent
+  `dispatch_attempt` then opens attempt #2 PENDING and commits; the
+  cancel's `UPDATE rollouts SET status='cancelled'` applies without
+  conflict. The result — a `cancelled` rollout owning an attempt stuck
+  PENDING forever — is exactly the state this module's own dispatch-side
+  invariant exists to prevent. `cancel_rollout`/`require_manual_repair` now
+  lock the rollout `FOR UPDATE` before reading its status, so a concurrent
+  `dispatch_attempt` (which locks the same rollout row before inserting)
+  genuinely blocks and then refuses once it re-reads a terminal status.
+- **`settle_attempt` had a lost update.** Two settlements of the SAME
+  attempt under different `command_id`s — realistically a timeout sweeper
+  racing a late executor callback — both read the attempt as PENDING from
+  unlocked snapshots, both passed the `outcome != PENDING` guard, and the
+  second `UPDATE` silently overwrote the first: two audit events, two
+  outbox rows, and a rollout status decided by whichever flushed last.
+  `process_once_platform`'s idempotency keys on `command_id`, so it does not
+  and cannot catch two DIFFERENT commands settling the same attempt.
+  `settle_attempt` now locks the rollout, then the exact attempt row it is
+  settling (not "its PENDING attempts" — `settle_attempt` settles one named
+  attempt), `FOR UPDATE` before checking `outcome`, so the loser of the race
+  blocks and then correctly refuses `attempt ... already settled`.
+
+Both fixes lock rollout-then-attempt, the same relative order
+`_stage_dispatch_consumption` already locks in (target→plan→rollout→
+attempt) — a genuine subsequence of one consistent global order, not a
+second, competing one. `require_manual_repair` (`settle=False`) locks the
+rollout only; it does not cancel or otherwise touch any attempt, so it takes
+no attempt lock.
 
 ### Documented, not changed
 

@@ -60,10 +60,17 @@ is the sole evidence for that.
 
 ## Isolation level
 
-Every lock this seam and its callers take is an explicit `SELECT ... FOR
-UPDATE`, and every check that follows a wait re-reads the row
-(`populate_existing=True`) rather than trusting a value read before the wait.
-That makes the whole boundary correct at PostgreSQL's default READ COMMITTED
-— its floor — and it remains correct, unchanged, at SERIALIZABLE. Nothing here
-depends on snapshot isolation or on a stronger level than the database's
-default.
+Scoped to this boundary — `_stage_dispatch_consumption`, `revoke_plan_approval`,
+`settle_attempt`, and `_rollout_transition` (`cancel_rollout`/
+`require_manual_repair`) — not a module-wide claim. Every lock THESE take is
+an explicit `SELECT ... FOR UPDATE`, and every check that follows a wait
+re-reads the row (`populate_existing=True`) rather than trusting a value read
+before the wait. That makes this boundary correct at PostgreSQL's default
+READ COMMITTED — its floor — and it remains correct, unchanged, at
+SERIALIZABLE. Nothing here depends on snapshot isolation or on a stronger
+level than the database's default.
+
+Not every mutation in this module holds to the same discipline yet — e.g.
+`cancel_plan` decides from an unlocked `_load_plan` plus an unlocked
+rollout-existence check, and only takes the plan lock at flush, which is a
+separate, pre-existing gap outside this boundary.

@@ -1283,6 +1283,35 @@ class TestDispatchConsumptionStaging:
             is control_service._DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING
         )
 
+    def test_a_suspended_target_refuses_even_with_the_correct_coordinate(
+        self, db: Session
+    ) -> None:
+        """`COORDINATE_MISMATCH` and `TARGET_NOT_LIVE` are two different
+        faults sharing one raise site's neighbourhood, not one composite
+        condition: suspension changes `status`, never `id`/`target_ref`, so
+        the coordinate check at the top of the function passes and control
+        reaches the later status check instead."""
+        attempt = self._attempt(db)
+        expected_target = self._expected_target(db, attempt)
+        rollout = db.get(Rollout, attempt.rollout_id)
+        assert rollout is not None
+        suspend_target(db, TargetTransitionCommand(_cmd(), rollout.target_id))
+        db.commit()
+
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                db, attempt_id=attempt.id, expected_target=expected_target
+            )
+
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.TARGET_NOT_LIVE
+        )
+        assert (
+            db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).count()
+            == 0
+        )
+
     def test_other_target_cannot_stage_this_attempt_or_write_a_marker(
         self, db: Session
     ) -> None:
