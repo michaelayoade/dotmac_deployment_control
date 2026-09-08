@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from dotmac_kernel.audit_actions import AuditActionRegistry, install_audit_actions
+from dotmac_kernel.idempotency import purge_expired
 from dotmac_kernel.idempotency_models import (
     INBOX_SCOPE,
     IdempotencyStatus,
@@ -1141,3 +1142,160 @@ class TestTheModuleOwnsNoTransaction:
         db.rollback()
         assert get_target(db, target.id) is None
         assert get_rollout(db, uuid.uuid4()) is None
+
+
+class TestDispatchConsumptionStaging:
+    """SQLite proves service wiring only; PostgreSQL race proof lives separately."""
+
+    @staticmethod
+    def _attempt(db: Session) -> RolloutAttempt:
+        target = _desired(db, _target(db).id)
+        rollout = _rollout(db, _approved_plan(db, target.id).id)
+        dispatch_attempt(
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
+        )
+        return db.query(RolloutAttempt).filter_by(rollout_id=rollout.id).one()
+
+    @staticmethod
+    def _expected_target(
+        db: Session, attempt: RolloutAttempt
+    ) -> control_service._ExpectedDispatchTarget:
+        rollout = db.get(Rollout, attempt.rollout_id)
+        assert rollout is not None
+        target = get_target(db, rollout.target_id)
+        assert target is not None
+        return control_service._ExpectedDispatchTarget(target.id, target.target_ref)
+
+    def test_staging_writes_a_permanent_bare_fingerprint_receipt(
+        self, db: Session
+    ) -> None:
+        attempt = self._attempt(db)
+
+        staged = control_service._stage_dispatch_consumption(
+            db,
+            attempt_id=attempt.id,
+            expected_target=self._expected_target(db, attempt),
+        )
+
+        record = (
+            db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).one()
+        )
+        assert staged.dispatch_id == str(attempt.id)
+        assert record.scope == "deployment.consume_dispatch_challenge.v1"
+        assert record.fingerprint == staged.dispatch_digest.digest.hex()
+        assert record.expires_at is None
+        assert record.result["dispatch_digest"] == staged.dispatch_digest.canonical
+
+    def test_commit_then_interruption_refuses_a_second_consumption(
+        self, db: Session
+    ) -> None:
+        attempt = self._attempt(db)
+        control_service._stage_dispatch_consumption(
+            db,
+            attempt_id=attempt.id,
+            expected_target=self._expected_target(db, attempt),
+        )
+        db.commit()  # Simulates a process dying after durable authority cut-off.
+
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                db,
+                attempt_id=attempt.id,
+                expected_target=self._expected_target(db, attempt),
+            )
+
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.ALREADY_CONSUMED
+        )
+
+    def test_kernel_expiry_sweep_cannot_reclaim_a_consumed_dispatch(
+        self, db: Session
+    ) -> None:
+        attempt = self._attempt(db)
+        control_service._stage_dispatch_consumption(
+            db,
+            attempt_id=attempt.id,
+            expected_target=self._expected_target(db, attempt),
+        )
+        db.commit()
+
+        removed = purge_expired(
+            db,
+            now=_NOW + timedelta(days=3650),
+            scope="deployment.consume_dispatch_challenge.v1",
+            platform=True,
+        )
+
+        assert removed == 0
+        assert (
+            db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).count()
+            == 1
+        )
+
+    def test_rollback_discards_the_marker_so_the_retry_can_stage(
+        self, db: Session
+    ) -> None:
+        attempt = self._attempt(db)
+        db.commit()
+        control_service._stage_dispatch_consumption(
+            db,
+            attempt_id=attempt.id,
+            expected_target=self._expected_target(db, attempt),
+        )
+        db.rollback()
+
+        staged = control_service._stage_dispatch_consumption(
+            db,
+            attempt_id=attempt.id,
+            expected_target=self._expected_target(db, attempt),
+        )
+
+        assert staged.dispatch_id == str(attempt.id)
+
+    def test_committed_revocation_before_consumption_refuses(self, db: Session) -> None:
+        attempt = self._attempt(db)
+        rollout = db.get(Rollout, attempt.rollout_id)
+        assert rollout is not None
+        revoke_plan_approval(
+            db,
+            RevokePlanApprovalCommand(
+                command_id=_cmd(),
+                plan_id=rollout.plan_id,
+                revocation_ref="withdrawn-decision",
+            ),
+        )
+        db.commit()
+
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                db,
+                attempt_id=attempt.id,
+                expected_target=self._expected_target(db, attempt),
+            )
+
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING
+        )
+
+    def test_other_target_cannot_stage_this_attempt_or_write_a_marker(
+        self, db: Session
+    ) -> None:
+        attempt = self._attempt(db)
+        other = _desired(db, _target(db).id)
+        supplied = control_service._ExpectedDispatchTarget(other.id, other.target_ref)
+
+        with pytest.raises(control_service._DispatchConsumptionRefusedError):
+            control_service._stage_dispatch_consumption(
+                db, attempt_id=attempt.id, expected_target=supplied
+            )
+
+        assert (
+            db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).count()
+            == 0
+        )

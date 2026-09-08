@@ -43,17 +43,19 @@ from dotmac_kernel.database_catalog_comparator import (
     observe_postgres_tables_columns,
     verify_module_database_catalog,
 )
+from dotmac_kernel.idempotency_models import PlatformIdempotencyRecord
 from dotmac_kernel.migrations import versions_dir as kernel_versions_dir
 from dotmac_kernel.product_database_catalog import (
     ComposedDatabaseLineageHeadV1,
     DatabaseCatalogOwnerKind,
     DatabaseCatalogOwnerV1,
 )
-from sqlalchemy import create_engine, event, select, text
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     PRESTATE_DISCRIMINATOR,
     ApprovalEvidence,
@@ -2294,3 +2296,351 @@ class TestTheApprovalStandingProjectionHoldsOnPostgres:
                 )
         finally:
             session.close()
+
+
+# ── Dispatch-consumption transaction proof ─────────────────────────────────
+
+
+def _dispatch_attempt_id(engine: Engine, rollout_ref: str):
+    with Session(engine) as db:
+        return db.execute(
+            select(RolloutAttempt.id)
+            .join(Rollout, RolloutAttempt.rollout_id == Rollout.id)
+            .where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+
+def _expected_dispatch_target(engine: Engine, rollout_ref: str):
+    with Session(engine) as db:
+        target = db.execute(
+            select(DeploymentTarget)
+            .join(Rollout, Rollout.target_id == DeploymentTarget.id)
+            .where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+        return control_service._ExpectedDispatchTarget(target.id, target.target_ref)
+
+
+def test_dispatch_consumption_rollback_and_commit_interruption(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """PostgreSQL sessions prove rollback retry and commit-then-interruption."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as first:
+        control_service._stage_dispatch_consumption(
+            first, attempt_id=attempt_id, expected_target=expected_target
+        )
+        first.rollback()
+    with sessions() as winner:
+        control_service._stage_dispatch_consumption(
+            winner, attempt_id=attempt_id, expected_target=expected_target
+        )
+        winner.commit()
+    with sessions() as interrupted_retry:
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                interrupted_retry,
+                attempt_id=attempt_id,
+                expected_target=expected_target,
+            )
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.ALREADY_CONSUMED
+        )
+
+
+def test_dispatch_consumption_race_serializes_on_the_target_lock(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """Independent PostgreSQL sessions race; exactly one marker may commit."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    outcomes: list[str] = []
+    backend_pids: dict[str, int] = {}
+    errors: list[BaseException] = []
+
+    def consume(holder: bool) -> None:
+        try:
+            with sessions() as db:
+                if holder:
+                    gate.holder_thread_id = threading.get_ident()
+                try:
+                    backend_pids["first" if holder else "second"] = int(
+                        db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                    )
+                    control_service._stage_dispatch_consumption(
+                        db, attempt_id=attempt_id, expected_target=expected_target
+                    )
+                    db.commit()
+                    outcomes.append("consumed")
+                except control_service._DispatchConsumptionRefusedError as exc:
+                    db.rollback()
+                    outcomes.append(exc.code.value)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=consume, args=(True,))
+    second = threading.Thread(target=consume, args=(False,))
+    try:
+        first.start()
+        assert gate.acquired.wait(timeout=20), "first consumer did not lock target"
+        second.start()
+        deadline = time.monotonic() + 10
+        while "second" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "second" in backend_pids, "second consumer did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["second"])
+        gate.release.set()
+        for worker in (first, second):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "consumption race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+    assert errors == [], f"consumer thread failed: {errors!r}"
+    assert sorted(outcomes) == [
+        "consumed",
+        control_service._DispatchConsumptionRefusalCode.ALREADY_CONSUMED.value,
+    ]
+
+
+def test_committed_revocation_refuses_a_dispatched_attempt(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """The revocation side of the serialized cut-off is DB-backed too."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as revoker:
+        plan_id = revoker.execute(
+            select(Rollout.plan_id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+        revoke_plan_approval(
+            revoker,
+            RevokePlanApprovalCommand(
+                command_id=f"consume-revoke-{uuid.uuid4()}",
+                plan_id=plan_id,
+                revocation_ref=f"withdraw-{uuid.uuid4()}",
+            ),
+        )
+        revoker.commit()
+    with sessions() as consumer:
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                consumer, attempt_id=attempt_id, expected_target=expected_target
+            )
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING
+        )
+
+
+def test_revocation_wins_the_lock_race_and_consumption_writes_no_marker(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A revocation holding the target lock withdraws launch authority first."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        plan_id = lookup.execute(
+            select(Rollout.plan_id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def revoke_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["revoker"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                revoke_plan_approval(
+                    db,
+                    RevokePlanApprovalCommand(
+                        command_id=f"consume-race-revoke-{uuid.uuid4()}",
+                        plan_id=plan_id,
+                        revocation_ref=f"withdraw-{uuid.uuid4()}",
+                    ),
+                )
+                db.commit()
+                outcomes["revoker"] = "revoked"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def consume_second() -> None:
+        try:
+            with sessions() as db:
+                try:
+                    backend_pids["consumer"] = int(
+                        db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                    )
+                    control_service._stage_dispatch_consumption(
+                        db,
+                        attempt_id=attempt_id,
+                        expected_target=expected_target,
+                    )
+                    db.commit()
+                    outcomes["consumer"] = "consumed"
+                except control_service._DispatchConsumptionRefusedError as exc:
+                    db.rollback()
+                    outcomes["consumer"] = exc.code.value
+        except BaseException as exc:
+            errors.append(exc)
+
+    revoker = threading.Thread(target=revoke_first)
+    consumer = threading.Thread(target=consume_second)
+    try:
+        revoker.start()
+        assert gate.acquired.wait(timeout=20), "revoker did not lock the target"
+        consumer.start()
+        deadline = time.monotonic() + 10
+        while "consumer" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "consumer" in backend_pids, "consumer did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["consumer"])
+        gate.release.set()
+        for worker in (revoker, consumer):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "revocation-first race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"revocation-first thread failed: {errors!r}"
+    assert outcomes == {
+        "revoker": "revoked",
+        "consumer": (
+            control_service._DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING.value
+        ),
+    }
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+    assert marker_count == 0
+
+
+def test_consumption_wins_the_lock_race_and_later_revocation_cannot_reclaim_it(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A committed marker survives a revocation that was blocked behind it."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    attempt_id = _dispatch_attempt_id(engine, rollout_ref)
+    expected_target = _expected_dispatch_target(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as lookup:
+        plan_id = lookup.execute(
+            select(Rollout.plan_id).where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def consume_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["consumer"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                control_service._stage_dispatch_consumption(
+                    db,
+                    attempt_id=attempt_id,
+                    expected_target=expected_target,
+                )
+                db.commit()
+                outcomes["consumer"] = "consumed"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def revoke_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["revoker"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                revoke_plan_approval(
+                    db,
+                    RevokePlanApprovalCommand(
+                        command_id=f"consume-race-revoke-{uuid.uuid4()}",
+                        plan_id=plan_id,
+                        revocation_ref=f"withdraw-{uuid.uuid4()}",
+                    ),
+                )
+                db.commit()
+                outcomes["revoker"] = "revoked"
+        except BaseException as exc:
+            errors.append(exc)
+
+    consumer = threading.Thread(target=consume_first)
+    revoker = threading.Thread(target=revoke_second)
+    try:
+        consumer.start()
+        assert gate.acquired.wait(timeout=20), "consumer did not lock the target"
+        revoker.start()
+        deadline = time.monotonic() + 10
+        while "revoker" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "revoker" in backend_pids, "revoker did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["revoker"])
+        gate.release.set()
+        for worker in (consumer, revoker):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "consumption-first race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"consumption-first thread failed: {errors!r}"
+    assert outcomes == {"consumer": "consumed", "revoker": "revoked"}
+    with sessions() as evidence:
+        marker = evidence.execute(
+            select(PlatformIdempotencyRecord).where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+        assert marker.expires_at is None
+        assert marker.result["attempt_id"] == str(attempt_id)
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                evidence,
+                attempt_id=attempt_id,
+                expected_target=expected_target,
+            )
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING
+        )
+        marker_after = evidence.execute(
+            select(PlatformIdempotencyRecord).where(
+                PlatformIdempotencyRecord.scope
+                == "deployment.consume_dispatch_challenge.v1",
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+        assert marker_after.id == marker.id
