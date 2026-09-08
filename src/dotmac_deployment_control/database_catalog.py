@@ -280,6 +280,20 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
             ),
         ),
         _table(
+            "rollout_attempt_settlements",
+            (
+                _column("id", 1, _UUID, nullable=False),
+                _column("attempt_id", 2, _UUID, nullable=False),
+                _column("outcome", 3, _VARCHAR_20, nullable=False),
+                _column("integrator_ref", 4, _VARCHAR_200, nullable=True),
+                _column("error_code", 5, _VARCHAR_60, nullable=True),
+                _column("detail", 6, _TEXT, nullable=True),
+                _column("settled_at", 7, _TIMESTAMPTZ, nullable=True),
+                _column("created_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
+                _column("updated_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
+            ),
+        ),
+        _table(
             "rollout_attempts",
             (
                 _column("id", 1, _UUID, nullable=False),
@@ -301,20 +315,6 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 # reserved for pre-a11 history; the existing append-only
                 # trigger makes the value immutable after INSERT.
                 _column("dispatch_envelope", 12, _JSONB, nullable=True),
-            ),
-        ),
-        _table(
-            "rollout_attempt_settlements",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("attempt_id", 2, _UUID, nullable=False),
-                _column("outcome", 3, _VARCHAR_20, nullable=False),
-                _column("integrator_ref", 4, _VARCHAR_200, nullable=True),
-                _column("error_code", 5, _VARCHAR_60, nullable=True),
-                _column("detail", 6, _TEXT, nullable=True),
-                _column("settled_at", 7, _TIMESTAMPTZ, nullable=True),
-                _column("created_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
-                _column("updated_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
             ),
         ),
         _table(
