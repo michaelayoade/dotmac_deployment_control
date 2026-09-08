@@ -46,7 +46,10 @@ SRC = PACKAGE_ROOT / "src/dotmac_deployment_control"
 #: siblings.
 MIGRATIONS = sorted((SRC / "migrations/versions").glob("dc_*.py"))
 
-#: The three tables whose whole value is that nobody can adjust them.
+#: The tables whose whole value is that nobody can adjust them. Every use
+#: below is `for table in EVIDENCE_TABLES:` -- membership, never position --
+#: so this is a SET obligation: it needs every evidence table named once,
+#: in no particular order, not lexical sort and not declaration order.
 EVIDENCE_TABLES = (
     "rollout_attempts",
     "rollout_attempt_settlements",
@@ -254,6 +257,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             RecoveryGrant,
             Rollout,
             RolloutAttempt,
+            RolloutAttemptSettlement,
             TargetCredential,
         )
 
@@ -263,6 +267,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             DeploymentPlan,
             Rollout,
             RolloutAttempt,
+            RolloutAttemptSettlement,
             ObservationReceipt,
             ObservationAttempt,
             RecoveryGrant,

@@ -1312,6 +1312,20 @@ CATALOGUE_TABLES: tuple[
         ),
     ),
     (
+        "rollout_attempt_settlements",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("attempt_id", 2, _UUID, False, ""),
+            ("outcome", 3, _V20, False, ""),
+            ("integrator_ref", 4, _V200, True, ""),
+            ("error_code", 5, _V60, True, ""),
+            ("detail", 6, _TEXT, True, ""),
+            ("settled_at", 7, _TS, True, ""),
+            ("created_at", 8, _TS, False, "now()"),
+            ("updated_at", 9, _TS, False, "now()"),
+        ),
+    ),
+    (
         "rollout_attempts",
         (
             ("id", 1, _UUID, False, ""),
@@ -1327,20 +1341,6 @@ CATALOGUE_TABLES: tuple[
             ("updated_at", 11, _TS, False, "now()"),
             # dc_0007: exact signed attempt, nullable only for old rows.
             ("dispatch_envelope", 12, _JSONB, True, ""),
-        ),
-    ),
-    (
-        "rollout_attempt_settlements",
-        (
-            ("id", 1, _UUID, False, ""),
-            ("attempt_id", 2, _UUID, False, ""),
-            ("outcome", 3, _V20, False, ""),
-            ("integrator_ref", 4, _V200, True, ""),
-            ("error_code", 5, _V60, True, ""),
-            ("detail", 6, _TEXT, True, ""),
-            ("settled_at", 7, _TS, True, ""),
-            ("created_at", 8, _TS, False, "now()"),
-            ("updated_at", 9, _TS, False, "now()"),
         ),
     ),
     (
