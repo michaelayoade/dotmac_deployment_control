@@ -5,6 +5,27 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — host-attester enrolment and rotation
+
+### Added
+
+- `host_attester_enrolment.py`: the issuing-side contract binding a Fleet
+  `host_id` to an attester incarnation, where the incarnation IS the
+  attester-key fingerprint rather than a second, independently authored
+  field. `evaluate_enrolment` refuses fingerprint reuse across hosts, reuse
+  by the same host of its own prior (superseded) key, and any re-enrolment
+  of a revoked fingerprint — permanently, with no operation in this module's
+  surface that reverses a `SUPERSEDED`/`REVOKED` status. `host_attester_
+  standing` answers, from a caller-supplied registry snapshot, whether a
+  fingerprint is currently the enrolled attester for a host. No table or
+  migration: the fingerprint registry (`active_by_host`,
+  `known_fingerprints`) is caller-supplied, the same shape
+  `recovery_grant.py`'s `revoked_grant_ids` and `rehearsal_grant.py`'s
+  `consumed_references` already use, because persistence for this contract
+  needs sequencing with a sibling lane's `models.py`/migration territory
+  rather than a race against it — see `docs/HOST_ATTESTER_ENROLMENT.md`.
+  Does not build a Foundation verifier or a Platform caller.
+
 ## Unreleased — staged dispatch-consumption boundary
 
 ### Added
