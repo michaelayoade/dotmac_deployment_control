@@ -111,12 +111,14 @@ from dotmac_deployment_control.models import (
     AttestationEnrolment,
     AttestationFingerprintClosure,
 )
-from dotmac_deployment_control.ports import DeploymentControlError
+from dotmac_deployment_control.ports import DeploymentControlError, DigestEncodingError
 
 __all__ = [
     "AttestationCurrentRootDrift",
     "AttestationRefusalCode",
     "AttestationRefusedError",
+    "AttestationRootRefusal",
+    "AttestationRootResolution",
     "AttestationRootView",
     "enrol_root",
     "fingerprint_standing",
@@ -307,7 +309,8 @@ def repair_current_root(db: Session, *, custody_domain: str, subject: str) -> No
     currently open for this `(custody_domain, subject)`
     (`AttestationRefusalCode.AMBIGUOUS_CURRENT_ROOT`). This function used to
     persist `_derive_current_fingerprint`'s most-recent-wins pick in that
-    case; doing so is worse than `resolve_current_root` answering ambiguously,
+    case; doing so is worse than `resolve_current_root`'s own explicit
+    `AttestationRootRefusal.REGISTRY_DISAGREEMENT` refusal,
     because a WRITE turns a transient registry inconsistency into DURABLE
     state that every later reader -- including `reconcile_current_root`
     itself, since it compares against the now-"repaired" projection -- would
@@ -372,6 +375,33 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
     two caller-supplied mappings replaced by this module's own tables. See the
     module docstring for the naming tension in reusing `HostAttesterStanding`
     for the candidate-release domain too.
+
+    Carries the SAME ambiguity guarantee `resolve_current_root` carries,
+    fixed here after an independent security review of PR #51 found this
+    sibling function did not: a fingerprint that is itself open (no
+    closure) is still checked against `_count_open_enrolments` for its OWN
+    `(custody_domain, subject)` before its standing against the projection
+    pointer is trusted. Without this, two open, unclosed enrolments for one
+    subject (raw SQL, a restored backup -- this module's own named threat
+    model) let a projection pointer that happens to name one of the two
+    report that fingerprint `VALID` with no signal the registry disputes
+    it, while `resolve_current_root` for the identical subject correctly
+    refused with `REGISTRY_DISAGREEMENT` -- two functions in one facade
+    disagreeing about whether trust is in dispute, with the more permissive
+    one winning for any caller that happened to ask it instead.
+
+    A remaining scope boundary, correct for this signature and not a
+    defect: this function takes NO requested-subject parameter, so it
+    cannot detect "valid key, wrong subject" -- a projection corrupted to
+    point subject S at subject S2's genuinely valid fingerprint reports
+    that fingerprint `VALID` (it derives `(custody_domain, subject)` from
+    the fingerprint's OWN row and finds S2's registry unambiguous, which is
+    true), where `resolve_current_root(db, custody_domain=D, subject=S)`
+    correctly refuses with `DRIFT` because it validates the resolved
+    enrolment's subject against the one REQUESTED. A caller that needs
+    subject-bound standing, not merely fingerprint-bound standing, must use
+    `resolve_current_root`/`resolve_attestation_binding`, never this
+    function alone.
     """
     enrolment = _enrolment(db, fingerprint)
     if enrolment is None:
@@ -381,6 +411,17 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
         if closure.closure_kind == FingerprintStatus.REVOKED.value:
             return HostAttesterStanding.REVOKED
         return HostAttesterStanding.SUPERSEDED
+    # This fingerprint is OPEN (no closure row) -- but is it the ONLY open
+    # enrolment for its own subject/domain? Checked BEFORE the projection
+    # pointer is trusted for anything, the same "ambiguity is a refusal,
+    # never a tie-break" rule `resolve_current_root` already applies.
+    if (
+        _count_open_enrolments(
+            db, custody_domain=enrolment.custody_domain, subject=enrolment.subject
+        )
+        > 1
+    ):
+        return HostAttesterStanding.REGISTRY_DISAGREEMENT
     current = _current_fingerprint(
         db, custody_domain=enrolment.custody_domain, subject=enrolment.subject
     )
@@ -399,29 +440,125 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
     return HostAttesterStanding.VALID
 
 
+class AttestationRootRefusal(StrEnum):
+    """Why `resolve_current_root` could not return a trust root -- THREE
+    DISTINCT refusals, never collapsed into one undifferentiated absence.
+
+    Michael's ruling (2026-09-09, after #50, repairing an earlier version of
+    this module that answered every one of these with a bare `None`): a
+    verifier reading `None` as "nothing enrolled yet, bootstrap is fine" is
+    the failure this closes -- the most permissive reading of the most
+    alarming state. `resolve_current_root` used to collapse absence, a
+    substituted subject/domain, a closed-fingerprint pointer, and a
+    genuinely ambiguous registry into that single value; this enum gives
+    each its own name, and `AttestationRootResolution` (below) is what
+    carries it back to the caller.
+
+    **Not the same enum as `HostAttesterStanding`, deliberately.**
+    `HostAttesterStanding` already has a member spelled `REGISTRY_DISAGREEMENT`,
+    but it answers a differently-SHAPED question -- "what is this ONE
+    fingerprint's standing, given two caller-supplied maps" (fingerprint-keyed)
+    -- from the one this enum answers: "does this SUBJECT have exactly one
+    current root, per the registry's own append-only tables" (subject-keyed).
+    The member name coincides because the underlying idea (two signals that
+    should agree do not) is the same shape of problem; the enums stay
+    separate because the questions are not interchangeable -- the same
+    reason `AttestationRefusalCode` (this module's own write-path refusals)
+    was already kept separate from `HostAttesterEnrolmentRefusalCode` rather
+    than merged into one enum spanning both modules.
+    """
+
+    #: No open enrolment at all for this `(custody_domain, subject)` --
+    #: the ordinary "nothing enrolled yet" case. Routine, not alarming.
+    ABSENT = "attestation_root_absent"
+    #: More than one enrolment is currently open (no closure row) for this
+    #: exact `(custody_domain, subject)`. The append-only truth itself does
+    #: not agree on a single answer, even though the projection's primary
+    #: key can only ever name one. NEVER a newest-wins tie-break -- the
+    #: same refusal `_derive_current_fingerprint` and `repair_current_root`
+    #: already make on the write side, extended here to the read path.
+    REGISTRY_DISAGREEMENT = "attestation_root_registry_disagreement"
+    #: The projection (or the resolved enrolment's own stored material)
+    #: disagrees with the append-only truth it is supposed to accelerate:
+    #: an unknown fingerprint, a fingerprint enrolled for a DIFFERENT
+    #: subject/custody-domain than requested, a fingerprint the closures
+    #: table has already closed, or a stored `public_key_fingerprint` that
+    #: does not match what is independently RECOMPUTED from the stored
+    #: `public_key_b64` material. Never repaired here --
+    #: `reconcile_current_root`/`repair_current_root` are the separate,
+    #: explicit write path, and this read path does not call either.
+    DRIFT = "attestation_root_drift"
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationRootResolution:
+    """The typed answer `resolve_current_root` returns. EXACTLY one of
+    `root`/`refusal` is set -- enforced in `__post_init__`, not merely by
+    convention, so a caller cannot construct (or receive) a value that is
+    silently both a root and a refusal, or neither."""
+
+    root: AttestationRootView | None
+    refusal: AttestationRootRefusal | None
+
+    def __post_init__(self) -> None:
+        if (self.root is None) == (self.refusal is None):
+            raise ValueError(
+                "an AttestationRootResolution carries exactly one of "
+                "root/refusal, never both and never neither"
+            )
+
+
+def _absent() -> AttestationRootResolution:
+    return AttestationRootResolution(root=None, refusal=AttestationRootRefusal.ABSENT)
+
+
+def _registry_disagreement() -> AttestationRootResolution:
+    return AttestationRootResolution(
+        root=None, refusal=AttestationRootRefusal.REGISTRY_DISAGREEMENT
+    )
+
+
+def _drift() -> AttestationRootResolution:
+    return AttestationRootResolution(root=None, refusal=AttestationRootRefusal.DRIFT)
+
+
 def resolve_current_root(
     db: Session, *, custody_domain: str, subject: str
-) -> AttestationRootView | None:
-    """The typed projection a Foundation/Platform verifier resolves against.
+) -> AttestationRootResolution:
+    """The typed resolution a Foundation/Platform verifier resolves against.
 
-    Returns `None` (`ABSENT`) rather than raising -- absence is a fact, not a
-    failure, exactly as `host_attester_enrolment`'s own docstring rules for
-    `HostAttesterStanding.ABSENT`.
+    Returns a typed `AttestationRootResolution` rather than raising --
+    absence, disagreement and drift are all facts about the registry's
+    current state, not failures of this call, exactly as
+    `host_attester_enrolment`'s own docstring rules for
+    `HostAttesterStanding.ABSENT`. See `AttestationRootRefusal`'s own
+    docstring for what each of the three refusals means and why they are
+    kept distinct rather than collapsed.
 
     `AttestationCurrentRoot` ACCELERATES this read; it does not DECIDE it.
-    Standing is derived from the append-only tables -- enrolment minus
-    closure -- every time, so a projection row that names a fingerprint the
-    closures table has since revoked or superseded is refused HERE, before
-    any reconciliation runs. Under this module's own writers that row would
-    already have been deleted (`revoke_root`) or moved
-    (`rotate_root`), but a raw-SQL write, a restored backup, or a corrupted
-    projection row must not be trusted to have kept that invariant -- the
-    same "never trust one signal alone" principle `fingerprint_standing`
-    already applies by checking the closures table directly rather than
-    inferring REVOKED from the pointer's absence.
+    The result is derived from the append-only tables -- enrolment minus
+    closure, plus an independently RECOMPUTED fingerprint -- every time, so
+    a projection row that names a fingerprint the closures table has since
+    revoked or superseded, or whose stored `public_key_fingerprint` does not
+    match its own stored `public_key_b64`, is refused HERE, before any
+    reconciliation runs. Under this module's own writers the projection row
+    would already have been deleted (`revoke_root`) or moved
+    (`rotate_root`), and the fingerprint/material pair would already agree
+    (`enrol_root`/`rotate_root` compute the fingerprint from the material
+    themselves) -- but a raw-SQL write, a restored backup, or a corrupted
+    row must not be trusted to have kept either invariant. This is
+    `fingerprint_standing`'s own "never trust one signal alone" principle,
+    extended to the stored key material itself.
 
-    Two further refusals, both proven pre-reconciliation:
+    Four refusals, each proven pre-reconciliation (the evaluation order
+    below is the module's original order, preserved deliberately rather
+    than re-derived, so this diff is reviewable against what it replaces):
 
+    - **Absence.** No current-root pointer at all for this subject/domain.
+    - **Unknown pointer target.** The pointer names a fingerprint with no
+      enrolment row at all -- not reachable through this module's own
+      writers, but a raw-SQL write or a restored backup must not be
+      trusted to have kept that invariant.
     - **Subject/custody-domain substitution.** The resolved enrolment's own
       `subject` and `custody_domain` must equal the ones REQUESTED. Without
       this check, a projection row pointing (through corruption, a restored
@@ -430,42 +567,71 @@ def resolve_current_root(
       requested subject's own root -- the view is built from the resolved
       enrolment's fields, so the caller would receive another host's or
       another domain's key with no signal that a substitution occurred.
-    - **Ambiguity.** If more than one enrolment is currently open (no closure
-      row) for this exact `(custody_domain, subject)`, the append-only truth
-      itself does not agree on a single answer, even though the projection's
-      primary key can only ever name one. Picking the projection's single
-      answer in that case would silently convert a registry inconsistency
-      into a confident, wrong-or-right-by-luck answer -- refused instead,
-      the same refusal `_derive_current_fingerprint` and `repair_current_root`
-      make on the write side: never choose an authority among several.
+    - **A closed-fingerprint pointer.** The projection points at a CLOSED
+      fingerprint. The projection is not authoritative, so this is a
+      refusal, not a report of the stale standing the closed fingerprint
+      used to have.
+
+    Then, separately, **ambiguity** (`REGISTRY_DISAGREEMENT`): if more than
+    one enrolment is currently open (no closure row) for this exact
+    `(custody_domain, subject)`, the append-only truth itself does not agree
+    on a single answer, even though the projection's primary key can only
+    ever name one. Picking the projection's single answer in that case
+    would silently convert a registry inconsistency into a confident,
+    wrong-or-right-by-luck answer -- refused instead, never a newest-wins
+    tie-break.
+
+    Finally, **recomputed-fingerprint mismatch** (`DRIFT`): the stored
+    `public_key_fingerprint` column is a CLAIM, not a fact. This function
+    independently recomputes it from the stored `public_key_b64` material
+    (the exact formula `enrol_root`/`rotate_root` already use to populate
+    that column in the first place) and refuses if the two disagree -- the
+    read-side mirror of the write-side guarantee, catching a row that never
+    went through either writer.
     """
     fingerprint = _current_fingerprint(
         db, custody_domain=custody_domain, subject=subject
     )
     if fingerprint is None:
-        return None
+        return _absent()
     enrolment = _enrolment(db, fingerprint)
     if enrolment is None:  # pragma: no cover - FK makes this unreachable
-        return None
+        return _drift()
     if enrolment.custody_domain != custody_domain or enrolment.subject != subject:
         # The projection's pointer resolves to an enrolment for a DIFFERENT
         # subject and/or custody domain than requested. Never trust the
         # projection to have kept that invariant -- refuse rather than hand
         # back another host's or another domain's root.
-        return None
+        return _drift()
     if _closure(db, fingerprint) is not None:
         # The projection points at a CLOSED fingerprint. The projection is
         # not authoritative, so this is a refusal, not a report of the stale
         # standing the closed fingerprint used to have.
-        return None
+        return _drift()
     if _count_open_enrolments(db, custody_domain=custody_domain, subject=subject) > 1:
         # Ambiguous: the append-only truth has more than one open enrolment
         # for this exact subject/domain. Refusing here, rather than trusting
         # the projection's single pointer, is the "ambiguity is a refusal,
         # not a tie-break" rule applied to the READ path, not only to
         # `reconcile_current_root`'s reporting.
-        return None
-    return _view_from_enrolment(enrolment, standing=HostAttesterStanding.VALID)
+        return _registry_disagreement()
+    # Recompute the fingerprint from the stored public-key material -- the
+    # read-side mirror of the write-side guarantee. A caller who never went
+    # through `enrol_root`/`rotate_root` (raw SQL, a restored backup) could
+    # have written a `public_key_fingerprint` that does not match its own
+    # `public_key_b64`; that is drift too, caught before it is ever trusted.
+    try:
+        recomputed = PublicKeyFingerprintV1.from_public_key_b64(
+            enrolment.public_key_b64
+        ).canonical
+    except DigestEncodingError:
+        return _drift()
+    if recomputed != enrolment.public_key_fingerprint:
+        return _drift()
+    return AttestationRootResolution(
+        root=_view_from_enrolment(enrolment, standing=HostAttesterStanding.VALID),
+        refusal=None,
+    )
 
 
 def enrol_root(

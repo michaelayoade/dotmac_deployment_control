@@ -51,6 +51,7 @@ from dotmac_deployment_control import versions_dir as deploy_versions_dir
 from dotmac_deployment_control.attestation_trust_registry import (
     AttestationRefusalCode,
     AttestationRefusedError,
+    AttestationRootRefusal,
     enrol_root,
     fingerprint_standing,
     reconcile_current_root,
@@ -1287,10 +1288,16 @@ def test_a_revoked_fingerprint_is_never_reported_valid(sessions) -> None:
 
     with sessions() as db:
         assert fingerprint_standing(db, fingerprint=fp) is HostAttesterStanding.REVOKED
-        assert (
-            resolve_current_root(db, custody_domain="host_attester", subject=subject)
-            is None
+        # A natural revoke deletes the current-root pointer (`revoke_root`'s
+        # own conditioned delete), so the append-only truth has ZERO open
+        # enrolments for this subject afterward -- ABSENT, not DRIFT. DRIFT
+        # is reserved for a STALE pointer someone reinserted after the fact
+        # (see the pre-reconciliation drift tests below).
+        resolution = resolve_current_root(
+            db, custody_domain="host_attester", subject=subject
         )
+        assert resolution.root is None
+        assert resolution.refusal is AttestationRootRefusal.ABSENT
 
     # Near miss: a SUPERSEDED fingerprint (a different subject) must read as
     # SUPERSEDED, not REVOKED and not VALID -- proving the guard actually
@@ -1669,12 +1676,11 @@ class TestCurrentRootDriftDetectionAndRepair:
             assert (
                 db.get(AttestationCurrentRoot, ("host_attester", subject)) is not None
             )
-            assert (
-                resolve_current_root(
-                    db, custody_domain="host_attester", subject=subject
-                )
-                is None
+            resolution = resolve_current_root(
+                db, custody_domain="host_attester", subject=subject
             )
+            assert resolution.root is None
+            assert resolution.refusal is AttestationRootRefusal.DRIFT
             # `fingerprint_standing` never consulted the projection for this
             # fingerprint's standing in the first place; restated here as the
             # cross-check that both read paths agree a revoked key is never
@@ -1745,20 +1751,22 @@ class TestCurrentRootDriftDetectionAndRepair:
                 ).current_fingerprint
                 == view_b.public_key_fingerprint
             )
-            assert (
-                resolve_current_root(
-                    db, custody_domain="host_attester", subject=subject_a
-                )
-                is None
+            resolution = resolve_current_root(
+                db, custody_domain="host_attester", subject=subject_a
             )
+            assert resolution.root is None
+            assert resolution.refusal is AttestationRootRefusal.DRIFT
             # Near miss: subject_b's OWN, uncorrupted lookup still resolves
             # normally -- the refusal above is about the substitution, not
             # about subject_b's fingerprint being unresolvable in general.
             resolved_b = resolve_current_root(
                 db, custody_domain="host_attester", subject=subject_b
             )
-            assert resolved_b is not None
-            assert resolved_b.public_key_fingerprint == view_b.public_key_fingerprint
+            assert resolved_b.refusal is None
+            assert resolved_b.root is not None
+            assert (
+                resolved_b.root.public_key_fingerprint == view_b.public_key_fingerprint
+            )
 
     def test_a_projection_naming_another_domains_fingerprint_never_returns_a_root(
         self, migrated_scratch, sessions
@@ -1821,12 +1829,11 @@ class TestCurrentRootDriftDetectionAndRepair:
                 ).current_fingerprint
                 == release_view.public_key_fingerprint
             )
-            assert (
-                resolve_current_root(
-                    db, custody_domain="host_attester", subject=shared_subject
-                )
-                is None
+            resolution = resolve_current_root(
+                db, custody_domain="host_attester", subject=shared_subject
             )
+            assert resolution.root is None
+            assert resolution.refusal is AttestationRootRefusal.DRIFT
             # Near miss: the candidate_release_signer domain's own,
             # uncorrupted lookup for the SAME subject string still resolves
             # -- the refusal above is about the domain substitution, not
@@ -1836,9 +1843,10 @@ class TestCurrentRootDriftDetectionAndRepair:
                 custody_domain="candidate_release_signer",
                 subject=shared_subject,
             )
-            assert resolved_release is not None
+            assert resolved_release.refusal is None
+            assert resolved_release.root is not None
             assert (
-                resolved_release.public_key_fingerprint
+                resolved_release.root.public_key_fingerprint
                 == release_view.public_key_fingerprint
             )
 
@@ -1905,14 +1913,19 @@ class TestCurrentRootDriftDetectionAndRepair:
                 ).current_fingerprint
                 == view.public_key_fingerprint
             )
-            assert (
-                resolve_current_root(
-                    db, custody_domain="host_attester", subject=subject
-                )
-                is None
+            resolution = resolve_current_root(
+                db, custody_domain="host_attester", subject=subject
             )
+            assert resolution.root is None
+            # THE assertion this test exists for: ambiguity is
+            # REGISTRY_DISAGREEMENT specifically, never merely "falsy" --
+            # a caller checking `is None` (as this test used to) cannot
+            # distinguish this from ABSENT, which is exactly the "most
+            # permissive reading of the most alarming state" defect
+            # Michael's ruling closes.
+            assert resolution.refusal is AttestationRootRefusal.REGISTRY_DISAGREEMENT
 
-        # Near miss: an entirely unrelated subject, with exactly one open
+        # Near miss #1: an entirely unrelated subject, with exactly one open
         # enrolment, still resolves normally under the identical code path --
         # the refusal above is about the ambiguity, not about
         # `resolve_current_root` having become universally unable to
@@ -1933,10 +1946,104 @@ class TestCurrentRootDriftDetectionAndRepair:
             resolved_other = resolve_current_root(
                 db, custody_domain="host_attester", subject=other_subject
             )
-            assert resolved_other is not None
+            assert resolved_other.refusal is None
+            assert resolved_other.root is not None
             assert (
-                resolved_other.public_key_fingerprint
+                resolved_other.root.public_key_fingerprint
                 == other_view.public_key_fingerprint
+            )
+
+        # Near miss #2, THE PAIRED CONTROL: a genuinely absent subject --
+        # never enrolled at all -- must return ABSENT, never
+        # REGISTRY_DISAGREEMENT. Proves the two refusals are not
+        # interchangeable "something is wrong" signals.
+        never_enrolled = f"host-never-enrolled-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            absent_resolution = resolve_current_root(
+                db, custody_domain="host_attester", subject=never_enrolled
+            )
+            assert absent_resolution.root is None
+            assert absent_resolution.refusal is AttestationRootRefusal.ABSENT
+
+    def test_fingerprint_standing_also_reports_registry_disagreement_when_ambiguous(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """BLOCKING finding from the independent security review of PR #51:
+        `fingerprint_standing` derived standing from the same corruptible
+        projection `resolve_current_root` was hardened against, above, and
+        never checked `_count_open_enrolments` -- so this exact corruption
+        (two open, unclosed enrolments for one subject) could return a
+        silent `VALID` from `fingerprint_standing` while
+        `resolve_current_root` correctly refused with
+        `REGISTRY_DISAGREEMENT` for the SAME subject. Both functions must
+        now agree the registry is disputed, checked here against real
+        Postgres, for BOTH the pointed-at and the never-pointed-at
+        fingerprint."""
+        subject = f"host-fp-standing-ambiguous-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        other_seed = f"{subject}-ambiguous-second"
+        other_fp = _fingerprint_of(other_seed)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_enrolments ("
+                        " id, custody_domain, subject, public_key_b64,"
+                        " public_key_fingerprint, algorithm,"
+                        " key_custody_pointer, enrolled_at, enrolment_authority"
+                        ") VALUES (:id, 'host_attester', :subject, :pub, :fp,"
+                        " 'ed25519', 'bao://secret/dotmac/attest/ambiguous', now(),"
+                        " 'manual_repair_script')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "subject": subject,
+                        "pub": _public_key_b64(other_seed),
+                        "fp": other_fp,
+                    },
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            pointed_at = fingerprint_standing(
+                db, fingerprint=view.public_key_fingerprint
+            )
+            never_pointed_at = fingerprint_standing(db, fingerprint=other_fp)
+            assert pointed_at is HostAttesterStanding.REGISTRY_DISAGREEMENT
+            assert never_pointed_at is HostAttesterStanding.REGISTRY_DISAGREEMENT
+
+        # Near miss: an unrelated, unambiguous subject's fingerprint still
+        # reports VALID through the identical function.
+        other_subject = f"host-fp-standing-unambiguous-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            other_view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=other_subject,
+                public_key_b64=_public_key_b64(f"{other_subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{other_subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            assert (
+                fingerprint_standing(db, fingerprint=other_view.public_key_fingerprint)
+                is HostAttesterStanding.VALID
             )
 
     def test_repair_deletes_the_projection_when_there_is_no_open_enrolment(

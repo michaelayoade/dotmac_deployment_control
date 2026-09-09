@@ -34,7 +34,11 @@ immutable plan snapshots and their digests; approval evidence for sensitive
 operations; rollout requests and attempts; desired-versus-observed state;
 authenticated target acknowledgements; success, failure, timeout, cancellation
 and manual-repair; idempotent retry and redrive; drift evidence; append-only
-operational history; and the typed delivery intent and observation contracts.
+operational history; the typed delivery intent and observation contracts; and
+the durable attestation trust registry's public, read-only binding facade
+(`AttestationBindingV1`/`resolve_attestation_binding`/
+`resolve_fingerprint_standing`) -- a translation layer, never a second trust
+authority.
 
 ## What it does NOT own
 
@@ -77,6 +81,17 @@ from dotmac_deployment_control.approvals import (
     APPROVAL_DECISION_STATUSES,
     ApprovalDecisionStatus,
     require_decision_status,
+)
+from dotmac_deployment_control.attestation_binding import (
+    ATTESTATION_BINDING_SCHEMA,
+    ATTESTATION_BINDING_VERSION,
+    AttestationBindingRefusalCode,
+    AttestationBindingRefusedError,
+    AttestationBindingResolution,
+    AttestationBindingV1,
+    AttestationRootRefusal,
+    resolve_attestation_binding,
+    resolve_fingerprint_standing,
 )
 from dotmac_deployment_control.authorization import (
     AUTHORIZATION_PURPOSE,
@@ -412,6 +427,8 @@ __all__ = [
     "PRESTATE_DISCRIMINATOR",
     "ALGORITHM",
     "APPROVAL_DECISION_STATUSES",
+    "ATTESTATION_BINDING_SCHEMA",
+    "ATTESTATION_BINDING_VERSION",
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
     "AUDIT_ACTION_ROLLOUT",
@@ -464,6 +481,11 @@ __all__ = [
     "ApprovedPlanRefusedError",
     "AttemptOutcome",
     "AttemptView",
+    "AttestationBindingRefusalCode",
+    "AttestationBindingRefusedError",
+    "AttestationBindingResolution",
+    "AttestationBindingV1",
+    "AttestationRootRefusal",
     "AUTHORIZATION_V3_PURPOSE",
     "AUTHORIZATION_V3_SCHEMA",
     "AUTHORIZATION_V3_VERSION",
@@ -619,6 +641,8 @@ __all__ = [
     "recovery_standing_for_target",
     "refuse_client_supplied_digest",
     "register_target",
+    "resolve_attestation_binding",
+    "resolve_fingerprint_standing",
     "request_rollout",
     "require_approved_plan",
     "require_decision_status",
