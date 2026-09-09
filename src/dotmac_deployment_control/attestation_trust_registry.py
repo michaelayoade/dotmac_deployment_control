@@ -388,6 +388,26 @@ def resolve_current_root(
     same "never trust one signal alone" principle `fingerprint_standing`
     already applies by checking the closures table directly rather than
     inferring REVOKED from the pointer's absence.
+
+    Two further refusals, both proven pre-reconciliation:
+
+    - **Subject/custody-domain substitution.** The resolved enrolment's own
+      `subject` and `custody_domain` must equal the ones REQUESTED. Without
+      this check, a projection row pointing (through corruption, a restored
+      backup, or a raw-SQL write) at a fingerprint enrolled for a DIFFERENT
+      host or a different custody domain would be returned as if it were the
+      requested subject's own root -- the view is built from the resolved
+      enrolment's fields, so the caller would receive another host's or
+      another domain's key with no signal that a substitution occurred.
+    - **Ambiguity.** If more than one enrolment is currently open (no closure
+      row) for this exact `(custody_domain, subject)`, the append-only truth
+      itself does not agree on a single answer, even though the projection's
+      primary key can only ever name one. Picking the projection's single
+      answer in that case would silently convert a registry inconsistency
+      into a confident, wrong-or-right-by-luck answer -- refused instead,
+      exactly as `_derive_current_fingerprint`'s "most-recently-enrolled"
+      choice is reported as an anomaly by `reconcile_current_root` rather
+      than resolved silently.
     """
     fingerprint = _current_fingerprint(
         db, custody_domain=custody_domain, subject=subject
@@ -397,10 +417,23 @@ def resolve_current_root(
     enrolment = _enrolment(db, fingerprint)
     if enrolment is None:  # pragma: no cover - FK makes this unreachable
         return None
+    if enrolment.custody_domain != custody_domain or enrolment.subject != subject:
+        # The projection's pointer resolves to an enrolment for a DIFFERENT
+        # subject and/or custody domain than requested. Never trust the
+        # projection to have kept that invariant -- refuse rather than hand
+        # back another host's or another domain's root.
+        return None
     if _closure(db, fingerprint) is not None:
         # The projection points at a CLOSED fingerprint. The projection is
         # not authoritative, so this is a refusal, not a report of the stale
         # standing the closed fingerprint used to have.
+        return None
+    if _count_open_enrolments(db, custody_domain=custody_domain, subject=subject) > 1:
+        # Ambiguous: the append-only truth has more than one open enrolment
+        # for this exact subject/domain. Refusing here, rather than trusting
+        # the projection's single pointer, is the "ambiguity is a refusal,
+        # not a tie-break" rule applied to the READ path, not only to
+        # `reconcile_current_root`'s reporting.
         return None
     return _view_from_enrolment(enrolment, standing=HostAttesterStanding.VALID)
 
