@@ -327,9 +327,7 @@ def extract_operations_members(source: str) -> frozenset[str]:
 
     members: set[str] = set()
     for element in assignment.value.elts:
-        if not isinstance(element, ast.Constant) or not isinstance(
-            element.value, str
-        ):
+        if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
             raise FoundationVocabularySourceError(
                 f"a `{OPERATIONS_ASSIGNMENT_NAME}` member is not a bare string "
                 f"literal (found {ast.dump(element)!r}). This narrow AST reader "

@@ -120,9 +120,7 @@ def test_the_workflow_does_not_hardcode_a_canary_filename_as_a_pytest_argument()
     assert not re.search(r"pytest\s+tests/test_\S*platform_isolation\.py", text)
 
 
-def test_every_discovered_file_would_be_reached_by_the_workflows_runner_call() -> (
-    None
-):
+def test_every_discovered_file_would_be_reached_by_the_workflows_runner_call() -> None:
     """The first half of the two-directional guard: nothing discovered on disk
     is left unreached by what `ci.yml` actually runs. Since the workflow
     invokes the discovering runner (proven above) rather than a fixed list,

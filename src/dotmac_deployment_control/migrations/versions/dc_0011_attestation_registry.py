@@ -298,9 +298,7 @@ def downgrade() -> None:
     # (`attestation_trust_registry.reconcile_current_root`/
     # `repair_current_root`), fully re-derivable from them, so dropping it
     # unconditionally below discards no evidence.
-    op.execute(
-        "LOCK TABLE mod_deploy.attestation_enrolments IN ACCESS EXCLUSIVE MODE"
-    )
+    op.execute("LOCK TABLE mod_deploy.attestation_enrolments IN ACCESS EXCLUSIVE MODE")
     op.execute(
         "LOCK TABLE mod_deploy.attestation_fingerprint_closures "
         "IN ACCESS EXCLUSIVE MODE"
@@ -308,9 +306,7 @@ def downgrade() -> None:
 
     bind = op.get_bind()
     enrolments_remain = bind.execute(
-        sa.text(
-            "SELECT EXISTS (SELECT 1 FROM mod_deploy.attestation_enrolments)"
-        )
+        sa.text("SELECT EXISTS (SELECT 1 FROM mod_deploy.attestation_enrolments)")
     ).scalar_one()
     closures_remain = bind.execute(
         sa.text(

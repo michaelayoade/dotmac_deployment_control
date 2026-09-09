@@ -124,9 +124,7 @@ def test_the_private_functions_still_exist_as_the_evaluation_engine() -> None:
 # ── the one guard here that is genuinely structural ─────────────────────────
 
 
-def test_the_real_module_names_no_caller_supplied_parameter_outside_the_two() -> (
-    None
-):
+def test_the_real_module_names_no_caller_supplied_parameter_outside_the_two() -> None:
     """Non-vacuity: the scan actually runs against the real file and finds
     only the two already-known, already-private functions -- never zero
     matches for the wrong reason (e.g. a typo in the parameter names)."""
@@ -145,9 +143,7 @@ def test_no_signature_names_the_caller_supplied_parameters_outside_the_two() -> 
     )
 
 
-def test_the_scan_flags_a_planted_reintroduction_under_a_fresh_public_name() -> (
-    None
-):
+def test_the_scan_flags_a_planted_reintroduction_under_a_fresh_public_name() -> None:
     """PLANT (ADR-0018): a brand-new PUBLIC function reintroducing exactly the
     caller-supplied surface this whole file exists to keep closed -- under a
     name nobody has used before, since that is the actual future failure
@@ -183,7 +179,5 @@ def test_the_scan_does_not_flag_an_unrelated_function_with_a_similar_signature()
     caller-supplied parameter must not be flagged -- proving the scan checks
     the exact parameter names, not merely "a function with keyword-only
     mapping arguments"."""
-    unrelated = (
-        "def resolve_current_root(db, *, custody_domain, subject):\n    pass\n"
-    )
+    unrelated = "def resolve_current_root(db, *, custody_domain, subject):\n    pass\n"
     assert _functions_accepting_caller_supplied_params(unrelated) == []

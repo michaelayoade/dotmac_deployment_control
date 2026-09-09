@@ -1390,8 +1390,7 @@ class TestCurrentRootDriftDetectionAndRepair:
             # to be exercising the corrupted state, not a state the INSERT
             # above silently failed to create.
             assert (
-                db.get(AttestationCurrentRoot, ("host_attester", subject))
-                is not None
+                db.get(AttestationCurrentRoot, ("host_attester", subject)) is not None
             )
             assert (
                 resolve_current_root(
@@ -1404,8 +1403,7 @@ class TestCurrentRootDriftDetectionAndRepair:
             # cross-check that both read paths agree a revoked key is never
             # reported active.
             assert (
-                fingerprint_standing(db, fingerprint=fp)
-                is HostAttesterStanding.REVOKED
+                fingerprint_standing(db, fingerprint=fp) is HostAttesterStanding.REVOKED
             )
 
     def test_repair_deletes_the_projection_when_there_is_no_open_enrolment(
