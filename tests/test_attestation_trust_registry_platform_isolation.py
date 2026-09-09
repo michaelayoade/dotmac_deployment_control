@@ -987,6 +987,152 @@ class TestRotationVersusRevocationOrdering:
             )
 
 
+class TestRotateRootRefusesProjectionSubstitution:
+    """`rotate_root` must not treat a match against the (corruptible)
+    `AttestationCurrentRoot` projection as sufficient authority to close
+    `supersedes_fingerprint` -- it must load THAT fingerprint's own
+    enrolment and confirm it actually belongs to the requested
+    `(custody_domain, subject)`, the same ground-truth pattern `revoke_root`
+    already uses. Without this check, a projection corrupted so subject A's
+    row points at subject B's genuinely open fingerprint would let a
+    rotation "for A" permanently close B's real, legitimate key -- there is
+    no un-supersede."""
+
+    def test_rotate_root_refuses_to_close_another_subjects_fingerprint(
+        self, migrated_scratch, sessions
+    ) -> None:
+        subject_a = f"host-rotate-cross-a-{uuid.uuid4().hex[:8]}"
+        subject_b = f"host-rotate-cross-b-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view_a = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject_a,
+                public_key_b64=_public_key_b64(f"{subject_a}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject_a}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            view_b = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject_b,
+                public_key_b64=_public_key_b64(f"{subject_b}-b"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject_b}-b",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        # Corrupt subject_a's projection row to point at subject_b's
+        # perfectly valid, current, unrevoked fingerprint -- the identical
+        # corruption the read-path substitution test plants.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_current_roots "
+                        "SET current_fingerprint = :fp "
+                        "WHERE custody_domain = 'host_attester' AND subject = :subject"
+                    ),
+                    {"fp": view_b.public_key_fingerprint, "subject": subject_a},
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            with pytest.raises(AttestationRefusedError) as excinfo:
+                rotate_root(
+                    db,
+                    custody_domain="host_attester",
+                    subject=subject_a,
+                    supersedes_fingerprint=view_b.public_key_fingerprint,
+                    public_key_b64=_public_key_b64(f"{subject_a}-attacker-new"),
+                    algorithm="ed25519",
+                    key_custody_pointer=(
+                        f"bao://secret/dotmac/attest/{subject_a}-attacker-new"
+                    ),
+                    enrolment_authority="control_service",
+                )
+            db.rollback()
+        assert excinfo.value.code is AttestationRefusalCode.SUPERSEDES_MISMATCH
+
+        with sessions() as db:
+            # subject_b's real key was never closed.
+            assert (
+                db.query(AttestationFingerprintClosure)
+                .filter(
+                    AttestationFingerprintClosure.fingerprint
+                    == view_b.public_key_fingerprint
+                )
+                .count()
+                == 0
+            )
+            assert (
+                fingerprint_standing(db, fingerprint=view_b.public_key_fingerprint)
+                is HostAttesterStanding.VALID
+            )
+            # No new enrolment was created against the attacker's fresh key
+            # either -- the refusal happened before any write.
+            assert (
+                db.query(AttestationEnrolment)
+                .filter(
+                    AttestationEnrolment.public_key_fingerprint
+                    == _fingerprint_of(f"{subject_a}-attacker-new")
+                )
+                .count()
+                == 0
+            )
+
+        # Near miss: repair the corrupted projection back to subject_a's own
+        # real fingerprint, and an HONEST rotation for subject_a -- naming
+        # its own fingerprint -- still succeeds. The new check refuses a
+        # substitution; it does not block a legitimate rotation.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_current_roots "
+                        "SET current_fingerprint = :fp "
+                        "WHERE custody_domain = 'host_attester' AND subject = :subject"
+                    ),
+                    {"fp": view_a.public_key_fingerprint, "subject": subject_a},
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            rotated = rotate_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject_a,
+                supersedes_fingerprint=view_a.public_key_fingerprint,
+                public_key_b64=_public_key_b64(f"{subject_a}-honest-new"),
+                algorithm="ed25519",
+                key_custody_pointer=(
+                    f"bao://secret/dotmac/attest/{subject_a}-honest-new"
+                ),
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        assert rotated.standing == HostAttesterStanding.VALID.value
+        with sessions() as db:
+            assert (
+                fingerprint_standing(db, fingerprint=view_a.public_key_fingerprint)
+                is HostAttesterStanding.SUPERSEDED
+            )
+            assert (
+                fingerprint_standing(db, fingerprint=rotated.public_key_fingerprint)
+                is HostAttesterStanding.VALID
+            )
+
+
 # ── Proof 4: stale-reader behaviour ──────────────────────────────────────────
 
 

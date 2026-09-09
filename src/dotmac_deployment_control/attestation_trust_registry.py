@@ -557,7 +557,11 @@ def rotate_root(
     Only legal against the subject's actual current fingerprint -- checked
     against `AttestationCurrentRoot` before anything is written, then enforced
     again by that same table's compare-and-swap UPDATE below, which is the
-    real race arbiter.
+    real race arbiter. That projection check alone is not sufficient: this
+    function also loads `supersedes_fingerprint`'s own enrolment and refuses
+    unless ITS `custody_domain`/`subject` equal the requested pair, so a
+    corrupted projection cannot be used to close another subject's
+    legitimate, open fingerprint.
     """
     fingerprint = PublicKeyFingerprintV1.from_public_key_b64(public_key_b64).canonical
     if fingerprint == supersedes_fingerprint:
@@ -582,6 +586,29 @@ def rotate_root(
             AttestationRefusalCode.SUPERSEDES_MISMATCH,
             f"{custody_domain!r} subject {subject!r}'s current root is "
             f"{current!r}; this rotation names {supersedes_fingerprint!r}",
+        )
+
+    # Ground truth, not projection: `current` above was read from
+    # `AttestationCurrentRoot`, which is a corruptible projection (raw SQL, a
+    # restored backup -- the exact precondition the read-path tests simulate).
+    # A projection row for THIS subject that has been repointed at ANOTHER
+    # subject's genuinely open fingerprint would otherwise pass the check
+    # above and let this call close that OTHER subject's real key --
+    # irrevocably, with no un-supersede. `revoke_root` already gets this
+    # right by loading the fingerprint's own enrolment rather than trusting a
+    # caller-supplied pair matched against the projection; do the same here,
+    # before any write.
+    superseded_enrolment = _enrolment(db, supersedes_fingerprint)
+    if (
+        superseded_enrolment is None
+        or superseded_enrolment.custody_domain != custody_domain
+        or superseded_enrolment.subject != subject
+    ):
+        raise _refused(
+            AttestationRefusalCode.SUPERSEDES_MISMATCH,
+            f"{supersedes_fingerprint!r} is not enrolled for {custody_domain!r} "
+            f"subject {subject!r} -- a projection match alone is not authority "
+            "to close another subject's fingerprint",
         )
 
     # 1. The new enrolment. Its own global-fingerprint uniqueness, PLUS the
