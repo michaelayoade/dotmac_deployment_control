@@ -284,12 +284,15 @@ def extract_operations_members(source: str) -> frozenset[str]:
 
     Same `ast.parse`-only discipline as `extract_step_kind_members`, adapted to
     a MODULE-LEVEL tuple/list assignment rather than a class body: Foundation
-    publishes `OPERATIONS = ("deploy", "rollback")` in `authorization.py`, not
-    an enum. Only a top-level `OPERATIONS = (...)`/`[...]` of bare string
-    constants is admitted; anything else (a generator, a call, a name
-    reference, a nested structure) is a REFUSAL rather than a partial read, for
-    the identical reason `extract_step_kind_members` refuses one: a silently
-    dropped member is a false "agrees" this gate exists to prevent.
+    publishes `OPERATIONS: Final[tuple[str, ...]] = ("deploy", "rollback")` in
+    `authorization.py` -- an ANNOTATED assignment (`ast.AnnAssign`), not the
+    bare `ast.Assign` a plain `OPERATIONS = (...)` would parse as; both forms
+    are admitted here for that reason. Only a top-level `OPERATIONS = (...)`/
+    `[...]`, annotated or not, of bare string constants is admitted; anything
+    else (a generator, a call, a name reference, a nested structure) is a
+    REFUSAL rather than a partial read, for the identical reason
+    `extract_step_kind_members` refuses one: a silently dropped member is a
+    false "agrees" this gate exists to prevent.
     """
     try:
         tree = ast.parse(source)
@@ -300,33 +303,41 @@ def extract_operations_members(source: str) -> frozenset[str]:
             "understand, or the wrong bytes were read"
         ) from error
 
-    assignment: ast.Assign | None = None
+    assignment_value: ast.expr | None = None
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if any(
-            isinstance(target, ast.Name) and target.id == OPERATIONS_ASSIGNMENT_NAME
-            for target in node.targets
-        ):
-            assignment = node
-            break
-    if assignment is None:
+        if isinstance(node, ast.Assign):
+            if any(
+                isinstance(target, ast.Name)
+                and target.id == OPERATIONS_ASSIGNMENT_NAME
+                for target in node.targets
+            ):
+                assignment_value = node.value
+                break
+        elif isinstance(node, ast.AnnAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.target.id == OPERATIONS_ASSIGNMENT_NAME
+                and node.value is not None
+            ):
+                assignment_value = node.value
+                break
+    if assignment_value is None:
         raise FoundationVocabularySourceError(
             f"no top-level `{OPERATIONS_ASSIGNMENT_NAME} = ...` assignment was "
             "found in the pinned source. Either the coordinate is wrong or "
             "Foundation renamed or removed the name this gate reads"
         )
 
-    if not isinstance(assignment.value, ast.Tuple | ast.List):
+    if not isinstance(assignment_value, ast.Tuple | ast.List):
         raise FoundationVocabularySourceError(
             f"`{OPERATIONS_ASSIGNMENT_NAME}` is not a bare tuple or list "
-            f"literal (found {ast.dump(assignment.value)!r}). This narrow AST "
+            f"literal (found {ast.dump(assignment_value)!r}). This narrow AST "
             "reader refuses rather than silently skipping a value it cannot "
             "evaluate, because a computed or referenced value could be anything"
         )
 
     members: set[str] = set()
-    for element in assignment.value.elts:
+    for element in assignment_value.elts:
         if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
             raise FoundationVocabularySourceError(
                 f"a `{OPERATIONS_ASSIGNMENT_NAME}` member is not a bare string "
