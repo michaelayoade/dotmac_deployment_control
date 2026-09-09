@@ -5,7 +5,12 @@ what a fleet of deployments should run is a control-plane act; the deployments
 themselves are separate applications that learn what to do through the
 Integrator, never by reading this schema (ADR-0024).
 
-## Nine tables, and the two pairings that matter
+## Twelve tables, and the two pairings that matter
+
+`dc_0011` added the durable attestation trust registry's three tables
+(`AttestationEnrolment`, `AttestationFingerprintClosure`,
+`AttestationCurrentRoot`) beside the nine this section originally described;
+the pairings below are about that original nine and are unaffected.
 
 Most of these are the obvious decomposition — target, credential, plan, rollout,
 attempt. Two are not:
@@ -274,14 +279,23 @@ class ObservationDisposition(StrEnum):
 class AttestationCustodyDomain(StrEnum):
     """The two custody roles a trust-registry entry may hold.
 
-    Deliberately closed to exactly these two members and CHECK-constrained on
-    the table (unlike `status`/`environment`/`disposition` elsewhere in this
-    module) -- see the migration docstring for why this vocabulary is
-    architectural rather than an evolving lifecycle: the custody separation is
-    the whole reason Foundation needs two distinct signer identities under
-    separate OpenBao principals (`host_attester_enrolment`'s module
-    docstring), and the global fingerprint-uniqueness constraint below only
-    prevents cross-role reuse if the roles it counts over are a closed set.
+    Deliberately closed to exactly these two members (unlike
+    `status`/`environment`/`disposition` elsewhere in this module) -- see the
+    migration docstring for why this vocabulary is architectural rather than
+    an evolving lifecycle: the custody separation is the whole reason
+    Foundation needs two distinct signer identities under separate OpenBao
+    principals (`host_attester_enrolment`'s module docstring).
+
+    NOT CHECK-constrained on the `custody_domain` column -- `dc_0011`'s
+    `table_args` carry only the fingerprint UNIQUE and the supersedes CHECK.
+    That is a true gap for a THIRD, invented custody-domain string reaching
+    the table by any path other than this enum, but it is not a gap in the
+    headline invariant below: `uq_attestation_enrolments_fingerprint` is a
+    single-column UNIQUE over `public_key_fingerprint` alone, so it refuses a
+    given key's second enrolment under ANY second `custody_domain` value --
+    including one this enum never declared -- regardless of whether the
+    column itself is closed to a known set. Closing the column is still
+    worth doing (an open follow-up), but this class does not claim it has been.
     """
 
     CANDIDATE_RELEASE_SIGNER = "candidate_release_signer"
@@ -341,8 +355,10 @@ class AttestationEnrolment(Base, TimestampMixin):
     )
 
     id: Mapped[UUID] = uuid_pk()
-    #: `AttestationCustodyDomain`. CHECK-constrained in the migration -- see
-    #: that class's docstring for why this vocabulary is exempt from ADR-0008.
+    #: `AttestationCustodyDomain`. NOT CHECK-constrained in the migration --
+    #: see that class's docstring for exactly what is and is not enforced,
+    #: and for why this vocabulary is exempt from ADR-0008's usual
+    #: open-vocabulary rule regardless of that gap.
     custody_domain: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     #: The stable subject: either the Foundation release-signer identity or a
     #: Fleet `host_id`. Opaque here -- this module does not validate either
