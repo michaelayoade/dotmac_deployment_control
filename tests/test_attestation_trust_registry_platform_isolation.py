@@ -1965,6 +1965,87 @@ class TestCurrentRootDriftDetectionAndRepair:
             assert absent_resolution.root is None
             assert absent_resolution.refusal is AttestationRootRefusal.ABSENT
 
+    def test_fingerprint_standing_also_reports_registry_disagreement_when_ambiguous(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """BLOCKING finding from the independent security review of PR #51:
+        `fingerprint_standing` derived standing from the same corruptible
+        projection `resolve_current_root` was hardened against, above, and
+        never checked `_count_open_enrolments` -- so this exact corruption
+        (two open, unclosed enrolments for one subject) could return a
+        silent `VALID` from `fingerprint_standing` while
+        `resolve_current_root` correctly refused with
+        `REGISTRY_DISAGREEMENT` for the SAME subject. Both functions must
+        now agree the registry is disputed, checked here against real
+        Postgres, for BOTH the pointed-at and the never-pointed-at
+        fingerprint."""
+        subject = f"host-fp-standing-ambiguous-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        other_seed = f"{subject}-ambiguous-second"
+        other_fp = _fingerprint_of(other_seed)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_enrolments ("
+                        " id, custody_domain, subject, public_key_b64,"
+                        " public_key_fingerprint, algorithm,"
+                        " key_custody_pointer, enrolled_at, enrolment_authority"
+                        ") VALUES (:id, 'host_attester', :subject, :pub, :fp,"
+                        " 'ed25519', 'bao://secret/dotmac/attest/ambiguous', now(),"
+                        " 'manual_repair_script')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "subject": subject,
+                        "pub": _public_key_b64(other_seed),
+                        "fp": other_fp,
+                    },
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            pointed_at = fingerprint_standing(
+                db, fingerprint=view.public_key_fingerprint
+            )
+            never_pointed_at = fingerprint_standing(db, fingerprint=other_fp)
+            assert pointed_at is HostAttesterStanding.REGISTRY_DISAGREEMENT
+            assert never_pointed_at is HostAttesterStanding.REGISTRY_DISAGREEMENT
+
+        # Near miss: an unrelated, unambiguous subject's fingerprint still
+        # reports VALID through the identical function.
+        other_subject = f"host-fp-standing-unambiguous-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            other_view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=other_subject,
+                public_key_b64=_public_key_b64(f"{other_subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{other_subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            assert (
+                fingerprint_standing(db, fingerprint=other_view.public_key_fingerprint)
+                is HostAttesterStanding.VALID
+            )
+
     def test_repair_deletes_the_projection_when_there_is_no_open_enrolment(
         self, sessions
     ) -> None:

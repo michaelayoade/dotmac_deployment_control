@@ -290,6 +290,85 @@ def test_a_consistent_fingerprint_does_not_report_drift(db: Session) -> None:
     assert resolution.binding.public_key_fingerprint == view.public_key_fingerprint
 
 
+# ── fingerprint_standing carries the SAME ambiguity guarantee ──────────────
+# (BLOCKING 1, independent security review of PR #51: this sibling function
+# derived standing from the same corruptible projection resolve_current_root
+# was hardened against, and never checked _count_open_enrolments -- so an
+# ambiguous registry could return a silent VALID here while
+# resolve_attestation_binding correctly refused for the identical subject.)
+
+
+def test_fingerprint_standing_reports_registry_disagreement_when_ambiguous(
+    db: Session,
+) -> None:
+    """PLANT: two open, unclosed enrolments for the SAME `(custody_domain,
+    subject)` -- raw SQL or a restored backup, this module's own named
+    threat model, identical corruption to the ambiguity plants already
+    proven against `resolve_current_root`. Before the fix, if the
+    projection pointer happened to name one of the two,
+    `resolve_fingerprint_standing` returned `VALID` with no signal the
+    registry disputes it. It must now return `REGISTRY_DISAGREEMENT` for
+    EITHER of the two open fingerprints, not merely the one the (corrupted,
+    still-untouched) projection happens to point at."""
+    import uuid
+    from datetime import UTC, datetime
+
+    from dotmac_deployment_control.digests import PublicKeyFingerprintV1
+    from dotmac_deployment_control.models import AttestationEnrolment
+
+    subject = "host-fp-standing-ambiguous"
+    first = _enrol(db, subject)
+
+    second_b64 = _public_key_b64(f"{subject}-second")
+    second_fp = PublicKeyFingerprintV1.from_public_key_b64(second_b64).canonical
+    db.add(
+        AttestationEnrolment(
+            id=uuid.uuid4(),
+            custody_domain="host_attester",
+            subject=subject,
+            public_key_b64=second_b64,
+            public_key_fingerprint=second_fp,
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-second",
+            supersedes_fingerprint=None,
+            enrolled_at=datetime.now(UTC),
+            enrolment_authority="control_service",
+        )
+    )
+    db.flush()
+    db.commit()
+
+    # The projection is untouched -- still names the FIRST (legitimately
+    # enrolled) fingerprint. Both the pointed-at fingerprint AND the
+    # never-pointed-at second one must report the disagreement -- neither
+    # is trusted more than the other once the subject itself is ambiguous.
+    pointed_at_standing = resolve_fingerprint_standing(
+        db, fingerprint=first.public_key_fingerprint
+    )
+    never_pointed_at_standing = resolve_fingerprint_standing(db, fingerprint=second_fp)
+    assert pointed_at_standing is HostAttesterStanding.REGISTRY_DISAGREEMENT
+    assert never_pointed_at_standing is HostAttesterStanding.REGISTRY_DISAGREEMENT
+
+    # Cross-check against the sibling function for the SAME subject: the
+    # two must now agree that trust is disputed, closing the exact gap the
+    # review found -- one function VALID while the other REGISTRY_DISAGREEMENT.
+    resolution = resolve_attestation_binding(
+        db, custody_domain="host_attester", subject=subject
+    )
+    assert resolution.refusal is AttestationRootRefusal.REGISTRY_DISAGREEMENT
+
+
+def test_fingerprint_standing_is_unaffected_by_an_unrelated_ambiguous_subject(
+    db: Session,
+) -> None:
+    """PAIRED NEAR-MISS: an ordinary, unambiguous enrolment must still
+    report `VALID` -- proving the new check does not false-positive on
+    every call, only on the subject that is actually disputed."""
+    view = _enrol(db, "host-fp-standing-unambiguous")
+    standing = resolve_fingerprint_standing(db, fingerprint=view.public_key_fingerprint)
+    assert standing is HostAttesterStanding.VALID
+
+
 # ── the versioned wire contract ─────────────────────────────────────────────
 
 

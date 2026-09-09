@@ -81,7 +81,7 @@ tell the difference between naming the column and reading it, so it flagged
 its own sentence as the violation it was trying to describe. A docstring
 cannot read a column; only executable code can.
 
-## Three known gaps, stated rather than worked around
+## Five known gaps, stated rather than worked around
 
 - **No public-key material for a host-attester `FingerprintRecord`.** Not
   relevant to THIS module -- `attestation_trust_registry.AttestationRootView`
@@ -115,7 +115,29 @@ cannot read a column; only executable code can.
   a caller can name WHICH subject/domain to ask about, but cannot supply a
   mapping standing in for the registry's own answer, and cannot select
   AMONG several candidate roots for that subject -- the registry alone
-  derives the answer once the subject is named.
+  derives the answer once the subject is named. **Acceptable only because
+  this module adds NO network surface** -- every caller today is in-process
+  trusted Python. The next PR that wires this facade to a Foundation or
+  Platform network boundary MUST carry an authorization check with it, or
+  any external caller could read any host's public key, fingerprint and
+  standing. Recorded here as a named open item, not resolved by this PR.
+- **The Foundation/Control base64 divergence fails safe today, but the
+  interop contract is unwritten.** Foundation's `AttestationTrustRootV2`
+  (`trusted_host_source.py`) reads a `public_key_base64` field as PADDED,
+  standard-alphabet base64; Control's `AttestationEnrolment.public_key_b64`
+  is UNPADDED, URL-safe base64 (see `resolve_current_root`'s own recompute
+  step, which uses Control's encoding, not Foundation's, for exactly this
+  reason). Measured: `digests.py:483-486` (`PublicKeyFingerprintV1
+  .from_public_key_b64`) rejects any `"="` outright and requires an exact
+  canonical round-trip, so a Foundation value moved verbatim into Control's
+  field raises a hard `DigestEncodingError` rather than being silently
+  misread, and no two distinct keys can collide on one fingerprint through
+  this path -- the residual risk is INTEROP (the two systems cannot yet
+  exchange a key without an explicit conversion step), not TRUST. Neither
+  repository states which side owns that conversion. This contract must be
+  written before a Foundation verifier consumes `public_key_b64` (or a
+  Control writer consumes `public_key_base64`) across the boundary; this
+  module does not invent one.
 
 ## Versioned wire contract, refusing an unsupported version rather than
 ## guessing

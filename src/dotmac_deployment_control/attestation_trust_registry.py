@@ -375,6 +375,20 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
     two caller-supplied mappings replaced by this module's own tables. See the
     module docstring for the naming tension in reusing `HostAttesterStanding`
     for the candidate-release domain too.
+
+    Carries the SAME ambiguity guarantee `resolve_current_root` carries,
+    fixed here after an independent security review of PR #51 found this
+    sibling function did not: a fingerprint that is itself open (no
+    closure) is still checked against `_count_open_enrolments` for its OWN
+    `(custody_domain, subject)` before its standing against the projection
+    pointer is trusted. Without this, two open, unclosed enrolments for one
+    subject (raw SQL, a restored backup -- this module's own named threat
+    model) let a projection pointer that happens to name one of the two
+    report that fingerprint `VALID` with no signal the registry disputes
+    it, while `resolve_current_root` for the identical subject correctly
+    refused with `REGISTRY_DISAGREEMENT` -- two functions in one facade
+    disagreeing about whether trust is in dispute, with the more permissive
+    one winning for any caller that happened to ask it instead.
     """
     enrolment = _enrolment(db, fingerprint)
     if enrolment is None:
@@ -384,6 +398,17 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
         if closure.closure_kind == FingerprintStatus.REVOKED.value:
             return HostAttesterStanding.REVOKED
         return HostAttesterStanding.SUPERSEDED
+    # This fingerprint is OPEN (no closure row) -- but is it the ONLY open
+    # enrolment for its own subject/domain? Checked BEFORE the projection
+    # pointer is trusted for anything, the same "ambiguity is a refusal,
+    # never a tie-break" rule `resolve_current_root` already applies.
+    if (
+        _count_open_enrolments(
+            db, custody_domain=enrolment.custody_domain, subject=enrolment.subject
+        )
+        > 1
+    ):
+        return HostAttesterStanding.REGISTRY_DISAGREEMENT
     current = _current_fingerprint(
         db, custody_domain=enrolment.custody_domain, subject=enrolment.subject
     )
