@@ -81,7 +81,7 @@ replay, changed-byte conflict, enrolled-key verification and purpose separation.
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0010` one, nine tables and 143 columns, because
+extent below is the POST-`dc_0011` one, twelve tables and 169 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -93,8 +93,8 @@ carry it?). a7's own record says so, and
 `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins the sentence.
 
 * `database_catalogue_as_published` — the installed distribution publishes the
-                             exact catalogue: module identity, all nine table
-                             identities, all 143 columns by name, ordinal, type
+                             exact catalogue: module identity, all twelve table
+                             identities, all 169 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
@@ -1112,7 +1112,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0010` extent, nine tables and 143 columns, and
+# literal below is the POST-`dc_0011` extent, twelve tables and 169 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1245,7 +1245,7 @@ def composed_lineage_head() -> str:
 
 
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
-#: single values rather than per-table, because "the module owns all nine and
+#: single values rather than per-table, because "the module owns all twelve and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
 #: DECLARED, never inferred), and a per-table copy would let one row drift while
 #: reading as if it had been checked.
@@ -1790,9 +1790,9 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * module identity — document schema and scope, distribution name and
       version, module code, release version, `mod_deploy`, and the `dc_0007`
       lineage head;
-    * all nine table identities, in canonical order, with nothing missing and
+    * all twelve table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 143 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 169 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
