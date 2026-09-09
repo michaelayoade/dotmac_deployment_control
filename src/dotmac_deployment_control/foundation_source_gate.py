@@ -317,7 +317,7 @@ def extract_operations_members(source: str) -> frozenset[str]:
             "Foundation renamed or removed the name this gate reads"
         )
 
-    if not isinstance(assignment.value, (ast.Tuple, ast.List)):
+    if not isinstance(assignment.value, ast.Tuple | ast.List):
         raise FoundationVocabularySourceError(
             f"`{OPERATIONS_ASSIGNMENT_NAME}` is not a bare tuple or list "
             f"literal (found {ast.dump(assignment.value)!r}). This narrow AST "
