@@ -489,11 +489,23 @@ jobs:
   # `tests/test_deployment_control_platform_isolation.py` is 1,001 lines proving
   # the claim/proof CHECK constraints hold against RAW SQL, and that the tenant
   # role holds zero grants on the platform plane. It cannot run on SQLite.
+  # `tests/test_attestation_trust_registry_platform_isolation.py` proves the
+  # same class of thing for the dc_0011 attestation trust registry.
   #
-  # `REQUIRE_NO_SKIPS=1` is not decoration. The canary calls `pytest.skip` when
-  # `TEST_DATABASE_URL` is unset — correct in the monorepo it came from, and a
-  # silent hole here, where this lane exists for this file. The conftest hook
-  # turns a skip in this lane into a failure.
+  # This job runs `scripts/run_platform_isolation_canaries.py` rather than
+  # naming either file directly: that runner DISCOVERS every
+  # `tests/test_*_platform_isolation.py` file (so a third canary is picked up
+  # automatically instead of requiring this workflow to be edited again), and
+  # fails outright if discovery finds nothing or the database coordinate is
+  # absent, rather than reporting success having run nothing. This is the
+  # repair for the single-filename version of this step orphaning the second
+  # canary file from the day it was written — see the runner's own docstring.
+  #
+  # `REQUIRE_NO_SKIPS=1` is not decoration. Every canary calls `pytest.skip`
+  # when the database coordinate is unset — correct in the monorepo it came
+  # from, and a silent hole here, where this lane exists to run them. The
+  # runner sets `REQUIRE_NO_SKIPS=1` itself as a second, independent layer on
+  # top of its own upfront database-coordinate check.
   postgres:
     name: platform isolation canary (PostgreSQL)
     needs: credential
@@ -584,4 +596,4 @@ jobs:
             echo "localhost:5432:*:platform_api:platform_api"
           } > "$HOME/.pgpass"
           chmod 600 "$HOME/.pgpass"
-      - run: poetry run pytest tests/test_deployment_control_platform_isolation.py -rs
+      - run: poetry run python scripts/run_platform_isolation_canaries.py
