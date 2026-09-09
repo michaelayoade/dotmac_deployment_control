@@ -1106,6 +1106,77 @@ class TestCurrentRootDriftDetectionAndRepair:
         assert count == 2
         assert closures == 0
 
+    def test_a_projection_naming_a_revoked_fingerprint_never_returns_a_root(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """Michael's ruling, stated as a test: `attestation_current_roots` may
+        ACCELERATE a read; it may never independently ESTABLISH standing. A
+        projection row pointing at a fingerprint the append-only closures
+        table has already revoked must return no root -- EVEN BEFORE
+        `reconcile_current_root`/`repair_current_root` ever runs. This is
+        deliberately NOT the drift-and-repair flow above: no reconciliation
+        call happens anywhere in this test, because the refusal must hold at
+        the moment of the READ, not only after a separate repair step."""
+        subject = f"host-corrupt-to-revoked-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        fp = view.public_key_fingerprint
+
+        with sessions() as db:
+            revoke_root(db, fingerprint=fp, revocation_authority="control_service")
+            db.commit()
+        # `revoke_root` deletes the projection row on its own correct path;
+        # the corruption below simulates a raw-SQL write or a restored
+        # backup that reinserts a pointer to that now-REVOKED fingerprint --
+        # the exact hazard the projection's own design note names.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_current_roots "
+                        "(custody_domain, subject, current_fingerprint) "
+                        "VALUES ('host_attester', :subject, :fp)"
+                    ),
+                    {"subject": subject, "fp": fp},
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            # The corrupted row is still present and still names the revoked
+            # fingerprint -- confirmed here so the assertion below is known
+            # to be exercising the corrupted state, not a state the INSERT
+            # above silently failed to create.
+            assert (
+                db.get(AttestationCurrentRoot, ("host_attester", subject))
+                is not None
+            )
+            assert (
+                resolve_current_root(
+                    db, custody_domain="host_attester", subject=subject
+                )
+                is None
+            )
+            # `fingerprint_standing` never consulted the projection for this
+            # fingerprint's standing in the first place; restated here as the
+            # cross-check that both read paths agree a revoked key is never
+            # reported active.
+            assert (
+                fingerprint_standing(db, fingerprint=fp)
+                is HostAttesterStanding.REVOKED
+            )
+
     def test_repair_deletes_the_projection_when_there_is_no_open_enrolment(
         self, sessions
     ) -> None:

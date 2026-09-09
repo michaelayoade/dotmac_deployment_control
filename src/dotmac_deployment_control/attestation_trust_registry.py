@@ -375,6 +375,18 @@ def resolve_current_root(
     Returns `None` (`ABSENT`) rather than raising -- absence is a fact, not a
     failure, exactly as `host_attester_enrolment`'s own docstring rules for
     `HostAttesterStanding.ABSENT`.
+
+    `AttestationCurrentRoot` ACCELERATES this read; it does not DECIDE it.
+    Standing is derived from the append-only tables -- enrolment minus
+    closure -- every time, so a projection row that names a fingerprint the
+    closures table has since revoked or superseded is refused HERE, before
+    any reconciliation runs. Under this module's own writers that row would
+    already have been deleted (`revoke_root`) or moved
+    (`rotate_root`), but a raw-SQL write, a restored backup, or a corrupted
+    projection row must not be trusted to have kept that invariant -- the
+    same "never trust one signal alone" principle `fingerprint_standing`
+    already applies by checking the closures table directly rather than
+    inferring REVOKED from the pointer's absence.
     """
     fingerprint = _current_fingerprint(
         db, custody_domain=custody_domain, subject=subject
@@ -383,6 +395,11 @@ def resolve_current_root(
         return None
     enrolment = _enrolment(db, fingerprint)
     if enrolment is None:  # pragma: no cover - FK makes this unreachable
+        return None
+    if _closure(db, fingerprint) is not None:
+        # The projection points at a CLOSED fingerprint. The projection is
+        # not authoritative, so this is a refusal, not a report of the stale
+        # standing the closed fingerprint used to have.
         return None
     return _view_from_enrolment(enrolment, standing=HostAttesterStanding.VALID)
 
