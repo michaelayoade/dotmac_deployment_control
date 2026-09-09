@@ -56,7 +56,7 @@ does run `poetry install`.
 Exit 0: the pinned source agrees with the mirror. Exit 1: it does not, or it
 could not be read — both are gate failures, and the message distinguishes
 which because they need different repairs (see
-`FoundationStepVocabularySourceError` vs `FoundationStepVocabularyDriftError`).
+`FoundationVocabularySourceError` vs `FoundationVocabularyDriftError`).
 """
 
 from __future__ import annotations
@@ -126,8 +126,8 @@ _ports = sys.modules["dotmac_deployment_control.ports"]
 require_foundation_step_vocabulary_agreement = (
     _gate.require_foundation_step_vocabulary_agreement
 )
-FoundationStepVocabularyDriftError = _ports.FoundationStepVocabularyDriftError
-FoundationStepVocabularySourceError = _ports.FoundationStepVocabularySourceError
+FoundationVocabularyDriftError = _ports.FoundationVocabularyDriftError
+FoundationVocabularySourceError = _ports.FoundationVocabularySourceError
 
 _TIMEOUT_SECONDS = 30
 
@@ -160,10 +160,10 @@ class _RawGithubReader:
 def main() -> int:
     try:
         require_foundation_step_vocabulary_agreement(_RawGithubReader())
-    except FoundationStepVocabularySourceError as error:
+    except FoundationVocabularySourceError as error:
         print(f"foundation-step-vocabulary-gate: SOURCE UNAVAILABLE: {error}")
         return 1
-    except FoundationStepVocabularyDriftError as error:
+    except FoundationVocabularyDriftError as error:
         print(f"foundation-step-vocabulary-gate: DRIFT: {error}")
         return 1
     except urllib.error.URLError as error:

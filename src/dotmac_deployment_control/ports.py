@@ -109,22 +109,27 @@ class ExpectedStateError(DeploymentControlError):
         )
 
 
-class FoundationStepVocabularySourceError(DeploymentControlError):
-    """Foundation's pinned step-vocabulary SOURCE could not be read or parsed.
+class FoundationVocabularySourceError(DeploymentControlError):
+    """Foundation's pinned vocabulary SOURCE could not be read or parsed.
 
-    Deliberately distinct from `FoundationStepVocabularyDriftError`: "I could
+    Shared by every pinned-source comparison `foundation_source_gate` runs —
+    today the `StepKind` step vocabulary and the `OPERATIONS` executor
+    vocabulary, both compared against Foundation's own SOURCE at a pinned
+    commit rather than a second hand-maintained mirror of each other.
+
+    Deliberately distinct from `FoundationVocabularyDriftError`: "I could
     not read what is at the pinned coordinate" and "I read it, and it
     disagrees with the mirror" are different findings needing different
     repairs, on the same split `DigestEncodingError` draws from a content
     mismatch. Covers BOTH the coordinate being unreachable (network failure,
     wrong commit, renamed path) and the source being unparsable in a way this
-    gate's narrow AST reader does not support (a `StepKind` member whose value
-    is not a bare string literal, or no `StepKind` class found at all) — the
+    gate's narrow AST reader does not support (a member whose value is not a
+    bare string literal, or no matching class/assignment found at all) — the
     gate refuses rather than silently skipping a member it cannot read.
     """
 
 
-class FoundationStepVocabularyDriftError(DeploymentControlError):
+class FoundationVocabularyDriftError(DeploymentControlError):
     """Foundation's pinned SOURCE vocabulary disagrees with the mirror.
 
     Raised for ANY non-empty symmetric difference — a member added, a member
@@ -436,8 +441,8 @@ __all__ = [
     "DigestEncodingError",
     "ExecutionPlanBindingError",
     "ExpectedStateError",
-    "FoundationStepVocabularyDriftError",
-    "FoundationStepVocabularySourceError",
+    "FoundationVocabularyDriftError",
+    "FoundationVocabularySourceError",
     "ImageSetRefusedError",
     "ObservationRefusedError",
     "OperationRefusedError",

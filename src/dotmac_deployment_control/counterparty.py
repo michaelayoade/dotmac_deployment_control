@@ -55,9 +55,11 @@ from dotmac_deployment_control.ports import OperationNotExecutableError
 __all__ = [
     "EXECUTOR_DISTRIBUTION",
     "EXECUTOR_OPERATIONS",
+    "EXECUTOR_OPERATIONS_SOURCE",
     "EXECUTOR_SOURCE_COMMIT",
     "EXECUTOR_SOURCE_REPOSITORY",
     "EXECUTOR_SOURCE_VERSION",
+    "executor_operations_drift",
     "require_executable_operation",
     "unexecutable_operations",
 ]
@@ -67,9 +69,32 @@ EXECUTOR_SOURCE_REPOSITORY: Final = "michaelayoade/dotmac_starter_mt"
 EXECUTOR_SOURCE_COMMIT: Final = "5dcb3d1184d0e5ee7544966f77ead47cdd020e64"
 EXECUTOR_SOURCE_VERSION: Final = "0.4.0a1"
 
+#: `<repository>@<commit>:<path>`, the same pinned-source coordinate format
+#: `rehearsal_grant.FOUNDATION_STEP_KIND_SOURCE` uses --
+#: `foundation_source_gate.require_foundation_operations_agreement` reads this
+#: exact commit's `authorization.py` and requires its `OPERATIONS` tuple to
+#: agree with `EXECUTOR_OPERATIONS` below, cold, with no Foundation install.
+EXECUTOR_OPERATIONS_SOURCE: Final = (
+    f"{EXECUTOR_SOURCE_REPOSITORY}@{EXECUTOR_SOURCE_COMMIT}"
+    ":packages/dotmac-deployment-foundation/src/"
+    "dotmac_deployment_foundation/authorization.py"
+)
+
 #: The operations the executor has published support for. A member of this
 #: control plane's vocabulary that is absent here can be NAMED but not acted on.
 EXECUTOR_OPERATIONS: Final[frozenset[str]] = frozenset({"deploy", "rollback"})
+
+
+def executor_operations_drift(observed: object) -> frozenset[str]:
+    """Symmetric difference between an observed vocabulary and the pin.
+
+    PURE, mirroring `rehearsal_grant.foundation_step_vocabulary_drift`: this
+    function needs no Foundation install to be exercised, so its own
+    sensitivity -- naming an addition, a removal, and a same-count rename, and
+    staying silent when nothing changed -- is provable with a synthetic
+    vocabulary unconditionally, in every CI run.
+    """
+    return frozenset(observed) ^ EXECUTOR_OPERATIONS
 
 
 def unexecutable_operations() -> frozenset[str]:

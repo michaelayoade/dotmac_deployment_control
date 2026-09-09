@@ -22,8 +22,8 @@ from dotmac_deployment_control.foundation_source_gate import (
     require_foundation_step_vocabulary_agreement,
 )
 from dotmac_deployment_control.ports import (
-    FoundationStepVocabularyDriftError,
-    FoundationStepVocabularySourceError,
+    FoundationVocabularyDriftError,
+    FoundationVocabularySourceError,
 )
 from dotmac_deployment_control.rehearsal_grant import FOUNDATION_STEP_KINDS
 
@@ -95,7 +95,7 @@ def test_the_coordinate_parses_into_its_three_parts() -> None:
 def test_a_non_pinned_or_malformed_coordinate_is_refused(bad: str) -> None:
     """A branch name is a MOVING reference; this gate exists to check a
     PINNED one, so it must refuse to even parse a branch as a commit."""
-    with pytest.raises(FoundationStepVocabularySourceError):
+    with pytest.raises(FoundationVocabularySourceError):
         parse_source_coordinate(bad)
 
 
@@ -105,7 +105,7 @@ def test_a_non_pinned_or_malformed_coordinate_is_refused(bad: str) -> None:
 def test_source_unavailable_is_refused() -> None:
     """FAILURE MODE 1: the coordinate cannot be read at all."""
     reader = _FakeReader(OSError("connection refused"))
-    with pytest.raises(FoundationStepVocabularySourceError) as refused:
+    with pytest.raises(FoundationVocabularySourceError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "connection refused" in str(refused.value)
 
@@ -117,7 +117,7 @@ def test_unsupported_syntax_is_refused() -> None:
         'class StepKind(str, Enum):\n    ACQUIRE_LOCK = "acquire_lock"\n'
         "    COMPUTED = some_function()\n"
     )
-    with pytest.raises(FoundationStepVocabularySourceError) as refused:
+    with pytest.raises(FoundationVocabularySourceError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "bare string literal" in str(refused.value)
 
@@ -125,13 +125,13 @@ def test_unsupported_syntax_is_refused() -> None:
 def test_unparsable_python_is_refused() -> None:
     """FAILURE MODE 2, the other half: not even valid Python."""
     reader = _FakeReader("class StepKind(str, Enum):\n    THIS IS NOT PYTHON ][\n")
-    with pytest.raises(FoundationStepVocabularySourceError):
+    with pytest.raises(FoundationVocabularySourceError):
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
 
 
 def test_a_missing_step_kind_class_is_refused() -> None:
     reader = _FakeReader('class SomethingElse:\n    X = "x"\n')
-    with pytest.raises(FoundationStepVocabularySourceError) as refused:
+    with pytest.raises(FoundationVocabularySourceError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "StepKind" in str(refused.value)
 
@@ -141,7 +141,7 @@ def test_an_addition_is_refused_and_named() -> None:
     reader = _FakeReader(
         _synthetic_source(*sorted(FOUNDATION_STEP_KINDS), "brand_new_step")
     )
-    with pytest.raises(FoundationStepVocabularyDriftError) as refused:
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "brand_new_step" in str(refused.value)
 
@@ -150,7 +150,7 @@ def test_a_removal_is_refused_and_named() -> None:
     """FAILURE MODE 4: the source no longer has a step the mirror carries."""
     remaining = sorted(FOUNDATION_STEP_KINDS - {"apply_exposure"})
     reader = _FakeReader(_synthetic_source(*remaining))
-    with pytest.raises(FoundationStepVocabularyDriftError) as refused:
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "apply_exposure" in str(refused.value)
 
@@ -173,7 +173,7 @@ def test_a_same_count_rename_is_refused_and_named() -> None:
         "exercise the discriminating case at all"
     )
     reader = _FakeReader(_synthetic_source(*renamed))
-    with pytest.raises(FoundationStepVocabularyDriftError) as refused:
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     message = str(refused.value)
     assert "apply_exposure_renamed" in message
@@ -184,5 +184,5 @@ def test_an_empty_step_kind_class_is_refused_rather_than_agreeing_with_nothing()
     None
 ):
     reader = _FakeReader("class StepKind(str, Enum):\n    pass\n")
-    with pytest.raises(FoundationStepVocabularySourceError):
+    with pytest.raises(FoundationVocabularySourceError):
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
