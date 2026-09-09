@@ -421,21 +421,52 @@ class AttestationFingerprintClosure(Base, TimestampMixin):
 
 
 class AttestationCurrentRoot(Base, TimestampMixin):
-    """The ONE deliberately-mutable row per `(custody_domain, subject)`.
+    """A DERIVED PROJECTION of `attestation_enrolments` +
+    `attestation_fingerprint_closures` -- not a second source of truth.
 
-    Everything else this module adds is immutable evidence; this is the
-    living pointer to which enrolled fingerprint is CURRENT -- the durable
-    replacement for the caller-supplied `active_by_host` mapping
-    `host_attester_enrolment` names as the gap this table closes. Rotation
-    updates it with a compare-and-swap (`UPDATE ... WHERE current_fingerprint
-    = :old`); initial enrolment inserts it, and the primary key
-    `(custody_domain, subject)` is what makes two concurrent initial
-    enrolments for the same subject a database conflict rather than a
-    silent double-write. Revocation of the current fingerprint deletes the
-    row (there is no valid current root until a new signed attempt recovers
-    it) -- a delete, not an edit of a status column, and it is conditioned on
-    still naming the fingerprint being revoked, so it can never erase a
-    pointer some other, later rotation already moved on.
+    ## Why a projection needs to exist at all, stated plainly
+
+    "Which fingerprint is current for this subject" is fully computable from
+    the two append-only tables alone: it is the one enrolment for
+    `(custody_domain, subject)` that has no row in
+    `attestation_fingerprint_closures`. This table exists ONLY because that
+    computation needs a place to hold a DATABASE-ENFORCED "at most one" lock
+    for two genuinely concurrent writers -- the primary key
+    `(custody_domain, subject)` is what makes two concurrent INITIAL
+    enrolments for the same subject a conflict rather than a silent
+    double-write, and the compare-and-swap `UPDATE ... WHERE
+    current_fingerprint = :old` is what makes a rotation race detectable.
+    Every FIELD on this row is redundant with the append-only tables; only
+    its EXISTENCE as a lockable, unique-keyed row is not.
+
+    ## One canonical writer, named
+
+    `dotmac_deployment_control.attestation_trust_registry`'s `enrol_root`,
+    `rotate_root` and `revoke_root` are the only functions that write this
+    table (insert, compare-and-swap update, and conditioned delete
+    respectively). Nothing else in this package touches it, and the
+    platform-plane grants below give no other role a route around that
+    module.
+
+    ## Drift detection and repair, because a projection that cannot be
+    ## re-derived and checked is a second copy of truth waiting to disagree
+
+    `attestation_trust_registry.reconcile_current_root` recomputes the
+    expected current fingerprint DIRECTLY from `attestation_enrolments` and
+    `attestation_fingerprint_closures` -- the same two append-only tables,
+    never this one -- and compares it against what is stored here.
+    `attestation_trust_registry.repair_current_root` performs the idempotent
+    write (upsert or delete) that makes this row agree with that same
+    derivation. Both are ordinary reads/writes over public tables; nothing
+    about them is privileged, so an operator (or a scheduled job) can run
+    them at any time without holding any authority this module does not
+    already grant `platform_api`/`app_admin`.
+
+    Revocation of the current fingerprint DELETEs this row rather than
+    editing a status column -- there is no valid current root until a NEW
+    signed attempt recovers one -- and the delete is conditioned on still
+    naming the fingerprint being revoked, so it can never erase a pointer
+    some other, later rotation already moved on.
     """
 
     __tablename__ = _ATTESTATION_CURRENT_ROOTS

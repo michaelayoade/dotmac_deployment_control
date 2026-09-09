@@ -16,15 +16,20 @@ one reader.
 ## Three tables, one derived projection, and why the projection is not a
 ## fourth persistence owner
 
-`AttestationEnrolment` (append-only), `AttestationFingerprintClosure`
-(append-only, `fingerprint` PRIMARY KEY -- the ordering arbiter) and
-`AttestationCurrentRoot` (the one deliberately mutable pointer) are the
-durable state; see `models.py` for the schema-level invariants. Nothing in
-this module stores a `status` column anywhere. `standing()` and
-`current_root()` DERIVE their answer by reading those three tables at query
-time -- exactly what `host_attester_enrolment`'s own docstring asks for when
-it says `FingerprintRecord` must become "a typed value / projection, not a
-second persistence owner."
+`AttestationEnrolment` (append-only) and `AttestationFingerprintClosure`
+(append-only, `fingerprint` PRIMARY KEY -- the ordering arbiter) are the
+durable TRUTH. `AttestationCurrentRoot` is a DERIVED PROJECTION over those
+two -- not a fourth source of fact -- kept only because "at most one open
+enrolment per subject" needs a database-enforced lock (its primary key and
+its compare-and-swap update), never because it knows anything the other two
+tables do not. `fingerprint_standing` and `resolve_current_root` read it
+directly for that reason; `reconcile_current_root` recomputes the same
+answer straight from the append-only tables and reports disagreement, and
+`repair_current_root` performs the idempotent write that removes it. Nothing
+in this module stores a `status` column anywhere -- exactly what
+`host_attester_enrolment`'s own docstring asks for when it says
+`FingerprintRecord` must become "a typed value / projection, not a second
+persistence owner," extended here to the current-root pointer as well.
 
 ## Vocabulary: reused, not reinvented, with one tension named plainly
 
@@ -101,16 +106,19 @@ from dotmac_deployment_control.models import (
 )
 from dotmac_deployment_control.ports import DeploymentControlError
 from dotmac_kernel.transactions import conflict_savepoint
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 __all__ = [
+    "AttestationCurrentRootDrift",
     "AttestationRefusalCode",
     "AttestationRefusedError",
     "AttestationRootView",
     "enrol_root",
     "fingerprint_standing",
+    "reconcile_current_root",
+    "repair_current_root",
     "resolve_current_root",
     "revoke_root",
     "rotate_root",
@@ -181,6 +189,123 @@ def _current_fingerprint(
             AttestationCurrentRoot.subject == subject,
         )
     ).scalar_one_or_none()
+
+
+def _derive_current_fingerprint(
+    session: Session, *, custody_domain: str, subject: str
+) -> str | None:
+    """The TRUTH, computed from the two append-only tables alone -- never
+    from `AttestationCurrentRoot`. This is what `reconcile_current_root`
+    compares the projection against, and what `repair_current_root` writes
+    back when they disagree.
+
+    An enrolment is "open" (a current-root candidate) when no closure row
+    names its fingerprint. Ordered by `enrolled_at` descending so that if
+    more than one open row exists -- itself a drift symptom this module's
+    own writers should never produce, but not something a raw-SQL repair
+    script is prevented from causing -- the most recently enrolled one is
+    treated as authoritative, and `reconcile_current_root` still reports the
+    anomaly rather than resolving it silently.
+    """
+    closed = select(AttestationFingerprintClosure.fingerprint)
+    row = session.execute(
+        select(AttestationEnrolment.public_key_fingerprint)
+        .where(
+            AttestationEnrolment.custody_domain == custody_domain,
+            AttestationEnrolment.subject == subject,
+            AttestationEnrolment.public_key_fingerprint.not_in(closed),
+        )
+        .order_by(AttestationEnrolment.enrolled_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return row
+
+
+def _count_open_enrolments(session: Session, *, custody_domain: str, subject: str) -> int:
+    closed = select(AttestationFingerprintClosure.fingerprint)
+    return session.execute(
+        select(func.count(AttestationEnrolment.id)).where(
+            AttestationEnrolment.custody_domain == custody_domain,
+            AttestationEnrolment.subject == subject,
+            AttestationEnrolment.public_key_fingerprint.not_in(closed),
+        )
+    ).scalar_one()
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationCurrentRootDrift:
+    """What `reconcile_current_root` found. `drifted` is the ONE question a
+    caller needs; the two fingerprints are kept for the operator triaging it."""
+
+    custody_domain: str
+    subject: str
+    expected_fingerprint: str | None
+    recorded_fingerprint: str | None
+    open_enrolment_count: int
+
+    @property
+    def drifted(self) -> bool:
+        return (
+            self.expected_fingerprint != self.recorded_fingerprint
+            or self.open_enrolment_count > 1
+        )
+
+
+def reconcile_current_root(
+    db: Session, *, custody_domain: str, subject: str
+) -> AttestationCurrentRootDrift:
+    """Compare the durable projection against the append-only truth.
+
+    Read-only. Never writes; `repair_current_root` is the separate, explicit
+    write path -- a caller that only wants to KNOW about drift never performs
+    one by asking."""
+    expected = _derive_current_fingerprint(db, custody_domain=custody_domain, subject=subject)
+    recorded = _current_fingerprint(db, custody_domain=custody_domain, subject=subject)
+    open_count = _count_open_enrolments(db, custody_domain=custody_domain, subject=subject)
+    return AttestationCurrentRootDrift(
+        custody_domain=custody_domain,
+        subject=subject,
+        expected_fingerprint=expected,
+        recorded_fingerprint=recorded,
+        open_enrolment_count=open_count,
+    )
+
+
+def repair_current_root(db: Session, *, custody_domain: str, subject: str) -> None:
+    """Make `AttestationCurrentRoot` agree with the append-only truth.
+
+    Idempotent: repairing an already-correct projection is a no-op write.
+    Deletes the row when there is no open enrolment (an ABSENT/REVOKED
+    subject has no valid current root); upserts it otherwise. Raises nothing
+    of its own -- a genuine multi-open-enrolment anomaly
+    (`AttestationCurrentRootDrift.open_enrolment_count > 1`) is a fact for the
+    caller to act on, not a decision this function is positioned to make for
+    them, so it repairs to the same most-recent-wins choice
+    `_derive_current_fingerprint` reports and lets the caller decide whether
+    that anomaly needs a human.
+    """
+    expected = _derive_current_fingerprint(db, custody_domain=custody_domain, subject=subject)
+    if expected is None:
+        db.execute(
+            delete(AttestationCurrentRoot).where(
+                AttestationCurrentRoot.custody_domain == custody_domain,
+                AttestationCurrentRoot.subject == subject,
+            )
+        )
+        db.flush()
+        return
+    existing = db.get(AttestationCurrentRoot, (custody_domain, subject))
+    if existing is None:
+        db.add(
+            AttestationCurrentRoot(
+                custody_domain=custody_domain,
+                subject=subject,
+                current_fingerprint=expected,
+            )
+        )
+    elif existing.current_fingerprint != expected:
+        existing.current_fingerprint = expected
+    db.flush()
 
 
 def _view_from_enrolment(
