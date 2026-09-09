@@ -71,8 +71,15 @@ already excludes it -- see its own definition). Nothing in this module reads
 `AttestationEnrolment.key_custody_pointer` at all.
 `tests/architecture/test_attestation_binding_no_custody_pointer.py` proves
 this two ways: a `dataclasses.fields()` scan of `AttestationBindingV1` for
-the exact column name, and an AST/source-text scan of this module for the
-literal string `key_custody_pointer` anywhere in it.
+the exact column name, and an AST scan of this module's EXECUTABLE code
+-- docstrings and comments excluded, deliberately -- for an attribute access,
+a `getattr` call, or a string used as a lookup key naming
+`key_custody_pointer`. The guard classifies by CONSUMPTION, not by content:
+this paragraph names the column by design (that is the documentation
+working), and an earlier, content-scanning version of this guard could not
+tell the difference between naming the column and reading it, so it flagged
+its own sentence as the violation it was trying to describe. A docstring
+cannot read a column; only executable code can.
 
 ## Three known gaps, stated rather than worked around
 
