@@ -26,6 +26,18 @@ unrelated object would also be flagged. That is a FALSE-POSITIVE risk this
 module's actual, narrow surface makes acceptable, not a gap in what the
 guard is meant to catch):
 
+**The undisclosed side is the false-NEGATIVE one, and it is real, not
+hypothetical: an attribute CHAIN (`x.y.z.rotate_root(...)`) is caught (the
+outermost `Attribute.attr` still matches), but an import alias
+(`from … import enrol_root as _e; _e(db, …)`), `getattr(session, "add")(row)`,
+and a call through a variable (`writer = enrol_root; writer(db, …)`) are
+NOT -- none of them names the forbidden identifier at the call site itself.
+Low severity in practice (none of these shapes appears anywhere in this
+codebase's style, and the sibling `never_reconciles` guard accepts the same
+by-name limitation), but a name-matching AST scan is not a rename-proof or
+indirection-proof guarantee, and a reviewer relying on it should know which
+evasions it does not see.
+
 1. **Writing registry callees** -- `enrol_root`, `rotate_root`,
    `revoke_root`, `repair_current_root` -- whether referenced bare or as
    `attestation_trust_registry.<name>(...)`, the exact two shapes this

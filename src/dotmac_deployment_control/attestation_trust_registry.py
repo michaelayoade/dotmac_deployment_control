@@ -389,6 +389,19 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
     refused with `REGISTRY_DISAGREEMENT` -- two functions in one facade
     disagreeing about whether trust is in dispute, with the more permissive
     one winning for any caller that happened to ask it instead.
+
+    A remaining scope boundary, correct for this signature and not a
+    defect: this function takes NO requested-subject parameter, so it
+    cannot detect "valid key, wrong subject" -- a projection corrupted to
+    point subject S at subject S2's genuinely valid fingerprint reports
+    that fingerprint `VALID` (it derives `(custody_domain, subject)` from
+    the fingerprint's OWN row and finds S2's registry unambiguous, which is
+    true), where `resolve_current_root(db, custody_domain=D, subject=S)`
+    correctly refuses with `DRIFT` because it validates the resolved
+    enrolment's subject against the one REQUESTED. A caller that needs
+    subject-bound standing, not merely fingerprint-bound standing, must use
+    `resolve_current_root`/`resolve_attestation_binding`, never this
+    function alone.
     """
     enrolment = _enrolment(db, fingerprint)
     if enrolment is None:
