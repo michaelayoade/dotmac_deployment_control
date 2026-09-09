@@ -55,8 +55,12 @@ EVIDENCE_TABLES = (
     "rollout_attempt_settlements",
     "observation_attempts",
     "observation_receipts",
+    # dc_0011: append-only registry evidence -- one row per signed enrolment
+    # or closure statement, never edited.
+    "attestation_enrolments",
+    "attestation_fingerprint_closures",
 )
-#: The four the lifecycle legitimately mutates.
+#: The tables the lifecycle legitimately mutates.
 MUTABLE_TABLES = (
     "deployment_targets",
     "target_credentials",
@@ -65,6 +69,10 @@ MUTABLE_TABLES = (
     # Revocation UPDATEs a grant in place rather than deleting it, so the
     # lifecycle genuinely mutates this one.
     "recovery_grants",
+    # dc_0011: the one deliberately mutable table in the registry -- a
+    # derived pointer projection, moved by compare-and-swap and cleared by
+    # revocation.
+    "attestation_current_roots",
 )
 
 SIBLING_ROOTS = frozenset(
@@ -250,6 +258,9 @@ class TestThePlaneIsDeclaredNotDiscovered:
     def test_the_declared_platform_tables_are_exactly_the_mapped_ones(self) -> None:
         from dotmac_deployment_control.models import (
             SCHEMA,
+            AttestationCurrentRoot,
+            AttestationEnrolment,
+            AttestationFingerprintClosure,
             DeploymentPlan,
             DeploymentTarget,
             ObservationAttempt,
@@ -271,6 +282,9 @@ class TestThePlaneIsDeclaredNotDiscovered:
             ObservationReceipt,
             ObservationAttempt,
             RecoveryGrant,
+            AttestationEnrolment,
+            AttestationFingerprintClosure,
+            AttestationCurrentRoot,
         )
         assert {m.__tablename__ for m in models} == set(module.platform_tables)
         assert all(m.__table__.schema == SCHEMA for m in models)

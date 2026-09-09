@@ -223,46 +223,52 @@ def upgrade() -> None:
     )
 
     # ── Append-only, reusing dc_0001's trigger function ─────────────────────
+    # Literal table/schema names, not the f-string-interpolated `_ENROLMENTS`/
+    # `_CLOSURES` constants: the access-surface architecture test greps this
+    # file's raw SOURCE TEXT for the exact `mod_deploy.<table>` phrase, and an
+    # f-string's interpolation braces never appear in that text.
     op.execute(
-        f"""
+        """
         CREATE TRIGGER refuse_evidence_rewrite
-        BEFORE UPDATE OR DELETE ON {_SCHEMA}.{_ENROLMENTS}
-        FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.refuse_evidence_rewrite();
+        BEFORE UPDATE OR DELETE ON mod_deploy.attestation_enrolments
+        FOR EACH ROW EXECUTE FUNCTION mod_deploy.refuse_evidence_rewrite();
         """
     )
     op.execute(
-        f"""
+        """
         CREATE TRIGGER refuse_evidence_truncate
-        BEFORE TRUNCATE ON {_SCHEMA}.{_ENROLMENTS}
-        FOR EACH STATEMENT EXECUTE FUNCTION {_SCHEMA}.refuse_evidence_rewrite();
+        BEFORE TRUNCATE ON mod_deploy.attestation_enrolments
+        FOR EACH STATEMENT EXECUTE FUNCTION mod_deploy.refuse_evidence_rewrite();
         """
     )
     op.execute(
-        f"""
+        """
         CREATE TRIGGER refuse_evidence_rewrite
-        BEFORE UPDATE OR DELETE ON {_SCHEMA}.{_CLOSURES}
-        FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.refuse_evidence_rewrite();
+        BEFORE UPDATE OR DELETE ON mod_deploy.attestation_fingerprint_closures
+        FOR EACH ROW EXECUTE FUNCTION mod_deploy.refuse_evidence_rewrite();
         """
     )
     op.execute(
-        f"""
+        """
         CREATE TRIGGER refuse_evidence_truncate
-        BEFORE TRUNCATE ON {_SCHEMA}.{_CLOSURES}
-        FOR EACH STATEMENT EXECUTE FUNCTION {_SCHEMA}.refuse_evidence_rewrite();
+        BEFORE TRUNCATE ON mod_deploy.attestation_fingerprint_closures
+        FOR EACH STATEMENT EXECUTE FUNCTION mod_deploy.refuse_evidence_rewrite();
         """
     )
 
-    _grant("SELECT, INSERT", _ENROLMENTS, "platform_api")
-    _grant("SELECT, INSERT", _CLOSURES, "platform_api")
-    _grant("SELECT, INSERT, UPDATE, DELETE", _CURRENT_ROOTS, "platform_api")
+    _grant("SELECT, INSERT", "attestation_enrolments", "platform_api")
+    _grant("SELECT, INSERT", "attestation_fingerprint_closures", "platform_api")
+    _grant(
+        "SELECT, INSERT, UPDATE, DELETE", "attestation_current_roots", "platform_api"
+    )
 
-    _grant("SELECT, INSERT", _ENROLMENTS, "app_admin")
-    _grant("SELECT, INSERT", _CLOSURES, "app_admin")
-    _grant("SELECT, INSERT, UPDATE, DELETE", _CURRENT_ROOTS, "app_admin")
+    _grant("SELECT, INSERT", "attestation_enrolments", "app_admin")
+    _grant("SELECT, INSERT", "attestation_fingerprint_closures", "app_admin")
+    _grant("SELECT, INSERT, UPDATE, DELETE", "attestation_current_roots", "app_admin")
 
-    _revoke(_ENROLMENTS)
-    _revoke(_CLOSURES)
-    _revoke(_CURRENT_ROOTS)
+    _revoke("attestation_enrolments")
+    _revoke("attestation_fingerprint_closures")
+    _revoke("attestation_current_roots")
 
 
 def downgrade() -> None:
