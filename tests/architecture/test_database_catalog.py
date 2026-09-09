@@ -32,18 +32,18 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0010_attempt_settlements",
+            revision="dc_0011_attestation_registry",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0010_attempt_settlements"
+    assert database_catalog.lineage_head == "dc_0011_attestation_registry"
 
 
-def test_catalogue_has_exact_nine_table_143_column_extent() -> None:
-    """Nine tables and 143 columns after `dc_0010`.
+def test_catalogue_has_exact_twelve_table_169_column_extent() -> None:
+    """Twelve tables and 169 columns after `dc_0011`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
     `dc_0009` appends the nineteenth: Foundation's identity for the encoding
@@ -66,10 +66,19 @@ def test_catalogue_has_exact_nine_table_143_column_extent() -> None:
     inside `snapshot` rather than in a column of its own. A `deployment_plans`
     count of 25 would mean somebody had added the sibling image column that
     lets an image change without the plan digest moving.
+
+    `dc_0011` adds three tables for the durable attestation trust registry:
+    the append-only `attestation_enrolments` (13 columns), the append-only
+    `attestation_fingerprint_closures` (8 columns), and the deliberately
+    mutable derived projection `attestation_current_roots` (5 columns) --
+    143 + 5 + 13 + 8 = 169.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
     assert counts == {
+        "attestation_current_roots": 5,
+        "attestation_enrolments": 13,
+        "attestation_fingerprint_closures": 8,
         "deployment_plans": 24,
         "deployment_targets": 22,
         "observation_attempts": 15,
@@ -80,7 +89,7 @@ def test_catalogue_has_exact_nine_table_143_column_extent() -> None:
         "rollouts": 12,
         "target_credentials": 15,
     }
-    assert sum(counts.values()) == 143
+    assert sum(counts.values()) == 169
 
 
 def test_dc_0005_appends_the_portable_authorization_to_the_rollout() -> None:
@@ -251,7 +260,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0010_attempt_settlements",
+                revision="dc_0011_attestation_registry",
             ),
         )
 
@@ -267,5 +276,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 143
+    assert sum(len(table.columns) for table in restored.tables) == 169
     assert {table.plane.value for table in restored.tables} == {"platform"}

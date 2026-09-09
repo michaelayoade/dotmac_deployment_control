@@ -116,25 +116,29 @@ jobs:
   # ── Foundation's OWN source, read cold, required rather than diagnostic ────
   #
   # `pytest.importorskip` inside `test_the_step_vocabulary_matches_the_
-  # installed_executor_when_one_is_present` (the `unit` job above) always
-  # SKIPS here, because nothing installs `dotmac-deployment-foundation` in
-  # this repository's CI. A skipped test is not a failed test, so that
-  # comparison has never actually been required to agree with anything.
+  # installed_executor_when_one_is_present` (unit) and
+  # `test_the_pin_matches_the_installed_executor_when_one_is_present`
+  # (`test_counterparty_vocabulary.py`) always SKIP here, because nothing
+  # installs `dotmac-deployment-foundation` in this repository's CI. A
+  # skipped test is not a failed test, so neither comparison has ever
+  # actually been required to agree with anything.
   #
-  # This job closes that gap without installing the Foundation and without
-  # depending on it: `scripts/foundation_step_vocabulary_gate.py` fetches the
-  # pinned commit `rehearsal_grant.FOUNDATION_STEP_KIND_SOURCE` names over
-  # HTTPS — a fixed coordinate, not a branch — parses `StepKind` out of it with
-  # `ast` (never `import`), and requires COMPLETE set equality with the mirror
-  # via `foundation_step_vocabulary_drift`. That comparison fails on an
-  # addition, a removal, or a same-count RENAME (simultaneously one of each),
-  # which is why it is a real gate and not a count check.
+  # This job closes both gaps without installing the Foundation and without
+  # depending on it: `scripts/foundation_step_vocabulary_gate.py` fetches TWO
+  # pinned commits over HTTPS — `rehearsal_grant.FOUNDATION_STEP_KIND_SOURCE`
+  # and `counterparty.EXECUTOR_OPERATIONS_SOURCE`, both fixed coordinates, not
+  # branches — parses `StepKind`/`OPERATIONS` out of them with `ast` (never
+  # `import`), and requires COMPLETE set equality with each mirror via the
+  # same `foundation_source_gate` comparator machinery (one comparator, not a
+  # second implementation for the second vocabulary). That comparison fails
+  # on an addition, a removal, or a same-count RENAME (simultaneously one of
+  # each), which is why it is a real gate and not a count check.
   #
   # No `poetry install` here on purpose: this job's only dependency is the
   # standard library, so it cannot be broken by, or mask a defect in, this
   # repository's OWN dependency resolution the way `unit`/`type-check` could.
   foundation-step-vocabulary:
-    name: foundation step vocabulary agrees with its pinned source
+    name: foundation step & operation vocabulary agrees with its pinned source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -485,11 +489,24 @@ jobs:
   # `tests/test_deployment_control_platform_isolation.py` is 1,001 lines proving
   # the claim/proof CHECK constraints hold against RAW SQL, and that the tenant
   # role holds zero grants on the platform plane. It cannot run on SQLite.
+  # `tests/test_attestation_trust_registry_platform_isolation.py` proves the
+  # same class of thing for the dc_0011 attestation trust registry.
   #
-  # `REQUIRE_NO_SKIPS=1` is not decoration. The canary calls `pytest.skip` when
-  # `TEST_DATABASE_URL` is unset — correct in the monorepo it came from, and a
-  # silent hole here, where this lane exists for this file. The conftest hook
-  # turns a skip in this lane into a failure.
+  # This job runs `scripts/run_platform_isolation_canaries.py` rather than
+  # naming either file directly: that runner DISCOVERS every file under
+  # `tests/` matching `test_*_platform_isolation.py` (so a third canary is
+  # picked up automatically instead of requiring this workflow to be edited
+  # again), and
+  # fails outright if discovery finds nothing or the database coordinate is
+  # absent, rather than reporting success having run nothing. This is the
+  # repair for the single-filename version of this step orphaning the second
+  # canary file from the day it was written — see the runner's own docstring.
+  #
+  # `REQUIRE_NO_SKIPS=1` is not decoration. Every canary calls `pytest.skip`
+  # when the database coordinate is unset — correct in the monorepo it came
+  # from, and a silent hole here, where this lane exists to run them. The
+  # runner sets `REQUIRE_NO_SKIPS=1` itself as a second, independent layer on
+  # top of its own upfront database-coordinate check.
   postgres:
     name: platform isolation canary (PostgreSQL)
     needs: credential
@@ -580,4 +597,4 @@ jobs:
             echo "localhost:5432:*:platform_api:platform_api"
           } > "$HOME/.pgpass"
           chmod 600 "$HOME/.pgpass"
-      - run: poetry run pytest tests/test_deployment_control_platform_isolation.py -rs
+      - run: poetry run python scripts/run_platform_isolation_canaries.py

@@ -73,7 +73,7 @@ key is generated and enrolled for the same `host_id`.**
 
 **The enforcement, split across what this module owns and what it does not:**
 
-- Structurally: `evaluate_enrolment` never accepts a fingerprint whose known
+- Structurally: `_evaluate_enrolment` never accepts a fingerprint whose known
   status is `REVOKED` or `SUPERSEDED` for *any* host, permanently -- no
   *function* in this module performs or requests that reversal. (This is a
   claim about this module's functions, not about the caller's storage:
@@ -85,7 +85,7 @@ key is generated and enrolled for the same `host_id`.**
 - Operationally: evidence signed with the old key carries the old key's
   fingerprint by construction (a signature cannot be transplanted onto a
   different key's identity without invalidating it), so once that
-  fingerprint's status is `REVOKED`, `host_attester_standing` reports
+  fingerprint's status is `REVOKED`, `_host_attester_standing` reports
   `REVOKED` for every subsequent query naming it -- not just the one that
   observed the rotation.
 - What this module does NOT do: hold the durable registry of which
@@ -114,7 +114,7 @@ the Kernel idempotency ledger for the consumption half), and this module
 states plainly that it does not resolve that race: it only refuses to ever
 answer "no longer revoked."
 
-## Evaluation order in `evaluate_enrolment`, and why
+## Evaluation order in `_evaluate_enrolment`, and why
 
 Two things could be judged first: the presented fingerprint's own global
 status (is it already active for someone, revoked, or superseded), or the
@@ -128,7 +128,7 @@ fingerprint's namespace is global and permanent; the host's binding is
 local and current; the more permanent fact is reported first.
 
 The same reasoning extends to rotation: before trusting `active_by_host`'s
-claim about what a rotation supersedes, `evaluate_enrolment` additionally
+claim about what a rotation supersedes, `_evaluate_enrolment` additionally
 looks up the SUPERSEDED fingerprint itself in `known_fingerprints` and
 requires it to be present, `ACTIVE`, and recorded against the SAME host
 named in the statement. `active_by_host` alone is not trusted for the most
@@ -137,21 +137,21 @@ retires it PERMANENTLY, so a rotation for host B naming a fingerprint that
 `known_fingerprints` actually records as host A's active attester is
 refused (`SUPERSEDES_FINGERPRINT_WRONG_HOST`) even if `active_by_host`
 (a second, independently-supplied map) claims otherwise. This is the same
-principle `host_attester_standing` already applies to its own two maps --
+principle `_host_attester_standing` already applies to its own two maps --
 extended to the write path, where it matters more.
 
-## `evaluate_enrolment` takes a STATEMENT, not a verified envelope
+## `_evaluate_enrolment` takes a STATEMENT, not a verified envelope
 
 Unlike `recovery_grant.verify_recovery_grant` and
 `rehearsal_grant.verify_rehearsal_grant`, which authenticate a signature and
 apply their caller-supplied revocation/consumption sets in the SAME call,
 this module splits authentication (`verify_host_attester_enrolment`) from
-the registry-conflict check (`evaluate_enrolment`) into two functions. That
-split means `evaluate_enrolment`'s `statement` parameter is NOT
+the registry-conflict check (`_evaluate_enrolment`) into two functions. That
+split means `_evaluate_enrolment`'s `statement` parameter is NOT
 cryptographically bound to anything by the time it is called -- every field
 on it is caller-fabricable, and "no exception" is the only signal of
 success. **The caller's obligation, stated here because nothing in the type
-system enforces it:** always call `evaluate_enrolment` on
+system enforces it:** always call `_evaluate_enrolment` on
 `verify_host_attester_enrolment(...).statement`, the product of a verified
 envelope, never on a hand-built or merely-parsed statement.
 `HostAttesterEnrolmentV1.parse`'s promise that "a caller cannot assemble one
@@ -159,18 +159,33 @@ from loose parts" protects the ENVELOPE; it says nothing about what a
 caller does with a `HostAttesterEnrolmentStatementV1` obtained some other
 way, which is exactly why this sentence exists.
 
-## No table added here
+## No table added here -- historical, and now superseded
 
-`evaluate_enrolment` and `host_attester_standing` take `active_by_host` and
-`known_fingerprints` as plain mappings the caller assembles. This mirrors
-`recovery_grant.py` and `rehearsal_grant.py` exactly and is a deliberate
-choice for this slice: `models.py` and the migration lineage are a sibling
-lane's read-only territory for this task, and a genuine durable table for
-"the currently active fingerprint per host_id" (which this contract will
-eventually need, on the same shape as `TargetCredential`'s
-`uq_target_credentials_fingerprint`) is real schema work that needs
-sequencing with that lane, not a race against it. That is reported, not
-silently deferred.
+`_evaluate_enrolment` and `_host_attester_standing` take `active_by_host` and
+`known_fingerprints` as plain mappings the caller assembles. This mirrored
+`recovery_grant.py` and `rehearsal_grant.py` and was a deliberate choice for
+the slice that first added this module: `models.py` and the migration
+lineage were a sibling lane's read-only territory for that task, and a
+genuine durable table for "the currently active fingerprint per host_id" was
+real schema work needing sequencing with that lane rather than a race
+against it.
+
+That sequencing has since happened: `dc_0011` added the durable
+`AttestationEnrolment`/`AttestationFingerprintClosure`/`AttestationCurrentRoot`
+tables, and `attestation_trust_registry.py` is their one writer and one
+reader. **These two functions are now PRIVATE** (leading underscore, absent
+from `__all__`) for exactly the reason this section used to name as a
+temporary gap: a caller that could still supply its own
+`active_by_host`/`known_fingerprints` mapping would be the caller supplying
+the registry that decides whether the caller's own key is trusted, which is
+the defect the durable registry exists to close. A real caller uses
+`attestation_trust_registry`'s `enrol_root`/`rotate_root`/`revoke_root`/
+`fingerprint_standing`/`resolve_current_root` instead -- registry-backed
+answers to the identical admission and standing questions, derived from
+Control's own durable tables rather than a caller-assembled mapping. These
+two functions stay, private, only because their pure evaluation-order logic
+is worth its existing test coverage; nothing outside this module may reach
+them.
 
 ## The URN grammar is not frozen here, and here is what would freeze it
 
@@ -225,8 +240,6 @@ __all__ = [
     "HostAttesterEnrolmentVerifier",
     "HostAttesterStanding",
     "HostAttesterStandingResult",
-    "evaluate_enrolment",
-    "host_attester_standing",
     "issue_host_attester_enrolment",
     "require_custody_pointer",
     "require_host_id",
@@ -297,34 +310,34 @@ class HostAttesterEnrolmentRefusalCode(StrEnum):
     HOST_ID_MISMATCH = "host_attester_enrolment_host_id_mismatch"
     #: Verify-time subject binding: the statement names a different key.
     FINGERPRINT_MISMATCH = "host_attester_enrolment_fingerprint_mismatch"
-    #: `evaluate_enrolment`: an initial enrolment for a host that already has
+    #: `_evaluate_enrolment`: an initial enrolment for a host that already has
     #: an active fingerprint. The repair is a rotation, not a new initial.
     HOST_ALREADY_ENROLLED = "host_attester_enrolment_host_already_enrolled"
-    #: `evaluate_enrolment`: a rotation for a host with no active fingerprint
+    #: `_evaluate_enrolment`: a rotation for a host with no active fingerprint
     #: to supersede.
     SUPERSEDES_WITHOUT_ACTIVE_ENROLMENT = (
         "host_attester_enrolment_supersedes_without_active_enrolment"
     )
-    #: `evaluate_enrolment`: the rotation names a `supersedes_fingerprint`
+    #: `_evaluate_enrolment`: the rotation names a `supersedes_fingerprint`
     #: that is not the host's actual current active fingerprint, per
     #: `active_by_host`.
     SUPERSEDED_FINGERPRINT_MISMATCH = (
         "host_attester_enrolment_superseded_fingerprint_mismatch"
     )
-    #: `evaluate_enrolment`: `active_by_host` and `known_fingerprints` agree
+    #: `_evaluate_enrolment`: `active_by_host` and `known_fingerprints` agree
     #: on WHICH fingerprint is being superseded, but `known_fingerprints` has
     #: never heard of it. `active_by_host` alone is not trusted for the most
     #: destructive operation this module can request.
     SUPERSEDES_FINGERPRINT_UNKNOWN = (
         "host_attester_enrolment_supersedes_fingerprint_unknown"
     )
-    #: `evaluate_enrolment`: the fingerprint being superseded is known but is
+    #: `_evaluate_enrolment`: the fingerprint being superseded is known but is
     #: not currently `ACTIVE` (already `REVOKED` or `SUPERSEDED`) -- it
     #: cannot be superseded a second time.
     SUPERSEDES_FINGERPRINT_NOT_ACTIVE = (
         "host_attester_enrolment_supersedes_fingerprint_not_active"
     )
-    #: `evaluate_enrolment`: the fingerprint being superseded is `ACTIVE`,
+    #: `_evaluate_enrolment`: the fingerprint being superseded is `ACTIVE`,
     #: but `known_fingerprints` records it against a DIFFERENT host than the
     #: one this rotation names. This is the case a rotation must never be
     #: allowed to reach: retiring another host's attester by naming it as
@@ -332,22 +345,22 @@ class HostAttesterEnrolmentRefusalCode(StrEnum):
     SUPERSEDES_FINGERPRINT_WRONG_HOST = (
         "host_attester_enrolment_supersedes_fingerprint_wrong_host"
     )
-    #: `evaluate_enrolment`: the new fingerprint is already the ACTIVE
+    #: `_evaluate_enrolment`: the new fingerprint is already the ACTIVE
     #: attester for THIS SAME host -- a no-op resubmission masquerading as a
     #: fresh enrolment; rotation requires a NEW fingerprint. Distinct from
     #: `FINGERPRINT_REUSED_ACROSS_HOSTS`, which is the cross-host case.
     FINGERPRINT_ALREADY_ENROLLED = (
         "host_attester_enrolment_fingerprint_already_enrolled"
     )
-    #: `evaluate_enrolment`: the new fingerprint is currently active for a
+    #: `_evaluate_enrolment`: the new fingerprint is currently active for a
     #: DIFFERENT host. Two hosts sharing one incarnation.
     FINGERPRINT_REUSED_ACROSS_HOSTS = (
         "host_attester_enrolment_fingerprint_reused_across_hosts"
     )
-    #: `evaluate_enrolment`: the fingerprint was revoked. Permanent; there is
+    #: `_evaluate_enrolment`: the fingerprint was revoked. Permanent; there is
     #: no un-revoke in this module's vocabulary.
     FINGERPRINT_REVOKED = "host_attester_enrolment_fingerprint_revoked"
-    #: `evaluate_enrolment`: the fingerprint was previously rotated away
+    #: `_evaluate_enrolment`: the fingerprint was previously rotated away
     #: (superseded), including by the SAME host. Permanent; rotation never
     #: rewinds to a prior key.
     FINGERPRINT_SUPERSEDED = "host_attester_enrolment_fingerprint_superseded"
@@ -521,7 +534,7 @@ class HostAttesterEnrolmentStatementV1:
     the incarnation IS `public_key_fingerprint`. `supersedes_fingerprint`
     empty (`""`) means this is the host's FIRST enrolment; non-empty means
     this is a ROTATION, and it must name the exact fingerprint being
-    replaced (checked by `evaluate_enrolment`, which is where the caller's
+    replaced (checked by `_evaluate_enrolment`, which is where the caller's
     registry is consulted -- this constructor only checks internal
     consistency).
     """
@@ -801,10 +814,10 @@ def verify_host_attester_enrolment(
 ) -> HostAttesterEnrolmentV1:
     """Authenticity of the ENVELOPE only: schema, signature, well-formedness.
 
-    Does not consult the fingerprint registry -- that is `evaluate_enrolment`
+    Does not consult the fingerprint registry -- that is `_evaluate_enrolment`
     (issuance-time conflict checks, and ONLY on the `.statement` this function
     returns -- see the module docstring's "takes a STATEMENT, not a verified
-    envelope" section) and `host_attester_standing` (a later query of "is this
+    envelope" section) and `_host_attester_standing` (a later query of "is this
     still the active attester for this host"), because this module performs
     no I/O and holds no registry itself.
 
@@ -841,7 +854,7 @@ def verify_host_attester_enrolment(
     return envelope
 
 
-def evaluate_enrolment(
+def _evaluate_enrolment(
     statement: HostAttesterEnrolmentStatementV1,
     *,
     active_by_host: Mapping[str, str],
@@ -925,7 +938,7 @@ def evaluate_enrolment(
         #    the SUPERSEDED fingerprint's own record. This is the most
         #    destructive operation this module can request -- it retires a
         #    fingerprint PERMANENTLY -- so `active_by_host` alone is not
-        #    trusted for it, on the same principle `host_attester_standing`
+        #    trusted for it, on the same principle `_host_attester_standing`
         #    already applies read-side.
         superseded_known = known_fingerprints.get(statement.supersedes_fingerprint)
         if superseded_known is None:
@@ -958,7 +971,7 @@ def evaluate_enrolment(
         )
 
 
-def host_attester_standing(
+def _host_attester_standing(
     *,
     host_id: str,
     fingerprint: str,

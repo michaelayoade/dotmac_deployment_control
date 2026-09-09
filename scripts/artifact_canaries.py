@@ -81,7 +81,7 @@ replay, changed-byte conflict, enrolled-key verification and purpose separation.
 
 `0.1.0a7`'s headline is a source-owned `ModuleDatabaseCatalogContributionV1`
 publishing `mod_deploy`'s exact seven platform tables and 95 columns — the
-extent below is the POST-`dc_0010` one, nine tables and 143 columns, because
+extent below is the POST-`dc_0011` one, twelve tables and 169 columns, because
 this literal describes the tree it ships with rather than the last release. It
 was
 published, tagged and VERIFIED on seven release properties and nine behavioural
@@ -93,8 +93,8 @@ carry it?). a7's own record says so, and
 `test_a7s_record_says_what_the_canaries_do_NOT_cover` pins the sentence.
 
 * `database_catalogue_as_published` — the installed distribution publishes the
-                             exact catalogue: module identity, all nine table
-                             identities, all 143 columns by name, ordinal, type
+                             exact catalogue: module identity, all twelve table
+                             identities, all 169 columns by name, ordinal, type
                              identity and rendered spelling, nullability,
                              generation and default, and every table's plane and
                              owner. Compared element-by-element against literals
@@ -114,6 +114,7 @@ decided from the stored canonical payload itself.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import os
 import re
@@ -1111,7 +1112,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
 #
 # `0.1.0a7`'s HEADLINE is a source-owned `ModuleDatabaseCatalogContributionV1`
 # publishing `mod_deploy`'s exact seven platform tables and 95 columns; the
-# literal below is the POST-`dc_0010` extent, nine tables and 143 columns, and
+# literal below is the POST-`dc_0011` extent, twelve tables and 169 columns, and
 # it describes THIS TREE rather than the last release. It
 # shipped with NO canary driving it: the nine canaries above are a6's exact set,
 # and the extent was proven only by source tests on the release commit. That is
@@ -1156,15 +1157,95 @@ _V120 = ("varchar", "character varying(120)")
 _V128 = ("varchar", "character varying(128)")
 _V200 = ("varchar", "character varying(200)")
 _V500 = ("varchar", "character varying(500)")
+_V512 = ("varchar", "character varying(512)")
 
 #: The catalogue document's own identity, independent of any release.
 CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
 CATALOGUE_DOCUMENT_SCOPE = "tables_and_columns"
 CATALOGUE_MODULE_CODE = "deployment_control"
 CATALOGUE_DATABASE_SCHEMA = "mod_deploy"
-CATALOGUE_LINEAGE_HEAD = "dc_0010_attempt_settlements"
+
+
+def derive_composed_lineage_head_from_versions_dir(versions_dir: Path) -> str:
+    """The composed head an ASSEMBLY would declare -- derived from the actual
+    migration revision graph in `versions_dir`, never from
+    `database_catalog.lineage_head`'s own value.
+
+    `revision`/`down_revision` are read as SOURCE TEXT via `ast`, never
+    imported: a migration module's top level runs real DDL-adjacent code, and
+    this canary has no business executing it. Every module-level `revision =
+    "..."` / `down_revision = "..." | None` bare assignment is collected, and
+    the answer is the one revision id that is nobody's `down_revision` -- the
+    tip of the chain.
+
+    A directory with zero heads (a cycle -- impossible for a real Alembic
+    lineage, but this reader does not trust the files to be one) or more than
+    one (an unmerged branch) makes "the composed head" ambiguous and is a
+    refusal, not a guess.
+
+    Comparing THIS against `database_catalog.py`'s declared `lineage_head` is
+    the whole point of the `lineage_head` check in `catalogue_differences`:
+    the graph and the catalogue declaration are two independently authored
+    facts, and reading the expected value back out of the declaration under
+    test would make the comparison `x == x` -- always green, proving nothing.
+    """
+    revisions: dict[str, str | None] = {}
+    for path in sorted(versions_dir.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        revision: str | None = None
+        down_revision: str | None = None
+        found_down_revision = False
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if (
+                "revision" in names
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                revision = node.value.value
+            if "down_revision" in names and isinstance(node.value, ast.Constant):
+                found_down_revision = True
+                if isinstance(node.value.value, str) or node.value.value is None:
+                    down_revision = node.value.value
+        if revision is None or not found_down_revision:
+            raise CanaryFailure(
+                f'{path.name} does not declare a bare `revision = "..."` and '
+                '`down_revision = "..." | None` this narrow AST reader '
+                "understands -- either it is not a migration module or its "
+                "shape changed"
+            )
+        revisions[revision] = down_revision
+
+    parents = {down for down in revisions.values() if down is not None}
+    heads = sorted(rev for rev in revisions if rev not in parents)
+    if len(heads) != 1:
+        raise CanaryFailure(
+            f"the migration lineage under {versions_dir} does not have exactly "
+            f"one head; found {heads!r}. A branch, a cycle or an orphaned "
+            "revision makes 'the composed head' ambiguous rather than derivable"
+        )
+    return heads[0]
+
+
+def composed_lineage_head() -> str:
+    """The installed package's own migration lineage, walked live.
+
+    Imports `dotmac_deployment_control.migrations` -- safe to call only AFTER
+    `canary_installed_not_source` has already confirmed the environment,
+    exactly like every other lazy `__import__(IMPORT_NAME)` in this script;
+    every caller of this function is a canary that already runs after that
+    one.
+    """
+    from dotmac_deployment_control.migrations import versions_dir
+
+    return derive_composed_lineage_head_from_versions_dir(versions_dir())
+
+
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
-#: single values rather than per-table, because "the module owns all nine and
+#: single values rather than per-table, because "the module owns all twelve and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
 #: DECLARED, never inferred), and a per-table copy would let one row drift while
 #: reading as if it had been checked.
@@ -1178,6 +1259,47 @@ CATALOGUE_RELATION_KIND = "table"
 CATALOGUE_TABLES: tuple[
     tuple[str, tuple[tuple[str, int, tuple[str, str], bool, str], ...]], ...
 ] = (
+    (
+        "attestation_current_roots",
+        (
+            ("custody_domain", 1, _V40, False, ""),
+            ("subject", 2, _V200, False, ""),
+            ("current_fingerprint", 3, _V128, False, ""),
+            ("created_at", 4, _TS, False, "now()"),
+            ("updated_at", 5, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "attestation_enrolments",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("custody_domain", 2, _V40, False, ""),
+            ("subject", 3, _V200, False, ""),
+            ("public_key_b64", 4, _V200, False, ""),
+            ("public_key_fingerprint", 5, _V128, False, ""),
+            ("algorithm", 6, _V60, False, ""),
+            ("key_custody_pointer", 7, _V512, False, ""),
+            ("supersedes_fingerprint", 8, _V128, True, ""),
+            ("enrolled_at", 9, _TS, False, ""),
+            ("enrolment_authority", 10, _V60, False, ""),
+            ("enrolment_envelope", 11, _JSONB, True, ""),
+            ("created_at", 12, _TS, False, "now()"),
+            ("updated_at", 13, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "attestation_fingerprint_closures",
+        (
+            ("fingerprint", 1, _V128, False, ""),
+            ("closure_kind", 2, _V20, False, ""),
+            ("closed_at", 3, _TS, False, ""),
+            ("closure_authority", 4, _V60, False, ""),
+            ("closure_reason", 5, _V500, True, ""),
+            ("superseded_by_fingerprint", 6, _V128, True, ""),
+            ("created_at", 7, _TS, False, "now()"),
+            ("updated_at", 8, _TS, False, "now()"),
+        ),
+    ),
     (
         "deployment_plans",
         (
@@ -1418,7 +1540,9 @@ def _difference(where: str, field: str, expected: object, actual: object) -> str
     return f"{where}: {field} is {actual!r}, the published contract says {expected!r}"
 
 
-def catalogue_differences(document: object, expect_version: str) -> list[str]:
+def catalogue_differences(
+    document: object, expect_version: str, *, expected_lineage_head: str
+) -> list[str]:
     """Every way one catalogue document differs from the declaration above.
 
     PURE — a parsed JSON document in, a list of attributed English differences
@@ -1429,6 +1553,14 @@ def catalogue_differences(document: object, expect_version: str) -> list[str]:
     difference naming the thing that moved), so the comparator is proven
     sensitive without ever being run from a checkout in a lane that claims to be
     about an artifact.
+
+    `expected_lineage_head` is supplied by the CALLER rather than read from a
+    module constant here, for the identical reason `expect_version` already
+    is: it is an EXTERNAL statement of what the composed head should be,
+    independently derived from the actual migration graph
+    (`composed_lineage_head`) — reading it back out of the document under
+    test, or out of `database_catalog.py`'s own declaration, would make the
+    `lineage_head` comparison below `x == x`.
 
     Every difference is collected rather than raised on the first, because a
     reader repairing a drifted catalogue needs the whole set; a first-failure
@@ -1454,7 +1586,7 @@ def catalogue_differences(document: object, expect_version: str) -> list[str]:
         "module_code": CATALOGUE_MODULE_CODE,
         "module_release_version": expect_version,
         "database_schema": CATALOGUE_DATABASE_SCHEMA,
-        "lineage_head": CATALOGUE_LINEAGE_HEAD,
+        "lineage_head": expected_lineage_head,
     }
     for field, expected in header.items():
         compare("the catalogue", field, expected, document.get(field))
@@ -1608,10 +1740,11 @@ def _published_catalogue(expect_version: str) -> Any:
 
     Built through the artifact's `build_database_catalog_snapshot`, which is the
     entry point a release lane actually calls, and handed the lineage head and
-    owner from THIS FILE'S literals rather than from the artifact's own
-    contribution. That direction matters: `from_manifest` refuses when the
-    authored head disagrees with the supplied one, so passing the artifact its
-    own value back would turn the check into `x == x`.
+    owner from `composed_lineage_head()` -- the migration graph, walked live --
+    rather than from the artifact's own contribution. That direction matters:
+    `from_manifest` refuses when the authored head disagrees with the supplied
+    one, so passing the artifact its own value back would turn the check into
+    `x == x`.
     """
     from dotmac_kernel.product_database_catalog import (
         ComposedDatabaseLineageHeadV1,
@@ -1635,7 +1768,7 @@ def _published_catalogue(expect_version: str) -> Any:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code=CATALOGUE_MODULE_CODE,
             ),
-            revision=CATALOGUE_LINEAGE_HEAD,
+            revision=composed_lineage_head(),
         ),
     )
 
@@ -1657,9 +1790,9 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
     * module identity — document schema and scope, distribution name and
       version, module code, release version, `mod_deploy`, and the `dc_0007`
       lineage head;
-    * all nine table identities, in canonical order, with nothing missing and
+    * all twelve table identities, in canonical order, with nothing missing and
       nothing extra;
-    * all 143 columns by name, physical ordinal, PostgreSQL type identity AND
+    * all 169 columns by name, physical ordinal, PostgreSQL type identity AND
       rendered spelling, nullability, generation and server default;
     * plane and ownership metadata on every table — `platform`, owned by
       `module:deployment_control` (ADR-0023: a plane is DECLARED).
@@ -1671,7 +1804,9 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
 
     snapshot = _published_catalogue(expect_version)
     document = json.loads(snapshot.to_json_bytes())
-    differences = catalogue_differences(document, expect_version)
+    differences = catalogue_differences(
+        document, expect_version, expected_lineage_head=composed_lineage_head()
+    )
     if differences:
         raise CanaryFailure(
             f"the installed artifact publishes a database catalogue that is not "
@@ -1751,7 +1886,11 @@ def canary_catalogue_digest_binds(expect_version: str) -> str:
     # The digest covers the structure this file declares — stated here as well
     # as in the canary above, because a digest over the wrong document is a
     # perfectly valid digest.
-    differences = catalogue_differences(json.loads(payload), expect_version)
+    differences = catalogue_differences(
+        json.loads(payload),
+        expect_version,
+        expected_lineage_head=composed_lineage_head(),
+    )
     if differences:
         raise CanaryFailure(
             f"the digested document is not the published contract: {differences}"

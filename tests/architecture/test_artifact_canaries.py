@@ -528,6 +528,101 @@ def test_an_observation_file_that_omits_the_canaries_fails_loudly() -> None:
         verify.evaluate(**incomplete)
 
 
+# ── the composed lineage head is DERIVED from the migration graph ──────────
+#
+# `derive_composed_lineage_head_from_versions_dir` walks `revision`/
+# `down_revision` links read as SOURCE TEXT and returns the one revision that
+# is nobody's `down_revision`. It is compared against `database_catalog.py`'s
+# own declared `lineage_head` precisely because the two are independently
+# authored -- reading the expected value back out of that same declaration
+# would make the comparison a tautology. This section is the sensitivity
+# proof for the DERIVATION itself: without it, a version that silently
+# returned a constant, or read the wrong directory, would pass every other
+# test in this file untouched, because they all only ever exercise the real,
+# already-linear lineage.
+
+
+def _write_revision(directory: Path, revision: str, down_revision: str | None) -> None:
+    (directory / f"{revision}.py").write_text(
+        f"revision = {revision!r}\ndown_revision = {down_revision!r}\n",
+        encoding="utf-8",
+    )
+
+
+def test_the_real_lineage_has_exactly_one_derivable_head() -> None:
+    """NON-VACUITY, against the real installed migration directory: the
+    derivation this repository's own canary run depends on must actually
+    resolve, not merely resolve in a synthetic `tmp_path`."""
+    from dotmac_deployment_control.migrations import versions_dir
+
+    head = canaries.derive_composed_lineage_head_from_versions_dir(versions_dir())
+    assert head == "dc_0011_attestation_registry"
+
+
+def test_the_derived_head_moves_when_a_child_revision_is_planted(
+    tmp_path: Path,
+) -> None:
+    """THE PLANT. Two revisions, a derived head, then a THIRD revision whose
+    `down_revision` names that head -- the derivation must follow it. A
+    derivation that silently returned a constant, or that read some other
+    directory entirely, would report `"r2"` here regardless, undetected by
+    every other passing test in this file."""
+    _write_revision(tmp_path, "r1", None)
+    _write_revision(tmp_path, "r2", "r1")
+    assert canaries.derive_composed_lineage_head_from_versions_dir(tmp_path) == "r2"
+
+    _write_revision(tmp_path, "r3_planted_child", "r2")
+    assert (
+        canaries.derive_composed_lineage_head_from_versions_dir(tmp_path)
+        == "r3_planted_child"
+    ), "the derived head did not move when a real child revision was planted"
+
+
+def test_a_file_that_is_not_a_revision_refuses_rather_than_silently_ignored(
+    tmp_path: Path,
+) -> None:
+    """NEAR MISS, first half: a `.py` file present in the directory that
+    declares no `revision`/`down_revision` at all must not move the head to
+    something bogus -- it refuses loudly instead, naming the offending file,
+    rather than silently skipping it (which would let a stray file in the
+    directory pass unnoticed) or treating it as a phantom new head."""
+    _write_revision(tmp_path, "r1", None)
+    (tmp_path / "helpers.py").write_text("CONSTANT = 1\n", encoding="utf-8")
+    with pytest.raises(canaries.CanaryFailure) as raised:
+        canaries.derive_composed_lineage_head_from_versions_dir(tmp_path)
+    assert "helpers.py" in str(raised.value)
+
+
+def test_a_revision_already_in_the_chain_does_not_move_the_head(
+    tmp_path: Path,
+) -> None:
+    """NEAR MISS, second half: re-declaring a revision that is ALREADY in the
+    chain (its `revision` id already appears, its `down_revision` unchanged)
+    is not a new child and must not move the head -- only a genuinely NEW
+    revision id naming the current head as its `down_revision` does that, as
+    the plant above proves."""
+    _write_revision(tmp_path, "r1", None)
+    _write_revision(tmp_path, "r2", "r1")
+    assert canaries.derive_composed_lineage_head_from_versions_dir(tmp_path) == "r2"
+
+    # Redundant restatement of the SAME revision id, not a new leaf.
+    _write_revision(tmp_path, "r2", "r1")
+    assert canaries.derive_composed_lineage_head_from_versions_dir(tmp_path) == "r2"
+
+
+def test_a_branching_lineage_is_refused_as_ambiguous(tmp_path: Path) -> None:
+    """Two children of the same parent make 'the composed head' ambiguous --
+    refused, never resolved by picking one, matching the registry's own
+    'ambiguity is a refusal, not a tie-break' rule applied here to a
+    migration graph instead of an attestation enrolment."""
+    _write_revision(tmp_path, "r1", None)
+    _write_revision(tmp_path, "r2a", "r1")
+    _write_revision(tmp_path, "r2b", "r1")
+    with pytest.raises(canaries.CanaryFailure) as raised:
+        canaries.derive_composed_lineage_head_from_versions_dir(tmp_path)
+    assert "r2a" in str(raised.value) and "r2b" in str(raised.value)
+
+
 # ── the catalogue canary's literal, and whether it can see a lie ────────────
 #
 # `scripts/artifact_canaries.py` writes `mod_deploy`'s whole published
@@ -570,7 +665,7 @@ def _published_catalogue_document() -> dict:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code=canaries.CATALOGUE_MODULE_CODE,
             ),
-            revision=canaries.CATALOGUE_LINEAGE_HEAD,
+            revision=canaries.composed_lineage_head(),
         ),
     )
     return json.loads(snapshot.to_json_bytes())
@@ -585,17 +680,19 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
     from dotmac_deployment_control import module
 
     differences = canaries.catalogue_differences(
-        _published_catalogue_document(), module.version
+        _published_catalogue_document(),
+        module.version,
+        expected_lineage_head=canaries.composed_lineage_head(),
     )
     assert differences == [], differences
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Nine tables and 143 columns, held as the LITERAL's own shape. A future
+    """Twelve tables and 169 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
-    assert canaries.CATALOGUE_TABLE_COUNT == 9
-    assert canaries.CATALOGUE_COLUMN_COUNT == 143
+    assert canaries.CATALOGUE_TABLE_COUNT == 12
+    assert canaries.CATALOGUE_COLUMN_COUNT == 169
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):
@@ -645,7 +742,11 @@ def test_every_planted_mutation_is_one_the_comparator_can_see() -> None:
 
     for mutation, tell_the_lie in DOCUMENT_MUTATIONS.items():
         document = tell_the_lie(_published_catalogue_document())
-        differences = canaries.catalogue_differences(document, module.version)
+        differences = canaries.catalogue_differences(
+            document,
+            module.version,
+            expected_lineage_head=canaries.composed_lineage_head(),
+        )
         assert differences, (
             f"the `{mutation}` mutation produced NO difference. The comparator "
             "cannot see it, so the CI lane that plants it would fail for some "
@@ -675,7 +776,9 @@ def test_the_comparator_sees_moved_plane_schema_and_relation_kind(
 
     document = _published_catalogue_document()
     document["tables"][0][field] = value
-    differences = canaries.catalogue_differences(document, module.version)
+    differences = canaries.catalogue_differences(
+        document, module.version, expected_lineage_head=canaries.composed_lineage_head()
+    )
     assert any(field in difference for difference in differences), differences
 
 
@@ -686,7 +789,9 @@ def test_the_comparator_sees_a_stolen_table() -> None:
 
     document = _published_catalogue_document()
     document["tables"][0]["owner"] = {"kind": "assembly", "code": "somebody_else"}
-    differences = canaries.catalogue_differences(document, module.version)
+    differences = canaries.catalogue_differences(
+        document, module.version, expected_lineage_head=canaries.composed_lineage_head()
+    )
     assert any("owner" in difference for difference in differences), differences
 
 
@@ -695,7 +800,9 @@ def test_the_comparator_sees_an_identity_that_belongs_to_another_release() -> No
     is the external statement of what was built. a4 shipped a wheel whose
     `__version__` was two releases stale; a catalogue can do the same."""
     document = _published_catalogue_document()
-    differences = canaries.catalogue_differences(document, "0.1.0a999")
+    differences = canaries.catalogue_differences(
+        document, "0.1.0a999", expected_lineage_head=canaries.composed_lineage_head()
+    )
     assert any("distribution_version" in d for d in differences), differences
     assert any("module_release_version" in d for d in differences), differences
 
@@ -713,10 +820,19 @@ def test_the_comparator_does_not_pin_the_kernels_manifest_generation() -> None:
 
     document = _published_catalogue_document()
     document["manifest_contract_version"] += 1
-    assert canaries.catalogue_differences(document, module.version) == []
+    assert (
+        canaries.catalogue_differences(
+            document,
+            module.version,
+            expected_lineage_head=canaries.composed_lineage_head(),
+        )
+        == []
+    )
 
     document["manifest_contract_version"] = "2"
-    differences = canaries.catalogue_differences(document, module.version)
+    differences = canaries.catalogue_differences(
+        document, module.version, expected_lineage_head=canaries.composed_lineage_head()
+    )
     assert any("manifest_contract_version" in d for d in differences), differences
 
 

@@ -1,12 +1,22 @@
 """The required CI gate over Foundation's OWN pinned source. No install.
 
-Reads `dotmac_deployment_control.rehearsal_grant.FOUNDATION_STEP_KIND_SOURCE`
-(`<repository>@<commit>:<path>`), fetches the raw file at that EXACT pinned
-commit over HTTPS — nothing beyond the standard library, no
-`dotmac-deployment-foundation` dependency of any kind, dev or runtime — and
-compares it against the mirror with
-`dotmac_deployment_control.foundation_source_gate
-.require_foundation_step_vocabulary_agreement`.
+Runs TWO pinned-source comparisons, both through the same comparator
+machinery in `foundation_source_gate.py` — never two separate reimplementations:
+
+1. `dotmac_deployment_control.rehearsal_grant.FOUNDATION_STEP_KIND_SOURCE`
+   against the mirrored `StepKind` step vocabulary
+   (`require_foundation_step_vocabulary_agreement`).
+2. `dotmac_deployment_control.counterparty.EXECUTOR_OPERATIONS_SOURCE`
+   against the mirrored `EXECUTOR_OPERATIONS` executor vocabulary
+   (`require_foundation_operations_agreement`) — this is the required,
+   always-run replacement for `tests/unit/test_counterparty_vocabulary.py`'s
+   `test_the_pin_matches_the_installed_executor_when_one_is_present`, which
+   always skips in this repository's own CI because
+   `dotmac-deployment-foundation` is never installed here.
+
+Both fetch the raw file at their EXACT pinned commit over HTTPS — nothing
+beyond the standard library, no `dotmac-deployment-foundation` dependency of
+any kind, dev or runtime.
 
 ## Why this does not simply `import dotmac_deployment_control.foundation_source_gate`
 
@@ -20,10 +30,11 @@ job installs nothing for on purpose (see `ci.yml`'s comment on this job: "no
 `ModuleNotFoundError: No module named 'dotmac_kernel'` — was the package
 `__init__` running, not this script's own logic.
 
-The five files this script actually needs (`ports.py`, `digests.py`,
-`candidate_artifact.py`, `rehearsal_grant.py`, `foundation_source_gate.py`)
-import ONLY each other and the standard library — none of them, individually,
-needs `dotmac_kernel` or anything else from the wider package. So `_load_module`
+The files this script actually needs (`ports.py`, `digests.py`,
+`candidate_artifact.py`, `operations.py`, `counterparty.py`,
+`rehearsal_grant.py`, `foundation_source_gate.py`) import ONLY each other and
+the standard library — none of them, individually, needs `dotmac_kernel` or
+anything else from the wider package. So `_load_module`
 below loads each one directly from its file with
 `importlib.util.spec_from_file_location`, registers it under its real dotted
 name in `sys.modules` (so the modules' OWN `from dotmac_deployment_control.X
@@ -56,7 +67,7 @@ does run `poetry install`.
 Exit 0: the pinned source agrees with the mirror. Exit 1: it does not, or it
 could not be read — both are gate failures, and the message distinguishes
 which because they need different repairs (see
-`FoundationStepVocabularySourceError` vs `FoundationStepVocabularyDriftError`).
+`FoundationVocabularySourceError` vs `FoundationVocabularyDriftError`).
 """
 
 from __future__ import annotations
@@ -86,6 +97,8 @@ _LOAD_ORDER = (
     "ports",
     "digests",
     "candidate_artifact",
+    "operations",
+    "counterparty",
     "rehearsal_grant",
     "foundation_source_gate",
 )
@@ -126,8 +139,9 @@ _ports = sys.modules["dotmac_deployment_control.ports"]
 require_foundation_step_vocabulary_agreement = (
     _gate.require_foundation_step_vocabulary_agreement
 )
-FoundationStepVocabularyDriftError = _ports.FoundationStepVocabularyDriftError
-FoundationStepVocabularySourceError = _ports.FoundationStepVocabularySourceError
+require_foundation_operations_agreement = _gate.require_foundation_operations_agreement
+FoundationVocabularyDriftError = _ports.FoundationVocabularyDriftError
+FoundationVocabularySourceError = _ports.FoundationVocabularySourceError
 
 _TIMEOUT_SECONDS = 30
 
@@ -157,20 +171,30 @@ class _RawGithubReader:
             return response.read().decode("utf-8")
 
 
+_CHECKS = (
+    ("step-vocabulary", require_foundation_step_vocabulary_agreement),
+    ("operations-vocabulary", require_foundation_operations_agreement),
+)
+
+
 def main() -> int:
-    try:
-        require_foundation_step_vocabulary_agreement(_RawGithubReader())
-    except FoundationStepVocabularySourceError as error:
-        print(f"foundation-step-vocabulary-gate: SOURCE UNAVAILABLE: {error}")
-        return 1
-    except FoundationStepVocabularyDriftError as error:
-        print(f"foundation-step-vocabulary-gate: DRIFT: {error}")
-        return 1
-    except urllib.error.URLError as error:
-        print(f"foundation-step-vocabulary-gate: NETWORK FAILURE: {error}")
-        return 1
-    print("foundation-step-vocabulary-gate: the pinned source agrees with the mirror")
-    return 0
+    reader = _RawGithubReader()
+    failed = False
+    for name, check in _CHECKS:
+        try:
+            check(reader)
+        except FoundationVocabularySourceError as error:
+            print(f"foundation-vocabulary-gate[{name}]: SOURCE UNAVAILABLE: {error}")
+            failed = True
+        except FoundationVocabularyDriftError as error:
+            print(f"foundation-vocabulary-gate[{name}]: DRIFT: {error}")
+            failed = True
+        except urllib.error.URLError as error:
+            print(f"foundation-vocabulary-gate[{name}]: NETWORK FAILURE: {error}")
+            failed = True
+        else:
+            print(f"foundation-vocabulary-gate[{name}]: the pinned source agrees")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

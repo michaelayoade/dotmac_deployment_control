@@ -32,11 +32,11 @@ sized).
 ## Fail-closed, on all five axes
 
 `require_foundation_step_vocabulary_agreement` raises
-`FoundationStepVocabularySourceError` when the source cannot be READ at all
+`FoundationVocabularySourceError` when the source cannot be READ at all
 (`SourceReader.read` raises) or cannot be PARSED in the narrow shape this
 module understands (no `StepKind` class; a member whose value is not a bare
 string literal — an expression, a call, an f-string, `auto()`), and raises
-`FoundationStepVocabularyDriftError` when the source parses cleanly but
+`FoundationVocabularyDriftError` when the source parses cleanly but
 disagrees with the mirror by even one member in either direction. There is no
 code path that treats "could not tell" as "must agree".
 
@@ -75,9 +75,13 @@ import ast
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from dotmac_deployment_control.counterparty import (
+    EXECUTOR_OPERATIONS_SOURCE,
+    executor_operations_drift,
+)
 from dotmac_deployment_control.ports import (
-    FoundationStepVocabularyDriftError,
-    FoundationStepVocabularySourceError,
+    FoundationVocabularyDriftError,
+    FoundationVocabularySourceError,
 )
 from dotmac_deployment_control.rehearsal_grant import (
     FOUNDATION_STEP_KIND_SOURCE,
@@ -85,11 +89,14 @@ from dotmac_deployment_control.rehearsal_grant import (
 )
 
 __all__ = [
+    "OPERATIONS_ASSIGNMENT_NAME",
     "STEP_KIND_CLASS_NAME",
     "SourceCoordinate",
     "SourceReader",
+    "extract_operations_members",
     "extract_step_kind_members",
     "parse_source_coordinate",
+    "require_foundation_operations_agreement",
     "require_foundation_step_vocabulary_agreement",
 ]
 
@@ -97,6 +104,12 @@ __all__ = [
 #: claim that Control owns the name, only the string this narrow reader
 #: searches for in the text it is handed.
 STEP_KIND_CLASS_NAME = "StepKind"
+
+#: The module-level name `counterparty.EXECUTOR_OPERATIONS` mirrors. A bare
+#: top-level assignment, not a class body -- Foundation publishes its operation
+#: vocabulary as `OPERATIONS = ("deploy", "rollback")` in `authorization.py`,
+#: not as an enum.
+OPERATIONS_ASSIGNMENT_NAME = "OPERATIONS"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,14 +132,14 @@ def parse_source_coordinate(value: str) -> SourceCoordinate:
     repository, _, rest = value.partition("@")
     commit, _, path = rest.partition(":")
     if not repository or not commit or not path:
-        raise FoundationStepVocabularySourceError(
+        raise FoundationVocabularySourceError(
             f"{value!r} is not `<repository>@<commit>:<path>`. A malformed "
             "coordinate names nothing this gate can read"
         )
     if len(commit) != 40 or any(
         character not in "0123456789abcdef" for character in commit
     ):
-        raise FoundationStepVocabularySourceError(
+        raise FoundationVocabularySourceError(
             f"{commit!r} is not a full 40-character lowercase-hex commit SHA. "
             "A branch name or a short hash is a MOVING reference, and this "
             "gate exists to check a PINNED one"
@@ -166,7 +179,7 @@ def extract_step_kind_members(source: str) -> frozenset[str]:
     class named `STEP_KIND_CLASS_NAME` are admitted. Anything else this gate
     is asked to read — no such class, a value that is not a bare string
     constant (a call, an f-string, `auto()`, a reference to another name) — is
-    a REFUSAL (`FoundationStepVocabularySourceError`), not a best-effort partial
+    a REFUSAL (`FoundationVocabularySourceError`), not a best-effort partial
     read, because a partial read that quietly drops a member it could not
     parse would silently produce exactly the "missing member" false negative
     this whole gate exists to catch.
@@ -174,7 +187,7 @@ def extract_step_kind_members(source: str) -> frozenset[str]:
     try:
         tree = ast.parse(source)
     except SyntaxError as error:
-        raise FoundationStepVocabularySourceError(
+        raise FoundationVocabularySourceError(
             f"the pinned source is not parsable Python: {error}. Foundation's "
             "own file changed shape in a way this narrow AST reader does not "
             "understand, or the wrong bytes were read"
@@ -186,7 +199,7 @@ def extract_step_kind_members(source: str) -> frozenset[str]:
             step_kind_class = node
             break
     if step_kind_class is None:
-        raise FoundationStepVocabularySourceError(
+        raise FoundationVocabularySourceError(
             f"no `class {STEP_KIND_CLASS_NAME}` was found in the pinned "
             "source. Either the coordinate is wrong or Foundation renamed or "
             "removed the class this gate reads"
@@ -201,7 +214,7 @@ def extract_step_kind_members(source: str) -> frozenset[str]:
         if not isinstance(statement.value, ast.Constant) or not isinstance(
             statement.value.value, str
         ):
-            raise FoundationStepVocabularySourceError(
+            raise FoundationVocabularySourceError(
                 "a StepKind member's value is not a bare string literal "
                 f"(found {ast.dump(statement.value)!r}). This narrow AST "
                 "reader refuses rather than silently skipping a member it "
@@ -211,13 +224,30 @@ def extract_step_kind_members(source: str) -> frozenset[str]:
         members.add(statement.value.value)
 
     if not members:
-        raise FoundationStepVocabularySourceError(
+        raise FoundationVocabularySourceError(
             f"`class {STEP_KIND_CLASS_NAME}` was found but no string-literal "
             "member assignments were read out of it. An empty vocabulary is "
             "not a step vocabulary; refusing rather than comparing against "
             "nothing"
         )
     return frozenset(members)
+
+
+def _read_pinned_source(reader: SourceReader, coordinate: str) -> str:
+    """Shared by every gate below: parse the coordinate, read it, and turn any
+    non-gate exception the reader raises into `FoundationVocabularySourceError`
+    rather than letting it propagate as an unrelated type."""
+    parsed = parse_source_coordinate(coordinate)
+    try:
+        return reader.read(parsed)
+    except FoundationVocabularySourceError:
+        raise
+    except Exception as error:  # broad on purpose; see `SourceReader.read`
+        raise FoundationVocabularySourceError(
+            f"could not read {coordinate!r}: {error}. The pin cannot be "
+            "checked right now, and this gate refuses rather than treating "
+            "an unreadable source as an agreeing one"
+        ) from error
 
 
 def require_foundation_step_vocabulary_agreement(
@@ -235,26 +265,125 @@ def require_foundation_step_vocabulary_agreement(
     pass `foundation_step_vocabulary_drift`'s complete-set-equality check no
     matter how the two sets happen to be sized.
     """
-    parsed = parse_source_coordinate(coordinate)
-    try:
-        source_text = reader.read(parsed)
-    except FoundationStepVocabularySourceError:
-        raise
-    except Exception as error:  # broad on purpose; see `SourceReader.read`
-        raise FoundationStepVocabularySourceError(
-            f"could not read {coordinate!r}: {error}. The pin cannot be "
-            "checked right now, and this gate refuses rather than treating "
-            "an unreadable source as an agreeing one"
-        ) from error
-
+    source_text = _read_pinned_source(reader, coordinate)
     observed = extract_step_kind_members(source_text)
     drift = foundation_step_vocabulary_drift(observed)
     if drift:
-        raise FoundationStepVocabularyDriftError(
+        raise FoundationVocabularyDriftError(
             f"Foundation's pinned source at {coordinate!r} disagrees with the "
             f"mirrored FOUNDATION_STEP_KINDS by {sorted(drift)!r}. Every "
             "member in that set is in exactly one of the two vocabularies — "
             "new to the source, retired from it, or the two halves of a "
             "same-count rename — and the mirror in rehearsal_grant.py must be "
             "updated to match before this gate can pass again"
+        )
+
+
+def extract_operations_members(source: str) -> frozenset[str]:
+    """Pull `OPERATIONS`'s string-literal values out of Python SOURCE TEXT.
+
+    Same `ast.parse`-only discipline as `extract_step_kind_members`, adapted to
+    a MODULE-LEVEL tuple/list assignment rather than a class body: Foundation
+    publishes `OPERATIONS: Final[tuple[str, ...]] = ("deploy", "rollback")` in
+    `authorization.py` -- an ANNOTATED assignment (`ast.AnnAssign`), not the
+    bare `ast.Assign` a plain `OPERATIONS = (...)` would parse as; both forms
+    are admitted here for that reason. Only a top-level `OPERATIONS = (...)`/
+    `[...]`, annotated or not, of bare string constants is admitted; anything
+    else (a generator, a call, a name reference, a nested structure) is a
+    REFUSAL rather than a partial read, for the identical reason
+    `extract_step_kind_members` refuses one: a silently dropped member is a
+    false "agrees" this gate exists to prevent.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        raise FoundationVocabularySourceError(
+            f"the pinned source is not parsable Python: {error}. Foundation's "
+            "own file changed shape in a way this narrow AST reader does not "
+            "understand, or the wrong bytes were read"
+        ) from error
+
+    assignment_value: ast.expr | None = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(
+                isinstance(target, ast.Name) and target.id == OPERATIONS_ASSIGNMENT_NAME
+                for target in node.targets
+            ):
+                assignment_value = node.value
+                break
+        elif isinstance(node, ast.AnnAssign):
+            if (
+                isinstance(node.target, ast.Name)
+                and node.target.id == OPERATIONS_ASSIGNMENT_NAME
+                and node.value is not None
+            ):
+                assignment_value = node.value
+                break
+    if assignment_value is None:
+        raise FoundationVocabularySourceError(
+            f"no top-level `{OPERATIONS_ASSIGNMENT_NAME} = ...` assignment was "
+            "found in the pinned source. Either the coordinate is wrong or "
+            "Foundation renamed or removed the name this gate reads"
+        )
+
+    if not isinstance(assignment_value, ast.Tuple | ast.List):
+        raise FoundationVocabularySourceError(
+            f"`{OPERATIONS_ASSIGNMENT_NAME}` is not a bare tuple or list "
+            f"literal (found {ast.dump(assignment_value)!r}). This narrow AST "
+            "reader refuses rather than silently skipping a value it cannot "
+            "evaluate, because a computed or referenced value could be anything"
+        )
+
+    members: set[str] = set()
+    for element in assignment_value.elts:
+        if not isinstance(element, ast.Constant) or not isinstance(element.value, str):
+            raise FoundationVocabularySourceError(
+                f"a `{OPERATIONS_ASSIGNMENT_NAME}` member is not a bare string "
+                f"literal (found {ast.dump(element)!r}). This narrow AST reader "
+                "refuses rather than silently skipping a member it cannot "
+                "evaluate, because a computed or referenced value could be "
+                "anything"
+            )
+        members.add(element.value)
+
+    if not members:
+        raise FoundationVocabularySourceError(
+            f"`{OPERATIONS_ASSIGNMENT_NAME}` was found but no string-literal "
+            "members were read out of it. An empty vocabulary is not an "
+            "operations vocabulary; refusing rather than comparing against "
+            "nothing"
+        )
+    return frozenset(members)
+
+
+def require_foundation_operations_agreement(
+    reader: SourceReader,
+    *,
+    coordinate: str = EXECUTOR_OPERATIONS_SOURCE,
+) -> None:
+    """THE GATE for the executor's operation vocabulary, over pinned SOURCE.
+
+    Read Foundation's own `authorization.py` at the pinned commit
+    `counterparty.EXECUTOR_OPERATIONS_SOURCE` names, parse `OPERATIONS` out of
+    it with `ast`, and require complete set equality with
+    `counterparty.EXECUTOR_OPERATIONS` via the same symmetric-difference
+    comparator (`executor_operations_drift`) `test_counterparty_vocabulary.py`
+    already proves is sensitive to an addition, a removal and a same-count
+    rename. This is the required, cold, always-run replacement for that file's
+    `test_the_pin_matches_the_installed_executor_when_one_is_present`, which
+    always skips in this repository's own CI because
+    `dotmac-deployment-foundation` is never installed here.
+    """
+    source_text = _read_pinned_source(reader, coordinate)
+    observed = extract_operations_members(source_text)
+    drift = executor_operations_drift(observed)
+    if drift:
+        raise FoundationVocabularyDriftError(
+            f"Foundation's pinned source at {coordinate!r} disagrees with the "
+            f"mirrored EXECUTOR_OPERATIONS by {sorted(drift)!r}. Every member "
+            "in that set is in exactly one of the two vocabularies — new to "
+            "the source, retired from it, or the two halves of a same-count "
+            "rename — and the mirror in counterparty.py must be updated to "
+            "match before this gate can pass again"
         )

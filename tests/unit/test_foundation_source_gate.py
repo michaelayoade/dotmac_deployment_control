@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import pytest
 
+from dotmac_deployment_control.counterparty import EXECUTOR_OPERATIONS
 from dotmac_deployment_control.foundation_source_gate import (
     SourceCoordinate,
+    extract_operations_members,
     extract_step_kind_members,
     parse_source_coordinate,
+    require_foundation_operations_agreement,
     require_foundation_step_vocabulary_agreement,
 )
 from dotmac_deployment_control.ports import (
-    FoundationStepVocabularyDriftError,
-    FoundationStepVocabularySourceError,
+    FoundationVocabularyDriftError,
+    FoundationVocabularySourceError,
 )
 from dotmac_deployment_control.rehearsal_grant import FOUNDATION_STEP_KINDS
 
@@ -33,6 +36,19 @@ _COORDINATE = (
     ":packages/dotmac-deployment-foundation/src/"
     "dotmac_deployment_foundation/engine/plan.py"
 )
+
+_OPERATIONS_PINNED_COMMIT = "5dcb3d1184d0e5ee7544966f77ead47cdd020e64"
+_OPERATIONS_COORDINATE = (
+    f"michaelayoade/dotmac_starter_mt@{_OPERATIONS_PINNED_COMMIT}"
+    ":packages/dotmac-deployment-foundation/src/"
+    "dotmac_deployment_foundation/authorization.py"
+)
+
+
+def _synthetic_operations_source(*members: str) -> str:
+    """A minimal, syntactically real `OPERATIONS` tuple assignment."""
+    body = ", ".join(f'"{member}"' for member in members)
+    return f"OPERATIONS = ({body},)\n"
 
 
 def _synthetic_source(*members: str) -> str:
@@ -95,7 +111,7 @@ def test_the_coordinate_parses_into_its_three_parts() -> None:
 def test_a_non_pinned_or_malformed_coordinate_is_refused(bad: str) -> None:
     """A branch name is a MOVING reference; this gate exists to check a
     PINNED one, so it must refuse to even parse a branch as a commit."""
-    with pytest.raises(FoundationStepVocabularySourceError):
+    with pytest.raises(FoundationVocabularySourceError):
         parse_source_coordinate(bad)
 
 
@@ -105,7 +121,7 @@ def test_a_non_pinned_or_malformed_coordinate_is_refused(bad: str) -> None:
 def test_source_unavailable_is_refused() -> None:
     """FAILURE MODE 1: the coordinate cannot be read at all."""
     reader = _FakeReader(OSError("connection refused"))
-    with pytest.raises(FoundationStepVocabularySourceError) as refused:
+    with pytest.raises(FoundationVocabularySourceError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "connection refused" in str(refused.value)
 
@@ -117,7 +133,7 @@ def test_unsupported_syntax_is_refused() -> None:
         'class StepKind(str, Enum):\n    ACQUIRE_LOCK = "acquire_lock"\n'
         "    COMPUTED = some_function()\n"
     )
-    with pytest.raises(FoundationStepVocabularySourceError) as refused:
+    with pytest.raises(FoundationVocabularySourceError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "bare string literal" in str(refused.value)
 
@@ -125,13 +141,13 @@ def test_unsupported_syntax_is_refused() -> None:
 def test_unparsable_python_is_refused() -> None:
     """FAILURE MODE 2, the other half: not even valid Python."""
     reader = _FakeReader("class StepKind(str, Enum):\n    THIS IS NOT PYTHON ][\n")
-    with pytest.raises(FoundationStepVocabularySourceError):
+    with pytest.raises(FoundationVocabularySourceError):
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
 
 
 def test_a_missing_step_kind_class_is_refused() -> None:
     reader = _FakeReader('class SomethingElse:\n    X = "x"\n')
-    with pytest.raises(FoundationStepVocabularySourceError) as refused:
+    with pytest.raises(FoundationVocabularySourceError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "StepKind" in str(refused.value)
 
@@ -141,7 +157,7 @@ def test_an_addition_is_refused_and_named() -> None:
     reader = _FakeReader(
         _synthetic_source(*sorted(FOUNDATION_STEP_KINDS), "brand_new_step")
     )
-    with pytest.raises(FoundationStepVocabularyDriftError) as refused:
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "brand_new_step" in str(refused.value)
 
@@ -150,7 +166,7 @@ def test_a_removal_is_refused_and_named() -> None:
     """FAILURE MODE 4: the source no longer has a step the mirror carries."""
     remaining = sorted(FOUNDATION_STEP_KINDS - {"apply_exposure"})
     reader = _FakeReader(_synthetic_source(*remaining))
-    with pytest.raises(FoundationStepVocabularyDriftError) as refused:
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     assert "apply_exposure" in str(refused.value)
 
@@ -173,7 +189,7 @@ def test_a_same_count_rename_is_refused_and_named() -> None:
         "exercise the discriminating case at all"
     )
     reader = _FakeReader(_synthetic_source(*renamed))
-    with pytest.raises(FoundationStepVocabularyDriftError) as refused:
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
     message = str(refused.value)
     assert "apply_exposure_renamed" in message
@@ -184,5 +200,119 @@ def test_an_empty_step_kind_class_is_refused_rather_than_agreeing_with_nothing()
     None
 ):
     reader = _FakeReader("class StepKind(str, Enum):\n    pass\n")
-    with pytest.raises(FoundationStepVocabularySourceError):
+    with pytest.raises(FoundationVocabularySourceError):
         require_foundation_step_vocabulary_agreement(reader, coordinate=_COORDINATE)
+
+
+# ── the second comparator: the executor's OPERATIONS vocabulary ────────────
+#
+# Same machinery (`SourceCoordinate`, `SourceReader`, `_read_pinned_source`,
+# the same two error types), a different AST shape (a module-level tuple
+# assignment rather than a class body) and a different mirror
+# (`counterparty.EXECUTOR_OPERATIONS`). This is the required, always-run
+# replacement for `test_counterparty_vocabulary.py`'s
+# `test_the_pin_matches_the_installed_executor_when_one_is_present`, which
+# always skips in this repository's own CI.
+
+
+def test_a_grant_agrees_with_the_real_operations_vocabulary() -> None:
+    """NON-VACUITY, same role as the step-vocabulary admit control above."""
+    reader = _FakeReader(_synthetic_operations_source(*sorted(EXECUTOR_OPERATIONS)))
+    require_foundation_operations_agreement(reader, coordinate=_OPERATIONS_COORDINATE)
+
+
+def test_extract_operations_members_reads_the_synthetic_source_correctly() -> None:
+    source = _synthetic_operations_source("deploy", "rollback")
+    assert extract_operations_members(source) == {"deploy", "rollback"}
+
+
+def test_a_list_literal_is_admitted_too() -> None:
+    """`OPERATIONS` is documented as a tuple; a list is the same AST shape
+    this narrow reader accepts, since Foundation could publish either."""
+    assert extract_operations_members('OPERATIONS = ["deploy", "rollback"]\n') == {
+        "deploy",
+        "rollback",
+    }
+
+
+def test_operations_source_unavailable_is_refused() -> None:
+    reader = _FakeReader(OSError("connection refused"))
+    with pytest.raises(FoundationVocabularySourceError) as refused:
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+    assert "connection refused" in str(refused.value)
+
+
+def test_a_missing_operations_assignment_is_refused() -> None:
+    reader = _FakeReader("SOMETHING_ELSE = ('a', 'b')\n")
+    with pytest.raises(FoundationVocabularySourceError) as refused:
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+    assert "OPERATIONS" in str(refused.value)
+
+
+def test_a_computed_operations_value_is_refused() -> None:
+    """The value is not a bare tuple/list literal at all."""
+    reader = _FakeReader("OPERATIONS = some_function()\n")
+    with pytest.raises(FoundationVocabularySourceError):
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+
+
+def test_a_non_literal_operations_member_is_refused() -> None:
+    reader = _FakeReader("OPERATIONS = (SOME_NAME, 'rollback')\n")
+    with pytest.raises(FoundationVocabularySourceError) as refused:
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+    assert "bare string literal" in str(refused.value)
+
+
+def test_an_empty_operations_tuple_is_refused_rather_than_agreeing_with_nothing() -> (
+    None
+):
+    reader = _FakeReader("OPERATIONS = ()\n")
+    with pytest.raises(FoundationVocabularySourceError):
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+
+
+def test_an_operations_addition_is_refused_and_named() -> None:
+    reader = _FakeReader(
+        _synthetic_operations_source(*sorted(EXECUTOR_OPERATIONS), "recover")
+    )
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+    assert "recover" in str(refused.value)
+
+
+def test_an_operations_removal_is_refused_and_named() -> None:
+    remaining = sorted(EXECUTOR_OPERATIONS - {"rollback"})
+    reader = _FakeReader(_synthetic_operations_source(*remaining))
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+    assert "rollback" in str(refused.value)
+
+
+def test_an_operations_same_count_rename_is_refused_and_named() -> None:
+    """THE DISCRIMINATING CASE, same reasoning as the step-vocabulary sibling
+    above: a rename is one addition and one removal simultaneously, so only
+    complete set equality — not a count check — catches it."""
+    renamed = sorted((EXECUTOR_OPERATIONS - {"rollback"}) | {"rollback_v2"})
+    assert len(renamed) == len(EXECUTOR_OPERATIONS)
+    reader = _FakeReader(_synthetic_operations_source(*renamed))
+    with pytest.raises(FoundationVocabularyDriftError) as refused:
+        require_foundation_operations_agreement(
+            reader, coordinate=_OPERATIONS_COORDINATE
+        )
+    message = str(refused.value)
+    assert "rollback_v2" in message
+    assert "rollback" in message
