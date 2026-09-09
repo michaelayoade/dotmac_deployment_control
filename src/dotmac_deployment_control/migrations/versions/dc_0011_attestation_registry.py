@@ -284,6 +284,49 @@ def downgrade() -> None:
     op.execute(
         f"DROP TRIGGER IF EXISTS refuse_evidence_rewrite ON {_SCHEMA}.{_ENROLMENTS};"
     )
+
+    # `attestation_enrolments` and `attestation_fingerprint_closures` are
+    # append-only EVIDENCE, matching dc_0010's own convention for
+    # `rollout_attempt_settlements`: the check and the drop must share an
+    # ACCESS EXCLUSIVE lock, or a concurrent enrolment/closure could arrive
+    # after the empty check and be erased anyway. Both are locked before
+    # either is checked, so this downgrade cannot drop one append-only table
+    # after having observed only the other's row count.
+    #
+    # `attestation_current_roots` is NOT locked or checked here -- it is a
+    # derived projection over the two append-only tables
+    # (`attestation_trust_registry.reconcile_current_root`/
+    # `repair_current_root`), fully re-derivable from them, so dropping it
+    # unconditionally below discards no evidence.
+    op.execute(
+        "LOCK TABLE mod_deploy.attestation_enrolments IN ACCESS EXCLUSIVE MODE"
+    )
+    op.execute(
+        "LOCK TABLE mod_deploy.attestation_fingerprint_closures "
+        "IN ACCESS EXCLUSIVE MODE"
+    )
+
+    bind = op.get_bind()
+    enrolments_remain = bind.execute(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM mod_deploy.attestation_enrolments)"
+        )
+    ).scalar_one()
+    closures_remain = bind.execute(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM "
+            "mod_deploy.attestation_fingerprint_closures)"
+        )
+    ).scalar_one()
+    if enrolments_remain or closures_remain:
+        raise RuntimeError(
+            "dc_0011_attestation_registry refuses to discard append-only "
+            "attestation trust evidence "
+            f"(attestation_enrolments has rows: {bool(enrolments_remain)}, "
+            f"attestation_fingerprint_closures has rows: "
+            f"{bool(closures_remain)})"
+        )
+
     op.drop_table(_CURRENT_ROOTS, schema=_SCHEMA)
     op.drop_table(_CLOSURES, schema=_SCHEMA)
     op.drop_index("uq_attestation_enrolments_supersedes", _ENROLMENTS, schema=_SCHEMA)

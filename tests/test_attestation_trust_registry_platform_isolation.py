@@ -1093,6 +1093,72 @@ def test_a_revoked_fingerprint_is_never_reported_valid(sessions) -> None:
         )
 
 
+# ── The downgrade guard: append-only evidence is not a rollback's to discard ─
+
+
+def test_the_downgrade_refuses_to_discard_append_only_evidence(
+    migrated_scratch, sessions
+) -> None:
+    """dc_0010's own convention (`rollout_attempt_settlements`'s downgrade:
+    LOCK, check for rows, raise rather than drop) applied to the two
+    append-only tables this revision adds. An unrelated rollback during an
+    incident must not be able to silently erase the attestation trust
+    evidence this whole feature exists to make durable.
+
+    `attestation_current_roots` is deliberately NOT covered by this guard --
+    it is a re-derivable projection over the two append-only tables
+    (`attestation_trust_registry.reconcile_current_root`/
+    `repair_current_root`), so `dc_0011`'s `downgrade()` drops it
+    unconditionally, and that is correct.
+    """
+    subject = f"host-downgrade-guard-{uuid.uuid4().hex[:8]}"
+    with sessions() as db:
+        enrol_root(
+            db,
+            custody_domain="host_attester",
+            subject=subject,
+            public_key_b64=_public_key_b64(subject),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
+            enrolment_authority="control_service",
+        )
+        db.commit()
+
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = migrated_scratch
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+    previous_migration_url = os.environ.get("MIGRATION_DATABASE_URL")
+    os.environ["MIGRATION_DATABASE_URL"] = admin_url
+    try:
+        with pytest.raises(RuntimeError, match="refuses to discard"):
+            command.downgrade(cfg, "dc_0010_attempt_settlements")
+    finally:
+        if previous_migration_url is None:
+            os.environ.pop("MIGRATION_DATABASE_URL", None)
+        else:
+            os.environ["MIGRATION_DATABASE_URL"] = previous_migration_url
+
+    # The refusal itself is not proof that nothing was dropped first --
+    # confirm every dc_0011 table is still standing.
+    admin_engine = create_engine(admin_url)
+    try:
+        with admin_engine.connect() as conn:
+            for table in TABLES:
+                assert (
+                    conn.execute(
+                        text("SELECT to_regclass(:t)"),
+                        {"t": f"{SCHEMA}.{table}"},
+                    ).scalar()
+                    is not None
+                ), table
+    finally:
+        admin_engine.dispose()
+
+
 # ── attestation_current_roots: derived projection, drift and repair ────────
 
 
