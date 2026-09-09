@@ -128,7 +128,7 @@ __all__ = [
 
 
 class AttestationRefusalCode(StrEnum):
-    """Why an enrol/rotate/revoke call was refused. One code per condition."""
+    """Why an enrol/rotate/revoke/repair call was refused. One code per condition."""
 
     ALREADY_ENROLLED = "attestation_fingerprint_already_enrolled"
     NO_ACTIVE_ROOT_TO_ROTATE = "attestation_no_active_root_to_rotate"
@@ -137,6 +137,7 @@ class AttestationRefusalCode(StrEnum):
     FINGERPRINT_SUPERSEDED = "attestation_fingerprint_superseded"
     UNKNOWN_FINGERPRINT = "attestation_unknown_fingerprint"
     LOST_ROTATION_RACE = "attestation_lost_rotation_race"
+    AMBIGUOUS_CURRENT_ROOT = "attestation_ambiguous_current_root"
 
 
 class AttestationRefusedError(DeploymentControlError):
@@ -204,25 +205,32 @@ def _derive_current_fingerprint(
     back when they disagree.
 
     An enrolment is "open" (a current-root candidate) when no closure row
-    names its fingerprint. Ordered by `enrolled_at` descending so that if
-    more than one open row exists -- itself a drift symptom this module's
-    own writers should never produce, but not something a raw-SQL repair
-    script is prevented from causing -- the most recently enrolled one is
-    treated as authoritative, and `reconcile_current_root` still reports the
-    anomaly rather than resolving it silently.
+    names its fingerprint. Returns the single open fingerprint when there is
+    EXACTLY one. Returns `None` both when there is no open enrolment AND
+    when there is more than one -- ambiguity is a refusal here, never a
+    tie-break: this function used to order by `enrolled_at` descending and
+    treat the most-recently-enrolled row as authoritative, which silently
+    converted a raw-SQL repair script's registry inconsistency into a
+    confident, possibly wrong, answer. A caller that needs to distinguish
+    "no open enrolment" from "ambiguous" (they both return `None` here) calls
+    `_count_open_enrolments` alongside this, exactly as
+    `reconcile_current_root` and `repair_current_root` already do.
     """
     closed = select(AttestationFingerprintClosure.fingerprint)
-    row = session.execute(
-        select(AttestationEnrolment.public_key_fingerprint)
-        .where(
-            AttestationEnrolment.custody_domain == custody_domain,
-            AttestationEnrolment.subject == subject,
-            AttestationEnrolment.public_key_fingerprint.not_in(closed),
+    rows = (
+        session.execute(
+            select(AttestationEnrolment.public_key_fingerprint).where(
+                AttestationEnrolment.custody_domain == custody_domain,
+                AttestationEnrolment.subject == subject,
+                AttestationEnrolment.public_key_fingerprint.not_in(closed),
+            )
         )
-        .order_by(AttestationEnrolment.enrolled_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    return row
+        .scalars()
+        .all()
+    )
+    if len(rows) != 1:
+        return None
+    return rows[0]
 
 
 def _count_open_enrolments(
@@ -241,7 +249,13 @@ def _count_open_enrolments(
 @dataclass(frozen=True, slots=True)
 class AttestationCurrentRootDrift:
     """What `reconcile_current_root` found. `drifted` is the ONE question a
-    caller needs; the two fingerprints are kept for the operator triaging it."""
+    caller needs; the two fingerprints are kept for the operator triaging it.
+
+    `expected_fingerprint` is `None` in TWO distinct situations that
+    `open_enrolment_count` is what disambiguates: no open enrolment at all
+    (0), or an ambiguous registry with more than one open enrolment (>1) --
+    `_derive_current_fingerprint` refuses to pick among the latter rather
+    than reporting one of them as "expected"."""
 
     custody_domain: str
     subject: str
@@ -286,14 +300,30 @@ def repair_current_root(db: Session, *, custody_domain: str, subject: str) -> No
 
     Idempotent: repairing an already-correct projection is a no-op write.
     Deletes the row when there is no open enrolment (an ABSENT/REVOKED
-    subject has no valid current root); upserts it otherwise. Raises nothing
-    of its own -- a genuine multi-open-enrolment anomaly
-    (`AttestationCurrentRootDrift.open_enrolment_count > 1`) is a fact for the
-    caller to act on, not a decision this function is positioned to make for
-    them, so it repairs to the same most-recent-wins choice
-    `_derive_current_fingerprint` reports and lets the caller decide whether
-    that anomaly needs a human.
+    subject has no valid current root); upserts it otherwise.
+
+    Refuses -- writes nothing at all -- when more than one enrolment is
+    currently open for this `(custody_domain, subject)`
+    (`AttestationRefusalCode.AMBIGUOUS_CURRENT_ROOT`). This function used to
+    persist `_derive_current_fingerprint`'s most-recent-wins pick in that
+    case; doing so is worse than `resolve_current_root` answering ambiguously,
+    because a WRITE turns a transient registry inconsistency into DURABLE
+    state that every later reader -- including `reconcile_current_root`
+    itself, since it compares against the now-"repaired" projection -- would
+    treat as settled. Never choose an authority. The caller decides whether
+    the anomaly needs a human; this function will not decide it for them by
+    writing one of the candidates down.
     """
+    open_count = _count_open_enrolments(
+        db, custody_domain=custody_domain, subject=subject
+    )
+    if open_count > 1:
+        raise _refused(
+            AttestationRefusalCode.AMBIGUOUS_CURRENT_ROOT,
+            f"{custody_domain!r} subject {subject!r} has {open_count} open "
+            "enrolments; repair refuses to persist a choice among them -- "
+            "close the extra enrolment(s) first",
+        )
     expected = _derive_current_fingerprint(
         db, custody_domain=custody_domain, subject=subject
     )
@@ -405,9 +435,8 @@ def resolve_current_root(
       primary key can only ever name one. Picking the projection's single
       answer in that case would silently convert a registry inconsistency
       into a confident, wrong-or-right-by-luck answer -- refused instead,
-      exactly as `_derive_current_fingerprint`'s "most-recently-enrolled"
-      choice is reported as an anomaly by `reconcile_current_root` rather
-      than resolved silently.
+      the same refusal `_derive_current_fingerprint` and `repair_current_root`
+      make on the write side: never choose an authority among several.
     """
     fingerprint = _current_fingerprint(
         db, custody_domain=custody_domain, subject=subject

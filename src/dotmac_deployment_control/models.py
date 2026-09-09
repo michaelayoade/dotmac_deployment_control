@@ -473,7 +473,11 @@ class AttestationCurrentRoot(Base, TimestampMixin):
     never this one -- and compares it against what is stored here.
     `attestation_trust_registry.repair_current_root` performs the idempotent
     write (upsert or delete) that makes this row agree with that same
-    derivation. Both are ordinary reads/writes over public tables; nothing
+    derivation -- OR refuses to write anything at all, if more than one
+    enrolment is currently open for the subject: persisting a choice among
+    several would turn a transient registry inconsistency into durable state
+    that even `reconcile_current_root` would then read back as settled.
+    Both functions are ordinary reads/writes over public tables; nothing
     about them is privileged, so an operator (or a scheduled job) can run
     them at any time without holding any authority this module does not
     already grant `platform_api`/`app_admin`.

@@ -1238,6 +1238,11 @@ class TestCurrentRootDriftDetectionAndRepair:
     def test_a_raw_sql_corruption_is_detected_and_repaired(
         self, migrated_scratch, sessions
     ) -> None:
+        """An UNAMBIGUOUS drift: exactly one enrolment is open for this
+        subject, but the projection points somewhere else entirely (a
+        raw-SQL write, a restored backup). `repair_current_root` may safely
+        fix this one, because there is only ever one candidate to write --
+        never a choice among several."""
         subject = f"host-drift-{uuid.uuid4().hex[:8]}"
         with sessions() as db:
             view = enrol_root(
@@ -1252,9 +1257,10 @@ class TestCurrentRootDriftDetectionAndRepair:
             db.commit()
         correct_fp = view.public_key_fingerprint
 
-        # Enrol a SECOND, unrelated fingerprint directly by raw SQL (bypassing
-        # the service) and repoint the projection at it -- simulating drift a
-        # hand-run repair script could cause.
+        # Enrol a SECOND, unrelated fingerprint directly by raw SQL and
+        # immediately CLOSE it, so it never counts as open -- then repoint
+        # the projection at it. The append-only truth still names exactly
+        # one open enrolment (`correct_fp`); only the projection is wrong.
         admin_url, _, _ = migrated_scratch
         eng = create_engine(admin_url)
         other_seed = f"{subject}-drift-fp"
@@ -1280,6 +1286,14 @@ class TestCurrentRootDriftDetectionAndRepair:
                 )
                 conn.execute(
                     text(
+                        "INSERT INTO mod_deploy.attestation_fingerprint_closures "
+                        "(fingerprint, closure_kind, closed_at, closure_authority) "
+                        "VALUES (:fp, 'superseded', now(), 'manual_repair_script')"
+                    ),
+                    {"fp": other_fp},
+                )
+                conn.execute(
+                    text(
                         "UPDATE mod_deploy.attestation_current_roots "
                         "SET current_fingerprint = :fp "
                         "WHERE custody_domain = 'host_attester' AND subject = :subject"
@@ -1295,12 +1309,8 @@ class TestCurrentRootDriftDetectionAndRepair:
             )
         assert drift.drifted
         assert drift.recorded_fingerprint == other_fp
-        # Two open enrolments now exist for this subject (the drift symptom):
-        # the original, correctly-derived current one, and the raw-SQL
-        # addition that was never closed. The derivation picks the
-        # most-recently-enrolled and REPORTS the anomaly rather than hiding
-        # it -- `open_enrolment_count > 1` is exactly that report.
-        assert drift.open_enrolment_count == 2
+        assert drift.expected_fingerprint == correct_fp
+        assert drift.open_enrolment_count == 1
 
         with sessions() as db:
             repair_current_root(db, custody_domain="host_attester", subject=subject)
@@ -1310,15 +1320,13 @@ class TestCurrentRootDriftDetectionAndRepair:
             repaired = reconcile_current_root(
                 db, custody_domain="host_attester", subject=subject
             )
-            # The append-only tables were never touched by the repair --
-            # only re-derived. The row count drift symptom persists (it is a
-            # fact about the enrolments table the repair does not erase),
-            # but the recorded projection now agrees with the derivation.
+            assert not repaired.drifted
+            assert repaired.recorded_fingerprint == correct_fp
             assert repaired.recorded_fingerprint == repaired.expected_fingerprint
 
         # Confirm no write ever touched the append-only tables during either
-        # the corruption or the repair, other than the one deliberate raw-SQL
-        # INSERT above.
+        # the corruption or the repair, other than the deliberate raw-SQL
+        # writes above.
         with sessions() as db:
             count = (
                 db.query(AttestationEnrolment)
@@ -1335,7 +1343,100 @@ class TestCurrentRootDriftDetectionAndRepair:
                 .count()
             )
         assert count == 2
-        assert closures == 0
+        assert closures == 1
+
+    def test_repair_refuses_to_persist_a_choice_among_ambiguous_open_enrolments(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """The plant: two open enrolments exist for one `(custody_domain,
+        subject)` -- the append-only truth itself does not agree on a single
+        answer. `repair_current_root` must refuse and write NOTHING, rather
+        than persist `_derive_current_fingerprint`'s old most-recent-wins
+        pick -- a write here would convert a transient registry
+        inconsistency into DURABLE state that even `reconcile_current_root`
+        would then treat as settled. The near-miss: closing the extra
+        enrolment removes the ambiguity, and the identical call on the
+        identical subject then succeeds."""
+        subject = f"host-ambiguous-repair-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            original = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        # A second, never-closed enrolment for the SAME subject/domain,
+        # inserted directly by raw SQL. The projection is left untouched --
+        # it still (legitimately) names `original`.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        second_seed = f"{subject}-ambiguous-second"
+        second_fp = _fingerprint_of(second_seed)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_enrolments ("
+                        " id, custody_domain, subject, public_key_b64,"
+                        " public_key_fingerprint, algorithm,"
+                        " key_custody_pointer, enrolled_at, enrolment_authority"
+                        ") VALUES (:id, 'host_attester', :subject, :pub, :fp,"
+                        " 'ed25519', 'bao://secret/dotmac/attest/ambiguous', now(),"
+                        " 'manual_repair_script')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "subject": subject,
+                        "pub": _public_key_b64(second_seed),
+                        "fp": second_fp,
+                    },
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            drift = reconcile_current_root(
+                db, custody_domain="host_attester", subject=subject
+            )
+        assert drift.drifted
+        assert drift.open_enrolment_count == 2
+        assert drift.expected_fingerprint is None
+
+        with sessions() as db:
+            with pytest.raises(AttestationRefusedError) as excinfo:
+                repair_current_root(db, custody_domain="host_attester", subject=subject)
+            db.rollback()
+        assert excinfo.value.code is AttestationRefusalCode.AMBIGUOUS_CURRENT_ROOT
+
+        # The refusal wrote nothing: the projection still names exactly what
+        # it did before repair was ever called.
+        with sessions() as db:
+            row = db.get(AttestationCurrentRoot, ("host_attester", subject))
+            assert row is not None
+            assert row.current_fingerprint == original.public_key_fingerprint
+
+        # Near miss: close the extra enrolment (revoke it) -- the ambiguity
+        # is gone, and the identical repair call on the identical subject now
+        # succeeds.
+        with sessions() as db:
+            revoke_root(
+                db, fingerprint=second_fp, revocation_authority="control_service"
+            )
+            db.commit()
+        with sessions() as db:
+            repair_current_root(db, custody_domain="host_attester", subject=subject)
+            db.commit()
+        with sessions() as db:
+            repaired = reconcile_current_root(
+                db, custody_domain="host_attester", subject=subject
+            )
+            assert not repaired.drifted
+            assert repaired.recorded_fingerprint == original.public_key_fingerprint
 
     def test_a_projection_naming_a_revoked_fingerprint_never_returns_a_root(
         self, migrated_scratch, sessions
