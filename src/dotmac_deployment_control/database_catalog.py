@@ -110,12 +110,8 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column("custody_domain", 1, _VARCHAR_40, nullable=False),
                 _column("subject", 2, _VARCHAR_200, nullable=False),
                 _column("current_fingerprint", 3, _VARCHAR_128, nullable=False),
-                _column(
-                    "created_at", 4, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 5, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
+                _column("created_at", 4, _TIMESTAMPTZ, nullable=False, default="now()"),
+                _column("updated_at", 5, _TIMESTAMPTZ, nullable=False, default="now()"),
             ),
         ),
         _table(
@@ -149,12 +145,8 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column("closure_authority", 4, _VARCHAR_60, nullable=False),
                 _column("closure_reason", 5, _VARCHAR_500, nullable=True),
                 _column("superseded_by_fingerprint", 6, _VARCHAR_128, nullable=True),
-                _column(
-                    "created_at", 7, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
+                _column("created_at", 7, _TIMESTAMPTZ, nullable=False, default="now()"),
+                _column("updated_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
             ),
         ),
         _table(

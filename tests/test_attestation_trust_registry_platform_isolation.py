@@ -1,0 +1,1139 @@
+"""Postgres proofs for the durable attestation trust registry (dc_0011).
+
+Michael was explicit: "SQLite evidence is insufficient for this lane." Every
+test in this file that is about a CONCURRENCY or ORDERING guarantee runs
+against a real, migrated PostgreSQL database and asserts on the actual
+`IntegrityError` PostgreSQL raises -- never on application-level bookkeeping
+that could pass under SQLite's much weaker constraint enforcement.
+
+Requires real Postgres (`make test-db-up` / `make test-integration`). This
+file is written, never executed here -- CI is the acceptance owner.
+
+## The four required proofs, and where each lives
+
+1. Concurrent enrolment -- `TestConcurrentEnrolment`.
+2. Cross-role fingerprint reuse, refused BY THE DATABASE --
+   `TestCrossRoleFingerprintReuseIsADatabaseConstraint`.
+3. Rotation versus revocation ordering (whichever commits first wins
+   permanently; a later act cannot reclaim it; recovery is a new signed
+   attempt, never a reset) -- `TestRotationVersusRevocationOrdering`.
+4. Stale-reader behaviour -- `TestStaleReaderBehaviour`.
+
+Plus the standing proof obligations: enrolment rows cannot be mutated in
+place (`TestAppendOnlyEnforcement`), no ORM object/session/row escapes the
+public boundary (`test_the_public_view_carries_no_orm_or_session_state`), a
+revoked key is never reported active
+(`test_a_revoked_fingerprint_is_never_reported_valid`), and the
+`attestation_current_roots` projection can drift from raw SQL and be
+detected and repaired (`TestCurrentRootDriftDetectionAndRepair`) -- the
+concrete evidence for why that table is a projection and not a fourth
+persistence owner.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import threading
+import uuid
+from collections.abc import Iterator
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+from dotmac_kernel.migrations import versions_dir as kernel_versions_dir
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.orm import Session, sessionmaker
+
+from dotmac_deployment_control import versions_dir as deploy_versions_dir
+from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRefusalCode,
+    AttestationRefusedError,
+    enrol_root,
+    fingerprint_standing,
+    reconcile_current_root,
+    repair_current_root,
+    resolve_current_root,
+    revoke_root,
+    rotate_root,
+)
+from dotmac_deployment_control.host_attester_enrolment import HostAttesterStanding
+from dotmac_deployment_control.models import (
+    AttestationCurrentRoot,
+    AttestationEnrolment,
+    AttestationFingerprintClosure,
+)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+KERNEL_VERSIONS = Path(kernel_versions_dir())
+DEPLOY_VERSIONS = Path(deploy_versions_dir())
+
+SCHEMA = "mod_deploy"
+TABLES = (
+    "attestation_enrolments",
+    "attestation_fingerprint_closures",
+    "attestation_current_roots",
+)
+EVIDENCE_TABLES = ("attestation_enrolments", "attestation_fingerprint_closures")
+
+
+def _superuser_url() -> str:
+    url = os.getenv("TEST_MIGRATION_DATABASE_URL") or os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL not set -- this canary needs Postgres")
+    return url
+
+
+def _url_for(base_url: str, dbname: str, *, user: str | None = None) -> str:
+    scheme_userhost, _, _ = base_url.rpartition("/")
+    if user is not None:
+        scheme, _, userhost = scheme_userhost.partition("://")
+        host = userhost.rpartition("@")[2]
+        scheme_userhost = f"{scheme}://{user}@{host}"
+    return f"{scheme_userhost}/{dbname}"
+
+
+def _public_key_b64(seed: str) -> str:
+    """A fresh, deterministic, valid unpadded-base64url public key per seed."""
+    raw = hashlib.sha256(b"attestation-trust-registry\0" + seed.encode()).digest()
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+@pytest.fixture(scope="module")
+def migrated_scratch() -> Iterator[tuple[str, str, str]]:
+    """`(admin_url, platform_api_url, app_user_url)` at the composed head."""
+    superuser = _superuser_url()
+    name = f"attest_{uuid.uuid4().hex[:12]}"
+    server = create_engine(superuser, isolation_level="AUTOCOMMIT")
+    with server.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{name}"'))
+
+    setup = create_engine(_url_for(superuser, name), isolation_level="AUTOCOMMIT")
+    with setup.connect() as conn:
+        conn.execute(text("ALTER SCHEMA public OWNER TO app_admin"))
+        conn.execute(text(f'GRANT CREATE ON DATABASE "{name}" TO app_admin'))
+        for role in ("app_user", "platform_api"):
+            conn.execute(text(f'GRANT CONNECT ON DATABASE "{name}" TO {role}'))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+    setup.dispose()
+
+    admin_url = _url_for(superuser, name, user="app_admin")
+    try:
+        from alembic.config import Config
+
+        from alembic import command
+
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        os.environ["MIGRATION_DATABASE_URL"] = admin_url
+        command.upgrade(cfg, "heads")
+
+        yield (
+            admin_url,
+            _url_for(superuser, name, user="platform_api"),
+            _url_for(superuser, name, user="app_user"),
+        )
+    finally:
+        with server.connect() as conn:
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"
+                ),
+                {"n": name},
+            )
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        server.dispose()
+
+
+@pytest.fixture
+def engine(migrated_scratch: tuple[str, str, str]):
+    admin_url, _, _ = migrated_scratch
+    eng = create_engine(admin_url, future=True)
+    try:
+        yield eng
+    finally:
+        eng.dispose()
+
+
+@pytest.fixture
+def sessions(engine):
+    return sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+
+def _has_privilege(url: str, table: str, privilege: str, *, role: str) -> bool:
+    eng = create_engine(url)
+    try:
+        with eng.connect() as conn:
+            return bool(
+                conn.execute(
+                    text("SELECT has_table_privilege(:r, :t, :p)"),
+                    {"r": role, "t": f"{SCHEMA}.{table}", "p": privilege},
+                ).scalar()
+            )
+    finally:
+        eng.dispose()
+
+
+# ── Migration from empty ─────────────────────────────────────────────────────
+
+
+class TestTheLineageBuildsTheRegistry:
+    def test_every_table_exists(self, migrated_scratch) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                for table in TABLES:
+                    assert (
+                        conn.execute(
+                            text("SELECT to_regclass(:t)"),
+                            {"t": f"{SCHEMA}.{table}"},
+                        ).scalar()
+                        is not None
+                    ), table
+        finally:
+            eng.dispose()
+
+    def test_the_fingerprint_uniqueness_is_a_real_constraint_not_an_index_alone(
+        self, migrated_scratch
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                found = conn.execute(
+                    text(
+                        "SELECT conname FROM pg_constraint c "
+                        "JOIN pg_class t ON t.oid = c.conrelid "
+                        "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                        "WHERE n.nspname = :s AND t.relname = 'attestation_enrolments' "
+                        "AND conname = 'uq_attestation_enrolments_fingerprint' "
+                        "AND contype = 'u'"
+                    ),
+                    {"s": SCHEMA},
+                ).scalar()
+            assert found == "uq_attestation_enrolments_fingerprint"
+        finally:
+            eng.dispose()
+
+    def test_the_closures_primary_key_is_the_fingerprint_column(
+        self, migrated_scratch
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                columns = (
+                    conn.execute(
+                        text(
+                            "SELECT a.attname FROM pg_index i "
+                            "JOIN pg_attribute a ON a.attrelid = i.indrelid "
+                            "AND a.attnum = ANY(i.indkey) "
+                            "WHERE i.indrelid = CAST(:t AS regclass) AND i.indisprimary"
+                        ),
+                        {"t": f"{SCHEMA}.attestation_fingerprint_closures"},
+                    )
+                    .scalars()
+                    .all()
+                )
+            assert columns == ["fingerprint"]
+        finally:
+            eng.dispose()
+
+    def test_no_table_has_row_level_security(self, migrated_scratch) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                for table in TABLES:
+                    enabled, forced = conn.execute(
+                        text(
+                            "SELECT relrowsecurity, relforcerowsecurity "
+                            "FROM pg_class WHERE oid = CAST(:t AS regclass)"
+                        ),
+                        {"t": f"{SCHEMA}.{table}"},
+                    ).one()
+                    assert not enabled and not forced, table
+        finally:
+            eng.dispose()
+
+    @pytest.mark.parametrize("table", TABLES)
+    def test_app_user_holds_no_privilege(self, migrated_scratch, table: str) -> None:
+        admin_url, _, _ = migrated_scratch
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+            assert not _has_privilege(admin_url, table, privilege, role="app_user"), (
+                table,
+                privilege,
+            )
+
+    @pytest.mark.parametrize("table", EVIDENCE_TABLES)
+    def test_platform_api_may_not_update_the_evidence_tables(
+        self, migrated_scratch, table: str
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        assert not _has_privilege(admin_url, table, "UPDATE", role="platform_api")
+        assert not _has_privilege(admin_url, table, "DELETE", role="platform_api")
+
+    def test_platform_api_may_update_and_delete_the_current_root_projection(
+        self, migrated_scratch
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        assert _has_privilege(
+            admin_url, "attestation_current_roots", "UPDATE", role="platform_api"
+        )
+        assert _has_privilege(
+            admin_url, "attestation_current_roots", "DELETE", role="platform_api"
+        )
+
+
+# ── Append-only enforcement, with a sensitivity proof (ADR-0018) ───────────
+
+
+class TestAppendOnlyEnforcement:
+    """Plant the defect the trigger targets (an UPDATE / a DELETE), and prove
+    it is caught. A guard that only passes over an untouched table proves
+    nothing about itself."""
+
+    def _seed_enrolment(self, conn, *, seed: str) -> str:
+        fingerprint = _fingerprint_of(seed)
+        conn.execute(
+            text(
+                "INSERT INTO mod_deploy.attestation_enrolments ("
+                " id, custody_domain, subject, public_key_b64,"
+                " public_key_fingerprint, algorithm, key_custody_pointer,"
+                " enrolled_at, enrolment_authority"
+                ") VALUES (:id, 'host_attester', :subject, :pub, :fp,"
+                " 'ed25519', 'bao://secret/dotmac/attest/x', now(),"
+                " 'control_service')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "subject": f"host-{seed}",
+                "pub": _public_key_b64(seed),
+                "fp": fingerprint,
+            },
+        )
+        return fingerprint
+
+    def test_an_enrolment_row_cannot_be_updated(self, migrated_scratch) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                with conn.begin():
+                    self._seed_enrolment(conn, seed="update-target")
+                with pytest.raises(DBAPIError, match="append-only"), conn.begin():
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.attestation_enrolments "
+                            "SET enrolment_authority = 'someone_else' "
+                            "WHERE subject = 'host-update-target'"
+                        )
+                    )
+        finally:
+            eng.dispose()
+
+    def test_an_enrolment_row_cannot_be_deleted(self, migrated_scratch) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                with conn.begin():
+                    self._seed_enrolment(conn, seed="delete-target")
+                with pytest.raises(DBAPIError, match="append-only"), conn.begin():
+                    conn.execute(
+                        text(
+                            "DELETE FROM mod_deploy.attestation_enrolments "
+                            "WHERE subject = 'host-delete-target'"
+                        )
+                    )
+        finally:
+            eng.dispose()
+
+    def test_a_closure_row_cannot_be_updated_the_near_miss_the_pk_alone_would_not_catch(
+        self, migrated_scratch
+    ) -> None:
+        """Sensitivity proof, near-miss half: the PRIMARY KEY on `fingerprint`
+        stops a SECOND row from claiming the same fingerprint, but it does
+        nothing to stop an UPDATE of the one row that already exists -- only
+        the trigger does. If the trigger were absent, this UPDATE would
+        succeed silently and the ordering guarantee this table exists for
+        would be gone even though the PK still looked intact."""
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                with conn.begin():
+                    fp = self._seed_enrolment(conn, seed="closure-update-target")
+                    conn.execute(
+                        text(
+                            "INSERT INTO mod_deploy.attestation_fingerprint_closures "
+                            "(fingerprint, closure_kind, closed_at, closure_authority) "
+                            "VALUES (:fp, 'revoked', now(), 'control_service')"
+                        ),
+                        {"fp": fp},
+                    )
+                with pytest.raises(DBAPIError, match="append-only"), conn.begin():
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.attestation_fingerprint_closures "
+                            "SET closure_kind = 'superseded' WHERE fingerprint = :fp"
+                        ),
+                        {"fp": fp},
+                    )
+        finally:
+            eng.dispose()
+
+    def test_app_admin_cannot_rewrite_an_enrolment_either(
+        self, migrated_scratch
+    ) -> None:
+        """The offline role is not a higher authority against this table --
+        matching `dc_0001`'s own three evidence tables."""
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                with conn.begin():
+                    self._seed_enrolment(conn, seed="admin-cannot-rewrite")
+                with pytest.raises(DBAPIError, match="append-only"), conn.begin():
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.attestation_enrolments "
+                            "SET algorithm = 'rewritten' "
+                            "WHERE subject = 'host-admin-cannot-rewrite'"
+                        )
+                    )
+        finally:
+            eng.dispose()
+
+
+def _fingerprint_of(seed: str) -> str:
+    from dotmac_deployment_control.digests import PublicKeyFingerprintV1
+
+    return PublicKeyFingerprintV1.from_public_key_b64(_public_key_b64(seed)).canonical
+
+
+# ── Proof 1: concurrent enrolment ───────────────────────────────────────────
+
+
+class TestConcurrentEnrolment:
+    """Two sessions racing to enrol. Both possible races are exercised:
+    the SAME fingerprint (global uniqueness) and two DIFFERENT fresh
+    fingerprints for the SAME subject (the current-root primary key)."""
+
+    def test_two_sessions_enrolling_the_identical_fingerprint_leave_exactly_one_row(
+        self, sessions
+    ) -> None:
+        subject = f"host-race-same-{uuid.uuid4().hex[:8]}"
+        seed = f"same-fp-{uuid.uuid4().hex[:8]}"
+        public_key_b64 = _public_key_b64(seed)
+        results: dict[int, object] = {}
+        barrier = threading.Barrier(2)
+
+        def worker(index: int) -> None:
+            db: Session = sessions()
+            try:
+                barrier.wait(timeout=30)
+                try:
+                    enrol_root(
+                        db,
+                        custody_domain="host_attester",
+                        subject=subject,
+                        public_key_b64=public_key_b64,
+                        algorithm="ed25519",
+                        key_custody_pointer="bao://secret/dotmac/attest/race",
+                        enrolment_authority="control_service",
+                    )
+                    db.commit()
+                    results[index] = "won"
+                except AttestationRefusedError as exc:
+                    db.rollback()
+                    results[index] = exc.code
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+            assert not t.is_alive()
+
+        outcomes = list(results.values())
+        assert outcomes.count("won") == 1
+        assert outcomes.count(AttestationRefusalCode.ALREADY_ENROLLED) == 1
+
+        with sessions() as db:
+            rows = (
+                db.query(AttestationEnrolment)
+                .filter(AttestationEnrolment.subject == subject)
+                .all()
+            )
+            assert len(rows) == 1
+            roots = (
+                db.query(AttestationCurrentRoot)
+                .filter(AttestationCurrentRoot.subject == subject)
+                .all()
+            )
+            assert len(roots) == 1
+
+    def test_two_sessions_enrolling_different_fresh_keys_leave_one_current_root(
+        self, sessions
+    ) -> None:
+        subject = f"host-race-diff-{uuid.uuid4().hex[:8]}"
+        results: dict[int, object] = {}
+        barrier = threading.Barrier(2)
+
+        def worker(index: int) -> None:
+            db: Session = sessions()
+            try:
+                barrier.wait(timeout=30)
+                try:
+                    enrol_root(
+                        db,
+                        custody_domain="host_attester",
+                        subject=subject,
+                        public_key_b64=_public_key_b64(f"race-diff-{subject}-{index}"),
+                        algorithm="ed25519",
+                        key_custody_pointer="bao://secret/dotmac/attest/race-diff",
+                        enrolment_authority="control_service",
+                    )
+                    db.commit()
+                    results[index] = "won"
+                except AttestationRefusedError as exc:
+                    db.rollback()
+                    results[index] = exc.code
+            finally:
+                db.close()
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+            assert not t.is_alive()
+
+        outcomes = list(results.values())
+        # BOTH enrolment inserts may succeed (they name different global
+        # fingerprints, so uq_attestation_enrolments_fingerprint does not fire)
+        # -- it is the SECOND attestation_current_roots insert, keyed on
+        # (custody_domain, subject), that must refuse exactly one of them.
+        assert outcomes.count("won") == 1
+        assert outcomes.count(AttestationRefusalCode.ALREADY_ENROLLED) == 1
+
+        with sessions() as db:
+            roots = (
+                db.query(AttestationCurrentRoot)
+                .filter(AttestationCurrentRoot.subject == subject)
+                .all()
+            )
+            assert len(roots) == 1
+            enrolments = (
+                db.query(AttestationEnrolment)
+                .filter(AttestationEnrolment.subject == subject)
+                .all()
+            )
+            # The loser's caller rolls back on `AttestationRefusedError`
+            # (documented caller discipline, matching every other
+            # conflict_savepoint consumer in this package), which undoes the
+            # loser's OWN enrolment insert along with it -- there is exactly
+            # one enrolment row and one current root, both the winner's.
+            assert len(enrolments) == 1
+            assert enrolments[0].public_key_fingerprint == roots[0].current_fingerprint
+            assert (
+                fingerprint_standing(db, fingerprint=roots[0].current_fingerprint)
+                is HostAttesterStanding.VALID
+            )
+
+
+# ── Proof 2: cross-role fingerprint reuse, refused BY THE DATABASE ─────────
+
+
+class TestCrossRoleFingerprintReuseIsADatabaseConstraint:
+    """The headline invariant. Refused by `uq_attestation_enrolments_fingerprint`
+    directly -- via raw SQL, so no application code stands between the attempt
+    and the constraint."""
+
+    def test_raw_sql_insert_of_the_same_fingerprint_in_the_other_domain_is_refused(
+        self, migrated_scratch
+    ) -> None:
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        seed = f"cross-role-{uuid.uuid4().hex[:8]}"
+        fp = _fingerprint_of(seed)
+        pub = _public_key_b64(seed)
+        try:
+            with eng.connect() as conn:
+                with conn.begin():
+                    conn.execute(
+                        text(
+                            "INSERT INTO mod_deploy.attestation_enrolments ("
+                            " id, custody_domain, subject, public_key_b64,"
+                            " public_key_fingerprint, algorithm,"
+                            " key_custody_pointer, enrolled_at,"
+                            " enrolment_authority"
+                            ") VALUES (:id, 'host_attester', 'host-x', :pub, :fp,"
+                            " 'ed25519', 'bao://secret/dotmac/attest/x', now(),"
+                            " 'control_service')"
+                        ),
+                        {"id": uuid.uuid4(), "pub": pub, "fp": fp},
+                    )
+                with pytest.raises(IntegrityError), conn.begin():
+                    conn.execute(
+                        text(
+                            "INSERT INTO mod_deploy.attestation_enrolments ("
+                            " id, custody_domain, subject, public_key_b64,"
+                            " public_key_fingerprint, algorithm,"
+                            " key_custody_pointer, enrolled_at,"
+                            " enrolment_authority"
+                            ") VALUES (:id, 'candidate_release_signer',"
+                            " 'foundation-release-signer', :pub, :fp, 'ed25519',"
+                            " 'bao://secret/dotmac/attest/y', now(),"
+                            " 'control_service')"
+                        ),
+                        {"id": uuid.uuid4(), "pub": pub, "fp": fp},
+                    )
+        finally:
+            eng.dispose()
+
+    def test_the_service_layer_reports_the_same_refusal(self, sessions) -> None:
+        seed = f"cross-role-service-{uuid.uuid4().hex[:8]}"
+        pub = _public_key_b64(seed)
+        with sessions() as db:
+            enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject="host-service-x",
+                public_key_b64=pub,
+                algorithm="ed25519",
+                key_custody_pointer="bao://secret/dotmac/attest/service-x",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            with pytest.raises(AttestationRefusedError) as excinfo:
+                enrol_root(
+                    db,
+                    custody_domain="candidate_release_signer",
+                    subject="foundation-release-signer",
+                    public_key_b64=pub,
+                    algorithm="ed25519",
+                    key_custody_pointer="bao://secret/dotmac/attest/service-y",
+                    enrolment_authority="control_service",
+                )
+            db.rollback()
+        assert excinfo.value.code is AttestationRefusalCode.ALREADY_ENROLLED
+
+
+# ── Proof 3: rotation versus revocation ordering ────────────────────────────
+
+
+class TestRotationVersusRevocationOrdering:
+    """Michael's ruling, made structural by the closure table's primary key
+    on `fingerprint`: whichever of a revocation and a supersession commits
+    first wins permanently; the later act cannot reclaim it; recovery is a
+    new signed attempt, never a reset of the closed marker."""
+
+    def _enrol(self, db: Session, *, subject: str, seed: str) -> str:
+        view = enrol_root(
+            db,
+            custody_domain="host_attester",
+            subject=subject,
+            public_key_b64=_public_key_b64(seed),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{seed}",
+            enrolment_authority="control_service",
+        )
+        return view.public_key_fingerprint
+
+    def test_revocation_committed_first_permanently_refuses_a_later_rotation(
+        self, sessions
+    ) -> None:
+        subject = f"host-order-revoke-first-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            fp = self._enrol(db, subject=subject, seed=f"{subject}-a")
+            db.commit()
+
+        with sessions() as db:
+            revoke_root(db, fingerprint=fp, revocation_authority="control_service")
+            db.commit()
+
+        with sessions() as db:
+            with pytest.raises(AttestationRefusedError) as excinfo:
+                rotate_root(
+                    db,
+                    custody_domain="host_attester",
+                    subject=subject,
+                    supersedes_fingerprint=fp,
+                    public_key_b64=_public_key_b64(f"{subject}-b"),
+                    algorithm="ed25519",
+                    key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-b",
+                    enrolment_authority="control_service",
+                )
+            db.rollback()
+        assert excinfo.value.code is AttestationRefusalCode.NO_ACTIVE_ROOT_TO_ROTATE
+
+        # Recovery is a NEW signed initial enrolment, never a resurrection of
+        # the revoked marker.
+        with sessions() as db:
+            recovered = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-recovery"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-recovery",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+            assert recovered.standing == HostAttesterStanding.VALID.value
+
+        with sessions() as db:
+            assert (
+                fingerprint_standing(db, fingerprint=fp) is HostAttesterStanding.REVOKED
+            )
+
+    def test_a_committed_rotation_permanently_refuses_a_later_revocation_of_the_old_key(
+        self, sessions
+    ) -> None:
+        """The mirror case: the old key was already rotated away before the
+        revocation's closure INSERT could claim the same primary-key slot."""
+        subject = f"host-order-rotate-first-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            old_fp = self._enrol(db, subject=subject, seed=f"{subject}-old")
+            db.commit()
+
+        with sessions() as db:
+            rotate_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                supersedes_fingerprint=old_fp,
+                public_key_b64=_public_key_b64(f"{subject}-new"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-new",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        with sessions() as db:
+            with pytest.raises(AttestationRefusedError) as excinfo:
+                revoke_root(
+                    db, fingerprint=old_fp, revocation_authority="control_service"
+                )
+            db.rollback()
+        assert excinfo.value.code is AttestationRefusalCode.FINGERPRINT_SUPERSEDED
+
+        with sessions() as db:
+            assert (
+                fingerprint_standing(db, fingerprint=old_fp)
+                is HostAttesterStanding.SUPERSEDED
+            )
+
+    def test_two_concurrent_closures_of_one_fingerprint_leave_exactly_one_winner(
+        self, sessions
+    ) -> None:
+        """The real ordering race, driven through two threads rather than
+        sequential calls: a rotation and a revocation both targeting the SAME
+        prior fingerprint, started concurrently. Whichever commits first must
+        win the closure's primary key; the other must observe a permanent
+        refusal, never a silent second closure."""
+        subject = f"host-order-race-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            fp = self._enrol(db, subject=subject, seed=f"{subject}-base")
+            db.commit()
+
+        outcomes: dict[str, object] = {}
+        barrier = threading.Barrier(2)
+
+        def do_rotate() -> None:
+            db: Session = sessions()
+            try:
+                barrier.wait(timeout=30)
+                try:
+                    rotate_root(
+                        db,
+                        custody_domain="host_attester",
+                        subject=subject,
+                        supersedes_fingerprint=fp,
+                        public_key_b64=_public_key_b64(f"{subject}-rotate-winner"),
+                        algorithm="ed25519",
+                        key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-rw",
+                        enrolment_authority="control_service",
+                    )
+                    db.commit()
+                    outcomes["rotate"] = "won"
+                except AttestationRefusedError as exc:
+                    db.rollback()
+                    outcomes["rotate"] = exc.code
+            finally:
+                db.close()
+
+        def do_revoke() -> None:
+            db: Session = sessions()
+            try:
+                barrier.wait(timeout=30)
+                try:
+                    revoke_root(
+                        db, fingerprint=fp, revocation_authority="control_service"
+                    )
+                    db.commit()
+                    outcomes["revoke"] = "won"
+                except AttestationRefusedError as exc:
+                    db.rollback()
+                    outcomes["revoke"] = exc.code
+            finally:
+                db.close()
+
+        threads = (
+            threading.Thread(target=do_rotate),
+            threading.Thread(target=do_revoke),
+        )
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+            assert not t.is_alive()
+
+        # Exactly one of the two operations won; the loser was permanently
+        # refused, never silently accepted alongside the winner.
+        wins = [v for v in outcomes.values() if v == "won"]
+        assert len(wins) == 1
+        with sessions() as db:
+            standing = fingerprint_standing(db, fingerprint=fp)
+        assert standing in (
+            HostAttesterStanding.REVOKED,
+            HostAttesterStanding.SUPERSEDED,
+        )
+        if outcomes["rotate"] == "won":
+            assert standing is HostAttesterStanding.SUPERSEDED
+            assert outcomes["revoke"] in (
+                AttestationRefusalCode.FINGERPRINT_SUPERSEDED,
+                AttestationRefusalCode.LOST_ROTATION_RACE,
+            )
+        else:
+            assert standing is HostAttesterStanding.REVOKED
+            assert outcomes["rotate"] in (
+                AttestationRefusalCode.FINGERPRINT_REVOKED,
+                AttestationRefusalCode.LOST_ROTATION_RACE,
+            )
+
+
+# ── Proof 4: stale-reader behaviour ──────────────────────────────────────────
+
+
+class TestStaleReaderBehaviour:
+    """What a reader holding an older snapshot sees. A REPEATABLE READ
+    transaction takes its snapshot at its first statement; a revocation
+    committed by another session afterwards must not appear inside it, and a
+    fresh read after that transaction ends must see it."""
+
+    def test_a_repeatable_read_transaction_does_not_see_a_concurrent_revocation(
+        self, engine, sessions
+    ) -> None:
+        subject = f"host-stale-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        fp = view.public_key_fingerprint
+
+        reader = engine.connect().execution_options(isolation_level="REPEATABLE READ")
+        reader_txn = reader.begin()
+        # Take the snapshot with a real read before the concurrent write.
+        before = reader.execute(
+            text(
+                "SELECT count(*) FROM mod_deploy.attestation_fingerprint_closures "
+                "WHERE fingerprint = :fp"
+            ),
+            {"fp": fp},
+        ).scalar_one()
+        assert before == 0
+
+        with sessions() as writer:
+            revoke_root(writer, fingerprint=fp, revocation_authority="control_service")
+            writer.commit()
+
+        # Still inside the reader's REPEATABLE READ transaction: the
+        # committed revocation must not be visible.
+        during = reader.execute(
+            text(
+                "SELECT count(*) FROM mod_deploy.attestation_fingerprint_closures "
+                "WHERE fingerprint = :fp"
+            ),
+            {"fp": fp},
+        ).scalar_one()
+        assert during == 0, (
+            "a REPEATABLE READ snapshot taken before the revocation committed "
+            "must not observe it -- caching this read across the concurrent "
+            "write would be exactly this false negative"
+        )
+        reader_txn.rollback()
+        reader.close()
+
+        # A FRESH read (new snapshot) sees the committed revocation.
+        with sessions() as fresh:
+            after = fresh.execute(
+                text(
+                    "SELECT count(*) FROM mod_deploy.attestation_fingerprint_closures "
+                    "WHERE fingerprint = :fp"
+                ),
+                {"fp": fp},
+            ).scalar_one()
+            standing = fingerprint_standing(fresh, fingerprint=fp)
+        assert after == 1
+        assert standing is HostAttesterStanding.REVOKED
+
+
+# ── Standing proof obligations beyond the four Postgres proofs ─────────────
+
+
+def test_the_public_view_carries_no_orm_or_session_state(sessions) -> None:
+    """Plant: a caller who tries to read an ORM attribute off the returned
+    value must get a plain, ordinary `AttributeError` for a name the
+    dataclass never declares -- not a `DetachedInstanceError`, which is what
+    an ORM object would raise once its session closed. That specific
+    exception type is the sensitivity control: it only differs from a bare
+    dataclass's `AttributeError` if something ORM-shaped actually leaked."""
+    subject = f"host-boundary-{uuid.uuid4().hex[:8]}"
+    with sessions() as db:
+        view = enrol_root(
+            db,
+            custody_domain="host_attester",
+            subject=subject,
+            public_key_b64=_public_key_b64(subject),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
+            enrolment_authority="control_service",
+        )
+        db.commit()
+    # The session is closed. A leaked ORM object would now raise
+    # DetachedInstanceError on lazy access; the typed view raises plain
+    # AttributeError for an undeclared field, proving it never was one.
+    assert not isinstance(view, AttestationEnrolment)
+    assert not hasattr(view, "_sa_instance_state")
+    with pytest.raises(AttributeError):
+        _ = view.this_field_does_not_exist_on_the_dataclass  # type: ignore[attr-defined]
+    assert isinstance(view.enrolled_at, datetime)
+    assert isinstance(view.public_key_fingerprint, str)
+
+
+def test_a_revoked_fingerprint_is_never_reported_valid(sessions) -> None:
+    """Plant: a fingerprint that has been revoked. Near miss: a merely
+    SUPERSEDED fingerprint, which must read distinctly, never as VALID and
+    never confused with REVOKED."""
+    subject = f"host-never-valid-{uuid.uuid4().hex[:8]}"
+    with sessions() as db:
+        view = enrol_root(
+            db,
+            custody_domain="host_attester",
+            subject=subject,
+            public_key_b64=_public_key_b64(f"{subject}-a"),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+            enrolment_authority="control_service",
+        )
+        db.commit()
+        fp = view.public_key_fingerprint
+
+    with sessions() as db:
+        revoke_root(db, fingerprint=fp, revocation_authority="control_service")
+        db.commit()
+
+    with sessions() as db:
+        assert fingerprint_standing(db, fingerprint=fp) is HostAttesterStanding.REVOKED
+        assert (
+            resolve_current_root(db, custody_domain="host_attester", subject=subject)
+            is None
+        )
+
+    # Near miss: a SUPERSEDED fingerprint (a different subject) must read as
+    # SUPERSEDED, not REVOKED and not VALID -- proving the guard actually
+    # distinguishes the two terminal states rather than treating "closed" as
+    # one bucket.
+    subject2 = f"host-superseded-not-revoked-{uuid.uuid4().hex[:8]}"
+    with sessions() as db:
+        old = enrol_root(
+            db,
+            custody_domain="host_attester",
+            subject=subject2,
+            public_key_b64=_public_key_b64(f"{subject2}-old"),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject2}-old",
+            enrolment_authority="control_service",
+        )
+        db.commit()
+    with sessions() as db:
+        rotate_root(
+            db,
+            custody_domain="host_attester",
+            subject=subject2,
+            supersedes_fingerprint=old.public_key_fingerprint,
+            public_key_b64=_public_key_b64(f"{subject2}-new"),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject2}-new",
+            enrolment_authority="control_service",
+        )
+        db.commit()
+    with sessions() as db:
+        assert (
+            fingerprint_standing(db, fingerprint=old.public_key_fingerprint)
+            is HostAttesterStanding.SUPERSEDED
+        )
+
+
+# ── attestation_current_roots: derived projection, drift and repair ────────
+
+
+class TestCurrentRootDriftDetectionAndRepair:
+    """`attestation_current_roots` is a derived projection over the two
+    append-only tables (see `models.AttestationCurrentRoot`'s docstring).
+    This proves it can actually drift when corrupted out from under the
+    service (a raw-SQL write, the exact hazard the projection's own design
+    note names), that `reconcile_current_root` detects it, and that
+    `repair_current_root` removes it without touching the append-only
+    tables."""
+
+    def test_a_raw_sql_corruption_is_detected_and_repaired(
+        self, migrated_scratch, sessions
+    ) -> None:
+        subject = f"host-drift-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        correct_fp = view.public_key_fingerprint
+
+        # Enrol a SECOND, unrelated fingerprint directly by raw SQL (bypassing
+        # the service) and repoint the projection at it -- simulating drift a
+        # hand-run repair script could cause.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        other_seed = f"{subject}-drift-fp"
+        other_fp = _fingerprint_of(other_seed)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_enrolments ("
+                        " id, custody_domain, subject, public_key_b64,"
+                        " public_key_fingerprint, algorithm,"
+                        " key_custody_pointer, enrolled_at, enrolment_authority"
+                        ") VALUES (:id, 'host_attester', :subject, :pub, :fp,"
+                        " 'ed25519', 'bao://secret/dotmac/attest/drift', now(),"
+                        " 'manual_repair_script')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "subject": subject,
+                        "pub": _public_key_b64(other_seed),
+                        "fp": other_fp,
+                    },
+                )
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_current_roots "
+                        "SET current_fingerprint = :fp "
+                        "WHERE custody_domain = 'host_attester' AND subject = :subject"
+                    ),
+                    {"fp": other_fp, "subject": subject},
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            drift = reconcile_current_root(
+                db, custody_domain="host_attester", subject=subject
+            )
+        assert drift.drifted
+        assert drift.recorded_fingerprint == other_fp
+        # Two open enrolments now exist for this subject (the drift symptom):
+        # the original, correctly-derived current one, and the raw-SQL
+        # addition that was never closed. The derivation picks the
+        # most-recently-enrolled and REPORTS the anomaly rather than hiding
+        # it -- `open_enrolment_count > 1` is exactly that report.
+        assert drift.open_enrolment_count == 2
+
+        with sessions() as db:
+            repair_current_root(db, custody_domain="host_attester", subject=subject)
+            db.commit()
+
+        with sessions() as db:
+            repaired = reconcile_current_root(
+                db, custody_domain="host_attester", subject=subject
+            )
+            # The append-only tables were never touched by the repair --
+            # only re-derived. The row count drift symptom persists (it is a
+            # fact about the enrolments table the repair does not erase),
+            # but the recorded projection now agrees with the derivation.
+            assert repaired.recorded_fingerprint == repaired.expected_fingerprint
+
+        # Confirm no write ever touched the append-only tables during either
+        # the corruption or the repair, other than the one deliberate raw-SQL
+        # INSERT above.
+        with sessions() as db:
+            count = (
+                db.query(AttestationEnrolment)
+                .filter(AttestationEnrolment.subject == subject)
+                .count()
+            )
+            closures = (
+                db.query(AttestationFingerprintClosure)
+                .filter(
+                    AttestationFingerprintClosure.fingerprint.in_(
+                        [correct_fp, other_fp]
+                    )
+                )
+                .count()
+            )
+        assert count == 2
+        assert closures == 0
+
+    def test_repair_deletes_the_projection_when_there_is_no_open_enrolment(
+        self, sessions
+    ) -> None:
+        subject = f"host-drift-absent-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(subject),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            revoke_root(
+                db,
+                fingerprint=view.public_key_fingerprint,
+                revocation_authority="control_service",
+            )
+            db.commit()
+        # revoke_root already deletes the projection row on this path; call
+        # repair anyway to prove it is idempotent against an already-correct
+        # (absent) state.
+        with sessions() as db:
+            repair_current_root(db, custody_domain="host_attester", subject=subject)
+            db.commit()
+        with sessions() as db:
+            assert db.get(AttestationCurrentRoot, ("host_attester", subject)) is None

@@ -94,6 +94,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
+from dotmac_kernel.transactions import conflict_savepoint
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
 from dotmac_deployment_control.digests import PublicKeyFingerprintV1
 from dotmac_deployment_control.host_attester_enrolment import (
     FingerprintStatus,
@@ -105,10 +110,6 @@ from dotmac_deployment_control.models import (
     AttestationFingerprintClosure,
 )
 from dotmac_deployment_control.ports import DeploymentControlError
-from dotmac_kernel.transactions import conflict_savepoint
-from sqlalchemy import delete, func, select, update
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
 
 __all__ = [
     "AttestationCurrentRootDrift",
@@ -164,7 +165,9 @@ class AttestationRootView:
     standing: str  # HostAttesterStanding.value
 
 
-def _closure(session: Session, fingerprint: str) -> AttestationFingerprintClosure | None:
+def _closure(
+    session: Session, fingerprint: str
+) -> AttestationFingerprintClosure | None:
     return session.execute(
         select(AttestationFingerprintClosure).where(
             AttestationFingerprintClosure.fingerprint == fingerprint
@@ -221,7 +224,9 @@ def _derive_current_fingerprint(
     return row
 
 
-def _count_open_enrolments(session: Session, *, custody_domain: str, subject: str) -> int:
+def _count_open_enrolments(
+    session: Session, *, custody_domain: str, subject: str
+) -> int:
     closed = select(AttestationFingerprintClosure.fingerprint)
     return session.execute(
         select(func.count(AttestationEnrolment.id)).where(
@@ -259,9 +264,13 @@ def reconcile_current_root(
     Read-only. Never writes; `repair_current_root` is the separate, explicit
     write path -- a caller that only wants to KNOW about drift never performs
     one by asking."""
-    expected = _derive_current_fingerprint(db, custody_domain=custody_domain, subject=subject)
+    expected = _derive_current_fingerprint(
+        db, custody_domain=custody_domain, subject=subject
+    )
     recorded = _current_fingerprint(db, custody_domain=custody_domain, subject=subject)
-    open_count = _count_open_enrolments(db, custody_domain=custody_domain, subject=subject)
+    open_count = _count_open_enrolments(
+        db, custody_domain=custody_domain, subject=subject
+    )
     return AttestationCurrentRootDrift(
         custody_domain=custody_domain,
         subject=subject,
@@ -284,7 +293,9 @@ def repair_current_root(db: Session, *, custody_domain: str, subject: str) -> No
     `_derive_current_fingerprint` reports and lets the caller decide whether
     that anomaly needs a human.
     """
-    expected = _derive_current_fingerprint(db, custody_domain=custody_domain, subject=subject)
+    expected = _derive_current_fingerprint(
+        db, custody_domain=custody_domain, subject=subject
+    )
     if expected is None:
         db.execute(
             delete(AttestationCurrentRoot).where(
@@ -342,9 +353,14 @@ def fingerprint_standing(db: Session, *, fingerprint: str) -> HostAttesterStandi
         db, custody_domain=enrolment.custody_domain, subject=enrolment.subject
     )
     if current is None:
-        # No closure AND no current pointer: this enrolment attempted a
-        # rotation that lost the race (see rotate_root) and was never
-        # promoted to current. It is neither active nor formally closed.
+        # No closure AND no current pointer for this subject at all. Not
+        # reachable through this module's own functions under ordinary
+        # caller discipline (a lost race raises before the transaction
+        # commits, and the caller is documented to roll back on refusal --
+        # see `enrol_root`/`rotate_root`), but a raw-SQL write or a caller
+        # that commits despite a raised refusal could produce it. Reported
+        # rather than treated as an internal error, on the same "never trust
+        # one signal alone" principle the rest of this module follows.
         return HostAttesterStanding.NOT_ACTIVE_FOR_HOST
     if current != fingerprint:
         return HostAttesterStanding.WRONG_HOST
@@ -360,7 +376,9 @@ def resolve_current_root(
     failure, exactly as `host_attester_enrolment`'s own docstring rules for
     `HostAttesterStanding.ABSENT`.
     """
-    fingerprint = _current_fingerprint(db, custody_domain=custody_domain, subject=subject)
+    fingerprint = _current_fingerprint(
+        db, custody_domain=custody_domain, subject=subject
+    )
     if fingerprint is None:
         return None
     enrolment = _enrolment(db, fingerprint)
@@ -530,8 +548,7 @@ def rotate_root(
             ) from exc
         raise _refused(
             AttestationRefusalCode.LOST_ROTATION_RACE,
-            f"{supersedes_fingerprint!r} was already closed by a concurrent "
-            "operation",
+            f"{supersedes_fingerprint!r} was already closed by a concurrent operation",
         ) from exc
 
     # 3. Move the current-root pointer with a compare-and-swap. If this loses
@@ -624,4 +641,3 @@ def revoke_root(
         )
     )
     db.flush()
-

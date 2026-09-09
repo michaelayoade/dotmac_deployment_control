@@ -266,8 +266,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(f"DROP TRIGGER IF EXISTS refuse_evidence_truncate ON {_SCHEMA}.{_CLOSURES};")
-    op.execute(f"DROP TRIGGER IF EXISTS refuse_evidence_rewrite ON {_SCHEMA}.{_CLOSURES};")
+    op.execute(
+        f"DROP TRIGGER IF EXISTS refuse_evidence_truncate ON {_SCHEMA}.{_CLOSURES};"
+    )
+    op.execute(
+        f"DROP TRIGGER IF EXISTS refuse_evidence_rewrite ON {_SCHEMA}.{_CLOSURES};"
+    )
     op.execute(
         f"DROP TRIGGER IF EXISTS refuse_evidence_truncate ON {_SCHEMA}.{_ENROLMENTS};"
     )
@@ -276,9 +280,7 @@ def downgrade() -> None:
     )
     op.drop_table(_CURRENT_ROOTS, schema=_SCHEMA)
     op.drop_table(_CLOSURES, schema=_SCHEMA)
-    op.drop_index(
-        "uq_attestation_enrolments_supersedes", _ENROLMENTS, schema=_SCHEMA
-    )
+    op.drop_index("uq_attestation_enrolments_supersedes", _ENROLMENTS, schema=_SCHEMA)
     op.drop_index("ix_attestation_enrolments_subject", _ENROLMENTS, schema=_SCHEMA)
     op.drop_index(
         "ix_attestation_enrolments_custody_domain", _ENROLMENTS, schema=_SCHEMA
