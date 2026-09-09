@@ -17,8 +17,26 @@ of the near-miss statement's three varying inputs (`host_id`,
 docstring for exactly what is and is not held constant.
 
 `test_a_rotation_cannot_retire_another_hosts_key` is the second serious
-property: `evaluate_enrolment` must not trust `active_by_host` alone for the
+property: `_evaluate_enrolment` must not trust `active_by_host` alone for the
 most destructive operation this module can request.
+
+`_evaluate_enrolment` and `_host_attester_standing` are PRIVATE (leading
+underscore, absent from `__all__`) as of the durable attestation trust
+registry: nothing outside this module may call them, because a caller
+supplying its own `active_by_host`/`known_fingerprints` mapping is exactly
+the "the caller supplies the registry that decides whether the caller's key
+is trusted" defect the registry closes. `attestation_trust_registry`'s
+`enrol_root`/`rotate_root`/`revoke_root`/`fingerprint_standing`/
+`resolve_current_root` are the ONE remaining path a real caller has for these
+decisions -- they reach the same admission and standing answers this file's
+pure functions compute, but against Control's own durable tables (unique
+constraints, the fingerprint-closures ledger, the current-root projection)
+rather than a mapping the caller assembled itself. This file still exercises
+`_evaluate_enrolment`/`_host_attester_standing` directly, by their private
+names, purely as coverage of the evaluation-order logic itself;
+`tests/architecture/test_host_attester_enrolment_is_private.py` is the
+structural proof that the public surface no longer exposes a caller-supplied
+path to either decision.
 """
 
 from __future__ import annotations
@@ -40,8 +58,8 @@ from dotmac_deployment_control.host_attester_enrolment import (
     HostAttesterEnrolmentSignerIdentity,
     HostAttesterEnrolmentStatementV1,
     HostAttesterStanding,
-    evaluate_enrolment,
-    host_attester_standing,
+    _evaluate_enrolment,
+    _host_attester_standing,
     issue_host_attester_enrolment,
     require_custody_pointer,
     require_host_id,
@@ -140,7 +158,7 @@ def test_a_real_initial_enrolment_is_admitted() -> None:
         verified.statement.incarnation_id == verified.statement.public_key_fingerprint
     )
     # And it clears the registry check with no active binding yet.
-    evaluate_enrolment(
+    _evaluate_enrolment(
         verified.statement, active_by_host={}, known_fingerprints={}
     )  # must not raise
 
@@ -153,7 +171,7 @@ def test_a_real_rotation_is_admitted() -> None:
         public_key_fingerprint=new_fp,
         supersedes_fingerprint=old_fp,
     )
-    evaluate_enrolment(
+    _evaluate_enrolment(
         statement,
         active_by_host={"db-primary": old_fp},
         known_fingerprints={
@@ -272,13 +290,13 @@ def test_a_rotation_naming_itself_as_superseded_is_refused() -> None:
     assert excinfo.value.code is HostAttesterEnrolmentRefusalCode.SUPERSEDES_EQUALS_NEW
 
 
-# ── the registry-conflict refusals (`evaluate_enrolment`) ───────────────────
+# ── the registry-conflict refusals (`_evaluate_enrolment`) ───────────────────
 
 
 def test_a_second_initial_enrolment_for_an_already_enrolled_host_is_refused() -> None:
     statement = _statement()
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={"db-primary": _fingerprint("incarnation-0")},
             known_fingerprints={},
@@ -293,7 +311,7 @@ def test_a_rotation_with_no_active_enrolment_to_supersede_is_refused() -> None:
         supersedes_fingerprint=_fingerprint("incarnation-1"),
     )
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(statement, active_by_host={}, known_fingerprints={})
+        _evaluate_enrolment(statement, active_by_host={}, known_fingerprints={})
     assert (
         excinfo.value.code
         is HostAttesterEnrolmentRefusalCode.SUPERSEDES_WITHOUT_ACTIVE_ENROLMENT
@@ -311,7 +329,7 @@ def test_a_rotation_naming_the_wrong_superseded_fingerprint_is_refused() -> None
         supersedes_fingerprint=wrongly_named,
     )
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={"db-primary": actual_active},
             known_fingerprints={},
@@ -341,7 +359,7 @@ def test_a_rotation_cannot_retire_another_hosts_key() -> None:
         supersedes_fingerprint=fp_a,
     )
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             rotation,
             active_by_host={"ns1": fp_a},  # the bugged/attacker claim
             known_fingerprints={
@@ -360,7 +378,7 @@ def test_a_rotation_cannot_retire_another_hosts_key() -> None:
         public_key_fingerprint=fp_new,
         supersedes_fingerprint=fp_a,
     )
-    evaluate_enrolment(
+    _evaluate_enrolment(
         legitimate,
         active_by_host={"db-primary": fp_a},
         known_fingerprints={
@@ -380,7 +398,7 @@ def test_supersedes_fingerprint_unknown_is_refused() -> None:
         supersedes_fingerprint=fp,
     )
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             rotation, active_by_host={"db-primary": fp}, known_fingerprints={}
         )
     assert (
@@ -400,7 +418,7 @@ def test_supersedes_fingerprint_not_active_is_refused() -> None:
         supersedes_fingerprint=fp,
     )
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             rotation,
             active_by_host={"db-primary": fp},
             known_fingerprints={
@@ -419,7 +437,7 @@ def test_two_hosts_cannot_share_an_incarnation() -> None:
     shared_fp = _fingerprint("incarnation-1")
     statement = _statement(host_id="ns1", public_key_fingerprint=shared_fp)
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={},
             known_fingerprints={
@@ -442,7 +460,7 @@ def test_a_superseded_fingerprint_is_also_refused_across_hosts() -> None:
     superseded_fp = _fingerprint("incarnation-1")
     statement = _statement(host_id="ns1", public_key_fingerprint=superseded_fp)
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={},
             known_fingerprints={
@@ -459,7 +477,7 @@ def test_two_enrolments_of_the_same_host_cannot_share_a_fingerprint() -> None:
     though it were a fresh enrolment. Named refusal:
     FINGERPRINT_ALREADY_ENROLLED, distinct from the cross-host code above.
 
-    This case is reachable only because `evaluate_enrolment` judges the
+    This case is reachable only because `_evaluate_enrolment` judges the
     fingerprint's own status BEFORE the host's binding -- if the host block
     ran first it would report `HOST_ALREADY_ENROLLED` and this code would be
     unreachable. `test_a_revoked_fingerprint_is_reported_before_the_host_block`
@@ -467,7 +485,7 @@ def test_two_enrolments_of_the_same_host_cannot_share_a_fingerprint() -> None:
     fp = _fingerprint("incarnation-1")
     statement = _statement(public_key_fingerprint=fp)
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={"db-primary": fp},
             known_fingerprints={
@@ -494,7 +512,7 @@ def test_a_revoked_fingerprint_is_reported_before_the_host_block() -> None:
         public_key_fingerprint=revoked_fp,
     )
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={"db-primary": host_active_fp},
             known_fingerprints={
@@ -515,8 +533,8 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     old fingerprint afterward is refused -- BECAUSE of the rotation, not some
     unrelated invariant. This module has no signed-evidence verification
     path of its own (that is Foundation's, built elsewhere); what it
-    exercises is RE-ENROLMENT (`evaluate_enrolment`) and a STANDING query
-    (`host_attester_standing`) of the retired fingerprint.
+    exercises is RE-ENROLMENT (`_evaluate_enrolment`) and a STANDING query
+    (`_host_attester_standing`) of the retired fingerprint.
 
     Structure: first prove a legitimate, UNRELATED use of the fingerprint is
     admitted BEFORE the rotation (near-miss, silent) -- a different host
@@ -525,7 +543,7 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     THEN perform the rotation and re-check the exact old fingerprint for the
     ORIGINAL host (plant, named). The isolation this proves is narrower than
     "only the registry changed": it is that `FINGERPRINT_SUPERSEDED` is
-    raised in exactly one place in `evaluate_enrolment`, so its appearance
+    raised in exactly one place in `_evaluate_enrolment`, so its appearance
     here can only be that branch, not a malformed statement, a bad
     signature, or any of the other refusal codes -- none of which this test
     triggers along the way.
@@ -537,7 +555,7 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     # DIFFERENT, not-yet-enrolled host is a legitimate (if unrelated) initial
     # enrolment and must stay silent.
     unrelated_statement = _statement(host_id="ns1", public_key_fingerprint=old_fp)
-    evaluate_enrolment(
+    _evaluate_enrolment(
         unrelated_statement, active_by_host={}, known_fingerprints={}
     )  # must not raise: the fingerprint has not been rotated away yet.
 
@@ -550,7 +568,7 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     registry_before_rotation = {
         old_fp: FingerprintRecord("db-primary", FingerprintStatus.ACTIVE)
     }
-    evaluate_enrolment(
+    _evaluate_enrolment(
         rotation,
         active_by_host={"db-primary": old_fp},
         known_fingerprints=registry_before_rotation,
@@ -569,7 +587,7 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     # as a rebuild's leftover credential would attempt to.
     replay = _statement(public_key_fingerprint=old_fp, supersedes_fingerprint=new_fp)
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             replay,
             active_by_host=active_after_rotation,
             known_fingerprints=registry_after_rotation,
@@ -579,7 +597,7 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     # And the standing query -- what a Foundation verifier would ask -- agrees
     # for the same reason, distinguishing it from an unrelated invariant such
     # as a malformed statement or a bad signature (neither is present here).
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=old_fp,
         active_by_host=active_after_rotation,
@@ -589,7 +607,7 @@ def test_a_superseded_fingerprint_is_refused_for_re_enrolment_and_standing() -> 
     assert standing.authorizes is False
 
     # Near-miss, kept silent: the NEW key, for the SAME host, still stands.
-    new_key_standing = host_attester_standing(
+    new_key_standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=new_fp,
         active_by_host=active_after_rotation,
@@ -606,7 +624,7 @@ def test_a_revoked_fingerprint_is_refused_with_its_own_distinct_code() -> None:
     fp = _fingerprint("incarnation-1")
     statement = _statement(public_key_fingerprint=fp)
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement,
             active_by_host={},
             known_fingerprints={
@@ -619,7 +637,7 @@ def test_a_revoked_fingerprint_is_refused_with_its_own_distinct_code() -> None:
         is not HostAttesterEnrolmentRefusalCode.FINGERPRINT_SUPERSEDED
     )
 
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=fp,
         active_by_host={},
@@ -632,11 +650,11 @@ def test_a_revoked_fingerprint_is_refused_with_its_own_distinct_code() -> None:
 
 def test_revocation_cannot_reclaim_a_spent_marker() -> None:
     """This module exposes no operation that moves a fingerprint OUT of
-    REVOKED or SUPERSEDED -- checked here against two of this module's
-    public entry points, `evaluate_enrolment` (the write path) and
-    `host_attester_standing` (the read path), and finding neither admits a
-    revoked fingerprint. Not a claim of exhaustive coverage of every public
-    function: `issue_host_attester_enrolment` and
+    REVOKED or SUPERSEDED -- checked here against this module's two
+    (now-private) evaluation functions, `_evaluate_enrolment` (the write
+    path) and `_host_attester_standing` (the read path), and finding neither
+    admits a revoked fingerprint. Not a claim of exhaustive coverage of every
+    public function: `issue_host_attester_enrolment` and
     `verify_host_attester_enrolment` do not consult the registry at all (see
     their own docstrings), so they have nothing to exercise here."""
     fp = _fingerprint("incarnation-1")
@@ -645,14 +663,14 @@ def test_revocation_cannot_reclaim_a_spent_marker() -> None:
     # (revoked) fingerprint is refused -- revocation is permanent and global.
     statement = _statement(host_id="ns1", public_key_fingerprint=fp)
     with pytest.raises(HostAttesterEnrolmentRefusedError) as excinfo:
-        evaluate_enrolment(
+        _evaluate_enrolment(
             statement, active_by_host={}, known_fingerprints=revoked_registry
         )
     assert excinfo.value.code is HostAttesterEnrolmentRefusalCode.FINGERPRINT_REVOKED
     # And the standing query never reports VALID for it, no matter what
     # `active_by_host` claims -- a registry disagreement is refused, not
     # trusted.
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=fp,
         active_by_host={"db-primary": fp},
@@ -668,7 +686,7 @@ def test_registry_disagreement_is_refused_not_trusted() -> None:
     fingerprint belongs to a different host entirely) and from
     NOT_ACTIVE_FOR_HOST (the host has no entry at all)."""
     fp = _fingerprint("incarnation-1")
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=fp,
         active_by_host={"db-primary": _fingerprint("incarnation-2")},
@@ -686,7 +704,7 @@ def test_a_fingerprint_active_for_this_host_with_no_active_by_host_entry() -> No
     REGISTRY_DISAGREEMENT (which requires a CONTRADICTING entry, not a
     missing one)."""
     fp = _fingerprint("incarnation-1")
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=fp,
         active_by_host={},
@@ -703,7 +721,7 @@ def test_wrong_host_is_distinct_from_registry_disagreement() -> None:
     host than the one asked about -- WRONG_HOST, never REGISTRY_DISAGREEMENT
     or NOT_ACTIVE_FOR_HOST, which are about the ASKED host's own maps."""
     fp = _fingerprint("incarnation-1")
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="ns1",
         fingerprint=fp,
         active_by_host={"db-primary": fp},
@@ -716,7 +734,7 @@ def test_wrong_host_is_distinct_from_registry_disagreement() -> None:
 
 
 def test_an_absent_fingerprint_reports_absent_not_a_refusal() -> None:
-    standing = host_attester_standing(
+    standing = _host_attester_standing(
         host_id="db-primary",
         fingerprint=_fingerprint("never-enrolled"),
         active_by_host={},
