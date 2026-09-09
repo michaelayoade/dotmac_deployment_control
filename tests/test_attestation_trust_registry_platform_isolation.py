@@ -121,9 +121,8 @@ def migrated_scratch() -> Iterator[tuple[str, str, str]]:
 
     admin_url = _url_for(superuser, name, user="app_admin")
     try:
-        from alembic.config import Config
-
         from alembic import command
+        from alembic.config import Config
 
         cfg = Config(str(REPO_ROOT / "alembic.ini"))
         cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
