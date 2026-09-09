@@ -2,10 +2,15 @@
 
 Complements the architecture-level structural proofs
 (`tests/architecture/test_attestation_binding_*.py`) with the ordinary
-value-level behaviour: resolution, absence, the versioned wire round-trip,
-and standing forwarding. Uses the same in-memory SQLite fixture pattern
-`tests/unit/test_projection_readers.py` already establishes for this
-package's `mod_deploy`-schema tables.
+value-level behaviour: resolution, absence, disagreement, drift, the
+versioned wire round-trip, and standing forwarding. Uses the same
+in-memory SQLite fixture pattern `tests/unit/test_projection_readers.py`
+already establishes for this package's `mod_deploy`-schema tables.
+
+Written against the three-way `AttestationRootRefusal` contract (Michael's
+ruling, 2026-09-09, after #50) -- `resolve_attestation_binding` now returns
+an `AttestationBindingResolution` with exactly one of `.binding`/`.refusal`
+set, never a bare `None`.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from dotmac_deployment_control.attestation_binding import (
     resolve_fingerprint_standing,
 )
 from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRootRefusal,
     enrol_root,
     revoke_root,
     rotate_root,
@@ -82,16 +88,18 @@ def _enrol(db: Session, subject: str, *, custody_domain: str = "host_attester"):
     return view
 
 
-# ── resolution: present, absent ─────────────────────────────────────────────
+# ── resolution: present, absent, drift ──────────────────────────────────────
 
 
 def test_a_valid_enrolment_resolves_to_a_binding_with_valid_standing(
     db: Session,
 ) -> None:
     view = _enrol(db, "host-valid")
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject="host-valid"
     )
+    assert resolution.refusal is None
+    binding = resolution.binding
     assert binding is not None
     assert binding.custody_domain == "host_attester"
     assert binding.subject == "host-valid"
@@ -101,7 +109,7 @@ def test_a_valid_enrolment_resolves_to_a_binding_with_valid_standing(
     assert binding.standing is HostAttesterStanding.VALID
 
 
-def test_an_unenrolled_subject_resolves_to_none() -> None:
+def test_an_unenrolled_subject_resolves_to_absent() -> None:
     engine = create_engine("sqlite://", future=True)
 
     @event.listens_for(engine, "connect")
@@ -122,7 +130,8 @@ def test_an_unenrolled_subject_resolves_to_none() -> None:
         result = resolve_attestation_binding(
             session, custody_domain="host_attester", subject="host-never-enrolled"
         )
-        assert result is None
+        assert result.binding is None
+        assert result.refusal is AttestationRootRefusal.ABSENT
     finally:
         session.close()
         engine.dispose()
@@ -148,11 +157,12 @@ def test_a_rotated_away_fingerprint_no_longer_resolves_as_current(
     )
     db.commit()
 
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject="host-rotate"
     )
-    assert binding is not None
-    assert binding.public_key_fingerprint == new_view.public_key_fingerprint
+    assert resolution.refusal is None
+    assert resolution.binding is not None
+    assert resolution.binding.public_key_fingerprint == new_view.public_key_fingerprint
 
     old_standing = resolve_fingerprint_standing(
         db, fingerprint=old.public_key_fingerprint
@@ -160,7 +170,13 @@ def test_a_rotated_away_fingerprint_no_longer_resolves_as_current(
     assert old_standing is HostAttesterStanding.SUPERSEDED
 
 
-def test_a_revoked_fingerprint_reports_revoked_standing(db: Session) -> None:
+def test_a_revoked_fingerprint_reports_revoked_standing_and_absent_binding(
+    db: Session,
+) -> None:
+    """A NATURAL revoke deletes the current-root pointer, so the subject's
+    append-only open-enrolment count is zero afterward -- ABSENT, not
+    DRIFT. DRIFT is reserved for a STALE pointer someone reinserted after
+    the fact (see the stale-projection test below)."""
     view = _enrol(db, "host-revoke")
     revoke_root(
         db,
@@ -171,21 +187,22 @@ def test_a_revoked_fingerprint_reports_revoked_standing(db: Session) -> None:
 
     standing = resolve_fingerprint_standing(db, fingerprint=view.public_key_fingerprint)
     assert standing is HostAttesterStanding.REVOKED
-    assert (
-        resolve_attestation_binding(
-            db, custody_domain="host_attester", subject="host-revoke"
-        )
-        is None
+    resolution = resolve_attestation_binding(
+        db, custody_domain="host_attester", subject="host-revoke"
     )
+    assert resolution.binding is None
+    assert resolution.refusal is AttestationRootRefusal.ABSENT
 
 
-def test_a_stale_projection_naming_a_revoked_fingerprint_returns_nothing(
+def test_a_stale_projection_naming_a_revoked_fingerprint_reports_drift(
     db: Session,
 ) -> None:
     """Pre-reconciliation refusal, proved at the unit level too (the
     Postgres-level companion lives in the top-level platform-isolation
     suite for the real constraint/concurrency evidence -- this is the
-    logic-level restatement, which SQLite is sufficient for)."""
+    logic-level restatement, which SQLite is sufficient for). A stale
+    pointer naming a CLOSED fingerprint is DRIFT specifically -- the
+    projection disagrees with the append-only truth it accelerates."""
     view = _enrol(db, "host-stale")
     revoke_root(
         db,
@@ -207,12 +224,70 @@ def test_a_stale_projection_naming_a_revoked_fingerprint_returns_nothing(
     db.flush()
 
     assert db.get(AttestationCurrentRoot, ("host_attester", "host-stale")) is not None
-    assert (
-        resolve_attestation_binding(
-            db, custody_domain="host_attester", subject="host-stale"
-        )
-        is None
+    resolution = resolve_attestation_binding(
+        db, custody_domain="host_attester", subject="host-stale"
     )
+    assert resolution.binding is None
+    assert resolution.refusal is AttestationRootRefusal.DRIFT
+
+
+def test_a_recomputed_fingerprint_mismatch_reports_drift(db: Session) -> None:
+    """PLANT for the recompute-from-material rule: a row whose stored
+    `public_key_fingerprint` does NOT match what is independently
+    recomputed from its own `public_key_b64` -- never reachable through
+    `enrol_root`/`rotate_root` (both compute the fingerprint themselves),
+    simulated here the same way the ambiguity/substitution plants simulate
+    registry corruption: a direct row write bypassing the writers."""
+    import uuid
+    from datetime import UTC, datetime
+
+    from dotmac_deployment_control.models import AttestationEnrolment
+
+    subject = "host-recompute-mismatch"
+    wrong_fingerprint = "sha256:" + "ab" * 32
+    db.add(
+        AttestationEnrolment(
+            id=uuid.uuid4(),
+            custody_domain="host_attester",
+            subject=subject,
+            public_key_b64=_public_key_b64(subject),
+            public_key_fingerprint=wrong_fingerprint,
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
+            supersedes_fingerprint=None,
+            enrolled_at=datetime.now(UTC),
+            enrolment_authority="control_service",
+        )
+    )
+    db.add(
+        AttestationCurrentRoot(
+            custody_domain="host_attester",
+            subject=subject,
+            current_fingerprint=wrong_fingerprint,
+        )
+    )
+    db.flush()
+    db.commit()
+
+    resolution = resolve_attestation_binding(
+        db, custody_domain="host_attester", subject=subject
+    )
+    assert resolution.binding is None
+    assert resolution.refusal is AttestationRootRefusal.DRIFT
+
+
+def test_a_consistent_fingerprint_does_not_report_drift(db: Session) -> None:
+    """NEAR-MISS to the recompute plant above: `enrol_root`'s own row (whose
+    fingerprint IS computed from its own material) must resolve normally --
+    the recompute check must not false-positive on ordinary, correctly
+    written rows."""
+    view = _enrol(db, "host-recompute-consistent")
+    resolution = resolve_attestation_binding(
+        db, custody_domain="host_attester", subject="host-recompute-consistent"
+    )
+    assert resolution.refusal is None
+    assert resolution.binding is not None
+    assert resolution.binding.public_key_fingerprint == view.public_key_fingerprint
 
 
 # ── the versioned wire contract ─────────────────────────────────────────────
@@ -220,10 +295,11 @@ def test_a_stale_projection_naming_a_revoked_fingerprint_returns_nothing(
 
 def test_as_mapping_round_trips_through_parse(db: Session) -> None:
     _enrol(db, "host-roundtrip")
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject="host-roundtrip"
     )
-    assert binding is not None
+    assert resolution.binding is not None
+    binding = resolution.binding
     mapping = binding.as_mapping()
     assert mapping["schema"] == ATTESTATION_BINDING_SCHEMA
     assert mapping["version"] == ATTESTATION_BINDING_VERSION
@@ -242,11 +318,11 @@ def test_parse_refuses_an_unexpected_version(db: Session) -> None:
     """PLANT: a future, differently-shaped version of this contract must be
     refused, never silently accepted as if it were V1."""
     _enrol(db, "host-version-check")
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject="host-version-check"
     )
-    assert binding is not None
-    mapping = binding.as_mapping()
+    assert resolution.binding is not None
+    mapping = resolution.binding.as_mapping()
     mapping["version"] = 99
     with pytest.raises(AttestationBindingRefusedError) as excinfo:
         AttestationBindingV1.parse(mapping)
@@ -274,11 +350,11 @@ def test_parse_refuses_missing_or_unexpected_keys() -> None:
 
 def test_parse_refuses_an_unknown_standing_value(db: Session) -> None:
     _enrol(db, "host-bad-standing")
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject="host-bad-standing"
     )
-    assert binding is not None
-    mapping = binding.as_mapping()
+    assert resolution.binding is not None
+    mapping = resolution.binding.as_mapping()
     mapping["standing"] = "not-a-real-standing"
     with pytest.raises(AttestationBindingRefusedError) as excinfo:
         AttestationBindingV1.parse(mapping)
@@ -292,8 +368,44 @@ def test_the_binding_carries_no_derived_authorization_boolean(db: Session) -> No
     """A binding returns facts, never a decision -- see the module docstring.
     Structural: the dataclass simply has no such attribute at all."""
     _enrol(db, "host-no-authorizes")
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject="host-no-authorizes"
     )
-    assert binding is not None
-    assert not hasattr(binding, "authorizes")
+    assert resolution.binding is not None
+    assert not hasattr(resolution.binding, "authorizes")
+
+
+# ── AttestationBindingResolution's own invariant ────────────────────────────
+
+
+def test_resolution_refuses_construction_with_both_binding_and_refusal_set(
+    db: Session,
+) -> None:
+    """PLANT: a hand-built `AttestationBindingResolution` naming BOTH a
+    binding and a refusal must be refused at construction -- proving the
+    invariant is enforced structurally, not merely by this module's own
+    discipline in `resolve_attestation_binding`."""
+    from dotmac_deployment_control.attestation_binding import (
+        AttestationBindingResolution,
+    )
+
+    _enrol(db, "host-invariant-check")
+    resolution = resolve_attestation_binding(
+        db, custody_domain="host_attester", subject="host-invariant-check"
+    )
+    assert resolution.binding is not None
+    with pytest.raises(ValueError):
+        AttestationBindingResolution(
+            binding=resolution.binding, refusal=AttestationRootRefusal.ABSENT
+        )
+
+
+def test_resolution_refuses_construction_with_neither_set() -> None:
+    """NEAR-MISS-adjacent second half of the same invariant: neither field
+    set is refused too, not only "both"."""
+    from dotmac_deployment_control.attestation_binding import (
+        AttestationBindingResolution,
+    )
+
+    with pytest.raises(ValueError):
+        AttestationBindingResolution(binding=None, refusal=None)

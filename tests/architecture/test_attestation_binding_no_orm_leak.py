@@ -207,11 +207,13 @@ def test_a_resolved_binding_survives_session_close_as_a_plain_dataclass(
     )
     sqlite_session.commit()
 
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         sqlite_session, custody_domain="host_attester", subject=subject
     )
     sqlite_session.close()
 
+    assert resolution.refusal is None
+    binding = resolution.binding
     assert isinstance(binding, AttestationBindingV1)
     assert not isinstance(binding, AttestationEnrolment)
     assert not isinstance(binding, AttestationCurrentRoot)

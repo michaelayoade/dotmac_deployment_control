@@ -1,20 +1,16 @@
 """`attestation_binding.py` never triggers reconciliation or repair, and
-never resolves past the registry's own ambiguity refusal.
+never resolves past the registry's own three-way refusal.
 
-## What "surfaces the refusal, never resolves past it" actually means here
+## Repaired since the first version of this file
 
-**Measured, not assumed:** `attestation_trust_registry.resolve_current_root`
--- the one function `resolve_attestation_binding` delegates to -- does NOT
-raise `AttestationRefusalCode.AMBIGUOUS_CURRENT_ROOT` on the read path. Only
-`repair_current_root` (a WRITE function) raises that code; `resolve_current_root`
-answers an ambiguous subject exactly the same way it answers an absent one:
-`return None` (see its own docstring's "Ambiguity" paragraph and its final
-`if _count_open_enrolments(...) > 1: return None`). This module's facade
-therefore surfaces the ambiguity refusal as `None`, indistinguishable from
-ABSENT -- not as a raised `AttestationRefusedError`. The static and
-behavioural proofs below are written against this MEASURED behaviour, not
-against a raised-exception shape the registry's read path does not actually
-have.
+Michael's ruling (2026-09-09, after #50) closed the gap this file's original
+docstring MEASURED and reported: `resolve_current_root` used to answer an
+ambiguous subject exactly the same way it answered an absent one -- a bare
+`None`. It now returns a typed `AttestationRootResolution` naming exactly
+which of `ABSENT`/`REGISTRY_DISAGREEMENT`/`DRIFT` applies
+(`attestation_trust_registry.AttestationRootRefusal`), and this module's
+`resolve_attestation_binding` forwards that SAME typed refusal inside its
+own `AttestationBindingResolution`, never collapsing it back to `None`.
 
 "Never resolves past it" is proved two ways:
 
@@ -26,9 +22,13 @@ have.
    `(custody_domain, subject)` (simulating the registry inconsistency
    `_derive_current_fingerprint`'s own docstring names -- e.g. a raw-SQL
    repair script), and `resolve_attestation_binding` is asserted to return
-   `None` -- never one of the two candidates, and never by calling
+   the SPECIFIC `REGISTRY_DISAGREEMENT` refusal -- never one of the two
+   candidates, never a bare falsy value, and never by calling
    `reconcile_current_root`/`repair_current_root` first (both are asserted
-   NOT called via a monkeypatch spy in the test body).
+   NOT called via a monkeypatch spy in the test body). A PAIRED near-miss
+   proves a genuinely absent subject returns `ABSENT` specifically, not
+   `REGISTRY_DISAGREEMENT` -- the two refusals are not interchangeable
+   "something is wrong" signals.
 """
 
 from __future__ import annotations
@@ -160,6 +160,9 @@ def test_two_open_enrolments_for_the_same_subject_refuse_through_the_facade(
     from dotmac_deployment_control.attestation_binding import (
         resolve_attestation_binding,
     )
+    from dotmac_deployment_control.attestation_trust_registry import (
+        AttestationRootRefusal,
+    )
     from dotmac_deployment_control.models import AttestationEnrolment
 
     subject = "host-ambiguous"
@@ -216,9 +219,35 @@ def test_two_open_enrolments_for_the_same_subject_refuse_through_the_facade(
         sqlite_session, custody_domain="host_attester", subject=subject
     )
 
-    assert result is None
+    assert result.binding is None
+    # THE assertion this test exists for: the specific
+    # REGISTRY_DISAGREEMENT refusal, never a bare falsy/`None` value that
+    # could be confused with ABSENT -- see the paired near-miss below.
+    assert result.refusal is AttestationRootRefusal.REGISTRY_DISAGREEMENT
     assert reconcile_calls == []
     assert repair_calls == []
+
+
+def test_a_genuinely_absent_subject_returns_absent_not_registry_disagreement(
+    sqlite_session: Session,
+) -> None:
+    """PAIRED NEAR-MISS to the ambiguity plant above: a subject that was
+    NEVER enrolled at all must resolve to `ABSENT`, never
+    `REGISTRY_DISAGREEMENT` -- proving the two refusals are distinguishable,
+    not two spellings of "something is wrong"."""
+    from dotmac_deployment_control.attestation_binding import (
+        resolve_attestation_binding,
+    )
+    from dotmac_deployment_control.attestation_trust_registry import (
+        AttestationRootRefusal,
+    )
+
+    result = resolve_attestation_binding(
+        sqlite_session, custody_domain="host_attester", subject="host-never-enrolled"
+    )
+
+    assert result.binding is None
+    assert result.refusal is AttestationRootRefusal.ABSENT
 
 
 def test_an_unambiguous_subject_still_resolves_through_the_facade(
@@ -250,6 +279,7 @@ def test_an_unambiguous_subject_still_resolves_through_the_facade(
         sqlite_session, custody_domain="host_attester", subject=subject
     )
 
-    assert result is not None
-    assert result.public_key_fingerprint == view.public_key_fingerprint
-    assert result.standing is HostAttesterStanding.VALID
+    assert result.refusal is None
+    assert result.binding is not None
+    assert result.binding.public_key_fingerprint == view.public_key_fingerprint
+    assert result.binding.standing is HostAttesterStanding.VALID

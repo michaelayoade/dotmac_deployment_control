@@ -39,21 +39,28 @@ read functions -- are called here.
 an AST scan of this module's source for the write-shaped registry calls and
 session-mutation methods.
 
-## Ambiguity and staleness are the registry's refusals, surfaced unchanged
+## Three distinct refusals, surfaced unchanged -- never collapsed
 
-`resolve_current_root` returns `None` both when a subject has no open root
-AND when it has more than one (`_derive_current_fingerprint`'s "ambiguity is
-a refusal, never a tie-break" rule, applied on the read path too -- see that
-function's own docstring). This module adds NO logic on top of that `None`:
-`resolve_attestation_binding` forwards it as `None` exactly as received,
-which is what "never resolve past it" means here -- there is no branch in
-this module that could turn an ambiguous or absent answer into a picked one.
-The same is true of a stale `attestation_current_roots` projection row naming
-a closed (revoked or superseded) fingerprint: `resolve_current_root` already
-refuses that BEFORE any reconciliation runs (checks the closures table
-directly rather than trusting the projection), and this module changes
-nothing about when or how that check happens -- it only copies the `None` or
-the resolved view through.
+Michael's ruling (2026-09-09, repairing an earlier version of the registry
+that answered absence, disagreement and drift with one undifferentiated
+`None`): `attestation_trust_registry.resolve_current_root` now returns a
+typed `AttestationRootResolution` naming exactly which of three things is
+true -- `ABSENT` (nothing enrolled), `REGISTRY_DISAGREEMENT` (more than one
+standing root; never a newest-wins tie-break), or `DRIFT` (the projection,
+or the enrolment's own stored key material, disagrees with the append-only
+truth). This module adds NO logic on top of that answer:
+`resolve_attestation_binding` forwards the SAME `AttestationRootRefusal`
+value it received, unchanged, inside its own `AttestationBindingResolution`
+-- which is what "surface the refusal, never resolve past it" means here.
+There is no branch in this module that reads any of the three refusals and
+decides to try harder, retry, or treat one as more permissive than another.
+
+`tests/architecture/test_attestation_binding_never_reconciles.py` proves
+this module never calls `reconcile_current_root`/`repair_current_root`
+(the drift REPAIR path is a separate, explicit write the registry
+documents and this module never reaches), and the same file's ambiguity
+plant is re-proven to assert the specific `REGISTRY_DISAGREEMENT` refusal,
+not merely "something falsy came back".
 
 ## `key_custody_pointer` cannot be reached through this module, by construction
 
@@ -67,7 +74,7 @@ this two ways: a `dataclasses.fields()` scan of `AttestationBindingV1` for
 the exact column name, and an AST/source-text scan of this module for the
 literal string `key_custody_pointer` anywhere in it.
 
-## Two known gaps, stated rather than worked around
+## Three known gaps, stated rather than worked around
 
 - **No public-key material for a host-attester `FingerprintRecord`.** Not
   relevant to THIS module -- `attestation_trust_registry.AttestationRootView`
@@ -82,6 +89,26 @@ literal string `key_custody_pointer` anywhere in it.
   `custody_domain` is passed through exactly as the registry stores it (an
   opaque string, per `AttestationEnrolment.custody_domain`'s own docstring),
   and this module performs no additional validation of its shape.
+- **"Canonical host and custody role from Control-owned authenticated
+  state" does not resolve to a real resolver today.** Measured, not
+  inferred: `custody_domain` and `subject` are plain caller-supplied
+  strings all the way down -- `resolve_attestation_binding`'s own
+  parameters, `attestation_trust_registry.resolve_current_root`'s
+  parameters, and every column they are compared against
+  (`AttestationEnrolment.custody_domain`/`.subject`) are opaque `String`
+  columns with no FK to an authenticated-session table, a Fleet host
+  registry, or any other Control-owned identity source. There is no
+  function anywhere in this package that takes an authenticated
+  request/session and DERIVES a `host_id`/`custody_domain` from it -- the
+  caller still names both. This module does not invent that resolver (the
+  same architecture-decision boundary the two gaps above already name); it
+  is reported here as the same seam, not a new one. What IS held, per the
+  "no request-selected roots" guard
+  (`tests/architecture/test_attestation_binding_no_caller_supplied_identity.py`):
+  a caller can name WHICH subject/domain to ask about, but cannot supply a
+  mapping standing in for the registry's own answer, and cannot select
+  AMONG several candidate roots for that subject -- the registry alone
+  derives the answer once the subject is named.
 
 ## Versioned wire contract, refusing an unsupported version rather than
 ## guessing
@@ -123,6 +150,14 @@ from typing import Any, Final
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import attestation_trust_registry
+
+# Reused, not reinvented -- the same pattern `HostAttesterStanding` already
+# follows: `attestation_trust_registry` states its FUNCTIONS are not this
+# package's stable surface (see that module's docstring), but its VOCABULARY
+# is meant to travel. Importing `AttestationRootRefusal` here and
+# re-exporting it is that reuse, not an exception to the "submodules are
+# unstable" rule.
+from dotmac_deployment_control.attestation_trust_registry import AttestationRootRefusal
 from dotmac_deployment_control.host_attester_enrolment import HostAttesterStanding
 from dotmac_deployment_control.ports import DeploymentControlError
 
@@ -131,7 +166,9 @@ __all__ = [
     "ATTESTATION_BINDING_VERSION",
     "AttestationBindingRefusalCode",
     "AttestationBindingRefusedError",
+    "AttestationBindingResolution",
     "AttestationBindingV1",
+    "AttestationRootRefusal",
     "resolve_attestation_binding",
     "resolve_fingerprint_standing",
 ]
@@ -292,32 +329,57 @@ class AttestationBindingV1:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AttestationBindingResolution:
+    """The typed answer `resolve_attestation_binding` returns. EXACTLY one
+    of `binding`/`refusal` is set -- enforced in `__post_init__`, mirroring
+    `attestation_trust_registry.AttestationRootResolution`'s own invariant
+    on the facade side of the boundary, so a caller cannot receive a value
+    that is silently both a resolved binding and a refusal, or neither."""
+
+    binding: AttestationBindingV1 | None
+    refusal: AttestationRootRefusal | None
+
+    def __post_init__(self) -> None:
+        if (self.binding is None) == (self.refusal is None):
+            raise ValueError(
+                "an AttestationBindingResolution carries exactly one of "
+                "binding/refusal, never both and never neither"
+            )
+
+
 def resolve_attestation_binding(
     db: Session, *, custody_domain: str, subject: str
-) -> AttestationBindingV1 | None:
+) -> AttestationBindingResolution:
     """The typed, versioned answer to "what is `subject`'s current trusted
     root in `custody_domain`, right now, per the durable registry".
 
     Delegates entirely to `attestation_trust_registry.resolve_current_root`
-    -- see that function's own docstring for the full refusal list (stale
-    projection naming a closed fingerprint, subject/custody-domain
-    substitution, ambiguity) this module inherits unchanged. Returns `None`
-    for every one of those cases exactly as the registry does; this function
-    adds no branch that could distinguish or resolve past any of them.
+    -- see that function's own docstring, and `AttestationRootRefusal`'s,
+    for the full three-way refusal (`ABSENT`/`REGISTRY_DISAGREEMENT`/
+    `DRIFT`) this module surfaces UNCHANGED. This function adds no branch
+    that could distinguish further, collapse, or resolve past any of the
+    three -- the `AttestationRootRefusal` value it received is the exact
+    one it returns.
     """
-    view = attestation_trust_registry.resolve_current_root(
+    resolution = attestation_trust_registry.resolve_current_root(
         db, custody_domain=custody_domain, subject=subject
     )
-    if view is None:
-        return None
-    return AttestationBindingV1(
-        custody_domain=view.custody_domain,
-        subject=view.subject,
-        public_key_fingerprint=view.public_key_fingerprint,
-        public_key_b64=view.public_key_b64,
-        algorithm=view.algorithm,
-        enrolled_at=view.enrolled_at,
-        standing=HostAttesterStanding(view.standing),
+    if resolution.refusal is not None:
+        return AttestationBindingResolution(binding=None, refusal=resolution.refusal)
+    view = resolution.root
+    assert view is not None  # AttestationRootResolution's own invariant
+    return AttestationBindingResolution(
+        binding=AttestationBindingV1(
+            custody_domain=view.custody_domain,
+            subject=view.subject,
+            public_key_fingerprint=view.public_key_fingerprint,
+            public_key_b64=view.public_key_b64,
+            algorithm=view.algorithm,
+            enrolled_at=view.enrolled_at,
+            standing=HostAttesterStanding(view.standing),
+        ),
+        refusal=None,
     )
 
 

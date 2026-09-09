@@ -35,7 +35,11 @@ from sqlalchemy.orm import sessionmaker
 
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
 from dotmac_deployment_control.attestation_binding import resolve_attestation_binding
-from dotmac_deployment_control.attestation_trust_registry import enrol_root, revoke_root
+from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRootRefusal,
+    enrol_root,
+    revoke_root,
+)
 from dotmac_deployment_control.digests import PublicKeyFingerprintV1
 from dotmac_deployment_control.models import AttestationCurrentRoot
 
@@ -176,12 +180,11 @@ def test_a_stale_projection_naming_a_revoked_fingerprint_never_resolves(
 
     with sessions() as db:
         assert db.get(AttestationCurrentRoot, ("host_attester", subject)) is not None
-        assert (
-            resolve_attestation_binding(
-                db, custody_domain="host_attester", subject=subject
-            )
-            is None
+        resolution = resolve_attestation_binding(
+            db, custody_domain="host_attester", subject=subject
         )
+        assert resolution.binding is None
+        assert resolution.refusal is AttestationRootRefusal.DRIFT
 
 
 def test_an_ambiguous_registry_never_resolves_through_the_facade(
@@ -239,15 +242,14 @@ def test_an_ambiguous_registry_never_resolves_through_the_facade(
             ).current_fingerprint
             == view.public_key_fingerprint
         )
-        assert (
-            resolve_attestation_binding(
-                db, custody_domain="host_attester", subject=subject
-            )
-            is None
+        resolution = resolve_attestation_binding(
+            db, custody_domain="host_attester", subject=subject
         )
+        assert resolution.binding is None
+        assert resolution.refusal is AttestationRootRefusal.REGISTRY_DISAGREEMENT
 
-    # Near miss: an unrelated, unambiguous subject still resolves normally
-    # through the identical facade function.
+    # Near miss #1: an unrelated, unambiguous subject still resolves
+    # normally through the identical facade function.
     other_subject = f"host-facade-unambiguous-{uuid.uuid4().hex[:8]}"
     with sessions() as db:
         other_view = enrol_root(
@@ -264,10 +266,22 @@ def test_an_ambiguous_registry_never_resolves_through_the_facade(
         resolved_other = resolve_attestation_binding(
             db, custody_domain="host_attester", subject=other_subject
         )
-        assert resolved_other is not None
+        assert resolved_other.refusal is None
+        assert resolved_other.binding is not None
         assert (
-            resolved_other.public_key_fingerprint == other_view.public_key_fingerprint
+            resolved_other.binding.public_key_fingerprint
+            == other_view.public_key_fingerprint
         )
+
+    # Near miss #2, THE PAIRED CONTROL: a genuinely absent subject -- never
+    # enrolled at all -- must return ABSENT, never REGISTRY_DISAGREEMENT.
+    never_enrolled = f"host-facade-never-enrolled-{uuid.uuid4().hex[:8]}"
+    with sessions() as db:
+        absent_resolution = resolve_attestation_binding(
+            db, custody_domain="host_attester", subject=never_enrolled
+        )
+        assert absent_resolution.binding is None
+        assert absent_resolution.refusal is AttestationRootRefusal.ABSENT
 
 
 def test_the_facade_binding_carries_no_orm_or_session_state_on_postgres(
@@ -290,10 +304,12 @@ def test_the_facade_binding_carries_no_orm_or_session_state_on_postgres(
         )
         db.commit()
     db = sessions()
-    binding = resolve_attestation_binding(
+    resolution = resolve_attestation_binding(
         db, custody_domain="host_attester", subject=subject
     )
     db.close()
+    assert resolution.refusal is None
+    binding = resolution.binding
     assert binding is not None
     assert isinstance(binding.enrolled_at, datetime)
     assert not hasattr(binding, "_sa_instance_state")
