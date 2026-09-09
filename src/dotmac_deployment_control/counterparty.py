@@ -43,6 +43,7 @@ without an oracle it does not have here.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Final
 
 from dotmac_deployment_control.operations import (
@@ -85,7 +86,7 @@ EXECUTOR_OPERATIONS_SOURCE: Final = (
 EXECUTOR_OPERATIONS: Final[frozenset[str]] = frozenset({"deploy", "rollback"})
 
 
-def executor_operations_drift(observed: object) -> frozenset[str]:
+def executor_operations_drift(observed: Iterable[str]) -> frozenset[str]:
     """Symmetric difference between an observed vocabulary and the pin.
 
     PURE, mirroring `rehearsal_grant.foundation_step_vocabulary_drift`: this

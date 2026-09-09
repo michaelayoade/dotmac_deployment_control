@@ -307,8 +307,7 @@ def extract_operations_members(source: str) -> frozenset[str]:
     for node in tree.body:
         if isinstance(node, ast.Assign):
             if any(
-                isinstance(target, ast.Name)
-                and target.id == OPERATIONS_ASSIGNMENT_NAME
+                isinstance(target, ast.Name) and target.id == OPERATIONS_ASSIGNMENT_NAME
                 for target in node.targets
             ):
                 assignment_value = node.value

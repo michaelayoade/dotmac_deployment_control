@@ -1211,7 +1211,7 @@ def derive_composed_lineage_head_from_versions_dir(versions_dir: Path) -> str:
                     down_revision = node.value.value
         if revision is None or not found_down_revision:
             raise CanaryFailure(
-                f"{path.name} does not declare a bare `revision = \"...\"` and "
+                f'{path.name} does not declare a bare `revision = "..."` and '
                 '`down_revision = "..." | None` this narrow AST reader '
                 "understands -- either it is not a migration module or its "
                 "shape changed"
@@ -1726,7 +1726,7 @@ def _published_catalogue(expect_version: str) -> Any:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code=CATALOGUE_MODULE_CODE,
             ),
-            revision=CATALOGUE_LINEAGE_HEAD,
+            revision=composed_lineage_head(),
         ),
     )
 
@@ -1762,7 +1762,9 @@ def canary_database_catalogue_as_published(expect_version: str) -> str:
 
     snapshot = _published_catalogue(expect_version)
     document = json.loads(snapshot.to_json_bytes())
-    differences = catalogue_differences(document, expect_version)
+    differences = catalogue_differences(
+        document, expect_version, expected_lineage_head=composed_lineage_head()
+    )
     if differences:
         raise CanaryFailure(
             f"the installed artifact publishes a database catalogue that is not "
@@ -1842,7 +1844,11 @@ def canary_catalogue_digest_binds(expect_version: str) -> str:
     # The digest covers the structure this file declares — stated here as well
     # as in the canary above, because a digest over the wrong document is a
     # perfectly valid digest.
-    differences = catalogue_differences(json.loads(payload), expect_version)
+    differences = catalogue_differences(
+        json.loads(payload),
+        expect_version,
+        expected_lineage_head=composed_lineage_head(),
+    )
     if differences:
         raise CanaryFailure(
             f"the digested document is not the published contract: {differences}"

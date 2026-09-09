@@ -96,6 +96,7 @@ from uuid import uuid4
 
 from dotmac_kernel.transactions import conflict_savepoint
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -684,6 +685,12 @@ def rotate_root(
         )
         .values(current_fingerprint=fingerprint)
     )
+    # A DML UPDATE always returns a `CursorResult` at runtime; asserted rather
+    # than merely type-narrowed with a comment, because `.rowcount` below is
+    # the actual race arbiter and a value silently coerced past a wrong
+    # assumption here is exactly the kind of unchecked signal this module
+    # refuses everywhere else.
+    assert isinstance(result, CursorResult)
     if result.rowcount != 1:  # pragma: no cover - defensive; step 2 should catch first
         raise _refused(
             AttestationRefusalCode.LOST_ROTATION_RACE,
