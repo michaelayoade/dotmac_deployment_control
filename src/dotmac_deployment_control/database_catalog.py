@@ -8,6 +8,9 @@ whose final type differs from the root revision, and
 the Foundation's execution plan and to a declared operation. ``dc_0007``
 appends the exact signed dispatch to the append-only attempt that it names.
 ``dc_0010`` adds immutable settlement evidence beside that issuance.
+``dc_0011`` adds the durable attestation trust registry -- append-only
+enrolments, an append-only fingerprint-closure ledger keyed on the fingerprint
+itself, and the one deliberately mutable current-root pointer table.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -55,6 +58,7 @@ _VARCHAR_120 = _base_type("varchar", "character varying(120)")
 _VARCHAR_128 = _base_type("varchar", "character varying(128)")
 _VARCHAR_200 = _base_type("varchar", "character varying(200)")
 _VARCHAR_500 = _base_type("varchar", "character varying(500)")
+_VARCHAR_512 = _base_type("varchar", "character varying(512)")
 _INTEGER = _base_type("int4", "integer")
 _BOOLEAN = _base_type("bool", "boolean")
 _TIMESTAMPTZ = _base_type("timestamptz", "timestamp with time zone")
@@ -96,10 +100,63 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0010_attempt_settlements",
+    lineage_head="dc_0011_attestation_registry",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
+        _table(
+            "attestation_current_roots",
+            (
+                _column("custody_domain", 1, _VARCHAR_40, nullable=False),
+                _column("subject", 2, _VARCHAR_200, nullable=False),
+                _column("current_fingerprint", 3, _VARCHAR_128, nullable=False),
+                _column(
+                    "created_at", 4, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+                _column(
+                    "updated_at", 5, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+            ),
+        ),
+        _table(
+            "attestation_enrolments",
+            (
+                _column("id", 1, _UUID, nullable=False),
+                _column("custody_domain", 2, _VARCHAR_40, nullable=False),
+                _column("subject", 3, _VARCHAR_200, nullable=False),
+                _column("public_key_b64", 4, _VARCHAR_200, nullable=False),
+                _column("public_key_fingerprint", 5, _VARCHAR_128, nullable=False),
+                _column("algorithm", 6, _VARCHAR_60, nullable=False),
+                _column("key_custody_pointer", 7, _VARCHAR_512, nullable=False),
+                _column("supersedes_fingerprint", 8, _VARCHAR_128, nullable=True),
+                _column("enrolled_at", 9, _TIMESTAMPTZ, nullable=False),
+                _column("enrolment_authority", 10, _VARCHAR_60, nullable=False),
+                _column("enrolment_envelope", 11, _JSONB, nullable=True),
+                _column(
+                    "created_at", 12, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+                _column(
+                    "updated_at", 13, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+            ),
+        ),
+        _table(
+            "attestation_fingerprint_closures",
+            (
+                _column("fingerprint", 1, _VARCHAR_128, nullable=False),
+                _column("closure_kind", 2, _VARCHAR_20, nullable=False),
+                _column("closed_at", 3, _TIMESTAMPTZ, nullable=False),
+                _column("closure_authority", 4, _VARCHAR_60, nullable=False),
+                _column("closure_reason", 5, _VARCHAR_500, nullable=True),
+                _column("superseded_by_fingerprint", 6, _VARCHAR_128, nullable=True),
+                _column(
+                    "created_at", 7, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+                _column(
+                    "updated_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"
+                ),
+            ),
+        ),
         _table(
             "deployment_plans",
             (

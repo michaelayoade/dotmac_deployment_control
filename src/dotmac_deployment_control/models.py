@@ -103,6 +103,9 @@ _ATTEMPT_SETTLEMENTS = "rollout_attempt_settlements"
 _RECOVERY_GRANTS = "recovery_grants"
 _OBS_ATTEMPTS = "observation_attempts"
 _OBS_RECEIPTS = "observation_receipts"
+_ATTESTATION_ENROLMENTS = "attestation_enrolments"
+_ATTESTATION_CLOSURES = "attestation_fingerprint_closures"
+_ATTESTATION_CURRENT_ROOTS = "attestation_current_roots"
 
 
 class TargetStatus(StrEnum):
@@ -266,6 +269,181 @@ class ObservationDisposition(StrEnum):
     EXECUTION_FAILED = "execution_failed"
     STALE_OBSERVATION = "stale_observation"
     EXECUTION_COORDINATE_CONFLICT = "execution_coordinate_conflict"
+
+
+class AttestationCustodyDomain(StrEnum):
+    """The two custody roles a trust-registry entry may hold.
+
+    Deliberately closed to exactly these two members and CHECK-constrained on
+    the table (unlike `status`/`environment`/`disposition` elsewhere in this
+    module) -- see the migration docstring for why this vocabulary is
+    architectural rather than an evolving lifecycle: the custody separation is
+    the whole reason Foundation needs two distinct signer identities under
+    separate OpenBao principals (`host_attester_enrolment`'s module
+    docstring), and the global fingerprint-uniqueness constraint below only
+    prevents cross-role reuse if the roles it counts over are a closed set.
+    """
+
+    CANDIDATE_RELEASE_SIGNER = "candidate_release_signer"
+    HOST_ATTESTER = "host_attester"
+
+
+class AttestationEnrolment(Base, TimestampMixin):
+    """One durable, immutable record of a public key entering the trust
+    registry -- either as a Foundation release-signer root or a per-host
+    attester incarnation (ADR-0007's two custody domains).
+
+    ## Append-only, exactly like `rollout_attempts`
+
+    Never UPDATEd or DELETEd, by any role including `app_admin` -- enforced by
+    the same `refuse_evidence_rewrite()` trigger `dc_0001` installed, reused
+    rather than re-implemented (see the migration). Rotation and revocation
+    are recorded as NEW rows elsewhere (`AttestationFingerprintClosure`), never
+    as a status flip on this one.
+
+    ## The one global invariant this table exists to hold
+
+    `uq_attestation_enrolments_fingerprint` is UNIQUE across the WHOLE table,
+    not scoped by `custody_domain`. That is what makes cross-role reuse a
+    constraint violation rather than an application bug waiting to happen: the
+    same key cannot become both a release-signer root and a host attester,
+    because it cannot appear in this table twice regardless of which role the
+    second attempt claims.
+
+    ## `supersedes_fingerprint`, not a second `incarnation_id`
+
+    Mirrors `host_attester_enrolment.HostAttesterEnrolmentStatementV1` exactly:
+    the incarnation IS the fingerprint, so a rotation names the fingerprint it
+    replaces rather than carrying a second counter that could disagree with
+    it. NULL means this is either a fresh initial enrolment or a
+    post-revocation recovery attempt (Michael's ruling: recovery is a NEW
+    signed attempt, never a resurrection of the old marker) -- both look
+    identical at this layer, and `AttestationCurrentRoot`'s own compare-and-
+    swap is what decides which one this actually is.
+
+    `uq_attestation_enrolments_supersedes` (UNIQUE, partial, WHERE NOT NULL)
+    is the database-level arbiter for two concurrent rotations claiming to
+    retire the SAME prior fingerprint: only one of those inserts can hold that
+    slot.
+    """
+
+    __tablename__ = _ATTESTATION_ENROLMENTS
+    __table_args__ = (
+        UniqueConstraint(
+            "public_key_fingerprint", name="uq_attestation_enrolments_fingerprint"
+        ),
+        CheckConstraint(
+            "supersedes_fingerprint IS NULL OR "
+            "supersedes_fingerprint <> public_key_fingerprint",
+            name="ck_attestation_enrolments_supersedes_not_self",
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    id: Mapped[UUID] = uuid_pk()
+    #: `AttestationCustodyDomain`. CHECK-constrained in the migration -- see
+    #: that class's docstring for why this vocabulary is exempt from ADR-0008.
+    custody_domain: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    #: The stable subject: either the Foundation release-signer identity or a
+    #: Fleet `host_id`. Opaque here -- this module does not validate either
+    #: shape; a caller wanting `host_attester_enrolment.require_host_id`'s
+    #: grammar applies it before calling the service.
+    subject: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    #: Unpadded base64url, exactly as `PublicKeyFingerprintV1.from_public_key_b64`
+    #: expects it.
+    public_key_b64: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: `sha256:<hex>` over the DECODED raw key bytes, derived and verified by
+    #: the service -- never trusted from a caller-supplied field alone.
+    public_key_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: `bao://...` -- WHERE the private half lives, never the key itself.
+    key_custody_pointer: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: NULL = initial enrolment or post-revocation recovery. Non-NULL = a
+    #: rotation naming the exact fingerprint it retires.
+    supersedes_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    enrolled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    #: Under which authority this enrolment was asserted, mirroring
+    #: `TargetCredential.enrollment_authority`.
+    enrolment_authority: Mapped[str] = mapped_column(String(60), nullable=False)
+    #: The exact signed statement, verbatim, when one exists. NULL is reserved
+    #: for a service-issued enrolment that has not yet been given an envelope
+    #: contract of its own -- the columns above are the authority in that case,
+    #: same as this module's `record_observation` before an authorization
+    #: envelope existed.
+    enrolment_envelope: Mapped[dict[str, Any] | None] = mapped_column(_JSON_DOC)
+
+
+class AttestationFingerprintClosure(Base, TimestampMixin):
+    """One append-only row per PERMANENTLY closed fingerprint.
+
+    `fingerprint` is the PRIMARY KEY -- not merely unique -- which is the
+    whole enforcement mechanism for Michael's ordering ruling: whichever of a
+    concurrent revocation and a concurrent supersession commits first for the
+    SAME fingerprint wins that primary-key slot, and the loser's INSERT fails
+    with an ordinary integrity error the caller reads back rather than
+    retries into. There is no UPDATE path here at all -- a fingerprint is
+    closed exactly once, by exactly one row, forever. The `dc_0001`
+    `refuse_evidence_rewrite()` trigger is attached anyway, as a second,
+    independent barrier against a future caller trying to edit a closure
+    (defence in depth, not the primary mechanism -- the primary key already
+    makes a second closure of the same fingerprint impossible to INSERT).
+    """
+
+    __tablename__ = _ATTESTATION_CLOSURES
+    __table_args__ = (
+        CheckConstraint(
+            "(closure_kind = 'superseded') = (superseded_by_fingerprint IS NOT NULL)",
+            name="ck_attestation_closures_supersession_needs_successor",
+        ),
+        CheckConstraint(
+            "superseded_by_fingerprint IS NULL OR "
+            "superseded_by_fingerprint <> fingerprint",
+            name="ck_attestation_closures_successor_not_self",
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    #: PRIMARY KEY. See the class docstring -- this IS the race arbiter.
+    fingerprint: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: `host_attester_enrolment.FingerprintStatus.REVOKED` or `.SUPERSEDED`'s
+    #: `.value` -- reused directly rather than a second enum with the same two
+    #: strings, per Michael's "do not invent a parallel set of names" ruling.
+    closure_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closure_authority: Mapped[str] = mapped_column(String(60), nullable=False)
+    closure_reason: Mapped[str | None] = mapped_column(String(500))
+    #: Set only when `closure_kind = 'superseded'` -- the NEW fingerprint that
+    #: replaced this one. NULL for a revocation: nothing replaces a revoked
+    #: key, by definition.
+    superseded_by_fingerprint: Mapped[str | None] = mapped_column(String(128))
+
+
+class AttestationCurrentRoot(Base, TimestampMixin):
+    """The ONE deliberately-mutable row per `(custody_domain, subject)`.
+
+    Everything else this module adds is immutable evidence; this is the
+    living pointer to which enrolled fingerprint is CURRENT -- the durable
+    replacement for the caller-supplied `active_by_host` mapping
+    `host_attester_enrolment` names as the gap this table closes. Rotation
+    updates it with a compare-and-swap (`UPDATE ... WHERE current_fingerprint
+    = :old`); initial enrolment inserts it, and the primary key
+    `(custody_domain, subject)` is what makes two concurrent initial
+    enrolments for the same subject a database conflict rather than a
+    silent double-write. Revocation of the current fingerprint deletes the
+    row (there is no valid current root until a new signed attempt recovers
+    it) -- a delete, not an edit of a status column, and it is conditioned on
+    still naming the fingerprint being revoked, so it can never erase a
+    pointer some other, later rotation already moved on.
+    """
+
+    __tablename__ = _ATTESTATION_CURRENT_ROOTS
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    custody_domain: Mapped[str] = mapped_column(String(40), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(200), primary_key=True)
+    current_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
 class DeploymentTarget(Base, TimestampMixin):
@@ -912,6 +1090,10 @@ __all__ = [
     "SCHEMA",
     "TERMINAL_ROLLOUT_STATUSES",
     "AttemptOutcome",
+    "AttestationCurrentRoot",
+    "AttestationCustodyDomain",
+    "AttestationEnrolment",
+    "AttestationFingerprintClosure",
     "CredentialStatus",
     "DeploymentPlan",
     "DeploymentTarget",
