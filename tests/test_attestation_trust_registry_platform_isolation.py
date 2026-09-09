@@ -517,6 +517,70 @@ def _fingerprint_of(seed: str) -> str:
     return PublicKeyFingerprintV1.from_public_key_b64(_public_key_b64(seed)).canonical
 
 
+# ── The custody-pointer shape check is wired in, not merely available ──────
+
+
+@pytest.mark.parametrize("call", ["enrol_root", "rotate_root"])
+def test_a_malformed_custody_pointer_is_refused_before_anything_is_written(
+    sessions, call: str
+) -> None:
+    """`host_attester_enrolment.require_custody_pointer` already implements
+    the `bao://` shape check; this proves it is actually CALLED from the
+    write path rather than merely existing beside it. A plain secret-shaped
+    string (no `bao://` scheme) must be refused, and refused before any row
+    lands -- checked by confirming the fingerprint was never enrolled."""
+    subject = f"host-bad-pointer-{call}-{uuid.uuid4().hex[:8]}"
+    bad_pointer = "not-a-bao-pointer"
+
+    if call == "enrol_root":
+        attempted_seed = subject
+        with sessions() as db, pytest.raises(Exception, match="bao://"):
+            enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(attempted_seed),
+                algorithm="ed25519",
+                key_custody_pointer=bad_pointer,
+                enrolment_authority="control_service",
+            )
+            db.commit()
+    else:
+        attempted_seed = f"{subject}-new"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-old"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-old",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db, pytest.raises(Exception, match="bao://"):
+            rotate_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                supersedes_fingerprint=view.public_key_fingerprint,
+                public_key_b64=_public_key_b64(attempted_seed),
+                algorithm="ed25519",
+                key_custody_pointer=bad_pointer,
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+    with sessions() as db:
+        attempted_fp = _fingerprint_of(attempted_seed)
+        assert (
+            db.query(AttestationEnrolment)
+            .filter(AttestationEnrolment.public_key_fingerprint == attempted_fp)
+            .count()
+            == 0
+        )
+
+
 # ── Proof 1: concurrent enrolment ───────────────────────────────────────────
 
 

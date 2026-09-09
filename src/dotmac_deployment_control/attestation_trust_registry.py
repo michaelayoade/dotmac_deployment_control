@@ -103,6 +103,7 @@ from dotmac_deployment_control.digests import PublicKeyFingerprintV1
 from dotmac_deployment_control.host_attester_enrolment import (
     FingerprintStatus,
     HostAttesterStanding,
+    require_custody_pointer,
 )
 from dotmac_deployment_control.models import (
     AttestationCurrentRoot,
@@ -424,6 +425,14 @@ def enrol_root(
     """
     fingerprint = PublicKeyFingerprintV1.from_public_key_b64(public_key_b64).canonical
     when = enrolled_at or datetime.now(UTC)
+    # Reused, not reimplemented: `require_custody_pointer` already carries the
+    # `bao://` shape check (`host_attester_enrolment.py`). A pointer that
+    # fails this is refused before anything is written -- the column type
+    # (`str`) could not otherwise distinguish a real pointer from an
+    # arbitrary string.
+    key_custody_pointer = require_custody_pointer(
+        key_custody_pointer, where="enrol_root"
+    )
 
     try:
         with conflict_savepoint(db):
@@ -495,6 +504,9 @@ def rotate_root(
             "a rotation must name a NEW fingerprint",
         )
     when = enrolled_at or datetime.now(UTC)
+    key_custody_pointer = require_custody_pointer(
+        key_custody_pointer, where="rotate_root"
+    )
 
     current = _current_fingerprint(db, custody_domain=custody_domain, subject=subject)
     if current is None:
