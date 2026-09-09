@@ -1406,6 +1406,262 @@ class TestCurrentRootDriftDetectionAndRepair:
                 fingerprint_standing(db, fingerprint=fp) is HostAttesterStanding.REVOKED
             )
 
+    def test_a_projection_naming_another_hosts_fingerprint_never_returns_a_root(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """Pre-reconciliation negative control, same pattern as the
+        revoked-fingerprint test above: a projection row corrupted (raw SQL,
+        a restored backup) to point at a fingerprint that is genuinely
+        enrolled, current, and unrevoked -- but for a DIFFERENT subject --
+        must still refuse. `resolve_current_root` builds its returned view
+        from the RESOLVED enrolment's own fields; without checking that
+        enrolment's `subject` against the one requested, this corruption
+        would silently hand the caller another host's key. No
+        `reconcile_current_root`/`repair_current_root` call happens anywhere
+        in this test."""
+        subject_a = f"host-cross-a-{uuid.uuid4().hex[:8]}"
+        subject_b = f"host-cross-b-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject_a,
+                public_key_b64=_public_key_b64(f"{subject_a}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject_a}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            view_b = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject_b,
+                public_key_b64=_public_key_b64(f"{subject_b}-b"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject_b}-b",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        # Corrupt subject_a's projection row to point at subject_b's
+        # perfectly valid, current, unrevoked fingerprint.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_current_roots "
+                        "SET current_fingerprint = :fp "
+                        "WHERE custody_domain = 'host_attester' AND subject = :subject"
+                    ),
+                    {"fp": view_b.public_key_fingerprint, "subject": subject_a},
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            assert (
+                db.get(
+                    AttestationCurrentRoot, ("host_attester", subject_a)
+                ).current_fingerprint
+                == view_b.public_key_fingerprint
+            )
+            assert (
+                resolve_current_root(
+                    db, custody_domain="host_attester", subject=subject_a
+                )
+                is None
+            )
+            # Near miss: subject_b's OWN, uncorrupted lookup still resolves
+            # normally -- the refusal above is about the substitution, not
+            # about subject_b's fingerprint being unresolvable in general.
+            resolved_b = resolve_current_root(
+                db, custody_domain="host_attester", subject=subject_b
+            )
+            assert resolved_b is not None
+            assert resolved_b.public_key_fingerprint == view_b.public_key_fingerprint
+
+    def test_a_projection_naming_another_domains_fingerprint_never_returns_a_root(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """The domain-substitution mirror of the host-substitution test
+        above: the SAME subject string enrolled independently in both
+        custody domains, then one domain's projection row corrupted to point
+        at the OTHER domain's fingerprint. Refused before any
+        reconciliation."""
+        shared_subject = f"shared-subject-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=shared_subject,
+                public_key_b64=_public_key_b64(f"{shared_subject}-host"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{shared_subject}-host",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            release_view = enrol_root(
+                db,
+                custody_domain="candidate_release_signer",
+                subject=shared_subject,
+                public_key_b64=_public_key_b64(f"{shared_subject}-release"),
+                algorithm="ed25519",
+                key_custody_pointer=(
+                    f"bao://secret/dotmac/attest/{shared_subject}-release"
+                ),
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        # Corrupt the host_attester projection row to point at the
+        # candidate_release_signer fingerprint for the SAME subject string.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_current_roots "
+                        "SET current_fingerprint = :fp "
+                        "WHERE custody_domain = 'host_attester' AND subject = :subject"
+                    ),
+                    {
+                        "fp": release_view.public_key_fingerprint,
+                        "subject": shared_subject,
+                    },
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            assert (
+                db.get(
+                    AttestationCurrentRoot, ("host_attester", shared_subject)
+                ).current_fingerprint
+                == release_view.public_key_fingerprint
+            )
+            assert (
+                resolve_current_root(
+                    db, custody_domain="host_attester", subject=shared_subject
+                )
+                is None
+            )
+            # Near miss: the candidate_release_signer domain's own,
+            # uncorrupted lookup for the SAME subject string still resolves
+            # -- the refusal above is about the domain substitution, not
+            # about the subject string being ambiguous by itself.
+            resolved_release = resolve_current_root(
+                db,
+                custody_domain="candidate_release_signer",
+                subject=shared_subject,
+            )
+            assert resolved_release is not None
+            assert (
+                resolved_release.public_key_fingerprint
+                == release_view.public_key_fingerprint
+            )
+
+    def test_a_projection_backed_by_an_ambiguous_registry_never_returns_a_root(
+        self, migrated_scratch, sessions
+    ) -> None:
+        """The append-only truth can hold more than one OPEN enrolment for a
+        single `(custody_domain, subject)` even though the projection's
+        primary key can only ever name one -- a raw-SQL insert of a second,
+        never-closed enrolment is exactly the anomaly
+        `_derive_current_fingerprint`'s own docstring names. Trusting the
+        projection's single pointer in that state would silently convert a
+        registry inconsistency into a confident answer. Refused at the
+        moment of the READ; no `reconcile_current_root`/`repair_current_root`
+        call happens anywhere in this test."""
+        subject = f"host-ambiguous-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=subject,
+                public_key_b64=_public_key_b64(f"{subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+
+        # Insert a SECOND, never-closed enrolment for the same subject/domain
+        # directly by raw SQL -- the projection still names the first
+        # (correct, current) fingerprint untouched.
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        other_seed = f"{subject}-ambiguous-second"
+        other_fp = _fingerprint_of(other_seed)
+        try:
+            with eng.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_enrolments ("
+                        " id, custody_domain, subject, public_key_b64,"
+                        " public_key_fingerprint, algorithm,"
+                        " key_custody_pointer, enrolled_at, enrolment_authority"
+                        ") VALUES (:id, 'host_attester', :subject, :pub, :fp,"
+                        " 'ed25519', 'bao://secret/dotmac/attest/ambiguous', now(),"
+                        " 'manual_repair_script')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "subject": subject,
+                        "pub": _public_key_b64(other_seed),
+                        "fp": other_fp,
+                    },
+                )
+        finally:
+            eng.dispose()
+
+        with sessions() as db:
+            # The projection is untouched -- still points at the original,
+            # legitimately-enrolled fingerprint.
+            assert (
+                db.get(
+                    AttestationCurrentRoot, ("host_attester", subject)
+                ).current_fingerprint
+                == view.public_key_fingerprint
+            )
+            assert (
+                resolve_current_root(
+                    db, custody_domain="host_attester", subject=subject
+                )
+                is None
+            )
+
+        # Near miss: an entirely unrelated subject, with exactly one open
+        # enrolment, still resolves normally under the identical code path --
+        # the refusal above is about the ambiguity, not about
+        # `resolve_current_root` having become universally unable to
+        # resolve.
+        other_subject = f"host-unambiguous-{uuid.uuid4().hex[:8]}"
+        with sessions() as db:
+            other_view = enrol_root(
+                db,
+                custody_domain="host_attester",
+                subject=other_subject,
+                public_key_b64=_public_key_b64(f"{other_subject}-a"),
+                algorithm="ed25519",
+                key_custody_pointer=f"bao://secret/dotmac/attest/{other_subject}-a",
+                enrolment_authority="control_service",
+            )
+            db.commit()
+        with sessions() as db:
+            resolved_other = resolve_current_root(
+                db, custody_domain="host_attester", subject=other_subject
+            )
+            assert resolved_other is not None
+            assert (
+                resolved_other.public_key_fingerprint
+                == other_view.public_key_fingerprint
+            )
+
     def test_repair_deletes_the_projection_when_there_is_no_open_enrolment(
         self, sessions
     ) -> None:
