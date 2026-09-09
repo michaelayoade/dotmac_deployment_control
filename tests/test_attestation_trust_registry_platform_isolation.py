@@ -243,6 +243,74 @@ class TestTheLineageBuildsTheRegistry:
         finally:
             eng.dispose()
 
+    def test_the_current_roots_primary_key_is_the_composite_domain_and_subject(
+        self, migrated_scratch
+    ) -> None:
+        """PK `(custody_domain, subject)` is what makes two concurrent INITIAL
+        enrolments for the same subject a database conflict -- see
+        `TestConcurrentEnrolment` for the behavioural half of this proof."""
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                columns = (
+                    conn.execute(
+                        text(
+                            "SELECT a.attname FROM pg_index i "
+                            "JOIN pg_attribute a ON a.attrelid = i.indrelid "
+                            "AND a.attnum = ANY(i.indkey) "
+                            "WHERE i.indrelid = CAST(:t AS regclass) "
+                            "AND i.indisprimary "
+                            "ORDER BY array_position(i.indkey, a.attnum)"
+                        ),
+                        {"t": f"{SCHEMA}.attestation_current_roots"},
+                    )
+                    .scalars()
+                    .all()
+                )
+            assert columns == ["custody_domain", "subject"]
+        finally:
+            eng.dispose()
+
+    @pytest.mark.parametrize(
+        ("constraint_name", "table"),
+        [
+            ("fk_attestation_closures_fingerprint", "attestation_fingerprint_closures"),
+            (
+                "fk_attestation_closures_superseded_by",
+                "attestation_fingerprint_closures",
+            ),
+            (
+                "fk_attestation_current_roots_fingerprint",
+                "attestation_current_roots",
+            ),
+        ],
+    )
+    def test_every_declared_foreign_key_exists(
+        self, migrated_scratch, constraint_name: str, table: str
+    ) -> None:
+        """Every FK the migration declares, present on the table it names --
+        not merely that SOME foreign key exists, but the exact named one, so
+        a migration that dropped and silently replaced it with a
+        differently-scoped constraint would still be caught."""
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn:
+                found = conn.execute(
+                    text(
+                        "SELECT conname FROM pg_constraint c "
+                        "JOIN pg_class t ON t.oid = c.conrelid "
+                        "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                        "WHERE n.nspname = :s AND t.relname = :table "
+                        "AND conname = :name AND contype = 'f'"
+                    ),
+                    {"s": SCHEMA, "table": table, "name": constraint_name},
+                ).scalar()
+            assert found == constraint_name
+        finally:
+            eng.dispose()
+
     def test_no_table_has_row_level_security(self, migrated_scratch) -> None:
         admin_url, _, _ = migrated_scratch
         eng = create_engine(admin_url)
@@ -384,6 +452,39 @@ class TestAppendOnlyEnforcement:
                         ),
                         {"fp": fp},
                     )
+        finally:
+            eng.dispose()
+
+    @pytest.mark.parametrize(
+        "table", ["attestation_enrolments", "attestation_fingerprint_closures"]
+    )
+    def test_truncate_is_refused_on_both_evidence_tables(
+        self, migrated_scratch, table: str
+    ) -> None:
+        """The TRUNCATE trigger, behaviourally -- matching `dc_0010`'s own
+        `TRUNCATE mod_deploy.rollout_attempt_settlements` proof. A per-row
+        `BEFORE UPDATE OR DELETE` trigger alone would say nothing about
+        TRUNCATE, which is a per-statement operation an UPDATE/DELETE trigger
+        never fires for."""
+        admin_url, _, _ = migrated_scratch
+        eng = create_engine(admin_url)
+        try:
+            with eng.connect() as conn, conn.begin():
+                fp = self._seed_enrolment(conn, seed=f"truncate-{table}")
+                if table == "attestation_fingerprint_closures":
+                    conn.execute(
+                        text(
+                            "INSERT INTO mod_deploy.attestation_fingerprint_closures "
+                            "(fingerprint, closure_kind, closed_at, closure_authority) "
+                            "VALUES (:fp, 'revoked', now(), 'control_service')"
+                        ),
+                        {"fp": fp},
+                    )
+            with (
+                eng.begin() as conn,
+                pytest.raises(DBAPIError, match="append-only"),
+            ):
+                conn.execute(text(f"TRUNCATE {SCHEMA}.{table}"))
         finally:
             eng.dispose()
 
