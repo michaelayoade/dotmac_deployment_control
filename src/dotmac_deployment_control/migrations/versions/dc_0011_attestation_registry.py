@@ -258,9 +258,14 @@ def upgrade() -> None:
 
     _grant("SELECT, INSERT", "attestation_enrolments", "platform_api")
     _grant("SELECT, INSERT", "attestation_fingerprint_closures", "platform_api")
-    _grant(
-        "SELECT, INSERT, UPDATE, DELETE", "attestation_current_roots", "platform_api"
-    )
+    # Split across two calls rather than one `"SELECT, INSERT, UPDATE,
+    # DELETE"` grant that only fits on one line by wrapping the argument list
+    # -- `tests/architecture/test_deployment_control_module.py`'s access-
+    # surface checks grep this file's SOURCE TEXT with a single-line regex
+    # (`_grant\("[A-Z, ]*...", "{table}", "{role}"\)`), the same convention
+    # every other migration's `_grant` call already follows.
+    _grant("SELECT, INSERT", "attestation_current_roots", "platform_api")
+    _grant("UPDATE, DELETE", "attestation_current_roots", "platform_api")
 
     _grant("SELECT, INSERT", "attestation_enrolments", "app_admin")
     _grant("SELECT, INSERT", "attestation_fingerprint_closures", "app_admin")

@@ -574,9 +574,11 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 143 columns across nine tables; `dc_0005` is 105.
-    `dc_0008` drops `recovery_grants` entirely on the way down, so the
-    difference is the whole table rather than a column count drifting.
+    The head extent is 169 columns across twelve tables; `dc_0005` is 105.
+    `dc_0008` drops `recovery_grants` entirely on the way down, and
+    `dc_0011` adds the three attestation-trust-registry tables on the way
+    up, so the difference is whole tables rather than a column count
+    drifting.
     """
     from alembic import command
     from alembic.config import Config
@@ -608,7 +610,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 143
+                    == 169
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -658,7 +660,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 143
+                    == 169
                 )
         finally:
             admin.dispose()

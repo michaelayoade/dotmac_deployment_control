@@ -179,11 +179,21 @@ class TestQueryConstructionStaysInThisModule:
     def test_query_construction_lives_only_in_the_service_layer(self) -> None:
         import pathlib
 
+        # `attestation_trust_registry.py` is the declared exception, not an
+        # oversight: its own module docstring states it is the ONE writer and
+        # ONE reader of `attestation_enrolments`/`attestation_fingerprint_
+        # closures`/`attestation_current_roots` -- tables `service.py` never
+        # touches and Platform CP's read contract above never exposes. It is
+        # its own bounded, self-contained data-access module, not a stray
+        # `select()` reached for by a router or web layer.
+        permitted_query_builders = {"service.py", "attestation_trust_registry.py"}
+
         root = pathlib.Path(service.__file__).parent
         offenders = [
             path.name
             for path in root.glob("*.py")
-            if path.name != "service.py" and "select(" in path.read_text()
+            if path.name not in permitted_query_builders
+            and "select(" in path.read_text()
         ]
         assert (
             not offenders

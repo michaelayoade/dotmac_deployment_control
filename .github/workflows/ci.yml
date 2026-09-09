@@ -493,9 +493,10 @@ jobs:
   # same class of thing for the dc_0011 attestation trust registry.
   #
   # This job runs `scripts/run_platform_isolation_canaries.py` rather than
-  # naming either file directly: that runner DISCOVERS every
-  # `tests/test_*_platform_isolation.py` file (so a third canary is picked up
-  # automatically instead of requiring this workflow to be edited again), and
+  # naming either file directly: that runner DISCOVERS every file under
+  # `tests/` matching `test_*_platform_isolation.py` (so a third canary is
+  # picked up automatically instead of requiring this workflow to be edited
+  # again), and
   # fails outright if discovery finds nothing or the database coordinate is
   # absent, rather than reporting success having run nothing. This is the
   # repair for the single-filename version of this step orphaning the second

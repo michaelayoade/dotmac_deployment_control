@@ -1157,6 +1157,7 @@ _V120 = ("varchar", "character varying(120)")
 _V128 = ("varchar", "character varying(128)")
 _V200 = ("varchar", "character varying(200)")
 _V500 = ("varchar", "character varying(500)")
+_V512 = ("varchar", "character varying(512)")
 
 #: The catalogue document's own identity, independent of any release.
 CATALOGUE_DOCUMENT_SCHEMA = "dotmac.module-database-catalog/v1"
@@ -1258,6 +1259,47 @@ CATALOGUE_RELATION_KIND = "table"
 CATALOGUE_TABLES: tuple[
     tuple[str, tuple[tuple[str, int, tuple[str, str], bool, str], ...]], ...
 ] = (
+    (
+        "attestation_current_roots",
+        (
+            ("custody_domain", 1, _V40, False, ""),
+            ("subject", 2, _V200, False, ""),
+            ("current_fingerprint", 3, _V128, False, ""),
+            ("created_at", 4, _TS, False, "now()"),
+            ("updated_at", 5, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "attestation_enrolments",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("custody_domain", 2, _V40, False, ""),
+            ("subject", 3, _V200, False, ""),
+            ("public_key_b64", 4, _V200, False, ""),
+            ("public_key_fingerprint", 5, _V128, False, ""),
+            ("algorithm", 6, _V60, False, ""),
+            ("key_custody_pointer", 7, _V512, False, ""),
+            ("supersedes_fingerprint", 8, _V128, True, ""),
+            ("enrolled_at", 9, _TS, False, ""),
+            ("enrolment_authority", 10, _V60, False, ""),
+            ("enrolment_envelope", 11, _JSONB, True, ""),
+            ("created_at", 12, _TS, False, "now()"),
+            ("updated_at", 13, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "attestation_fingerprint_closures",
+        (
+            ("fingerprint", 1, _V128, False, ""),
+            ("closure_kind", 2, _V20, False, ""),
+            ("closed_at", 3, _TS, False, ""),
+            ("closure_authority", 4, _V60, False, ""),
+            ("closure_reason", 5, _V500, True, ""),
+            ("superseded_by_fingerprint", 6, _V128, True, ""),
+            ("created_at", 7, _TS, False, "now()"),
+            ("updated_at", 8, _TS, False, "now()"),
+        ),
+    ),
     (
         "deployment_plans",
         (

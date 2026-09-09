@@ -480,11 +480,24 @@ class TestAppendOnlyEnforcement:
                         ),
                         {"fp": fp},
                     )
+            # `attestation_enrolments` is referenced by an FK from BOTH
+            # `attestation_fingerprint_closures` (`fk_attestation_closures_
+            # fingerprint`/`_superseded_by`) and `attestation_current_roots`
+            # (`fk_attestation_current_roots_fingerprint`). A plain TRUNCATE
+            # of a table any FK still references is refused by PostgreSQL
+            # itself with `FeatureNotSupported` -- BEFORE the append-only
+            # trigger this test exists to exercise ever gets a chance to
+            # fire. CASCADE resolves that FK precondition (Postgres pulls the
+            # referencing tables into the same TRUNCATE) so the trigger is
+            # what actually stops the statement, which is the behaviour
+            # under test. `attestation_fingerprint_closures` has no such
+            # referencing table, so it needs no CASCADE.
+            cascade = " CASCADE" if table == "attestation_enrolments" else ""
             with (
                 eng.begin() as conn,
                 pytest.raises(DBAPIError, match="append-only"),
             ):
-                conn.execute(text(f"TRUNCATE {SCHEMA}.{table}"))
+                conn.execute(text(f"TRUNCATE {SCHEMA}.{table}{cascade}"))
         finally:
             eng.dispose()
 
@@ -981,9 +994,20 @@ class TestRotationVersusRevocationOrdering:
             )
         else:
             assert standing is HostAttesterStanding.REVOKED
+            # `revoke_root` has fewer steps before its conflict-causing INSERT
+            # than `rotate_root` has before its own first read -- the barrier
+            # only guarantees both threads START together, not that they reach
+            # their respective checkpoints in lockstep. If revoke's entire
+            # transaction (including its delete of the projection pointer)
+            # commits before rotate's very first `_current_fingerprint` read
+            # runs, rotate observes NO projection row at all and refuses with
+            # `NO_ACTIVE_ROOT_TO_ROTATE` rather than reaching the
+            # already-closed-fingerprint checks further in -- a legitimate
+            # third shape of "rotate lost this race", not a different bug.
             assert outcomes["rotate"] in (
                 AttestationRefusalCode.FINGERPRINT_REVOKED,
                 AttestationRefusalCode.LOST_ROTATION_RACE,
+                AttestationRefusalCode.NO_ACTIVE_ROOT_TO_ROTATE,
             )
 
 
@@ -1430,11 +1454,17 @@ class TestCurrentRootDriftDetectionAndRepair:
                         "fp": other_fp,
                     },
                 )
+                # 'revoked', not 'superseded': the database CHECK constraint
+                # `ck_attestation_closures_supersession_needs_successor`
+                # requires `superseded_by_fingerprint IS NOT NULL` exactly
+                # when `closure_kind = 'superseded'`, and this fingerprint
+                # has no real successor to name -- it only needs to be
+                # CLOSED (not open) for this test's purpose.
                 conn.execute(
                     text(
                         "INSERT INTO mod_deploy.attestation_fingerprint_closures "
                         "(fingerprint, closure_kind, closed_at, closure_authority) "
-                        "VALUES (:fp, 'superseded', now(), 'manual_repair_script')"
+                        "VALUES (:fp, 'revoked', now(), 'manual_repair_script')"
                     ),
                     {"fp": other_fp},
                 )
