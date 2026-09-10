@@ -5,8 +5,6 @@
     "State is computed from this repository's git tags. a1 and a2 were published",
     "from dotmac_starter_mt and their tags stay there permanently.",
     "",
-    "EMPTY, and that is the correct state: every declared version is published.",
-    "",
     "The 0.1.0a12 row that sat here between the declaration and the publication",
     "was removed by the RECORDER, as a8 through a11 were — the gesture a human",
     "forgot twice (a4 by six silent hours, a7 loudly at every open pull request)",
@@ -24,7 +22,23 @@
     "A row here and a row in docs/published-versions.json are never both true",
     "about one version at once, and",
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
-    "that over the two FILES so it holds even in a tagless checkout."
+    "that over the two FILES so it holds even in a tagless checkout.",
+    "",
+    "NOT EMPTY: `0.1.0a12+dev` is the tree's current declaration, and it names a",
+    "PEP 440 local segment rather than a new alpha. main diverged from the a12",
+    "bytes the moment the attestation trust registry migration",
+    "(dc_0011_attestation_registry) and the read-only trust-root binding facade",
+    "(attestation_binding.py, merged 540c17fa) landed after a12 was tagged, so a",
+    "bare `0.1.0a12` would name bytes the tree no longer has. The marker",
+    "allocates nothing and cannot be published — the next number this repository",
+    "may allocate is derived, at allocation time, as the successor of the",
+    "highest version in docs/published-versions.json (today 0.1.0a12, so a13)."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a12+dev": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "Post-a12 development marker, not a new alpha awaiting release. 0.1.0a12 itself is published and verified (tag_object 2df5b0b8d18a61dd0802b11c3502d01d44222a66, peeled_commit 8e8342bcbefc7d25f2877c440552a276c1226ba4, release_run 33854964978, verify_run 33855190724 — see docs/published-versions.json). main has since diverged from those bytes: the attestation trust registry migration (dc_0011_attestation_registry) and the read-only trust-root binding facade (attestation_binding.py, merged 540c17fa) both landed after a12 published, so a bare 0.1.0a12 declaration would misname the tree's current bytes as a12's own. This row exists only so the declared-publication gate can account for the marker; it is removed, without ever having named a real release, the moment the tree bumps to the next allocated number."
+    }
+  }
 }
