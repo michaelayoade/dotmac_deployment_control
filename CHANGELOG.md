@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## Unreleased — host-attester enrolment and rotation
+## 0.1.0a13 (unreleased) — host-attester enrolment and rotation
 
 ### Added
 
@@ -26,7 +26,7 @@ changes, each called out here.
   rather than a race against it — see `docs/HOST_ATTESTER_ENROLMENT.md`.
   Does not build a Foundation verifier or a Platform caller.
 
-## Unreleased — cancel and settle join the dispatch-consumption lock order
+## 0.1.0a13 (unreleased) — cancel and settle join the dispatch-consumption lock order
 
 ### Changed
 
@@ -104,7 +104,7 @@ still occur); `require_manual_repair`
   real, locked target that is not `ACTIVE`. Internal-only code; no production
   caller exists yet.
 
-## Unreleased — staged dispatch-consumption boundary
+## 0.1.0a13 (unreleased) — staged dispatch-consumption boundary
 
 ### Added
 
@@ -125,7 +125,7 @@ still occur); `require_manual_repair`
   a newly signed attempt. This is not external delivery, and adds no table or
   migration; Integrator/outbox continues to own delivery and retry.
 
-## Unreleased — the rehearsal grant
+## 0.1.0a13 (unreleased) — the rehearsal grant
 
 ### Added
 
@@ -185,7 +185,7 @@ what does not is stated at the constant: the closure always runs against the
 literal, and the installed distribution is compared only where it is
 importable, which this repository's CI is not.
 
-## Unreleased — the prestate discriminator
+## 0.1.0a13 (unreleased) — the prestate discriminator
 
 ### Added
 
