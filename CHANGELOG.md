@@ -5,7 +5,236 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## Unreleased — host-attester enrolment and rotation
+## 0.1.0a13 (unreleased) — a trust-root binding a consumer can read, and refusals it can tell apart
+
+### Added
+
+- `AttestationBindingV1`, a typed, frozen, `slots=True` public read-only copy
+  of the durable registry's answer — never an ORM object, never carrying
+  `key_custody_pointer`, never a second authority. It is derived from
+  `resolve_current_root`, which is itself derived from the append-only
+  `attestation_enrolments`/`attestation_fingerprint_closures` tables;
+  `attestation_current_roots` accelerates that read and never decides it.
+- Three distinguishable refusals where `resolve_current_root` previously
+  returned `None` at five separate points, only one of which was absence.
+  The others were security-relevant — a projection resolving to a different
+  subject or custody domain, a pointer naming a closed fingerprint, and more
+  than one open enrolment for a subject — and all were flattened into the
+  same value that also means "nothing is enrolled here"; a verifier reading
+  `None` as "no root yet, bootstrap is fine" would have treated a
+  substituted, revoked or disputed registry as a clean slate. The result is
+  now a type that cannot carry both a root and a refusal, or neither:
+  `ABSENT`, `REGISTRY_DISAGREEMENT`, and `DRIFT`. Ambiguity refuses rather
+  than picking, and never newest-wins; projection disagreement refuses and
+  does not repair on the read path; every fingerprint is recomputed from
+  stored public-key material rather than trusted as a stored claim.
+- `fingerprint_standing` carries the same guarantee: it counts open
+  enrolments for the queried fingerprint's own subject before consulting the
+  projection, so the two functions in this facade can no longer disagree
+  about whether trust is in dispute.
+- Six guards, each with a paired near-miss: no ORM object, session or row
+  crosses the boundary; `key_custody_pointer` is unreachable by construction
+  and its scan classifies by consumption rather than content (a docstring
+  naming the column is not itself a violation, while an attribute access, a
+  `getattr`, and a string lookup key all are); no caller-supplied root or
+  identity; the read path never reconciles; multiple open roots refuse with
+  `REGISTRY_DISAGREEMENT` specifically, paired against a genuinely absent
+  subject returning `ABSENT`; and no writing registry call or session
+  mutation appears in the module.
+
+### Named open items, not resolved here
+
+- Foundation's `public_key_base64` is padded standard base64; Control's
+  `public_key_b64` is unpadded URL-safe. Control rejects any `=` outright and
+  requires an exact canonical round-trip, so a key moved verbatim fails safe
+  rather than being misread, and no two keys can share a fingerprint — but
+  nothing states which side owns the conversion, and that contract is needed
+  before Foundation consumes `public_key_b64`.
+- `custody_domain` and `subject` are caller-supplied opaque strings; nothing
+  derives them from authenticated state. Acceptable only because this module
+  adds no network surface, so every caller is in-process — the PR that wires
+  this facade to a Foundation or Platform network boundary must carry an
+  authorization boundary.
+- `fingerprint_standing` alone cannot detect "valid key, wrong subject"; a
+  caller needing subject-bound standing must use `resolve_current_root`.
+- The read-only guard matches by name, so an import alias, a `getattr`, or a
+  call through a variable would evade it.
+- When #51 landed no successor was allocated; `0.1.0a13` is now allocated,
+  but remains UNPUBLISHED and UNVERIFIED — nothing here asserts an artifact
+  exists.
+
+## 0.1.0a13 (unreleased) — a trust root is resolved from Control-owned state, and ambiguity refuses rather than picks
+
+### Added
+
+- A durable attestation trust registry (`dc_0011_attestation_registry`):
+  `attestation_enrolments` and `attestation_fingerprint_closures`, append-only
+  via `dc_0001`'s `refuse_evidence_rewrite` (no `WHEN`) plus `dc_0010`'s
+  `refuse_evidence_truncate`, applied from day one; and
+  `attestation_current_roots`, a derived projection whose only job is the
+  database lock its primary key and CAS update provide — it stores nothing
+  the append-only tables do not already establish. `reconcile_current_root`
+  recomputes the same answer straight from the append-only truth and reports
+  disagreement; `repair_current_root` makes the idempotent write that removes
+  it. `closure_kind` stores `host_attester_enrolment.FingerprintStatus`'s own
+  `REVOKED`/`SUPERSEDED` values directly, not a second parallel enum.
+- Schema-enforced invariants rather than code-enforced ones:
+  `uq_attestation_enrolments_fingerprint` is UNIQUE on `public_key_fingerprint`
+  alone, deliberately not compounded with `custody_domain`, which is what
+  makes one key holding both custody roles impossible rather than merely
+  discouraged; `attestation_fingerprint_closures.fingerprint` is the PRIMARY
+  KEY, so whichever of a concurrent revocation or supersession commits first
+  takes the slot permanently, with no UPDATE path and so no un-revoke to
+  express; fingerprints are derived and revalidated from stored public-key
+  material on every write path, never trusted from a caller-supplied value;
+  private keys stay OpenBao pointers (`key_custody_pointer`), and
+  `require_custody_pointer`'s existing `bao://` shape check is now called by
+  `enrol_root` and `rotate_root` before anything is written, so a malformed
+  pointer is refused at the write boundary instead of entering the
+  append-only table.
+- Four PostgreSQL proofs that actually execute: concurrent enrolment,
+  cross-role fingerprint reuse refused by the schema itself, rotation-versus-
+  revocation commit ordering (including the two-thread race), and
+  stale-reader snapshot behaviour — plus append-only sensitivity proofs and
+  the current-root projection's drift/repair path.
+
+### Changed
+
+- `resolve_current_root` refuses cross-host and cross-domain substitution and
+  ambiguity rather than ever picking one. `_derive_current_fingerprint`
+  previously ordered by `enrolled_at` descending and `repair_current_root`
+  persisted that choice, converting a transient registry inconsistency into
+  durable state that later readers — including the reconciler meant to detect
+  drift — would treat as settled. Both now refuse
+  (`AMBIGUOUS_CURRENT_ROOT`) and write nothing when more than one enrolment is
+  open for a subject. `resolve_current_root` also refuses, before any
+  reconciliation runs, when the projection names a fingerprint that has since
+  been closed — a projection row accelerates a read and must never
+  independently establish standing.
+- `rotate_root` now loads `supersedes_fingerprint`'s own enrolment as ground
+  truth and refuses unless its `custody_domain`/`subject` match the requested
+  pair, before any write — matching the pattern `revoke_root` already used —
+  rather than trusting the corruptible `attestation_current_roots` projection
+  to authorize closing a key permanently.
+- The caller-supplied registry path is closed by convention, not structurally:
+  `evaluate_enrolment`/`host_attester_standing` are renamed private
+  (`_evaluate_enrolment`/`_host_attester_standing`), dropped from `__all__`,
+  and their docstrings point at the registry-backed functions as the one real
+  path. An AST guard fails the build if any function — present now or added
+  later, public or not — accepts `active_by_host`/`known_fingerprints` under
+  a name other than the two already-private ones, closing reintroduction
+  under a fresh name even though the old import still works under the new
+  name for any caller.
+- The PostgreSQL platform-isolation canary job discovers every
+  `tests/test_*_platform_isolation.py` file (`scripts/run_platform_isolation_
+  canaries.py`) instead of naming one hardcoded file, refuses an empty
+  discovery result, requires the database coordinate rather than skipping,
+  and sets `REQUIRE_NO_SKIPS=1` — this module's own four-proof suite had been
+  dead code, never executed by CI, until this change. `REQUIRE_NO_SKIPS=1`
+  itself now converts a skip at the test's call stage and a whole module
+  skipping itself at import time to failures, not only a setup-stage skip as
+  before.
+- The Foundation `OPERATIONS` vocabulary comparison, which always
+  `importorskip`-ed because Foundation is never installed in this
+  repository's CI, is now a cold-source check against Foundation's pinned
+  source over HTTPS, reusing the existing step-vocabulary comparator rather
+  than adding a second one.
+- `dc_0011`'s `downgrade()` locks both append-only tables in ACCESS EXCLUSIVE
+  MODE and raises rather than dropping either if it holds rows, matching
+  `dc_0010`'s own convention for its append-only table; `attestation_current_
+  roots` stays an unconditional drop, since it is a re-derivable projection
+  and discards no evidence.
+
+### Honestly open
+
+- `custody_domain` has no DB-level CHECK constraint; the docstring prose was
+  corrected rather than the constraint added.
+- `_evaluate_enrolment`/`_host_attester_standing` are private by convention
+  only — Python enforces nothing about a leading underscore. Full retirement
+  is a separate, not-yet-authorized slice.
+- These `0.1.0a13` bytes do not make Control the authority in production: no
+  route calls either the new registry or the old evaluators. It builds a
+  correct authority alongside an unretired one; that cutover is tracked
+  separately and must not be assumed from this merge.
+
+## 0.1.0a13 (unreleased) — a V3 authorization binds Platform Health's evidence digest and never its own
+
+### Added
+
+- `AuthorizationStatementV3` (`authorization_v3.py`), a new type alongside
+  the unchanged, still-published `AuthorizationStatementV2` — no field is
+  added to V2 and no refusal code is repurposed. It carries V2's exact terms
+  plus `health_evidence_digest`, `required_component_roster`,
+  `health_evidence_evaluated_at`/`valid_until`, and `control_plan_digest`,
+  implementing ADR-0070's 2026-09-07 amendment: verify Platform Health's
+  inner signature, bind its digest and exact required-component roster
+  together with target/environment/product/rollout/approval, and freeze a
+  signed successor statement — without importing `dotmac_platform_health` or
+  recomputing health.
+- `control_plan_digest`, identifying the bound statement as a whole and
+  never appearing inside the bytes it digests: `control_plan_digest_preimage`
+  is the single builder, applies the exclusion as a set-difference filter
+  over `CONTROL_PLAN_DIGEST_EXCLUDED_FIELDS` rather than an assembled dict,
+  and re-asserts the filter held before returning.
+- Health evidence arrives through Control's own wire contract
+  (`parse_signed_health_evidence_document`), since Platform Health's
+  `SignedHealthEvidence` has no serialization of its own; Control's
+  `HealthEvidenceDigestV1` is a received digest, not a second canonicalizer.
+  The injected `HealthEvidenceVerifier` is a second, purpose-separated port
+  alongside the existing `AuthorizationVerifier`, since Platform Health's own
+  `HealthEvidenceSignature` carries no purpose or key-fingerprint field.
+- `verify_authorization_envelope_v3` compares the signed statement against a
+  caller-declared `AuthorizationSubjectV3` term by term. `ROLLOUT_MISMATCH`
+  and `EXECUTION_SEQUENCE_MISMATCH`, checked and raised separately, name
+  Control's existing `(rollout_ref, execution_sequence)` coordinate — no new
+  `Lease` type is introduced. `required_component_roster` is checked against
+  the evidence's own independently signed roster at issuance, never against
+  a value the same caller also supplies unchecked.
+
+### Fixed
+
+- `issue_authorization_envelope_v3` was hashing the caller's raw field
+  mapping while `verify_authorization_envelope_v3` recomputed over
+  `AuthorizationStatementV3.as_mapping()`'s canonical form — an untampered,
+  genuinely-issued statement therefore failed its own re-derivation the
+  moment a caller's image order differed from the canonical one. Fixed by
+  parsing a placeholder statement first and deriving `control_plan_digest`
+  from that parsed statement's own `as_mapping()`, so issuance and
+  verification always hash the identical representation.
+- `ROLLOUT_MISMATCH`/`EXECUTION_SEQUENCE_MISMATCH` replace an earlier
+  `LEASE_MISMATCH`: Foundation already owns the real lease
+  (`HostLease.v2`, carrying a mandatory `authorization_run_id` and bound at
+  execution time through that field), and no authorization contract anywhere
+  carries a `lease_id`. `LEASE_MISMATCH` named the wrong concept; the
+  comparison itself is unchanged, only the name and the per-field
+  granularity of the refusal moves.
+
+### Not changed, deliberately
+
+- **The admit control is fixture-shaped and says so.** Tests bind against a
+  value mirror of `canonical_health_evidence_bytes`'s documented encoding,
+  never an import, since Control must not depend on
+  `dotmac_platform_health`. No real Platform Health service, real key, or
+  real Foundation verifier is exercised; the genuine end-to-end proof comes
+  after Foundation is frozen and built once.
+- A single caller who builds the evidence bytes, sets
+  `required_component_roster` to match exactly, and attaches a fabricated
+  signature is refused with `EVIDENCE_SIGNATURE_INVALID`; the converse arm
+  swaps in an always-`True` verifier stub and passes, proving the refusal
+  depends on the verifier doing real work.
+- `product_code` and `environment` are bound, inherited from the already
+  published `AuthorizationStatementV2` rather than invented for V3.
+  Foundation's descriptor and execution-plan contracts carry neither, and
+  that asymmetry predates V3; whether Foundation should independently
+  declare them for cross-validation is a named Foundation follow-up.
+- The key-eligibility/revocation registry ADR-0070 assigns to Control is not
+  built here — the injected `HealthEvidenceVerifier` protocol is the seam; a
+  registry-backed implementation is a service/assembly concern.
+  `EVIDENCE_FUTURE_DATED` exists as a code with nothing raising it: the ADR
+  assigns future-dating to Foundation against its own clock, so it is
+  named-but-unwired rather than guessed at.
+
+## 0.1.0a13 (unreleased) — host-attester enrolment and rotation
 
 ### Added
 
@@ -17,16 +246,29 @@ changes, each called out here.
   of a revoked fingerprint — permanently, with no operation in this module's
   surface that reverses a `SUPERSEDED`/`REVOKED` status. `host_attester_
   standing` answers, from a caller-supplied registry snapshot, whether a
-  fingerprint is currently the enrolled attester for a host. No table or
-  migration: the fingerprint registry (`active_by_host`,
-  `known_fingerprints`) is caller-supplied, the same shape
-  `recovery_grant.py`'s `revoked_grant_ids` and `rehearsal_grant.py`'s
-  `consumed_references` already use, because persistence for this contract
-  needs sequencing with a sibling lane's `models.py`/migration territory
-  rather than a race against it — see `docs/HOST_ATTESTER_ENROLMENT.md`.
-  Does not build a Foundation verifier or a Platform caller.
+  fingerprint is currently the enrolled attester for a host. At the time
+  this module landed it added no table or migration of its own: the
+  fingerprint registry (`active_by_host`, `known_fingerprints`) was
+  caller-supplied, the same shape `recovery_grant.py`'s `revoked_grant_ids`
+  and `rehearsal_grant.py`'s `consumed_references` already use, because
+  persistence for this contract needed sequencing with a sibling lane's
+  `models.py`/migration territory rather than a race against it — see
+  `docs/HOST_ATTESTER_ENROLMENT.md`. Does not build a Foundation verifier or
+  a Platform caller.
+- **Superseded, in this same release, by the durable attestation trust
+  registry above.** The durable Control-owned registry this module's own
+  docstring deferred to a sibling lane now exists (`dc_0011_attestation_
+  registry`; see "A trust root is resolved from Control-owned state, and
+  ambiguity refuses rather than picks"), and it is the one real path for a
+  registry-backed consumer: `evaluate_enrolment`/`host_attester_standing`
+  were renamed private (`_evaluate_enrolment`/`_host_attester_standing`),
+  dropped from `__all__`, and their docstrings now point at the
+  registry-backed functions instead. This is convention, not structural
+  closure — the old names are still importable under their new spelling —
+  and a guard blocks the caller-supplied `active_by_host`/
+  `known_fingerprints` shape from being reintroduced under any other name.
 
-## Unreleased — cancel and settle join the dispatch-consumption lock order
+## 0.1.0a13 (unreleased) — cancel and settle join the dispatch-consumption lock order
 
 ### Changed
 
@@ -104,7 +346,7 @@ still occur); `require_manual_repair`
   real, locked target that is not `ACTIVE`. Internal-only code; no production
   caller exists yet.
 
-## Unreleased — staged dispatch-consumption boundary
+## 0.1.0a13 (unreleased) — staged dispatch-consumption boundary
 
 ### Added
 
@@ -125,7 +367,7 @@ still occur); `require_manual_repair`
   a newly signed attempt. This is not external delivery, and adds no table or
   migration; Integrator/outbox continues to own delivery and retry.
 
-## Unreleased — the rehearsal grant
+## 0.1.0a13 (unreleased) — the rehearsal grant
 
 ### Added
 
@@ -185,7 +427,7 @@ what does not is stated at the constant: the closure always runs against the
 literal, and the installed distribution is compared only where it is
 importable, which this repository's CI is not.
 
-## Unreleased — the prestate discriminator
+## 0.1.0a13 (unreleased) — the prestate discriminator
 
 ### Added
 
