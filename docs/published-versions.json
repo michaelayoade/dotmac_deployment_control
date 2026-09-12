@@ -329,7 +329,10 @@
         "dotmac_deployment_control-0.1.0a13.tar.gz": "d6854bc0ec949ed1997ebeadcbbbccb945906c59d4ffb684c79054db39b90238"
       },
       "supersedes": "0.1.0a12",
-      "declared_kernel_floor": ">=0.1.0a100"
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published by run 34687474025 from the exact tip of protected main (8173954886396e8d2fbb8e3b470aa2dfddbe64b0); that run built and uploaded but neither verified itself nor tagged. INDEPENDENT verify run 34687542590 returned VERIFIED — both registry-served artifacts matched the release build by sha256, publisher read-back succeeded, a clean dependency-complete read-only consumer installed and imported the wheel, all FIFTEEN behavioural canaries passed against that installed artifact, and only then did tag_once.py write the annotated tag object 5b63f293ce93781f627151992d7034f1698213ff. The release contents and their honestly open cutover items are recorded under the 0.1.0a13 sections in CHANGELOG.md.",
+      "adoption_note": "PIN a13 when a consumer needs the Control-owned durable attestation trust registry or the public read-only resolve_current_root, fingerprint_standing and AttestationRootRefusal facade; a12 is published, verified and pinnable but predates those surfaces. Publication does not make Control authoritative in production: the consumer must compose the facade, bind its authorization boundary and retire the caller-supplied evaluator path separately."
     }
   ],
   "tags_remain_in_source_for": [

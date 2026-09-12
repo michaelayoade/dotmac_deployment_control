@@ -64,6 +64,7 @@ def test_every_published_version_is_recorded() -> None:
         "0.1.0a10",
         "0.1.0a11",
         "0.1.0a12",
+        "0.1.0a13",
     ], versions
 
 
@@ -127,7 +128,7 @@ def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
     """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
     floor that skipped it would let the next release collide with bytes that are
     permanently on the index."""
-    assert release_guard.published_floor() == "0.1.0a12"
+    assert release_guard.published_floor() == "0.1.0a13"
 
 
 def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
@@ -141,17 +142,17 @@ def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything.
 
-    a13 rather than a12, as of the change that recorded a12's coordinates. a12
+    a14 rather than a13, as of the change that recorded a13's coordinates. a13
     is now PUBLISHED, so the guard is required to refuse it; leaving the control
-    on a12 would assert that this repository may re-upload a name that already
+    on a13 would assert that this repository may re-upload a name that already
     exists — the exact hazard the floor is for.
 
     The two moves are one change because the floor is DERIVED from
-    `docs/published-versions.json`: recording a12 there raises the floor, and a
+    `docs/published-versions.json`: recording a13 there raises the floor, and a
     control left behind the floor is a control asserting the opposite of what
     the floor says.
     """
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a13") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a14") == []
 
 
 def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
@@ -171,6 +172,39 @@ def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
         == []
     )
     assert release_guard.refusals("dotmac-deployment-control", floor)
+
+
+def test_a13_records_verification_and_a_distinct_adoption_disposition() -> None:
+    """Coordinates say what was published; these fields say what that means.
+
+    The recorder is deliberately unable to decide either question, so a green
+    record branch must prove that a human supplied both rather than inheriting
+    a coordinates-only row whose missing disposition happens not to be read.
+    """
+    a13 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a13")
+    assert a13["status"] == "released"
+    assert a13["pinnable"] is True
+    assert a13["release_run"] == "34687474025"
+    assert a13["verify_run"] == "34687542590"
+    verification = a13["release_run_note"]
+    for evidence in (
+        "registry-served",
+        "sha256",
+        "read-only consumer",
+        "FIFTEEN behavioural canaries",
+        "tag_once.py",
+    ):
+        assert evidence in verification, evidence
+    adoption = a13["adoption_note"]
+    for evidence in (
+        "resolve_current_root",
+        "fingerprint_standing",
+        "AttestationRootRefusal",
+        "a12",
+        "does not make Control authoritative in production",
+    ):
+        assert evidence in adoption, evidence
+    assert "superseded_by" not in a13
 
 
 def test_a4_carries_the_superseding_disposition_in_four_named_terms() -> None:
@@ -264,7 +298,7 @@ def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNADOPTABLE" in problems[0], problems
-    assert any("not greater than 0.1.0a12" in p for p in problems), problems
+    assert any("not greater than 0.1.0a13" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -276,7 +310,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a12" in problems[0], problems
+    assert problems and "not greater than 0.1.0a13" in problems[0], problems
     assert not any("UNPINNABLE" in p for p in problems), (
         "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
         "unpinnable would be a different and wrong statement"
@@ -298,6 +332,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
         "0.1.0a10",
         "0.1.0a11",
         "0.1.0a12",
+        "0.1.0a13",
         "0.0.9a99",
         "0.1.0a0",
     ],
@@ -306,9 +341,9 @@ def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a13", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a14", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
-    """`0.1.0a12` is the one that matters: lexicographically it sorts BELOW
+    """`0.1.0a13` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse a double-digit alpha
     forever."""
     assert release_guard.refusals("dotmac-deployment-control", version) == []
@@ -620,7 +655,7 @@ def test_a5_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNSUITABLE FOR NEW ADOPTION" in problems[0], problems
-    assert any("not greater than 0.1.0a12" in p for p in problems), problems
+    assert any("not greater than 0.1.0a13" in p for p in problems), problems
 
 
 # ── a6: the first release whose declared floor is itself proven ─────────────
