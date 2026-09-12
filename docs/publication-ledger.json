@@ -35,11 +35,5 @@
     "ever having named a real release, the moment 0.1.0a13 is verified and",
     "tagged or the tree bumps past it."
   ],
-  "unpublished": {
-    "0.1.0a13": {
-      "status": "declared-not-published",
-      "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "Declared as the successor of the published floor 0.1.0a12 (tag_object 2df5b0b8d18a61dd0802b11c3502d01d44222a66, peeled_commit 8e8342bcbefc7d25f2877c440552a276c1226ba4 — see docs/published-versions.json), per this same file's own prior statement of the next number. Allocation of the name only: no build, tag, release run or verify run has occurred for 0.1.0a13. This row exists only so the declared-publication gate can account for the declaration; it is removed, without ever having named a real release on its own, the moment a release run tags and verifies it."
-    }
-  }
+  "unpublished": {}
 }
