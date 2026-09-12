@@ -256,7 +256,7 @@ changes, each called out here.
   `docs/HOST_ATTESTER_ENROLMENT.md`. Does not build a Foundation verifier or
   a Platform caller.
 - **Superseded, in this same release, by the durable attestation trust
-  registry below.** The durable Control-owned registry this module's own
+  registry above.** The durable Control-owned registry this module's own
   docstring deferred to a sibling lane now exists (`dc_0011_attestation_
   registry`; see "A trust root is resolved from Control-owned state, and
   ambiguity refuses rather than picks"), and it is the one real path for a
