@@ -5,7 +5,15 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a13 (unreleased) — a trust-root binding a consumer can read, and refusals it can tell apart
+## 0.1.0a13 (published 2026-09-12) — a trust-root binding a consumer can read, and refusals it can tell apart
+
+Published by run `34687474025` from protected main `817395488639`; independent
+verify run `34687542590` fetched both artifacts from the registry by name,
+matched their recorded digests, installed and imported the wheel in a clean
+read-only consumer environment, drove all fifteen behavioural canaries against
+that installed artifact, and only then wrote the annotated tag. Exact
+coordinates and the adoption disposition are recorded in
+`docs/published-versions.json`.
 
 ### Added
 
@@ -59,11 +67,11 @@ changes, each called out here.
   caller needing subject-bound standing must use `resolve_current_root`.
 - The read-only guard matches by name, so an import alias, a `getattr`, or a
   call through a variable would evade it.
-- When #51 landed no successor was allocated; `0.1.0a13` is now allocated,
-  but remains UNPUBLISHED and UNVERIFIED — nothing here asserts an artifact
-  exists.
+- When #51 landed no successor was allocated. `0.1.0a13` was subsequently
+  allocated, published and independently verified; its immutable coordinates
+  now live in `docs/published-versions.json`.
 
-## 0.1.0a13 (unreleased) — a trust root is resolved from Control-owned state, and ambiguity refuses rather than picks
+## 0.1.0a13 (published 2026-09-12) — a trust root is resolved from Control-owned state, and ambiguity refuses rather than picks
 
 ### Added
 
@@ -157,7 +165,7 @@ changes, each called out here.
   correct authority alongside an unretired one; that cutover is tracked
   separately and must not be assumed from this merge.
 
-## 0.1.0a13 (unreleased) — a V3 authorization binds Platform Health's evidence digest and never its own
+## 0.1.0a13 (published 2026-09-12) — a V3 authorization binds Platform Health's evidence digest and never its own
 
 ### Added
 
@@ -234,7 +242,7 @@ changes, each called out here.
   assigns future-dating to Foundation against its own clock, so it is
   named-but-unwired rather than guessed at.
 
-## 0.1.0a13 (unreleased) — host-attester enrolment and rotation
+## 0.1.0a13 (published 2026-09-12) — host-attester enrolment and rotation
 
 ### Added
 
@@ -268,7 +276,7 @@ changes, each called out here.
   and a guard blocks the caller-supplied `active_by_host`/
   `known_fingerprints` shape from being reintroduced under any other name.
 
-## 0.1.0a13 (unreleased) — cancel and settle join the dispatch-consumption lock order
+## 0.1.0a13 (published 2026-09-12) — cancel and settle join the dispatch-consumption lock order
 
 ### Changed
 
@@ -346,7 +354,7 @@ still occur); `require_manual_repair`
   real, locked target that is not `ACTIVE`. Internal-only code; no production
   caller exists yet.
 
-## 0.1.0a13 (unreleased) — staged dispatch-consumption boundary
+## 0.1.0a13 (published 2026-09-12) — staged dispatch-consumption boundary
 
 ### Added
 
@@ -367,7 +375,7 @@ still occur); `require_manual_repair`
   a newly signed attempt. This is not external delivery, and adds no table or
   migration; Integrator/outbox continues to own delivery and retry.
 
-## 0.1.0a13 (unreleased) — the rehearsal grant
+## 0.1.0a13 (published 2026-09-12) — the rehearsal grant
 
 ### Added
 
@@ -427,7 +435,7 @@ what does not is stated at the constant: the closure always runs against the
 literal, and the installed distribution is compared only where it is
 importable, which this repository's CI is not.
 
-## 0.1.0a13 (unreleased) — the prestate discriminator
+## 0.1.0a13 (published 2026-09-12) — the prestate discriminator
 
 ### Added
 

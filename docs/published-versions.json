@@ -313,6 +313,26 @@
       "declared_kernel_floor": ">=0.1.0a100",
       "pinnable": true,
       "release_run_note": "Published by run 33854964978 from the exact tip of protected main (8e8342bcbefc7d25f2877c440552a276c1226ba4); that run neither verified itself nor tagged. INDEPENDENT verify run 33855190724 returned VERIFIED — both artifacts fetched from registry.dotmac.io by exact filename and sha256-equal to the release build, publisher read-back, a dependency-complete read-only consumer install, import, and all FIFTEEN behavioural canaries against the registry-served wheel — and only that run wrote the annotated tag, through tag_once.py. WHAT a12 CARRIES: RecoveryGrantV1, a separately-signed document under the purpose deployment_recovery, binding the bundle being restored from, the incumbent prestate the target was on when that bundle was taken, and the window the restoration may run in. It carries no operation field: schema identifies the document and refuses any other before a field is compared, and purpose binds the signer, so a deployment authorization is refused here as a schema mismatch and a recovery grant fails the deployment verifier the same way in the other direction. RecoveryStanding answers ABSENT, NOT_YET_VALID, EXPIRED, REVOKED or UNRESOLVED rather than collapsing them, every binding term is compared rather than merely required to be present, each with its own refusal code, and no path consults a deployment authorization — a dead deployment authorization is not weak recovery authority, it is none. A recovery may not be approval_exempt. dc_0008 stores the exact signed envelope as the authority with its lookup columns never consulted for a verdict, and revocation is a state change rather than a deletion; the published catalogue reaches eight tables and 133 columns. Four owner-computed read projections and ExecutionBindingStanding's four members answer by total function rather than through a write-path gate that raises on a historical vocabulary word, and the browser surface renders every state each of them can answer. Two canaries proved these where they actually run: the shipped Jinja macros rendered from the registry-served wheel outside any checkout, and the correlated standing subquery on real PostgreSQL returning all four states in one statement per page."
+    },
+    {
+      "version": "0.1.0a13",
+      "tag": "dotmac-deployment-control-v0.1.0a13",
+      "tag_object": "5b63f293ce93781f627151992d7034f1698213ff",
+      "peeled_commit": "8173954886396e8d2fbb8e3b470aa2dfddbe64b0",
+      "release_run": "34687474025",
+      "verify_run": "34687542590",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a13-py3-none-any.whl": "278b480ec7bd4bbb6bd53ac8591d8f2d609da08a19a7e9500bcaf58f429da65e",
+        "dotmac_deployment_control-0.1.0a13.tar.gz": "d6854bc0ec949ed1997ebeadcbbbccb945906c59d4ffb684c79054db39b90238"
+      },
+      "supersedes": "0.1.0a12",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published by run 34687474025 from the exact tip of protected main (8173954886396e8d2fbb8e3b470aa2dfddbe64b0); that run built and uploaded but neither verified itself nor tagged. INDEPENDENT verify run 34687542590 returned VERIFIED — both registry-served artifacts matched the release build by sha256, publisher read-back succeeded, a clean dependency-complete read-only consumer installed and imported the wheel, all FIFTEEN behavioural canaries passed against that installed artifact, and only then did tag_once.py write the annotated tag object 5b63f293ce93781f627151992d7034f1698213ff. The release contents and their honestly open cutover items are recorded under the 0.1.0a13 sections in CHANGELOG.md.",
+      "adoption_note": "PIN a13 when a consumer needs the Control-owned durable attestation trust registry or the public read-only resolve_current_root, fingerprint_standing and AttestationRootRefusal facade; a12 is published, verified and pinnable but predates those surfaces. Publication does not make Control authoritative in production: the consumer must compose the facade, bind its authorization boundary and retire the caller-supplied evaluator path separately."
     }
   ],
   "tags_remain_in_source_for": [

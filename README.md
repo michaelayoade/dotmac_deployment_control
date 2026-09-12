@@ -282,9 +282,9 @@ hand-written list.
 
 ## Status
 
-**The newest published version is `0.1.0a12`; it is not yet adopted.** It was
-published by release run `33854964978` from protected main and independently
-VERIFIED by run `33855190724` on 2026-09-04. It requires
+**The newest published version is `0.1.0a13`; it is not yet adopted.** It was
+published by release run `34687474025` from protected main and independently
+VERIFIED by run `34687542590` on 2026-09-12. It requires
 `dotmac-kernel >=0.1.0a100` because `database_catalog.py` imports
 `dotmac_kernel.product_database_catalog`, absent from the published `0.1.0a99`
 wheel and present in `0.1.0a100`. `0.1.0a6` remains published, verified and
@@ -296,8 +296,14 @@ purpose-separated signed target execution result. Published a11 signs the
 concrete outbound dispatch attempt under a third purpose. Published and pinnable
 a12 adds a separately-signed recovery grant with its own persistence, and the
 owner-computed read projections and browser surface over the deployment fleet.
-Adoption still requires the consuming assembly to inject its purpose-separated
-signer and verifier identities.
+Published and pinnable a13 adds the durable Control-owned attestation trust
+registry, the public read-only `resolve_current_root`/`fingerprint_standing`
+facade with typed refusals, Authorization V3's Platform Health digest binding,
+and the host-attester and dispatch-consumption transitions catalogued in the
+release notes. Publication does not make that registry authoritative in
+production: adoption still requires the consuming assembly to bind the facade
+and its authorization boundary, retire the caller-supplied evaluator path, and
+inject the purpose-separated signer and verifier identities.
 
 Adopting a7 is not a dependency bump for a consumer still on kernel `a98`:
 `a100` makes `ProductAssemblySpec.api_documentation` mandatory, so the move is
@@ -319,8 +325,10 @@ and the monotonic execution coordinates; `dc_0007_signed_dispatch_envelope`
 appends the signed attempt document. `dc_0008_recovery_grants` adds the eighth
 table, `dc_0009_prestate_discriminator` appends its nineteenth column, and
 `dc_0010_attempt_settlements` adds terminal settlement evidence beside immutable
-issuance. The CURRENT declaration is nine tables and 143 columns. The 95
-above is a fact about the published a7 wheel and stays as one.
+issuance. `dc_0011_attestation_registry` adds the append-only trust-root registry
+and its rebuildable current-root projection. The published a13 declaration is
+twelve tables and 169 columns. The 95 above is a fact about the published a7
+wheel and stays as one.
 
 `dc_0004` adds no image column to `deployment_plans`, deliberately. A plan's
 authorized image set lives inside `snapshot` — the exact document `plan_digest`
