@@ -8,14 +8,17 @@
     "The 0.1.0a12 row that sat here between the declaration and the publication",
     "was removed by the RECORDER, as a8 through a11 were — the gesture a human",
     "forgot twice (a4 by six silent hours, a7 loudly at every open pull request)",
-    "is now the verify run's own last act.",
+    "is now the verify run's own last act. The 0.1.0a12+dev row that followed",
+    "a12's publication was a post-publication development marker, not a new",
+    "alpha awaiting release; it was removed, without ever having named a real",
+    "release, the moment the tree bumped to 0.1.0a13 below.",
     "",
     "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 and 0.1.0a5 are",
     "published, verified, and refused for adoption; 0.1.0a6 through 0.1.0a10",
     "remain published and verified; 0.1.0a11 is published and verified; 0.1.0a12",
     "is published, verified, carries the separately-signed recovery grant and the",
-    "owner-computed fleet reads, and is the version to pin. All of them live in",
-    "docs/published-versions.json,",
+    "owner-computed fleet reads, and is the version to pin until 0.1.0a13 is",
+    "verified. All of them live in docs/published-versions.json,",
     "each superseding disposition APPENDED to its original record rather than",
     "replacing it.",
     "",
@@ -24,21 +27,19 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout.",
     "",
-    "NOT EMPTY: `0.1.0a12+dev` is the tree's current declaration, and it names a",
-    "PEP 440 local segment rather than a new alpha. main diverged from the a12",
-    "bytes the moment the attestation trust registry migration",
-    "(dc_0011_attestation_registry) and the read-only trust-root binding facade",
-    "(attestation_binding.py, merged 540c17fa) landed after a12 was tagged, so a",
-    "bare `0.1.0a12` would name bytes the tree no longer has. The marker",
-    "allocates nothing and cannot be published — the next number this repository",
-    "may allocate is derived, at allocation time, as the successor of the",
-    "highest version in docs/published-versions.json (today 0.1.0a12, so a13)."
+    "NOT EMPTY: `0.1.0a13` is the tree's current declaration, derived exactly as",
+    "the retired marker row said it would be — the successor of the highest",
+    "version in docs/published-versions.json (0.1.0a12). It is not yet built,",
+    "tagged, released or verified; this row exists only so the",
+    "declared-publication gate can account for it, and it is removed, without",
+    "ever having named a real release, the moment 0.1.0a13 is verified and",
+    "tagged or the tree bumps past it."
   ],
   "unpublished": {
-    "0.1.0a12+dev": {
+    "0.1.0a13": {
       "status": "declared-not-published",
       "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "Post-a12 development marker, not a new alpha awaiting release. 0.1.0a12 itself is published and verified (tag_object 2df5b0b8d18a61dd0802b11c3502d01d44222a66, peeled_commit 8e8342bcbefc7d25f2877c440552a276c1226ba4, release_run 33854964978, verify_run 33855190724 — see docs/published-versions.json). main has since diverged from those bytes: the attestation trust registry migration (dc_0011_attestation_registry) and the read-only trust-root binding facade (attestation_binding.py, merged 540c17fa) both landed after a12 published, so a bare 0.1.0a12 declaration would misname the tree's current bytes as a12's own. This row exists only so the declared-publication gate can account for the marker; it is removed, without ever having named a real release, the moment the tree bumps to the next allocated number."
+      "reason": "Declared as the successor of the published floor 0.1.0a12 (tag_object 2df5b0b8d18a61dd0802b11c3502d01d44222a66, peeled_commit 8e8342bcbefc7d25f2877c440552a276c1226ba4 — see docs/published-versions.json), per this same file's own prior statement of the next number. Allocation of the name only: no build, tag, release run or verify run has occurred for 0.1.0a13. This row exists only so the declared-publication gate can account for the declaration; it is removed, without ever having named a real release on its own, the moment a release run tags and verifies it."
     }
   }
 }
