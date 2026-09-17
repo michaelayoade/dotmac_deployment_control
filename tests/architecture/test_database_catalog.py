@@ -121,7 +121,7 @@ def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
         False,
         False,
     ]
-    assert [column.type.formatted for column in rehearsal.columns][1:3] == [
+    assert [column.postgres_type.formatted for column in rehearsal.columns][1:3] == [
         "character varying(512)",
         "character varying(512)",
     ]

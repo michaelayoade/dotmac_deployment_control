@@ -12,8 +12,10 @@ here is the reference.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import inspect
+from pathlib import Path
 
 import pytest
 
@@ -177,8 +179,6 @@ class TestQueryConstructionStaysInThisModule:
             assert callable(getattr(api, name))
 
     def test_query_construction_lives_only_in_the_service_layer(self) -> None:
-        import pathlib
-
         # `attestation_trust_registry.py` is the declared exception, not an
         # oversight: its own module docstring states it is the ONE writer and
         # ONE reader of `attestation_enrolments`/`attestation_fingerprint_
@@ -186,9 +186,38 @@ class TestQueryConstructionStaysInThisModule:
         # touches and Platform CP's read contract above never exposes. It is
         # its own bounded, self-contained data-access module, not a stray
         # `select()` reached for by a router or web layer.
-        permitted_query_builders = {"service.py", "attestation_trust_registry.py"}
+        # `rehearsal_grant_lifecycle.py` is likewise the sole data-access
+        # owner for the mutable rehearsal-grant ledger.  The exception is
+        # deliberately narrower than a filename allowlist: its only query
+        # must lock `RehearsalGrant`, and it exports no public callable.  A
+        # future public reader, or a query for another model, has to move to
+        # the service layer (or establish and test a new named owner).
+        permitted_query_builders = {
+            "service.py",
+            "attestation_trust_registry.py",
+            "rehearsal_grant_lifecycle.py",
+        }
 
-        root = pathlib.Path(service.__file__).parent
+        root = Path(service.__file__).parent
+        rehearsal_lifecycle = root / "rehearsal_grant_lifecycle.py"
+        lifecycle_tree = ast.parse(rehearsal_lifecycle.read_text())
+        select_calls = [
+            node
+            for node in ast.walk(lifecycle_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "select"
+        ]
+        assert len(select_calls) == 1
+        assert len(select_calls[0].args) == 1
+        selected = select_calls[0].args[0]
+        assert isinstance(selected, ast.Name) and selected.id == "RehearsalGrant"
+        assert not [
+            node.name
+            for node in lifecycle_tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and not node.name.startswith("_")
+        ]
         offenders = [
             path.name
             for path in root.glob("*.py")

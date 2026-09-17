@@ -593,7 +593,7 @@ def test_signed_identifiers_accept_the_512_character_contract(
             _statement(**{field: "x" * length}),
             signer=_Signer(),
             candidate=_candidate_evidence(),
-        ),
+        ).as_mapping(),
         verifier=_Verifier(),
         subject=_statement(**{field: "x" * length}).subject,
         at=NOW,

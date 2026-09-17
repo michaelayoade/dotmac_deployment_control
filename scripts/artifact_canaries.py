@@ -1437,8 +1437,8 @@ CATALOGUE_TABLES: tuple[
         "rehearsal_grants",
         (
             ("id", 1, _UUID, False, ""),
-            ("grant_id", 2, _V200, False, ""),
-            ("single_use_reference", 3, _V200, False, ""),
+            ("grant_id", 2, _V512, False, ""),
+            ("single_use_reference", 3, _V512, False, ""),
             ("state", 4, _V20, False, ""),
             ("revoked_at", 5, _TS, True, ""),
             ("revocation_ref", 6, _V200, True, ""),
