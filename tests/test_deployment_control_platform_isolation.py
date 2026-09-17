@@ -169,6 +169,7 @@ TABLES = (
     "observation_receipts",
     "observation_attempts",
     "recovery_grants",
+    "rehearsal_grants",
 )
 EVIDENCE_TABLES = (
     "rollout_attempts",
@@ -184,6 +185,7 @@ MUTABLE_TABLES = (
     # Revocation UPDATEs a grant in place; it does not delete one. The row is
     # the record of the withdrawal.
     "recovery_grants",
+    "rehearsal_grants",
 )
 
 #: All seven. A revoke that covers six is not a revoke.
@@ -460,7 +462,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0011_attestation_registry",
+                revision="dc_0012_rehearsal_lifecycle",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -574,7 +576,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 169 columns across twelve tables; `dc_0005` is 105.
+    The head extent is 178 columns across thirteen tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -610,7 +612,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 169
+                    == 178
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -660,7 +662,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 169
+                    == 178
                 )
         finally:
             admin.dispose()
@@ -680,6 +682,59 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
             )
             conn.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
         server.dispose()
+
+
+def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    """A rollback cannot erase the durable single-use cut-off."""
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = migrated_scratch
+    grant_id = f"downgrade-{uuid.uuid4().hex}"
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state, spent_at) "
+                    "VALUES (:id, :grant_id, :reference, 'spent', now())"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "grant_id": grant_id,
+                    "reference": f"reference-{uuid.uuid4().hex}",
+                },
+            )
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="refuses to discard"):
+            command.downgrade(cfg, "dc_0011_attestation_registry")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT state FROM mod_deploy.rehearsal_grants "
+                        "WHERE grant_id = :grant_id"
+                    ),
+                    {"grant_id": grant_id},
+                ).scalar_one()
+                == "spent"
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM public.alembic_version "
+                        "WHERE version_num = 'dc_0012_rehearsal_lifecycle'"
+                    )
+                ).scalar_one()
+                == 1
+            )
+    finally:
+        engine.dispose()
 
 
 def test_dc_0010_copies_terminal_legacy_attempt_without_rewriting_issuance() -> None:
@@ -3531,3 +3586,353 @@ def test_consumption_wins_the_lock_race_and_settle_still_records_its_own_outcome
     assert marker.expires_at is None
     assert marker.result["attempt_id"] == str(attempt_id)
     assert rollout.status == "succeeded"
+
+
+def test_rehearsal_grant_state_constraint_refuses_null_revocation_reference(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    """PostgreSQL CHECK, not only the ORM, rejects UNKNOWN-as-valid revocation."""
+    engine = create_engine(migrated_scratch[0])
+    try:
+        # A valid row is the positive control: a missing table or broken grant
+        # cannot masquerade as evidence that this specific CHECK fired.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state) "
+                    "VALUES (:id, 'valid-grant', 'valid-ref', 'issued')"
+                ),
+                {"id": uuid.uuid4()},
+            )
+        with pytest.raises(IntegrityError, match="ck_rehearsal_grants_state_evidence"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_grants "
+                        "(id, grant_id, single_use_reference, state, "
+                        "revoked_at, revocation_ref) "
+                        "VALUES (:id, 'invalid-grant', 'invalid-ref', "
+                        "'revoked', now(), NULL)"
+                    ),
+                    {"id": uuid.uuid4()},
+                )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("revocation_ref", ("", "   ", "\t", "\n"))
+def test_rehearsal_grant_state_constraint_refuses_whitespace_revocation_reference(
+    migrated_scratch: tuple[str, str, str], revocation_ref: str
+) -> None:
+    engine = create_engine(migrated_scratch[0])
+    try:
+        with pytest.raises(IntegrityError, match="ck_rehearsal_grants_state_evidence"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_grants "
+                        "(id, grant_id, single_use_reference, state, "
+                        "revoked_at, revocation_ref) "
+                        "VALUES (:id, :grant_id, :reference, 'revoked', "
+                        "now(), :revocation_ref)"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "grant_id": f"whitespace-{uuid.uuid4().hex}",
+                        "reference": f"reference-{uuid.uuid4().hex}",
+                        "revocation_ref": revocation_ref,
+                    },
+                )
+    finally:
+        engine.dispose()
+
+
+def test_platform_api_cannot_reset_a_terminal_rehearsal_grant(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    _, platform_api_url, _ = migrated_scratch
+    engine = create_engine(platform_api_url)
+    grant_id = f"terminal-{uuid.uuid4().hex}"
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state, spent_at) "
+                    "VALUES (:id, :grant_id, :reference, 'spent', now())"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "grant_id": grant_id,
+                    "reference": f"reference-{uuid.uuid4().hex}",
+                },
+            )
+        with pytest.raises(DBAPIError, match="terminal row is immutable"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rehearsal_grants "
+                        "SET state = 'issued' "
+                        "WHERE grant_id = :grant_id"
+                    ),
+                    {"grant_id": grant_id},
+                )
+    finally:
+        engine.dispose()
+
+
+def test_platform_api_cannot_rewrite_terminal_rehearsal_evidence(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    _, platform_api_url, _ = migrated_scratch
+    engine = create_engine(platform_api_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state, spent_at) "
+                    "VALUES (:id, :grant_id, :reference, 'spent', now())"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "grant_id": f"immutable-{uuid.uuid4().hex}",
+                    "reference": f"reference-{uuid.uuid4().hex}",
+                },
+            )
+        with pytest.raises(DBAPIError, match="terminal row is immutable"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rehearsal_grants "
+                        "SET spent_at = now() "
+                        "WHERE grant_id LIKE 'immutable-%'"
+                    )
+                )
+    finally:
+        engine.dispose()
+
+
+def test_platform_api_cannot_rewrite_issued_rehearsal_identity(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    _, platform_api_url, _ = migrated_scratch
+    engine = create_engine(platform_api_url)
+    grant_id = f"issued-{uuid.uuid4().hex}"
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state) "
+                    "VALUES (:id, :grant_id, :reference, 'issued')"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "grant_id": grant_id,
+                    "reference": f"reference-{uuid.uuid4().hex}",
+                },
+            )
+        with pytest.raises(DBAPIError, match="identity is immutable"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rehearsal_grants "
+                        "SET grant_id = :replacement, state = 'spent', "
+                        "spent_at = now() "
+                        "WHERE grant_id = :grant_id"
+                    ),
+                    {
+                        "grant_id": grant_id,
+                        "replacement": f"replacement-{uuid.uuid4().hex}",
+                    },
+                )
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("length", (200, 201, 512))
+def test_platform_api_persists_signed_identifier_boundaries(
+    migrated_scratch: tuple[str, str, str], length: int
+) -> None:
+    _, platform_api_url, _ = migrated_scratch
+    engine = create_engine(platform_api_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state) "
+                    "VALUES (:id, :grant_id, :reference, 'issued')"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "grant_id": "g" * length,
+                    "reference": "r" * length,
+                },
+            )
+    finally:
+        engine.dispose()
+
+
+def test_platform_api_refuses_signed_identifier_above_512(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    _, platform_api_url, _ = migrated_scratch
+    engine = create_engine(platform_api_url)
+    try:
+        with pytest.raises(DBAPIError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_grants "
+                        "(id, grant_id, single_use_reference, state) "
+                        "VALUES (:id, :grant_id, :reference, 'issued')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "grant_id": "g" * 513,
+                        "reference": "r" * 513,
+                    },
+                )
+    finally:
+        engine.dispose()
+
+
+class _HoldOneRehearsalLock:
+    """Pause the winner after PostgreSQL grants the rehearsal row lock."""
+
+    def __init__(self) -> None:
+        self.holder_thread_id: int | None = None
+        self.acquired = threading.Event()
+        self.release = threading.Event()
+
+    def after_cursor_execute(
+        self,
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if threading.get_ident() != self.holder_thread_id:
+            return
+        normalised = " ".join(statement.lower().split())
+        if (
+            "from mod_deploy.rehearsal_grants" not in normalised
+            or "for update" not in normalised
+        ):
+            return
+        self.acquired.set()
+        if not self.release.wait(timeout=30):
+            raise AssertionError("the rehearsal-lock holder was never released")
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected_state", "expected_refusal"),
+    (
+        ("spend", "spend", "spent", "already spent"),
+        ("spend", "revoke", "spent", "not revocable"),
+        ("revoke", "spend", "revoked", "revoked"),
+    ),
+)
+def test_rehearsal_spend_and_revocation_serialize_on_postgres(
+    migrated_scratch: tuple[str, str, str],
+    first: str,
+    second: str,
+    expected_state: str,
+    expected_refusal: str,
+) -> None:
+    """The second transaction visibly waits, then sees the committed winner."""
+    from dotmac_deployment_control.rehearsal_grant_lifecycle import (
+        _Refused,
+        _revoke_rehearsal_grant,
+        _stage_rehearsal_consumption,
+    )
+
+    engine = create_engine(migrated_scratch[0])
+    grant_id = f"g-race-{uuid.uuid4().hex}"
+    reference = f"r-race-{uuid.uuid4().hex}"
+    gate = _HoldOneRehearsalLock()
+    threads: list[threading.Thread] = []
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_grants "
+                    "(id, grant_id, single_use_reference, state) "
+                    "VALUES (:id, :grant_id, :reference, 'issued')"
+                ),
+                {"id": uuid.uuid4(), "grant_id": grant_id, "reference": reference},
+            )
+        sessions = sessionmaker(bind=engine)
+        outcomes: dict[str, str] = {}
+        errors: list[BaseException] = []
+        backend_pids: dict[str, int] = {}
+        waiter_ready = threading.Event()
+
+        def worker(name: str, action: str) -> None:
+            with sessions() as db:
+                try:
+                    backend_pids[name] = db.execute(
+                        text("SELECT pg_backend_pid()")
+                    ).scalar_one()
+                    if name == "first":
+                        gate.holder_thread_id = threading.get_ident()
+                    else:
+                        waiter_ready.set()
+                    if action == "spend":
+                        _stage_rehearsal_consumption(
+                            db, grant_id=grant_id, single_use_reference=reference
+                        )
+                    else:
+                        _revoke_rehearsal_grant(
+                            db,
+                            grant_id=grant_id,
+                            single_use_reference=reference,
+                            revocation_ref=f"revoke-{name}",
+                        )
+                    db.commit()
+                    outcomes[name] = action
+                except _Refused as exc:
+                    db.rollback()
+                    outcomes[name] = f"refused:{exc}"
+                except BaseException as exc:
+                    db.rollback()
+                    errors.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=("first", first)),
+            threading.Thread(target=worker, args=("second", second)),
+        ]
+        threads[0].start()
+        assert gate.acquired.wait(timeout=10), "the first FOR UPDATE was not reached"
+        threads[1].start()
+        assert waiter_ready.wait(timeout=10), "the second backend did not start"
+        _wait_until_postgres_reports_lock(engine, backend_pids["second"])
+        gate.release.set()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == [], errors
+        assert outcomes["first"] == first
+        assert expected_refusal in outcomes["second"], outcomes
+        with sessions() as db:
+            state = db.execute(
+                text(
+                    "SELECT state FROM mod_deploy.rehearsal_grants "
+                    "WHERE grant_id = :grant_id"
+                ),
+                {"grant_id": grant_id},
+            ).scalar_one()
+        assert state == expected_state
+    finally:
+        gate.release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=30)
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+        engine.dispose()

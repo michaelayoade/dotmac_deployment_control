@@ -5,12 +5,13 @@ what a fleet of deployments should run is a control-plane act; the deployments
 themselves are separate applications that learn what to do through the
 Integrator, never by reading this schema (ADR-0024).
 
-## Twelve tables, and the two pairings that matter
+## Thirteen tables, and the two pairings that matter
 
 `dc_0011` added the durable attestation trust registry's three tables
 (`AttestationEnrolment`, `AttestationFingerprintClosure`,
 `AttestationCurrentRoot`) beside the nine this section originally described;
-the pairings below are about that original nine and are unaffected.
+`dc_0012` added the rehearsal-grant lifecycle ledger. The pairings below are
+about the original nine and are unaffected.
 
 Most of these are the obvious decomposition — target, credential, plan, rollout,
 attempt. Two are not:
@@ -106,6 +107,7 @@ _ROLLOUTS = "rollouts"
 _ATTEMPTS = "rollout_attempts"
 _ATTEMPT_SETTLEMENTS = "rollout_attempt_settlements"
 _RECOVERY_GRANTS = "recovery_grants"
+_REHEARSAL_GRANTS = "rehearsal_grants"
 _OBS_ATTEMPTS = "observation_attempts"
 _OBS_RECEIPTS = "observation_receipts"
 _ATTESTATION_ENROLMENTS = "attestation_enrolments"
@@ -207,6 +209,12 @@ class AttemptOutcome(StrEnum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
+
+
+class RehearsalGrantState(StrEnum):
+    ISSUED = "issued"
+    REVOKED = "revoked"
+    SPENT = "spent"
 
 
 class SignatureStatus(StrEnum):
@@ -741,6 +749,35 @@ class RecoveryGrant(Base, TimestampMixin):
     revocation_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     revocation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     record_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class RehearsalGrant(Base, TimestampMixin):
+    """Control's replay-coordinate ledger, not grant eligibility or launch authority."""
+
+    __tablename__ = _REHEARSAL_GRANTS
+    __table_args__ = (
+        UniqueConstraint("grant_id", name="uq_rehearsal_grants_grant_id"),
+        UniqueConstraint(
+            "single_use_reference", name="uq_rehearsal_grants_single_use_reference"
+        ),
+        CheckConstraint(
+            "state IN ('issued', 'revoked', 'spent')", name="ck_rehearsal_grants_state"
+        ),
+        CheckConstraint(
+            "(state = 'issued' AND revoked_at IS NULL AND revocation_ref IS NULL AND spent_at IS NULL) "  # noqa: E501
+            "OR (state = 'revoked' AND revoked_at IS NOT NULL AND revocation_ref IS NOT NULL AND revocation_ref ~ '[^[:space:]]' AND spent_at IS NULL) "  # noqa: E501
+            "OR (state = 'spent' AND spent_at IS NOT NULL AND revoked_at IS NULL AND revocation_ref IS NULL)",  # noqa: E501
+            name="ck_rehearsal_grants_state_evidence",
+        ),
+        schema_table_args(SCHEMA),
+    )
+    id: Mapped[UUID] = uuid_pk()
+    grant_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    single_use_reference: Mapped[str] = mapped_column(String(512), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="issued")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revocation_ref: Mapped[str | None] = mapped_column(String(200))
+    spent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DeploymentPlan(Base, TimestampMixin):

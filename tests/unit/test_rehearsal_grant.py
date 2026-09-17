@@ -583,6 +583,30 @@ def test_a_grant_built_from_validated_evidence_is_admitted() -> None:
     )
 
 
+@pytest.mark.parametrize("field", ("grant_id", "single_use_reference"))
+@pytest.mark.parametrize("length", (200, 201, 512))
+def test_signed_identifiers_accept_the_512_character_contract(
+    field: str, length: int
+) -> None:
+    verify_rehearsal_grant(
+        issue_rehearsal_grant(
+            _statement(**{field: "x" * length}),
+            signer=_Signer(),
+            candidate=_candidate_evidence(),
+        ),
+        verifier=_Verifier(),
+        subject=_statement(**{field: "x" * length}).subject,
+        at=NOW,
+    )
+
+
+@pytest.mark.parametrize("field", ("grant_id", "single_use_reference"))
+def test_signed_identifiers_refuse_beyond_512_characters(field: str) -> None:
+    with pytest.raises(RehearsalGrantRefusedError) as refused:
+        _statement(**{field: "x" * 513})
+    assert refused.value.code is RehearsalGrantRefusalCode.MALFORMED
+
+
 def test_issuance_refuses_a_bare_value_in_place_of_evidence() -> None:
     """THE FREE-HEX-STRING CLOSURE, direct form.
 

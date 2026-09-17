@@ -109,6 +109,7 @@ module = ModuleManifest(
         "observation_receipts",
         "observation_attempts",
         "recovery_grants",
+        "rehearsal_grants",
         "attestation_enrolments",
         "attestation_fingerprint_closures",
         "attestation_current_roots",

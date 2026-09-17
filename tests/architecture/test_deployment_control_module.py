@@ -69,6 +69,8 @@ MUTABLE_TABLES = (
     # Revocation UPDATEs a grant in place rather than deleting it, so the
     # lifecycle genuinely mutates this one.
     "recovery_grants",
+    # dc_0012: revocation and irreversible spend update one grant-state row.
+    "rehearsal_grants",
     # dc_0011: the one deliberately mutable table in the registry -- a
     # derived pointer projection, moved by compare-and-swap and cleared by
     # revocation.

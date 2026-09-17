@@ -3,6 +3,18 @@
 This document is the source of truth for Control's single-use dispatch
 authority. It does not define an executor transport or launch adapter.
 
+## Rehearsal-grant staging
+
+`_stage_rehearsal_consumption` follows the same caller-owned transaction rule:
+it locks and flushes the durable grant-state row for the replay coordinate,
+but is private and NOT a launch grant. A future trusted assembly adapter must
+verify the signed rehearsal grant, own the transaction, call the stage, observe
+a successful commit, and
+only then launch. No such adapter exists in this distribution. An unknown
+commit outcome gives no launch or automatic replay authority; the adapter must
+resolve durable standing before any further action. A committed spend remains
+final; no unspend path is implied here.
+
 `_stage_dispatch_consumption` is an internal service seam. It accepts only a
 Control attempt identifier and an independently resolved expected target
 coordinate after trusted composition has authenticated a presenter. The
