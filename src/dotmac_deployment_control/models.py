@@ -88,6 +88,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
+    column,
+    or_,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -764,9 +768,23 @@ class RehearsalGrant(Base, TimestampMixin):
             "state IN ('issued', 'revoked', 'spent')", name="ck_rehearsal_grants_state"
         ),
         CheckConstraint(
-            "(state = 'issued' AND revoked_at IS NULL AND revocation_ref IS NULL AND spent_at IS NULL) "  # noqa: E501
-            "OR (state = 'revoked' AND revoked_at IS NOT NULL AND revocation_ref IS NOT NULL AND revocation_ref ~ '[^[:space:]]' AND spent_at IS NULL) "  # noqa: E501
-            "OR (state = 'spent' AND spent_at IS NOT NULL AND revoked_at IS NULL AND revocation_ref IS NULL)",  # noqa: E501
+            or_(
+                text(
+                    "state = 'issued' AND revoked_at IS NULL "
+                    "AND revocation_ref IS NULL AND spent_at IS NULL"
+                ),
+                and_(
+                    text(
+                        "state = 'revoked' AND revoked_at IS NOT NULL "
+                        "AND revocation_ref IS NOT NULL AND spent_at IS NULL"
+                    ),
+                    column("revocation_ref").regexp_match(r"\S"),
+                ),
+                text(
+                    "state = 'spent' AND spent_at IS NOT NULL "
+                    "AND revoked_at IS NULL AND revocation_ref IS NULL"
+                ),
+            ),
             name="ck_rehearsal_grants_state_evidence",
         ),
         schema_table_args(SCHEMA),

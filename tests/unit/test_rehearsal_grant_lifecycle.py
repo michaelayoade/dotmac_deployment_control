@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
-from dotmac_deployment_control.models import RehearsalGrantState
+from dotmac_deployment_control.models import RehearsalGrant, RehearsalGrantState
 from dotmac_deployment_control.rehearsal_grant_lifecycle import (
     _Refused,
     _revoke_rehearsal_grant,
@@ -68,3 +71,27 @@ def test_revoke_refuses_a_reference_wider_than_its_persisted_column() -> None:
         )
     assert db.row.state == "issued"
     assert not db.flushed
+
+
+def test_sqlite_model_constraint_refuses_whitespace_revocation_reference() -> None:
+    """The model's portable CHECK must not break every SQLite fixture."""
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("ATTACH DATABASE ':memory:' AS mod_deploy"))
+            RehearsalGrant.__table__.create(conn)
+            with pytest.raises(
+                IntegrityError, match="ck_rehearsal_grants_state_evidence"
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_grants "
+                        "(id, grant_id, single_use_reference, state, "
+                        "revoked_at, revocation_ref) VALUES "
+                        "(:id, 'grant', 'single-use', 'revoked', "
+                        "CURRENT_TIMESTAMP, :ref)"
+                    ),
+                    {"id": uuid4().hex, "ref": " \t\n"},
+                )
+    finally:
+        engine.dispose()
