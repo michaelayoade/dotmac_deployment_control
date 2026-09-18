@@ -7,10 +7,10 @@ whose final type differs from the root revision, and
 ``dc_0003_execution_plan_binding`` appends the four columns that bind a plan to
 the Foundation's execution plan and to a declared operation. ``dc_0007``
 appends the exact signed dispatch to the append-only attempt that it names.
-``dc_0010`` adds immutable settlement evidence beside that issuance.
 ``dc_0011`` adds the durable attestation trust registry -- append-only
 enrolments, an append-only fingerprint-closure ledger keyed on the fingerprint
 itself, and the one deliberately mutable current-root pointer table.
+``dc_0012`` adds the durable rehearsal-grant lifecycle ledger.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -100,7 +100,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0011_attestation_registry",
+    lineage_head="dc_0012_rehearsal_lifecycle",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=(
@@ -326,6 +326,20 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                 _column(
                     "incumbent_prestate_discriminator", 19, _VARCHAR_128, nullable=True
                 ),
+            ),
+        ),
+        _table(
+            "rehearsal_grants",
+            (
+                _column("id", 1, _UUID, nullable=False),
+                _column("grant_id", 2, _VARCHAR_512, nullable=False),
+                _column("single_use_reference", 3, _VARCHAR_512, nullable=False),
+                _column("state", 4, _VARCHAR_20, nullable=False),
+                _column("revoked_at", 5, _TIMESTAMPTZ, nullable=True),
+                _column("revocation_ref", 6, _VARCHAR_200, nullable=True),
+                _column("spent_at", 7, _TIMESTAMPTZ, nullable=True),
+                _column("created_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
+                _column("updated_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
             ),
         ),
         _table(

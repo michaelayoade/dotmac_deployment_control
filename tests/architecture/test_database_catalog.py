@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0010 structure declaration."""
+"""The module publishes one exact post-dc_0012 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,18 +32,18 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0011_attestation_registry",
+            revision="dc_0012_rehearsal_lifecycle",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0011_attestation_registry"
+    assert database_catalog.lineage_head == "dc_0012_rehearsal_lifecycle"
 
 
-def test_catalogue_has_exact_twelve_table_169_column_extent() -> None:
-    """Twelve tables and 169 columns after `dc_0011`.
+def test_catalogue_has_exact_thirteen_table_178_column_extent() -> None:
+    """Thirteen tables and 178 columns after `dc_0012`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
     `dc_0009` appends the nineteenth: Foundation's identity for the encoding
@@ -67,11 +67,12 @@ def test_catalogue_has_exact_twelve_table_169_column_extent() -> None:
     count of 25 would mean somebody had added the sibling image column that
     lets an image change without the plan digest moving.
 
-    `dc_0011` adds three tables for the durable attestation trust registry:
+    `dc_0011` adds three tables for the durable attestation trust registry,
+    and `dc_0012` adds the nine-column rehearsal grant ledger:
     the append-only `attestation_enrolments` (13 columns), the append-only
     `attestation_fingerprint_closures` (8 columns), and the deliberately
     mutable derived projection `attestation_current_roots` (5 columns) --
-    143 + 5 + 13 + 8 = 169.
+    143 + 5 + 13 + 8 + 9 = 178.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
@@ -84,12 +85,46 @@ def test_catalogue_has_exact_twelve_table_169_column_extent() -> None:
         "observation_attempts": 15,
         "observation_receipts": 15,
         "recovery_grants": 19,
+        "rehearsal_grants": 9,
         "rollout_attempts": 12,
         "rollout_attempt_settlements": 9,
         "rollouts": 12,
         "target_credentials": 15,
     }
-    assert sum(counts.values()) == 169
+    assert sum(counts.values()) == 178
+
+
+def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
+    rehearsal = next(
+        table for table in database_catalog.tables if table.name == "rehearsal_grants"
+    )
+    assert [column.name for column in rehearsal.columns] == [
+        "id",
+        "grant_id",
+        "single_use_reference",
+        "state",
+        "revoked_at",
+        "revocation_ref",
+        "spent_at",
+        "created_at",
+        "updated_at",
+    ]
+    assert [column.ordinal for column in rehearsal.columns] == list(range(1, 10))
+    assert [column.nullable for column in rehearsal.columns] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert [column.postgres_type.formatted for column in rehearsal.columns][1:3] == [
+        "character varying(512)",
+        "character varying(512)",
+    ]
 
 
 def test_dc_0005_appends_the_portable_authorization_to_the_rollout() -> None:
@@ -260,7 +295,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0011_attestation_registry",
+                revision="dc_0012_rehearsal_lifecycle",
             ),
         )
 
@@ -276,5 +311,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 169
+    assert sum(len(table.columns) for table in restored.tables) == 178
     assert {table.plane.value for table in restored.tables} == {"platform"}

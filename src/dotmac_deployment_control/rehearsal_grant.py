@@ -639,13 +639,20 @@ class RehearsalGrantStatementV1:
                 RehearsalGrantRefusalCode.PURPOSE_MISMATCH,
                 f"a rehearsal grant statement must declare {REHEARSAL_PURPOSE!r}",
             )
-        if not str(self.single_use_reference).strip():
-            raise _refused(
-                RehearsalGrantRefusalCode.MALFORMED,
-                "single_use_reference is empty. A grant with no replay "
-                "coordinate is re-presentable, and a re-presentable grant is a "
-                "second execution authority",
-            )
+        for field, value in (
+            ("grant_id", self.grant_id),
+            ("single_use_reference", self.single_use_reference),
+        ):
+            if not isinstance(value, str) or not value or value != value.strip():
+                raise _refused(
+                    RehearsalGrantRefusalCode.MALFORMED,
+                    f"{field} must be a non-empty, whitespace-exact string",
+                )
+            if len(value) > _MAX_TEXT:
+                raise _refused(
+                    RehearsalGrantRefusalCode.MALFORMED,
+                    f"{field} exceeds {_MAX_TEXT} characters",
+                )
         # Constructing the provocation is the validation: it refuses an unknown
         # refusal and an unpublished step, and there is no route to a statement
         # that skips it.
