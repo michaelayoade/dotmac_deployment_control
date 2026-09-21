@@ -15,11 +15,17 @@ from __future__ import annotations
 
 import os
 
+from dotmac_kernel.prerequisites import install_prerequisite_bindings
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+from migration_bindings import ASSEMBLY_PREREQUISITE_BINDINGS
 
 config = context.config
+
+# Install before Alembic loads revision modules: module ``depends_on`` edges
+# resolve from these assembly-owned bindings at import time.
+install_prerequisite_bindings(ASSEMBLY_PREREQUISITE_BINDINGS)
 
 target_metadata = None
 

@@ -48,6 +48,7 @@ TARGET_SUSPENDED_V1: Final[str] = "deployment.target.suspended.v1"
 TARGET_DECOMMISSIONED_V1: Final[str] = "deployment.target.decommissioned.v1"
 CREDENTIAL_ENROLLED_V1: Final[str] = "deployment.credential.enrolled.v1"
 CREDENTIAL_ACTIVATED_V1: Final[str] = "deployment.credential.activated.v1"
+CREDENTIAL_RETIRED_V1: Final[str] = "deployment.credential.retired.v1"
 CREDENTIAL_REVOKED_V1: Final[str] = "deployment.credential.revoked.v1"
 PLAN_PROPOSED_V1: Final[str] = "deployment.plan.proposed.v1"
 PLAN_APPROVED_V1: Final[str] = "deployment.plan.approved.v1"
@@ -78,6 +79,7 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         TARGET_DECOMMISSIONED_V1,
         CREDENTIAL_ENROLLED_V1,
         CREDENTIAL_ACTIVATED_V1,
+        CREDENTIAL_RETIRED_V1,
         CREDENTIAL_REVOKED_V1,
         PLAN_PROPOSED_V1,
         PLAN_APPROVED_V1,
@@ -731,6 +733,7 @@ class DriftReport:
 __all__ = [
     "CREDENTIAL_ACTIVATED_V1",
     "CREDENTIAL_ENROLLED_V1",
+    "CREDENTIAL_RETIRED_V1",
     "CREDENTIAL_REVOKED_V1",
     "DRIFT_DETECTED_V1",
     "INTENT_DISPATCHED_V1",

@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from collections.abc import Generator
+from datetime import UTC, datetime
 
 import pytest
 from dotmac_kernel.models import Base
@@ -35,6 +36,7 @@ from dotmac_deployment_control.attestation_binding import (
     resolve_fingerprint_standing,
 )
 from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRootDescriptorTerms,
     AttestationRootRefusal,
     enrol_root,
     revoke_root,
@@ -74,6 +76,19 @@ def _public_key_b64(seed: str) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def _descriptor(custody_domain: str, suffix: str) -> AttestationRootDescriptorTerms:
+    purpose = {
+        "host_attester": "dotmac.foundation.installed-host.v2",
+        "candidate_release_signer": "dotmac.foundation.candidate-artifact.v2",
+    }[custody_domain]
+    return AttestationRootDescriptorTerms(
+        issuer="control-test",
+        attestation_key_id=f"attestation-{suffix}",
+        evidence_purpose=purpose,
+        not_after=datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+
 def _enrol(db: Session, subject: str, *, custody_domain: str = "host_attester"):
     view = enrol_root(
         db,
@@ -83,6 +98,7 @@ def _enrol(db: Session, subject: str, *, custody_domain: str = "host_attester"):
         algorithm="ed25519",
         key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
         enrolment_authority="control_service",
+        descriptor=_descriptor(custody_domain, subject),
     )
     db.commit()
     return view
@@ -154,6 +170,7 @@ def test_a_rotated_away_fingerprint_no_longer_resolves_as_current(
         algorithm="ed25519",
         key_custody_pointer="bao://secret/dotmac/attest/host-rotate-new",
         enrolment_authority="control_service",
+        descriptor=_descriptor("host_attester", "host-rotate-new"),
     )
     db.commit()
 

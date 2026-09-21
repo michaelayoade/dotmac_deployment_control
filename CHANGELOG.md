@@ -5,6 +5,47 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — ADR-0073 authenticated host admission
+
+### Added
+
+- A distinct purpose-bound host-admission presentation credential, canonical
+  signed presentation contract, and same-transaction prepare/finalize service.
+  Control derives target and Fleet host identity from locked stored state,
+  emits complete immutable but non-authorizing candidate/installed root facts,
+  and mints an opaque Session-bound capability. Finalize refuses copied facts
+  or a forged object and stages the existing replay marker only after the exact
+  verified evidence coordinate is returned.
+- An install-once host-admission security seam. Trusted composition fixes the
+  presentation verifier and clock at startup; request-time prepare accepts only
+  the attempt and parsed presentation, refuses if startup wiring is absent, and
+  cannot replace either dependency.
+- Append-only target-to-host associations and target admission-policy revisions,
+  each with append-only closure/successor evidence and a separately mutable
+  one-current projection. Admission derives truth from history and refuses
+  absence, ambiguity, or projection drift without repairing it.
+- Immutable one-to-one attestation-root descriptors and permanent subject lock
+  rows. New enrolments and rotations require complete issuer/key/purpose/expiry
+  metadata; legacy roots without it remain historical and refuse admission.
+- A credential-retirement transition, distinct from revocation, which uses the
+  same target-then-credential lock order and records the terminal transition in
+  Control's append-only fact history.
+
+### Changed
+
+- Dispatch consumption keeps the existing Kernel scope and dispatch-id key but
+  now fingerprints the canonical dispatch + candidate-envelope + installed-
+  envelope coordinate. The sole production caller is the authenticated
+  finalizer; rollback writes no marker and a committed replay remains spent.
+- Every credential transition uses target-then-credential lock ordering, and
+  trust-root writers serialize through permanent subject rows.
+- The standalone Alembic verification assembly now installs explicit Kernel
+  prerequisite bindings before loading module revisions, so clean-room
+  migrations prove the real idempotency-ledger and platform-audit dependencies
+  rather than relying on ambient registration.
+
+No release version is allocated by this source change.
+
 ## 0.1.0a13 (published 2026-09-12) — a trust-root binding a consumer can read, and refusals it can tell apart
 
 Published by run `34687474025` from protected main `817395488639`; independent

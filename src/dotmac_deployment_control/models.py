@@ -117,6 +117,14 @@ _OBS_RECEIPTS = "observation_receipts"
 _ATTESTATION_ENROLMENTS = "attestation_enrolments"
 _ATTESTATION_CLOSURES = "attestation_fingerprint_closures"
 _ATTESTATION_CURRENT_ROOTS = "attestation_current_roots"
+_ATTESTATION_SUBJECT_LOCKS = "attestation_subject_locks"
+_ATTESTATION_ROOT_DESCRIPTORS = "attestation_root_descriptors"
+_TARGET_HOST_ASSOCIATIONS = "target_host_associations"
+_TARGET_HOST_CLOSURES = "target_host_association_closures"
+_TARGET_CURRENT_HOSTS = "target_current_hosts"
+_TARGET_ADMISSION_POLICIES = "target_admission_policies"
+_TARGET_ADMISSION_POLICY_CLOSURES = "target_admission_policy_closures"
+_TARGET_CURRENT_ADMISSION_POLICIES = "target_current_admission_policies"
 
 
 class TargetStatus(StrEnum):
@@ -1130,6 +1138,126 @@ class ObservationReceipt(Base, TimestampMixin):
     observed_state_digest: Mapped[str | None] = mapped_column(String(128))
 
 
+class AttestationSubjectLock(Base, TimestampMixin):
+    """Persistent serialization row; never a trust-state projection."""
+
+    __tablename__ = _ATTESTATION_SUBJECT_LOCKS
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    custody_domain: Mapped[str] = mapped_column(String(40), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(200), primary_key=True)
+
+
+class AttestationRootDescriptor(Base, TimestampMixin):
+    """Immutable metadata that supplements, but never duplicates, enrolment."""
+
+    __tablename__ = _ATTESTATION_ROOT_DESCRIPTORS
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    enrolment_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_ATTESTATION_ENROLMENTS}.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    issuer: Mapped[str] = mapped_column(String(200), nullable=False)
+    attestation_key_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    evidence_purpose: Mapped[str] = mapped_column(String(200), nullable=False)
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TargetHostAssociation(Base, TimestampMixin):
+    __tablename__ = _TARGET_HOST_ASSOCIATIONS
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    id: Mapped[UUID] = uuid_pk()
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"), nullable=False
+    )
+    host_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    authority: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class TargetHostAssociationClosure(Base, TimestampMixin):
+    __tablename__ = _TARGET_HOST_CLOSURES
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    association_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_HOST_ASSOCIATIONS}.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    authority: Mapped[str] = mapped_column(String(200), nullable=False)
+    successor_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_HOST_ASSOCIATIONS}.id", ondelete="RESTRICT")
+    )
+
+
+class TargetCurrentHost(Base, TimestampMixin):
+    __tablename__ = _TARGET_CURRENT_HOSTS
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"), primary_key=True
+    )
+    association_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_HOST_ASSOCIATIONS}.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+
+class TargetAdmissionPolicy(Base, TimestampMixin):
+    __tablename__ = _TARGET_ADMISSION_POLICIES
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    id: Mapped[UUID] = uuid_pk()
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"), nullable=False
+    )
+    host_association_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_HOST_ASSOCIATIONS}.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    candidate_root_subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    candidate_audience: Mapped[str] = mapped_column(String(200), nullable=False)
+    installed_audience: Mapped[str] = mapped_column(String(200), nullable=False)
+    expected_foundation_package: Mapped[str] = mapped_column(
+        String(200), nullable=False
+    )
+
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    authority: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class TargetAdmissionPolicyClosure(Base, TimestampMixin):
+    __tablename__ = _TARGET_ADMISSION_POLICY_CLOSURES
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    policy_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_ADMISSION_POLICIES}.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    authority: Mapped[str] = mapped_column(String(200), nullable=False)
+    successor_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_ADMISSION_POLICIES}.id", ondelete="RESTRICT")
+    )
+
+
+class TargetCurrentAdmissionPolicy(Base, TimestampMixin):
+    __tablename__ = _TARGET_CURRENT_ADMISSION_POLICIES
+    __table_args__ = (schema_table_args(SCHEMA),)
+
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"), primary_key=True
+    )
+    policy_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGET_ADMISSION_POLICIES}.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+
 class ObservationAttempt(Base, TimestampMixin):
     """Append-only: one row per ARRIVAL, whatever happens to it.
 
@@ -1200,6 +1328,8 @@ __all__ = [
     "AttestationCustodyDomain",
     "AttestationEnrolment",
     "AttestationFingerprintClosure",
+    "AttestationRootDescriptor",
+    "AttestationSubjectLock",
     "CredentialStatus",
     "DeploymentPlan",
     "DeploymentTarget",
@@ -1214,5 +1344,11 @@ __all__ = [
     "RolloutStatus",
     "SignatureStatus",
     "TargetCredential",
+    "TargetAdmissionPolicy",
+    "TargetAdmissionPolicyClosure",
+    "TargetCurrentAdmissionPolicy",
+    "TargetCurrentHost",
+    "TargetHostAssociation",
+    "TargetHostAssociationClosure",
     "TargetStatus",
 ]

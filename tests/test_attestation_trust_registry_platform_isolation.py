@@ -38,7 +38,7 @@ import os
 import threading
 import uuid
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -51,14 +51,20 @@ from dotmac_deployment_control import versions_dir as deploy_versions_dir
 from dotmac_deployment_control.attestation_trust_registry import (
     AttestationRefusalCode,
     AttestationRefusedError,
+    AttestationRootDescriptorTerms,
     AttestationRootRefusal,
-    enrol_root,
+    AttestationRootView,
     fingerprint_standing,
     reconcile_current_root,
     repair_current_root,
     resolve_current_root,
     revoke_root,
-    rotate_root,
+)
+from dotmac_deployment_control.attestation_trust_registry import (
+    enrol_root as _enrol_root,
+)
+from dotmac_deployment_control.attestation_trust_registry import (
+    rotate_root as _rotate_root,
 )
 from dotmac_deployment_control.host_attester_enrolment import HostAttesterStanding
 from dotmac_deployment_control.models import (
@@ -100,6 +106,78 @@ def _public_key_b64(seed: str) -> str:
     """A fresh, deterministic, valid unpadded-base64url public key per seed."""
     raw = hashlib.sha256(b"attestation-trust-registry\0" + seed.encode()).digest()
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def enrol_root(
+    db: Session,
+    *,
+    custody_domain: str,
+    subject: str,
+    public_key_b64: str,
+    algorithm: str,
+    key_custody_pointer: str,
+    enrolment_authority: str,
+    enrolled_at: datetime | None = None,
+) -> AttestationRootView:
+    """Supply complete descriptor terms to the canonical production writer."""
+    when = enrolled_at or datetime.now(UTC)
+    purpose = {
+        "host_attester": "dotmac.foundation.installed-host.v2",
+        "candidate_release_signer": "dotmac.foundation.candidate-artifact.v2",
+    }[custody_domain]
+    return _enrol_root(
+        db,
+        custody_domain=custody_domain,
+        subject=subject,
+        public_key_b64=public_key_b64,
+        algorithm=algorithm,
+        key_custody_pointer=key_custody_pointer,
+        enrolment_authority=enrolment_authority,
+        descriptor=AttestationRootDescriptorTerms(
+            issuer="control-test-issuer",
+            attestation_key_id=f"test-{custody_domain}-{subject}"[:200],
+            evidence_purpose=purpose,
+            not_after=when + timedelta(days=3650),
+        ),
+        enrolled_at=enrolled_at,
+    )
+
+
+def rotate_root(
+    db: Session,
+    *,
+    custody_domain: str,
+    subject: str,
+    supersedes_fingerprint: str,
+    public_key_b64: str,
+    algorithm: str,
+    key_custody_pointer: str,
+    enrolment_authority: str,
+    enrolled_at: datetime | None = None,
+) -> AttestationRootView:
+    """Supply complete successor descriptor terms to the canonical writer."""
+    when = enrolled_at or datetime.now(UTC)
+    purpose = {
+        "host_attester": "dotmac.foundation.installed-host.v2",
+        "candidate_release_signer": "dotmac.foundation.candidate-artifact.v2",
+    }[custody_domain]
+    return _rotate_root(
+        db,
+        custody_domain=custody_domain,
+        subject=subject,
+        supersedes_fingerprint=supersedes_fingerprint,
+        public_key_b64=public_key_b64,
+        algorithm=algorithm,
+        key_custody_pointer=key_custody_pointer,
+        enrolment_authority=enrolment_authority,
+        descriptor=AttestationRootDescriptorTerms(
+            issuer="control-test-issuer",
+            attestation_key_id=f"test-{custody_domain}-{subject}-successor"[:200],
+            evidence_purpose=purpose,
+            not_after=when + timedelta(days=3650),
+        ),
+        enrolled_at=enrolled_at,
+    )
 
 
 @pytest.fixture(scope="module")

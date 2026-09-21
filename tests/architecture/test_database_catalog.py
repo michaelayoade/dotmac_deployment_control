@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0012 structure declaration."""
+"""The module publishes one exact post-dc_0013 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,17 +32,17 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0012_rehearsal_lifecycle",
+            revision="dc_0013_host_admission",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0012_rehearsal_lifecycle"
+    assert database_catalog.lineage_head == "dc_0013_host_admission"
 
 
-def test_catalogue_has_exact_thirteen_table_178_column_extent() -> None:
+def test_catalogue_has_exact_twenty_one_table_227_column_extent() -> None:
     """Thirteen tables and 178 columns after `dc_0012`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
@@ -73,6 +73,12 @@ def test_catalogue_has_exact_thirteen_table_178_column_extent() -> None:
     `attestation_fingerprint_closures` (8 columns), and the deliberately
     mutable derived projection `attestation_current_roots` (5 columns) --
     143 + 5 + 13 + 8 + 9 = 178.
+
+    `dc_0013` adds eight host-admission tables and 49 columns: permanent
+    attestation-subject locks, immutable root descriptors, append-only host and
+    policy revisions plus closure/successor evidence, and two mutable current
+    projections. The exact post-revision extent is therefore 21 tables and 227
+    columns.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
@@ -80,6 +86,8 @@ def test_catalogue_has_exact_thirteen_table_178_column_extent() -> None:
         "attestation_current_roots": 5,
         "attestation_enrolments": 13,
         "attestation_fingerprint_closures": 8,
+        "attestation_root_descriptors": 7,
+        "attestation_subject_locks": 4,
         "deployment_plans": 24,
         "deployment_targets": 22,
         "observation_attempts": 15,
@@ -90,8 +98,14 @@ def test_catalogue_has_exact_thirteen_table_178_column_extent() -> None:
         "rollout_attempt_settlements": 9,
         "rollouts": 12,
         "target_credentials": 15,
+        "target_admission_policies": 11,
+        "target_admission_policy_closures": 6,
+        "target_current_admission_policies": 4,
+        "target_current_hosts": 4,
+        "target_host_association_closures": 6,
+        "target_host_associations": 7,
     }
-    assert sum(counts.values()) == 178
+    assert sum(counts.values()) == 227
 
 
 def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
@@ -295,7 +309,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0012_rehearsal_lifecycle",
+                revision="dc_0013_host_admission",
             ),
         )
 
@@ -311,5 +325,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 178
+    assert sum(len(table.columns) for table in restored.tables) == 227
     assert {table.plane.value for table in restored.tables} == {"platform"}

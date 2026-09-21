@@ -154,13 +154,14 @@ def test_two_open_enrolments_for_the_same_subject_refuse_through_the_facade(
     `enrol_root`, matching a raw-SQL repair script or restored-backup
     scenario `_derive_current_fingerprint`'s own docstring names."""
     import uuid
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime, timedelta
 
     import dotmac_deployment_control.attestation_trust_registry as registry
     from dotmac_deployment_control.attestation_binding import (
         resolve_attestation_binding,
     )
     from dotmac_deployment_control.attestation_trust_registry import (
+        AttestationRootDescriptorTerms,
         AttestationRootRefusal,
     )
     from dotmac_deployment_control.models import AttestationEnrolment
@@ -174,6 +175,12 @@ def test_two_open_enrolments_for_the_same_subject_refuse_through_the_facade(
         algorithm="ed25519",
         key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
         enrolment_authority="control_service",
+        descriptor=AttestationRootDescriptorTerms(
+            issuer="control-test-issuer",
+            attestation_key_id="host-ambiguous-key",
+            evidence_purpose="dotmac.foundation.installed-host.v2",
+            not_after=datetime.now(UTC) + timedelta(days=3650),
+        ),
     )
     sqlite_session.commit()
 
@@ -257,10 +264,15 @@ def test_an_unambiguous_subject_still_resolves_through_the_facade(
     with exactly one open enrolment resolves normally through the identical
     facade function -- the refusal is about the ambiguity specifically, not
     about the facade having become universally unable to resolve anything."""
+    from datetime import UTC, datetime, timedelta
+
     from dotmac_deployment_control.attestation_binding import (
         resolve_attestation_binding,
     )
-    from dotmac_deployment_control.attestation_trust_registry import enrol_root
+    from dotmac_deployment_control.attestation_trust_registry import (
+        AttestationRootDescriptorTerms,
+        enrol_root,
+    )
     from dotmac_deployment_control.host_attester_enrolment import HostAttesterStanding
 
     subject = "host-unambiguous"
@@ -272,6 +284,12 @@ def test_an_unambiguous_subject_still_resolves_through_the_facade(
         algorithm="ed25519",
         key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
         enrolment_authority="control_service",
+        descriptor=AttestationRootDescriptorTerms(
+            issuer="control-test-issuer",
+            attestation_key_id="host-unambiguous-key",
+            evidence_purpose="dotmac.foundation.installed-host.v2",
+            not_after=datetime.now(UTC) + timedelta(days=3650),
+        ),
     )
     sqlite_session.commit()
 

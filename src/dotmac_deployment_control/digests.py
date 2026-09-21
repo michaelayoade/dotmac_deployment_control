@@ -118,6 +118,27 @@ def canonical_json(payload: Mapping[str, Any]) -> bytes:
     )
 
 
+def compute_host_admission_consumption_fingerprint(
+    *,
+    dispatch_envelope_digest: str,
+    candidate_attestation_envelope_digest: str,
+    installed_attestation_envelope_digest: str,
+) -> str:
+    """Bare Kernel fingerprint over ADR-0073's complete evidence coordinate."""
+    payload = {
+        "schema": "dotmac.control.host-admission-consumption",
+        "version": 1,
+        "dispatch_envelope_digest": dispatch_envelope_digest,
+        "candidate_attestation_envelope_digest": (
+            candidate_attestation_envelope_digest
+        ),
+        "installed_attestation_envelope_digest": (
+            installed_attestation_envelope_digest
+        ),
+    }
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
 def _refuse(subject: str, value: object, reason: str) -> DigestEncodingError:
     return DigestEncodingError(
         f"{value!r} is not a readable {subject}: {reason}. This is an ENCODING "

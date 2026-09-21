@@ -21,9 +21,10 @@ coordinate after trusted composition has authenticated a presenter. The
 coordinate's `target_id` must come from the Control-stored credential selected
 by that authentication, and its `target_ref` from the corresponding target row;
 neither may come from the presented envelope. The coordinate is compared to the
-locked target; it is not itself authentication. No production caller exists. It
-does not accept an envelope, verifier or standing assertion from an untrusted
-caller.
+locked target; it is not itself authentication. Its sole production caller is
+ADR-0073's `finalize_host_admission`, after `prepare_host_admission` has
+authenticated and locked the complete coordinate. It does not accept an
+envelope, verifier or standing assertion from an untrusted caller.
 
 Within one caller-owned transaction, Control locks target, plan and the mutable
 rollout in the same order as approval revocation, then reads immutable attempt
@@ -32,17 +33,38 @@ stored authorization/dispatch coordinate; checks target liveness, rollout and
 attempt state, authorization lifetime, and current approval standing; then calls
 Kernel `execute_once_platform`. Its key is the stored signed dispatch id, its
 scope is `deployment.consume_dispatch_challenge.v1`, its fingerprint is the
-bare 64-hex form of the typed dispatch-envelope digest, and `expires_at` is
-always `NULL`.
+bare 64-hex SHA-256 over the canonical dispatch/candidate/installed evidence
+coordinate, and `expires_at` is always `NULL`.
 
 The service flushes but never commits. Its private staged result is not a launch
-grant. An adapter may launch only after the transaction owner observes commit;
-no such adapter is present in this distribution today. The marker and the
+grant. A CP adapter may launch only after the transaction owner observes commit;
+that transport adapter is not part of this distribution. The marker and the
 launch must never be reset or expired. If approval revocation commits first,
 consumption refuses even though dispatch history stays immutable. If consumption
 commits first, that is the final authorization cut-off; recovery requires a new
 signed dispatch attempt. This is distinct from at-most-once external delivery,
 which stays with Integrator/outbox.
+
+## Authenticated host-admission extension
+
+ADR-0073 requires a private Control preparation/finalization path for a signed
+host-admission presentation. It retains this scope and the signed dispatch
+envelope's `dispatch_id` as the Kernel key.  Its fingerprint is instead the
+SHA-256 of the canonical admission-coordinate mapping containing the dispatch,
+candidate-attestation and installed-attestation envelope digests.  Therefore a
+replay of the exact coordinate is consumed, while the same dispatch with changed
+attestation evidence is an integrity conflict; no second replay ledger exists.
+
+The implemented preparation and finalization use one caller-owned transaction.
+Trusted composition first installs the purpose-specific presentation verifier
+and trusted clock exactly once; preparation has no request-time verifier or
+clock parameter and fails closed before authentication if startup wiring is
+absent. A second install is refused.
+Preparation exposes immutable verification facts but registers the separately
+opaque, non-public finalization capability in that Session and root transaction.
+Copied facts or a forged object cannot reach consumption. Finalization calls
+this private staging seam, consumes that capability, and returns its private
+staged result. Neither Control service commits or rolls back.
 
 ## The cut-off class also covers cancel and settle
 

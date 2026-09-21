@@ -1245,7 +1245,7 @@ def composed_lineage_head() -> str:
 
 
 #: Every table is on the PLATFORM plane and owned by the module itself. Held as
-#: single values rather than per-table, because "the module owns all thirteen and
+#: single values rather than per-table, because "the module owns all twenty-one and
 #: none of them is tenant-scoped" is the actual claim (ADR-0023: the plane is
 #: DECLARED, never inferred), and a per-table copy would let one row drift while
 #: reading as if it had been checked.
@@ -1298,6 +1298,27 @@ CATALOGUE_TABLES: tuple[
             ("superseded_by_fingerprint", 6, _V128, True, ""),
             ("created_at", 7, _TS, False, "now()"),
             ("updated_at", 8, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "attestation_root_descriptors",
+        (
+            ("enrolment_id", 1, _UUID, False, ""),
+            ("issuer", 2, _V200, False, ""),
+            ("attestation_key_id", 3, _V200, False, ""),
+            ("evidence_purpose", 4, _V200, False, ""),
+            ("not_after", 5, _TS, False, ""),
+            ("created_at", 6, _TS, False, "now()"),
+            ("updated_at", 7, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "attestation_subject_locks",
+        (
+            ("custody_domain", 1, _V40, False, ""),
+            ("subject", 2, _V200, False, ""),
+            ("created_at", 3, _TS, False, "now()"),
+            ("updated_at", 4, _TS, False, "now()"),
         ),
     ),
     (
@@ -1499,6 +1520,33 @@ CATALOGUE_TABLES: tuple[
         ),
     ),
     (
+        "target_admission_policies",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("target_id", 2, _UUID, False, ""),
+            ("host_association_id", 3, _UUID, False, ""),
+            ("candidate_root_subject", 4, _V200, False, ""),
+            ("candidate_audience", 5, _V200, False, ""),
+            ("installed_audience", 6, _V200, False, ""),
+            ("expected_foundation_package", 7, _V200, False, ""),
+            ("effective_at", 8, _TS, False, ""),
+            ("authority", 9, _V200, False, ""),
+            ("created_at", 10, _TS, False, "now()"),
+            ("updated_at", 11, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "target_admission_policy_closures",
+        (
+            ("policy_id", 1, _UUID, False, ""),
+            ("closed_at", 2, _TS, False, ""),
+            ("authority", 3, _V200, False, ""),
+            ("successor_id", 4, _UUID, True, ""),
+            ("created_at", 5, _TS, False, "now()"),
+            ("updated_at", 6, _TS, False, "now()"),
+        ),
+    ),
+    (
         "target_credentials",
         (
             ("id", 1, _UUID, False, ""),
@@ -1519,6 +1567,47 @@ CATALOGUE_TABLES: tuple[
             ("purpose", 15, _V60, True, ""),
         ),
     ),
+    (
+        "target_current_admission_policies",
+        (
+            ("target_id", 1, _UUID, False, ""),
+            ("policy_id", 2, _UUID, False, ""),
+            ("created_at", 3, _TS, False, "now()"),
+            ("updated_at", 4, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "target_current_hosts",
+        (
+            ("target_id", 1, _UUID, False, ""),
+            ("association_id", 2, _UUID, False, ""),
+            ("created_at", 3, _TS, False, "now()"),
+            ("updated_at", 4, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "target_host_association_closures",
+        (
+            ("association_id", 1, _UUID, False, ""),
+            ("closed_at", 2, _TS, False, ""),
+            ("authority", 3, _V200, False, ""),
+            ("successor_id", 4, _UUID, True, ""),
+            ("created_at", 5, _TS, False, "now()"),
+            ("updated_at", 6, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "target_host_associations",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("target_id", 2, _UUID, False, ""),
+            ("host_id", 3, _V200, False, ""),
+            ("bound_at", 4, _TS, False, ""),
+            ("authority", 5, _V200, False, ""),
+            ("created_at", 6, _TS, False, "now()"),
+            ("updated_at", 7, _TS, False, "now()"),
+        ),
+    ),
 )
 
 
@@ -1533,7 +1622,7 @@ def _expected_column(column: tuple[str, int, tuple[str, str], bool, str]) -> dic
         "name": name,
         "ordinal": ordinal,
         "postgres_type": {
-            # BASE and `pg_catalog` for all 143: this module declares no domain,
+            # BASE and `pg_catalog` for every column: this module declares no domain,
             # enum, composite, range or array column, and stating that here is
             # what makes the absence a declaration rather than an oversight.
             "kind": "base",
