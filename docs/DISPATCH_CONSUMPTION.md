@@ -66,6 +66,43 @@ Copied facts or a forged object cannot reach consumption. Finalization calls
 this private staging seam, consumes that capability, and returns its private
 staged result. Neither Control service commits or rolls back.
 
+**Lock-duration bound is a stated CP obligation, not a Control mechanism.**
+Between `prepare_host_admission` returning and `finalize_host_admission` being
+called, the caller-owned transaction holds row locks on the target, the
+selected credential, the current host-association and admission-policy
+projections, and both candidate/installed attestation-subject rows. Foundation
+verification and any network round-trip the trusted adapter performs happen
+inside that window by design — finalize re-checks everything against the
+locked state rather than a fresh read, which is only safe because nothing
+under those locks can change. This is correct for correctness but has no
+Control-side time bound: a stalled or slow presenter/adapter keeps those locks
+— including the `("host_attester", host_id)` subject lock, which is global to
+that host attester, not scoped to one target — held for as long as the
+transaction stays open, which can delay an operator's emergency root
+revocation or any other mutation of the locked target. Control cannot bound
+this itself without taking over session configuration; the composing CP
+adapter MUST set a `statement_timeout`/`lock_timeout` (and should consider
+`idle_in_transaction_session_timeout`) on the connection used for the
+prepare/finalize transaction, sized to the real Foundation-verification and
+network latency it expects, so an admission attempt fails closed rather than
+holding fleet-wide locks indefinitely. This is not yet enforced by any test in
+this distribution.
+
+**The CP adapter must pass Foundation's computed digests to finalize, never
+the digests `prepare_host_admission` already returned.** Finalization's
+`EVIDENCE_CHANGED` check (comparing the caller-supplied digests against the
+prepared coordinate) is the ONLY thing binding what Foundation actually
+verified to what the presenter signed. Feeding `prepare`'s own returned facts
+straight back into `finalize` — the shape every test in this distribution
+uses, because no real Foundation call is available in-process — makes that
+check compare a value to itself and defeats it silently; Control cannot detect
+an adapter that does this, because both call sites are, by construction, given
+exactly the same interface. A real adapter must call Foundation's
+`attestation_envelope_digest` on the envelopes it verified and pass THAT
+result, never the value it read out of `prepare`'s facts. This deserves a
+fixed cross-repository vector test on the adapter itself, since Control
+structurally cannot enforce it from its own side of the boundary.
+
 ## The cut-off class also covers cancel and settle
 
 The permanent-cut-off rule above was proven, on real PostgreSQL, for approval

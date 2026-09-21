@@ -16,7 +16,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from dotmac_deployment_control.host_attester_enrolment import require_host_id
+from dotmac_deployment_control.host_attester_enrolment import (
+    HostAttesterEnrolmentRefusedError,
+    require_host_id,
+)
 from dotmac_deployment_control.models import (
     DeploymentTarget,
     TargetAdmissionPolicy,
@@ -169,10 +172,25 @@ def require_current_target_host_locked(
             HostAdmissionStateRefusalCode.HOST_DRIFT,
             "current-host projection disagrees with append-only truth",
         )
+    # `bind_target_host`/`rotate_target_host` both validate `host_id` through
+    # `require_host_id` before writing it; re-validating here treats the
+    # stored value as a CLAIM, not a fact, the same way `resolve_current_root`
+    # recomputes the fingerprint rather than trusting the stored column. A
+    # `platform_api` write that bypassed the ORM service (an `INSERT` is not
+    # constrained by the append-only trigger the way `UPDATE`/`DELETE` are)
+    # cannot forge a coherent-looking association with a host_id that fails
+    # Fleet's own grammar.
+    try:
+        host_id = require_host_id(row.host_id, where="current target host")
+    except HostAttesterEnrolmentRefusedError as exc:
+        raise _refuse(
+            HostAdmissionStateRefusalCode.MALFORMED,
+            f"stored host association {row.id} failed re-validation: {exc}",
+        ) from exc
     return TargetHostAssociationView(
         association_id=row.id,
         target_id=row.target_id,
-        host_id=row.host_id,
+        host_id=host_id,
         bound_at=row.bound_at,
         authority=row.authority,
     )

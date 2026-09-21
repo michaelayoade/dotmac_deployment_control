@@ -1012,6 +1012,81 @@ class TestTheOnlinePlatformRoleCanActuallyWork:
         admin_url, _, _ = migrated_scratch
         assert not _has_privilege(admin_url, table, "UPDATE", role="platform_api")
 
+    def test_platform_api_can_actually_lock_an_attestation_subject_row(
+        self, migrated_scratch
+    ) -> None:
+        """`attestation_subject_locks` is neither `EVIDENCE_TABLES` nor
+        `MUTABLE_TABLES`: it is a permanent serialization row that every
+        admission and root mutation takes `SELECT ... FOR UPDATE` on, which
+        PostgreSQL only permits with the UPDATE privilege held (in addition to
+        SELECT) -- a `has_table_privilege` check would pass on a superset grant
+        that a real locking statement still fails on, so this executes the
+        actual statement `_lock_subject` issues, through the platform_api
+        role's own connection."""
+        admin_url, platform_url, _ = migrated_scratch
+        admin_engine = create_engine(admin_url)
+        try:
+            with admin_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_subject_locks "
+                        "(custody_domain, subject) VALUES "
+                        "('host_attester', 'fixture-lock-subject') "
+                        "ON CONFLICT DO NOTHING"
+                    )
+                )
+        finally:
+            admin_engine.dispose()
+        platform_engine = create_engine(platform_url)
+        try:
+            with platform_engine.begin() as conn:
+                locked = conn.execute(
+                    text(
+                        "SELECT subject FROM mod_deploy.attestation_subject_locks "
+                        "WHERE custody_domain = 'host_attester' "
+                        "AND subject = 'fixture-lock-subject' FOR UPDATE"
+                    )
+                ).scalar()
+            assert locked == "fixture-lock-subject"
+        finally:
+            platform_engine.dispose()
+
+    def test_platform_api_cannot_rewrite_an_attestation_subject_lock(
+        self, migrated_scratch
+    ) -> None:
+        """The UPDATE grant above exists only so a locking read can succeed;
+        the append-only trigger must still refuse a genuine write."""
+        admin_url, platform_url, _ = migrated_scratch
+        admin_engine = create_engine(admin_url)
+        try:
+            with admin_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_subject_locks "
+                        "(custody_domain, subject) VALUES "
+                        "('host_attester', 'fixture-rewrite-subject') "
+                        "ON CONFLICT DO NOTHING"
+                    )
+                )
+        finally:
+            admin_engine.dispose()
+        platform_engine = create_engine(platform_url)
+        try:
+            with (
+                platform_engine.begin() as conn,
+                pytest.raises(DBAPIError, match="append-only"),
+            ):
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_subject_locks "
+                        "SET subject = 'rewritten' "
+                        "WHERE custody_domain = 'host_attester' "
+                        "AND subject = 'fixture-rewrite-subject'"
+                    )
+                )
+        finally:
+            platform_engine.dispose()
+
     def test_platform_api_can_insert_a_target_and_read_it_back(
         self, migrated_scratch
     ) -> None:

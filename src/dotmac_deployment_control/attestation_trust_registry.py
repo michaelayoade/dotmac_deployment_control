@@ -430,6 +430,15 @@ def repair_current_root(db: Session, *, custody_domain: str, subject: str) -> No
     the anomaly needs a human; this function will not decide it for them by
     writing one of the candidates down.
     """
+    # Every OTHER writer of this projection's underlying truth
+    # (`enrol_root`/`rotate_root`/`revoke_root`) takes this permanent
+    # serialization row first. Repair is a projection writer too -- it can
+    # only persist what the append-only truth already implies, so it was not
+    # itself exploitable without this -- but locking here makes "every writer
+    # of current-root state is serialized on the subject lock" true without a
+    # case analysis, rather than true only for the enrolment/rotation/
+    # revocation writers.
+    _lock_subject(db, custody_domain=custody_domain, subject=subject)
     open_count = _count_open_enrolments(
         db, custody_domain=custody_domain, subject=subject
     )

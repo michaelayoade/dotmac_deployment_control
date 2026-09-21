@@ -284,8 +284,17 @@ def upgrade() -> None:
     _grant("SELECT, INSERT", "target_admission_policy_closures", "platform_api")
     _grant("SELECT, INSERT", "target_admission_policy_closures", "app_admin")
     _revoke("target_admission_policy_closures")
-    _grant("SELECT, INSERT", "attestation_subject_locks", "platform_api")
-    _grant("SELECT, INSERT", "attestation_subject_locks", "app_admin")
+    # `attestation_subject_locks` is a lock TARGET: every admission and every
+    # root mutation takes `SELECT ... FOR UPDATE` on it, and PostgreSQL's
+    # locking-read clause requires the UPDATE privilege (in addition to
+    # SELECT) on at least one column, the same way every other lock-target
+    # table here (`deployment_targets`, `target_credentials`, ...) carries an
+    # explicit UPDATE grant. `_append_only` still refuses a real UPDATE/DELETE
+    # statement -- its trigger does not fire for a locking SELECT -- so the
+    # row-locking use is preserved while genuine rewrites remain refused.
+    _append_only("attestation_subject_locks")
+    _grant("SELECT, INSERT, UPDATE", "attestation_subject_locks", "platform_api")
+    _grant("SELECT, INSERT, UPDATE", "attestation_subject_locks", "app_admin")
     _revoke("attestation_subject_locks")
     _grant("SELECT, INSERT, UPDATE, DELETE", "target_current_hosts", "platform_api")
     _grant("SELECT, INSERT, UPDATE, DELETE", "target_current_hosts", "app_admin")
@@ -326,6 +335,10 @@ def downgrade() -> None:
             "target_admission_policy_closures",
             "SELECT EXISTS (SELECT 1 FROM "
             "mod_deploy.target_admission_policy_closures)",
+        ),
+        (
+            "attestation_subject_locks",
+            "SELECT EXISTS (SELECT 1 FROM mod_deploy.attestation_subject_locks)",
         ),
     )
     for table, _query in evidence_checks:

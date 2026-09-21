@@ -127,6 +127,34 @@ def test_host_projection_drift_and_ambiguous_history_refuse(db: Session) -> None
         resolve_current_target_host(db, target_id=target.id)
     assert drift.value.code is HostAdmissionStateRefusalCode.HOST_DRIFT
 
+
+def test_a_coherent_but_forged_host_id_still_refuses(db: Session) -> None:
+    """`bind_target_host`/`rotate_target_host` both validate `host_id` through
+    `require_host_id`; this proves the READ path re-validates it too, rather
+    than trusting the stored column as `resolve_current_root` already does not
+    trust a stored fingerprint. A writer that bypassed the ORM service entirely
+    (an `INSERT` is not blocked by the append-only trigger the way `UPDATE`/
+    `DELETE` are) could otherwise leave a single, coherent open association +
+    matching current-host pointer naming an arbitrary string -- exactly what
+    `require_current_target_host_locked`'s drift/ambiguity checks do not catch,
+    because a lone forged row is neither absent, ambiguous, nor disagreeing
+    with its own pointer."""
+    target = _target(db)
+    association = TargetHostAssociation(
+        id=uuid4(),
+        target_id=target.id,
+        host_id="Not A Fleet Host Id!",
+        bound_at=datetime.now(UTC),
+        authority="forged-write",
+    )
+    db.add(association)
+    db.flush([association])
+    db.add(TargetCurrentHost(target_id=target.id, association_id=association.id))
+    db.flush()
+    with pytest.raises(HostAdmissionStateRefusedError) as caught:
+        resolve_current_target_host(db, target_id=target.id)
+    assert caught.value.code is HostAdmissionStateRefusalCode.MALFORMED
+
     db.add(
         TargetHostAssociation(
             id=uuid4(),
