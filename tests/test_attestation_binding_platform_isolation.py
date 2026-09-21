@@ -25,7 +25,7 @@ import hashlib
 import os
 import uuid
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -36,6 +36,7 @@ from sqlalchemy.orm import sessionmaker
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
 from dotmac_deployment_control.attestation_binding import resolve_attestation_binding
 from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRootDescriptorTerms,
     AttestationRootRefusal,
     enrol_root,
     revoke_root,
@@ -71,6 +72,18 @@ def _public_key_b64(seed: str) -> str:
 
 def _fingerprint_of(seed: str) -> str:
     return PublicKeyFingerprintV1.from_public_key_b64(_public_key_b64(seed)).canonical
+
+
+def _descriptor(custody_domain: str, seed: str) -> AttestationRootDescriptorTerms:
+    return AttestationRootDescriptorTerms(
+        issuer="control-test",
+        attestation_key_id=f"attestation-{seed}",
+        evidence_purpose={
+            "host_attester": "dotmac.foundation.installed-host.v2",
+            "candidate_release_signer": "dotmac.foundation.candidate-artifact.v2",
+        }[custody_domain],
+        not_after=datetime.now(UTC) + timedelta(days=3650),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -152,6 +165,7 @@ def test_a_stale_projection_naming_a_revoked_fingerprint_never_resolves(
             algorithm="ed25519",
             key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
             enrolment_authority="control_service",
+            descriptor=_descriptor("host_attester", f"{subject}-a"),
         )
         db.commit()
     fp = view.public_key_fingerprint
@@ -204,6 +218,7 @@ def test_an_ambiguous_registry_never_resolves_through_the_facade(
             algorithm="ed25519",
             key_custody_pointer=f"bao://secret/dotmac/attest/{subject}-a",
             enrolment_authority="control_service",
+            descriptor=_descriptor("host_attester", f"{subject}-a"),
         )
         db.commit()
 
@@ -260,6 +275,7 @@ def test_an_ambiguous_registry_never_resolves_through_the_facade(
             algorithm="ed25519",
             key_custody_pointer=f"bao://secret/dotmac/attest/{other_subject}-a",
             enrolment_authority="control_service",
+            descriptor=_descriptor("host_attester", f"{other_subject}-a"),
         )
         db.commit()
     with sessions() as db:
@@ -301,6 +317,7 @@ def test_the_facade_binding_carries_no_orm_or_session_state_on_postgres(
             algorithm="ed25519",
             key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
             enrolment_authority="control_service",
+            descriptor=_descriptor("host_attester", subject),
         )
         db.commit()
     db = sessions()

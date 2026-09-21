@@ -195,6 +195,7 @@ class TestQueryConstructionStaysInThisModule:
         permitted_query_builders = {
             "service.py",
             "attestation_trust_registry.py",
+            "host_admission_service.py",
             "rehearsal_grant_lifecycle.py",
         }
 
@@ -218,6 +219,30 @@ class TestQueryConstructionStaysInThisModule:
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
             and not node.name.startswith("_")
         ]
+        host_admission_owner = root / "host_admission_service.py"
+        host_admission_tree = ast.parse(host_admission_owner.read_text())
+        selected_models = {
+            (argument.id if isinstance(argument, ast.Name) else argument.value.id)
+            for node in ast.walk(host_admission_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "select"
+            for argument in node.args
+            if isinstance(argument, ast.Name)
+            or (
+                isinstance(argument, ast.Attribute)
+                and isinstance(argument.value, ast.Name)
+            )
+        }
+        assert selected_models == {
+            "DeploymentTarget",
+            "TargetAdmissionPolicy",
+            "TargetAdmissionPolicyClosure",
+            "TargetCurrentAdmissionPolicy",
+            "TargetCurrentHost",
+            "TargetHostAssociation",
+            "TargetHostAssociationClosure",
+        }
         offenders = [
             path.name
             for path in root.glob("*.py")

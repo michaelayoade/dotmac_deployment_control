@@ -35,6 +35,8 @@ from dotmac_kernel.models import Base
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control as public_api
+import dotmac_deployment_control.host_admission_coordinator as admission_coordinator
 import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     ApprovalEvidence,
@@ -43,10 +45,12 @@ from dotmac_deployment_control import (
     AttemptOutcome,
     AuthorizationEnvelopeV1,
     AuthorizationEnvelopeV2,
+    CredentialTransitionCommand,
     DesiredDeployment,
     DigestEncodingError,
     DispatchEnvelopeV1,
     EnrolCredentialCommand,
+    EnrolHostAdmissionCredentialCommand,
     ExpectedStateError,
     PlanDigestV1,
     PlanRefusedError,
@@ -62,13 +66,16 @@ from dotmac_deployment_control import (
     TargetStatus,
     TargetTransitionCommand,
     TransitionRefusedError,
+    activate_credential,
     approve_plan,
     cancel_plan,
     cancel_rollout,
+    credential_is_eligible,
     decommission_target,
     dispatch_attempt,
     drift,
     enrol_credential,
+    enrol_host_admission_credential,
     get_plan,
     get_rollout,
     get_target,
@@ -77,11 +84,34 @@ from dotmac_deployment_control import (
     register_target,
     request_rollout,
     require_manual_repair,
+    retire_credential,
     revoke_plan_approval,
     set_desired_state,
     settle_attempt,
     snapshot_digest,
     suspend_target,
+)
+from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRootDescriptorTerms,
+    enrol_root,
+)
+from dotmac_deployment_control.host_admission import (
+    HostAdmissionPresentationStatementV1,
+    HostAdmissionPresentationV1,
+)
+from dotmac_deployment_control.host_admission_coordinator import (
+    HostAdmissionRefusalCode,
+    HostAdmissionRefusedError,
+    finalize_host_admission,
+    install_host_admission_security,
+    prepare_host_admission,
+)
+from dotmac_deployment_control.host_admission_service import (
+    BindTargetHostCommand,
+    SetTargetAdmissionPolicyCommand,
+    bind_target_host,
+    rotate_target_host,
+    set_target_admission_policy,
 )
 from dotmac_deployment_control.models import (
     Rollout,
@@ -339,6 +369,55 @@ class TestCredentials:
                     enrollment_authority="platform_admin_policy",
                 ),
             )
+
+    def test_retirement_closes_the_active_half_open_window(
+        self, db, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dotmac_deployment_control import CredentialStatus, TargetCredential
+
+        target = _target(db)
+        credential_id = enrol_credential(
+            db,
+            EnrolCredentialCommand(
+                command_id=_cmd(),
+                target_id=target.id,
+                key_id="retire-k1",
+                algorithm="test-sha256",
+                public_key_b64=observation_public_key_b64("retire-k1"),
+                enrollment_authority="platform_admin_policy",
+            ),
+        )
+        activate_credential(
+            db,
+            CredentialTransitionCommand(command_id=_cmd(), credential_id=credential_id),
+        )
+        active = db.get(TargetCredential, credential_id)
+        assert active is not None
+        active.activated_at = _NOW
+        db.flush()
+        monkeypatch.setattr(
+            control_service, "_control_now", lambda: _NOW + timedelta(minutes=1)
+        )
+        retire_credential(
+            db,
+            CredentialTransitionCommand(
+                command_id=_cmd(),
+                credential_id=credential_id,
+                reason="planned successor",
+            ),
+        )
+        row = db.get(TargetCredential, credential_id)
+        assert row is not None
+        assert row.status == CredentialStatus.RETIRED.value
+        assert row.retired_at is not None
+        assert credential_is_eligible(db, row.key_id, at=_NOW) == (
+            True,
+            target.target_ref,
+        )
+        assert credential_is_eligible(db, row.key_id, at=row.retired_at) == (
+            False,
+            target.target_ref,
+        )
 
 
 # ── Plans ───────────────────────────────────────────────────────────────────
@@ -1212,6 +1291,24 @@ class TestTheModuleOwnsNoTransaction:
 class TestDispatchConsumptionStaging:
     """SQLite proves service wiring only; PostgreSQL race proof lives separately."""
 
+    _CANDIDATE_DIGEST = "sha256:" + "ca" * 32
+    _INSTALLED_DIGEST = "sha256:" + "1d" * 32
+
+    def _stage(
+        self,
+        db: Session,
+        *,
+        attempt_id: uuid.UUID,
+        expected_target: control_service._ExpectedDispatchTarget,
+    ):
+        return control_service._stage_dispatch_consumption(
+            db,
+            attempt_id=attempt_id,
+            expected_target=expected_target,
+            candidate_attestation_envelope_digest=self._CANDIDATE_DIGEST,
+            installed_attestation_envelope_digest=self._INSTALLED_DIGEST,
+        )
+
     @staticmethod
     def _attempt(db: Session) -> RolloutAttempt:
         target = _desired(db, _target(db).id)
@@ -1240,7 +1337,7 @@ class TestDispatchConsumptionStaging:
     ) -> None:
         attempt = self._attempt(db)
 
-        staged = control_service._stage_dispatch_consumption(
+        staged = self._stage(
             db,
             attempt_id=attempt.id,
             expected_target=self._expected_target(db, attempt),
@@ -1251,7 +1348,11 @@ class TestDispatchConsumptionStaging:
         )
         assert staged.dispatch_id == str(attempt.id)
         assert record.scope == "deployment.consume_dispatch_challenge.v1"
-        assert record.fingerprint == staged.dispatch_digest.digest.hex()
+        assert record.fingerprint == control_service.admission_consumption_fingerprint(
+            dispatch_envelope_digest=staged.dispatch_digest.canonical,
+            candidate_attestation_envelope_digest=self._CANDIDATE_DIGEST,
+            installed_attestation_envelope_digest=self._INSTALLED_DIGEST,
+        )
         assert record.expires_at is None
         assert record.result["dispatch_digest"] == staged.dispatch_digest.canonical
 
@@ -1259,7 +1360,7 @@ class TestDispatchConsumptionStaging:
         self, db: Session
     ) -> None:
         attempt = self._attempt(db)
-        control_service._stage_dispatch_consumption(
+        self._stage(
             db,
             attempt_id=attempt.id,
             expected_target=self._expected_target(db, attempt),
@@ -1267,7 +1368,7 @@ class TestDispatchConsumptionStaging:
         db.commit()  # Simulates a process dying after durable authority cut-off.
 
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
+            self._stage(
                 db,
                 attempt_id=attempt.id,
                 expected_target=self._expected_target(db, attempt),
@@ -1278,11 +1379,32 @@ class TestDispatchConsumptionStaging:
             is control_service._DispatchConsumptionRefusalCode.ALREADY_CONSUMED
         )
 
+    def test_same_dispatch_with_changed_evidence_is_an_integrity_conflict(
+        self, db: Session
+    ) -> None:
+        attempt = self._attempt(db)
+        expected = self._expected_target(db, attempt)
+        self._stage(db, attempt_id=attempt.id, expected_target=expected)
+        db.commit()
+
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            control_service._stage_dispatch_consumption(
+                db,
+                attempt_id=attempt.id,
+                expected_target=expected,
+                candidate_attestation_envelope_digest="sha256:" + "ee" * 32,
+                installed_attestation_envelope_digest=self._INSTALLED_DIGEST,
+            )
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.INTEGRITY_CONFLICT
+        )
+
     def test_kernel_expiry_sweep_cannot_reclaim_a_consumed_dispatch(
         self, db: Session
     ) -> None:
         attempt = self._attempt(db)
-        control_service._stage_dispatch_consumption(
+        self._stage(
             db,
             attempt_id=attempt.id,
             expected_target=self._expected_target(db, attempt),
@@ -1307,14 +1429,14 @@ class TestDispatchConsumptionStaging:
     ) -> None:
         attempt = self._attempt(db)
         db.commit()
-        control_service._stage_dispatch_consumption(
+        self._stage(
             db,
             attempt_id=attempt.id,
             expected_target=self._expected_target(db, attempt),
         )
         db.rollback()
 
-        staged = control_service._stage_dispatch_consumption(
+        staged = self._stage(
             db,
             attempt_id=attempt.id,
             expected_target=self._expected_target(db, attempt),
@@ -1337,7 +1459,7 @@ class TestDispatchConsumptionStaging:
         db.commit()
 
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
+            self._stage(
                 db,
                 attempt_id=attempt.id,
                 expected_target=self._expected_target(db, attempt),
@@ -1364,9 +1486,7 @@ class TestDispatchConsumptionStaging:
         db.commit()
 
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
-                db, attempt_id=attempt.id, expected_target=expected_target
-            )
+            self._stage(db, attempt_id=attempt.id, expected_target=expected_target)
 
         assert (
             caught.value.code
@@ -1385,9 +1505,7 @@ class TestDispatchConsumptionStaging:
         supplied = control_service._ExpectedDispatchTarget(other.id, other.target_ref)
 
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
-                db, attempt_id=attempt.id, expected_target=supplied
-            )
+            self._stage(db, attempt_id=attempt.id, expected_target=supplied)
 
         assert (
             caught.value.code
@@ -1397,3 +1515,274 @@ class TestDispatchConsumptionStaging:
             db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).count()
             == 0
         )
+
+
+class _AdmissionClock:
+    def now(self) -> datetime:
+        return _NOW
+
+
+class _AdmissionVerifier:
+    def verify_host_admission_presentation(self, **values: object) -> bool:
+        return (
+            values["key_id"] == "admission-key-1"
+            and values["purpose"] == "dotmac.control.host-admission-presentation.v1"
+            and values["signature"] == "c2ln"
+        )
+
+
+@pytest.fixture(autouse=True)
+def _installed_host_admission_security() -> Generator[None, None, None]:
+    admission_coordinator._reset_host_admission_security_for_tests()
+    install_host_admission_security(
+        verifier=_AdmissionVerifier(), clock=_AdmissionClock()
+    )
+    yield
+    admission_coordinator._reset_host_admission_security_for_tests()
+
+
+def _admission_fixture_inputs(
+    db: Session,
+) -> tuple[uuid.UUID, HostAdmissionPresentationV1]:
+    target = _desired(db, _target(db).id)
+    rollout = _rollout(db, _approved_plan(db, target.id).id)
+    dispatch_attempt(
+        db,
+        command_id=_cmd(),
+        rollout_id=rollout.id,
+        verifier=VERIFIER,
+        dispatch_signer=DISPATCH_SIGNER,
+    )
+    attempt = db.query(RolloutAttempt).filter_by(rollout_id=rollout.id).one()
+    dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+
+    credential_id = enrol_host_admission_credential(
+        db,
+        EnrolHostAdmissionCredentialCommand(
+            command_id=_cmd(),
+            target_id=target.id,
+            key_id="admission-key-1",
+            algorithm="ed25519",
+            public_key_b64=observation_public_key_b64("admission-key-1"),
+            enrollment_authority="control-test",
+        ),
+    )
+    activate_credential(
+        db,
+        CredentialTransitionCommand(command_id=_cmd(), credential_id=credential_id),
+    )
+    bind_target_host(
+        db,
+        BindTargetHostCommand(
+            target_id=target.id, host_id="host-one", authority="control-test"
+        ),
+    )
+    set_target_admission_policy(
+        db,
+        SetTargetAdmissionPolicyCommand(
+            target_id=target.id,
+            candidate_root_subject="foundation-release",
+            candidate_audience="foundation-candidate",
+            installed_audience="foundation-installed",
+            expected_foundation_package="dotmac-sub",
+            authority="control-test",
+        ),
+    )
+    for custody_domain, subject, purpose in (
+        (
+            "candidate_release_signer",
+            "foundation-release",
+            "dotmac.foundation.candidate-artifact.v2",
+        ),
+        ("host_attester", "host-one", "dotmac.foundation.installed-host.v2"),
+    ):
+        enrol_root(
+            db,
+            custody_domain=custody_domain,
+            subject=subject,
+            public_key_b64=observation_public_key_b64(subject),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/test/{subject}",
+            enrolment_authority="control-test",
+            descriptor=AttestationRootDescriptorTerms(
+                issuer="control-test",
+                attestation_key_id=f"attestation-{subject}",
+                evidence_purpose=purpose,
+                not_after=_NOW + timedelta(days=1),
+            ),
+            enrolled_at=_NOW - timedelta(days=1),
+        )
+    presentation = HostAdmissionPresentationV1(
+        statement=HostAdmissionPresentationStatementV1(
+            presentation_id="presentation-1",
+            key_id="admission-key-1",
+            dispatch_id=dispatch.statement.dispatch_id,
+            candidate_attestation_envelope_digest="sha256:" + "ca" * 32,
+            installed_attestation_envelope_digest="sha256:" + "1d" * 32,
+            issued_at=_NOW,
+            expires_at=_NOW + timedelta(minutes=5),
+        ),
+        signature="c2ln",
+    )
+    return attempt.id, presentation
+
+
+def _prepare_admission_fixture(db: Session):  # type: ignore[no-untyped-def]
+    attempt_id, presentation = _admission_fixture_inputs(db)
+    return prepare_host_admission(
+        db,
+        attempt_id=attempt_id,
+        presentation=presentation,
+    )
+
+
+class TestAuthenticatedHostAdmission:
+    def test_prepare_fails_closed_until_startup_security_is_installed(
+        self, db: Session
+    ) -> None:
+        attempt_id, presentation = _admission_fixture_inputs(db)
+        admission_coordinator._reset_host_admission_security_for_tests()
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            prepare_host_admission(
+                db,
+                attempt_id=attempt_id,
+                presentation=presentation,
+            )
+        assert caught.value.code is HostAdmissionRefusalCode.AUTHENTICATION_FAILED
+        assert (
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=presentation.statement.dispatch_id)
+            .count()
+            == 0
+        )
+
+    def test_startup_security_cannot_be_replaced(self) -> None:
+        with pytest.raises(RuntimeError, match="already installed"):
+            install_host_admission_security(
+                verifier=_AdmissionVerifier(), clock=_AdmissionClock()
+            )
+
+    def test_prepare_returns_locked_facts_and_finalize_stages_composite_coordinate(
+        self, db: Session
+    ) -> None:
+        prepared = _prepare_admission_fixture(db)
+        facts = prepared.facts
+        assert facts.host_id == "host-one"
+        assert facts.expected_foundation_package == "dotmac-sub"
+        assert facts.installed_root.public_key_base64.endswith("=")
+
+        staged = finalize_host_admission(
+            db,
+            prepared=prepared,
+            candidate_attestation_envelope_digest=(
+                facts.candidate_attestation_envelope_digest
+            ),
+            installed_attestation_envelope_digest=(
+                facts.installed_attestation_envelope_digest
+            ),
+        )
+        assert staged.dispatch_id == facts.dispatch_id
+
+    @pytest.mark.parametrize("forgery", ["public-facts", "private-object"])
+    def test_only_prepare_can_mint_a_finalizable_capability(
+        self, db: Session, forgery: str
+    ) -> None:
+        prepared = _prepare_admission_fixture(db)
+        facts = prepared.facts
+        assert not hasattr(public_api, "PreparedHostAdmissionV1")
+        if forgery == "public-facts":
+            forged: object = facts
+        else:
+            forged = object.__new__(admission_coordinator._PreparedHostAdmission)
+            object.__setattr__(forged, "_facts", facts)
+
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            finalize_host_admission(
+                db,
+                prepared=forged,
+                candidate_attestation_envelope_digest=(
+                    facts.candidate_attestation_envelope_digest
+                ),
+                installed_attestation_envelope_digest=(
+                    facts.installed_attestation_envelope_digest
+                ),
+            )
+        assert caught.value.code is HostAdmissionRefusalCode.AUTHENTICATION_FAILED
+        assert (
+            db.query(PlatformIdempotencyRecord).filter_by(key=facts.dispatch_id).count()
+            == 0
+        )
+
+    def test_one_field_evidence_substitution_refuses_without_consumption(
+        self, db: Session
+    ) -> None:
+        prepared = _prepare_admission_fixture(db)
+        facts = prepared.facts
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            finalize_host_admission(
+                db,
+                prepared=prepared,
+                candidate_attestation_envelope_digest="sha256:" + "ee" * 32,
+                installed_attestation_envelope_digest=(
+                    facts.installed_attestation_envelope_digest
+                ),
+            )
+        assert caught.value.code is HostAdmissionRefusalCode.EVIDENCE_CHANGED
+        assert (
+            db.query(PlatformIdempotencyRecord).filter_by(key=facts.dispatch_id).count()
+            == 0
+        )
+
+    def test_commit_between_prepare_and_finalize_refuses(self, db: Session) -> None:
+        prepared = _prepare_admission_fixture(db)
+        facts = prepared.facts
+        db.commit()
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            finalize_host_admission(
+                db,
+                prepared=prepared,
+                candidate_attestation_envelope_digest=(
+                    facts.candidate_attestation_envelope_digest
+                ),
+                installed_attestation_envelope_digest=(
+                    facts.installed_attestation_envelope_digest
+                ),
+            )
+        assert caught.value.code is HostAdmissionRefusalCode.TRANSACTION_CHANGED
+
+    def test_host_rotation_requires_a_policy_revision_before_new_admission(
+        self, db: Session
+    ) -> None:
+        prepared = _prepare_admission_fixture(db)
+        facts = prepared.facts
+        rotate_target_host(
+            db,
+            BindTargetHostCommand(
+                target_id=facts.target_id,
+                host_id="host-two",
+                authority="control-test",
+            ),
+        )
+        presentation = HostAdmissionPresentationV1(
+            statement=HostAdmissionPresentationStatementV1(
+                presentation_id="presentation-2",
+                key_id="admission-key-1",
+                dispatch_id=facts.dispatch_id,
+                candidate_attestation_envelope_digest=(
+                    facts.candidate_attestation_envelope_digest
+                ),
+                installed_attestation_envelope_digest=(
+                    facts.installed_attestation_envelope_digest
+                ),
+                issued_at=_NOW,
+                expires_at=_NOW + timedelta(minutes=5),
+            ),
+            signature="c2ln",
+        )
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            prepare_host_admission(
+                db,
+                attempt_id=facts.attempt_id,
+                presentation=presentation,
+            )
+        assert caught.value.code is HostAdmissionRefusalCode.POLICY_HOST_MISMATCH

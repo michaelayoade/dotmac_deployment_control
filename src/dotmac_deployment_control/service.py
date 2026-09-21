@@ -117,6 +117,10 @@ from dotmac_deployment_control.execution_observation import (
     ExecutionObservationVerifier,
     verify_execution_observation_envelope,
 )
+from dotmac_deployment_control.host_admission import (
+    HOST_ADMISSION_PRESENTATION_PURPOSE,
+    admission_consumption_fingerprint,
+)
 from dotmac_deployment_control.images import (
     AuthorizedImage,
     authorized_image_set,
@@ -187,7 +191,9 @@ SCOPE_SET_DESIRED = "deployment.set_desired_state"
 SCOPE_SUSPEND_TARGET = "deployment.suspend_target"
 SCOPE_DECOMMISSION_TARGET = "deployment.decommission_target"
 SCOPE_ENROL_CREDENTIAL = "deployment.enrol_credential"
+SCOPE_ENROL_HOST_ADMISSION_CREDENTIAL = "deployment.enrol_host_admission_credential"
 SCOPE_ACTIVATE_CREDENTIAL = "deployment.activate_credential"
+SCOPE_RETIRE_CREDENTIAL = "deployment.retire_credential"
 SCOPE_REVOKE_CREDENTIAL = "deployment.revoke_credential"
 SCOPE_PROPOSE_PLAN = "deployment.propose_plan"
 SCOPE_APPROVE_PLAN = "deployment.approve_plan"
@@ -242,13 +248,13 @@ class _DispatchConsumptionRefusedError(TransitionRefusedError):
 
 @dataclass(frozen=True, slots=True)
 class _ExpectedDispatchTarget:
-    """Coordinate independently resolved by a future trusted adapter.
+    """Coordinate independently resolved by the authenticated finalizer.
 
     This type does not authenticate anybody. A future composition must derive
     ``target_id`` from the Control-stored credential selected by successful
     presenter authentication, then load ``target_ref`` from that target row.
-    Neither value may come from the presented envelope. No production caller of
-    the private staging seam exists today.
+    Neither value may come from the presented envelope. ADR-0073's sole caller
+    is ``host_admission_coordinator.finalize_host_admission``.
     """
 
     target_id: UUID
@@ -268,10 +274,53 @@ class _StagedDispatchConsumption:
     attempt_id: UUID
     dispatch_id: str
     dispatch_digest: DispatchEnvelopeDigestV1
+    candidate_attestation_envelope_digest: str
+    installed_attestation_envelope_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredDispatchCoordinate:
+    attempt_id: UUID
+    target_id: UUID
+    dispatch_id: str
+    dispatch_envelope_digest: str
+
+
+def _credential_by_key_id(db: Session, key_id: str) -> TargetCredential | None:
+    return db.execute(
+        select(TargetCredential).where(TargetCredential.key_id == key_id)
+    ).scalar_one_or_none()
+
+
+def _stored_dispatch_coordinate(
+    db: Session, attempt_id: UUID
+) -> _StoredDispatchCoordinate | None:
+    row = db.execute(
+        select(RolloutAttempt, Rollout.target_id)
+        .join(Rollout, Rollout.id == RolloutAttempt.rollout_id)
+        .where(RolloutAttempt.id == attempt_id)
+    ).one_or_none()
+    if row is None or row[0].dispatch_envelope is None:
+        return None
+    attempt, target_id = row
+    dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+    return _StoredDispatchCoordinate(
+        attempt_id=attempt.id,
+        target_id=target_id,
+        dispatch_id=dispatch.statement.dispatch_id,
+        dispatch_envelope_digest=DispatchEnvelopeDigestV1.over_bytes(
+            dispatch.canonical_bytes
+        ).canonical,
+    )
 
 
 def _stage_dispatch_consumption(
-    db: Session, *, attempt_id: UUID, expected_target: _ExpectedDispatchTarget
+    db: Session,
+    *,
+    attempt_id: UUID,
+    expected_target: _ExpectedDispatchTarget,
+    candidate_attestation_envelope_digest: str,
+    installed_attestation_envelope_digest: str,
 ) -> _StagedDispatchConsumption:
     """Stage one exact persisted dispatch for post-commit launch.
 
@@ -281,7 +330,7 @@ def _stage_dispatch_consumption(
     the authenticated Control credential and ``target_ref`` from the corresponding
     target row, own the transaction, and call this internal seam. Neither
     coordinate may come from the presented envelope. This type itself is not
-    authentication. Control has no such adapter today, therefore this function
+    authentication. ADR-0073's finalizer is the sole caller, and this function
     alone MUST NOT be used to launch.
 
     The target, plan and mutable rollout locks serialize consumption with
@@ -412,15 +461,29 @@ def _stage_dispatch_consumption(
             db,
             scope=_SCOPE_CONSUME_DISPATCH_CHALLENGE,
             key=statement.dispatch_id,
-            # Kernel fingerprints are deliberately bare 64-hex.  The typed,
-            # canonical digest remains in the durable receipt and return type.
-            fingerprint=digest.digest.hex(),
+            # Kernel fingerprints are deliberately bare 64-hex. This one binds
+            # the immutable dispatch and both verified attestation envelopes.
+            fingerprint=admission_consumption_fingerprint(
+                dispatch_envelope_digest=digest.canonical,
+                candidate_attestation_envelope_digest=(
+                    candidate_attestation_envelope_digest
+                ),
+                installed_attestation_envelope_digest=(
+                    installed_attestation_envelope_digest
+                ),
+            ),
             expires_at=None,
             operation_name=_SCOPE_CONSUME_DISPATCH_CHALLENGE,
             operation=lambda _session: {
                 "attempt_id": str(attempt.id),
                 "dispatch_id": statement.dispatch_id,
                 "dispatch_digest": digest.canonical,
+                "candidate_attestation_envelope_digest": (
+                    candidate_attestation_envelope_digest
+                ),
+                "installed_attestation_envelope_digest": (
+                    installed_attestation_envelope_digest
+                ),
             },
         )
     except IdempotencyConflict as exc:
@@ -438,6 +501,8 @@ def _stage_dispatch_consumption(
         attempt_id=attempt.id,
         dispatch_id=statement.dispatch_id,
         dispatch_digest=digest,
+        candidate_attestation_envelope_digest=(candidate_attestation_envelope_digest),
+        installed_attestation_envelope_digest=(installed_attestation_envelope_digest),
     )
 
 
@@ -484,6 +549,19 @@ class EnrolCredentialCommand:
     fingerprint itself. It never holds private material and never generates a
     key.
     """
+
+    command_id: str
+    target_id: UUID
+    key_id: str
+    algorithm: str
+    public_key_b64: str
+    enrollment_authority: str
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EnrolHostAdmissionCredentialCommand:
+    """Register a distinct public key for ADR-0073 presentations only."""
 
     command_id: str
     target_id: UUID
@@ -1836,7 +1914,13 @@ def _target_transition(
 # ── Credentials ─────────────────────────────────────────────────────────────
 
 
-def enrol_credential(db: Session, command: EnrolCredentialCommand) -> UUID:
+def _enrol_purpose_bound_credential(
+    db: Session,
+    command: EnrolCredentialCommand | EnrolHostAdmissionCredentialCommand,
+    *,
+    purpose: str,
+    scope: str,
+) -> UUID:
     """Register a target's own PUBLIC verification key, as `PENDING`.
 
     `PENDING` rather than `ACTIVE`, and the difference is the whole point: an
@@ -1858,7 +1942,7 @@ def enrol_credential(db: Session, command: EnrolCredentialCommand) -> UUID:
             if (
                 existing.target_id != target.id
                 or existing.algorithm != command.algorithm
-                or existing.purpose != EXECUTION_OBSERVATION_PURPOSE
+                or existing.purpose != purpose
                 or existing.public_key_b64 != command.public_key_b64
                 or existing.public_key_fingerprint != expected_fingerprint
             ):
@@ -1877,7 +1961,7 @@ def enrol_credential(db: Session, command: EnrolCredentialCommand) -> UUID:
             public_key_b64=command.public_key_b64,
             public_key_fingerprint=fingerprint,
             algorithm=command.algorithm,
-            purpose=EXECUTION_OBSERVATION_PURPOSE,
+            purpose=purpose,
             status=CredentialStatus.PENDING.value,
             enrollment_authority=command.enrollment_authority,
         )
@@ -1902,10 +1986,32 @@ def enrol_credential(db: Session, command: EnrolCredentialCommand) -> UUID:
     outcome = process_once_platform(
         db,
         command_id=command.command_id,
-        command_type=SCOPE_ENROL_CREDENTIAL,
+        command_type=scope,
         handler=handler,
     )
     return UUID(str(outcome.result["id"]))
+
+
+def enrol_credential(db: Session, command: EnrolCredentialCommand) -> UUID:
+    """Register the purpose-bound execution-observation verification key."""
+    return _enrol_purpose_bound_credential(
+        db,
+        command,
+        purpose=EXECUTION_OBSERVATION_PURPOSE,
+        scope=SCOPE_ENROL_CREDENTIAL,
+    )
+
+
+def enrol_host_admission_credential(
+    db: Session, command: EnrolHostAdmissionCredentialCommand
+) -> UUID:
+    """Register a key that can authenticate host-admission presentations only."""
+    return _enrol_purpose_bound_credential(
+        db,
+        command,
+        purpose=HOST_ADMISSION_PRESENTATION_PURPOSE,
+        scope=SCOPE_ENROL_HOST_ADMISSION_CREDENTIAL,
+    )
 
 
 def activate_credential(db: Session, command: CredentialTransitionCommand) -> None:
@@ -1981,6 +2087,46 @@ def revoke_credential(db: Session, command: CredentialTransitionCommand) -> None
         db,
         command_id=command.command_id,
         command_type=SCOPE_REVOKE_CREDENTIAL,
+        handler=handler,
+    )
+
+
+def retire_credential(db: Session, command: CredentialTransitionCommand) -> None:
+    """Permanently close a credential after planned replacement.
+
+    Retirement is distinct from compromise revocation, but uses the same
+    target -> credential lock order and the same half-open eligibility cutoff.
+    """
+
+    effective_at = _control_now()
+
+    def handler(session: Session) -> Mapping[str, object]:
+        row = _load_credential_for_update(session, command.credential_id)
+        if row.status == CredentialStatus.RETIRED.value:
+            return {"id": str(row.id)}
+        if row.status != CredentialStatus.ACTIVE.value:
+            raise TransitionRefusedError(
+                f"credential {row.key_id} is {row.status!r}; only an active "
+                "credential can be retired"
+            )
+        row.status = CredentialStatus.RETIRED.value
+        row.retired_at = effective_at
+        session.flush()
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_CREDENTIAL,
+            event_type=facts.CREDENTIAL_RETIRED_V1,
+            entity_type=_ENTITY_CREDENTIAL,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={"key_id": row.key_id, "reason": command.reason},
+        )
+        return {"id": str(row.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_RETIRE_CREDENTIAL,
         handler=handler,
     )
 
@@ -4579,12 +4725,14 @@ __all__ = [
     "AUDIT_ACTION_ROLLOUT",
     "AUDIT_ACTION_TARGET",
     "SCOPE_ACTIVATE_CREDENTIAL",
+    "SCOPE_RETIRE_CREDENTIAL",
     "SCOPE_APPROVE_PLAN",
     "SCOPE_CANCEL_PLAN",
     "SCOPE_CANCEL_ROLLOUT",
     "SCOPE_DECOMMISSION_TARGET",
     "SCOPE_DISPATCH",
     "SCOPE_ENROL_CREDENTIAL",
+    "SCOPE_ENROL_HOST_ADMISSION_CREDENTIAL",
     "SCOPE_OBSERVE",
     "SCOPE_PROPOSE_PLAN",
     "SCOPE_REGISTER_TARGET",
@@ -4597,6 +4745,7 @@ __all__ = [
     "ApprovePlanCommand",
     "CredentialTransitionCommand",
     "EnrolCredentialCommand",
+    "EnrolHostAdmissionCredentialCommand",
     "ProposePlanCommand",
     "RecordObservationCommand",
     "RegisterTargetCommand",
@@ -4615,6 +4764,7 @@ __all__ = [
     "dispatch_attempt",
     "drift",
     "enrol_credential",
+    "enrol_host_admission_credential",
     "find_approved_plan",
     "get_plan",
     "get_rollout",
@@ -4634,6 +4784,7 @@ __all__ = [
     "require_approved_plan",
     "require_manual_repair",
     "revoke_credential",
+    "retire_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
     "set_desired_state",

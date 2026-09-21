@@ -35,6 +35,7 @@ anything unsafe itself.
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -189,7 +190,10 @@ def test_a_resolved_binding_survives_session_close_as_a_plain_dataclass(
         AttestationBindingV1,
         resolve_attestation_binding,
     )
-    from dotmac_deployment_control.attestation_trust_registry import enrol_root
+    from dotmac_deployment_control.attestation_trust_registry import (
+        AttestationRootDescriptorTerms,
+        enrol_root,
+    )
     from dotmac_deployment_control.models import (
         AttestationCurrentRoot,
         AttestationEnrolment,
@@ -204,6 +208,12 @@ def test_a_resolved_binding_survives_session_close_as_a_plain_dataclass(
         algorithm="ed25519",
         key_custody_pointer=f"bao://secret/dotmac/attest/{subject}",
         enrolment_authority="control_service",
+        descriptor=AttestationRootDescriptorTerms(
+            issuer="control-test-issuer",
+            attestation_key_id="host-orm-leak-check-key",
+            evidence_purpose="dotmac.foundation.installed-host.v2",
+            not_after=datetime.now(UTC) + timedelta(days=3650),
+        ),
     )
     sqlite_session.commit()
 

@@ -110,6 +110,8 @@ from dotmac_deployment_control.models import (
     AttestationCurrentRoot,
     AttestationEnrolment,
     AttestationFingerprintClosure,
+    AttestationRootDescriptor,
+    AttestationSubjectLock,
 )
 from dotmac_deployment_control.ports import DeploymentControlError, DigestEncodingError
 
@@ -120,11 +122,15 @@ __all__ = [
     "AttestationRootRefusal",
     "AttestationRootResolution",
     "AttestationRootView",
+    "AttestationRootDescriptorTerms",
+    "AttestationAdmissionRootView",
     "enrol_root",
     "fingerprint_standing",
     "reconcile_current_root",
     "repair_current_root",
     "resolve_current_root",
+    "resolve_admission_root",
+    "lock_attestation_subjects",
     "revoke_root",
     "rotate_root",
 ]
@@ -141,6 +147,8 @@ class AttestationRefusalCode(StrEnum):
     UNKNOWN_FINGERPRINT = "attestation_unknown_fingerprint"
     LOST_ROTATION_RACE = "attestation_lost_rotation_race"
     AMBIGUOUS_CURRENT_ROOT = "attestation_ambiguous_current_root"
+    MALFORMED_DESCRIPTOR = "attestation_malformed_descriptor"
+    PURPOSE_MISMATCH = "attestation_descriptor_purpose_mismatch"
 
 
 class AttestationRefusedError(DeploymentControlError):
@@ -156,6 +164,50 @@ def _refused(code: AttestationRefusalCode, detail: str) -> AttestationRefusedErr
 
 
 @dataclass(frozen=True, slots=True)
+class AttestationRootDescriptorTerms:
+    issuer: str
+    attestation_key_id: str
+    evidence_purpose: str
+    not_after: datetime
+
+
+def _validate_descriptor_terms(
+    custody_domain: str,
+    descriptor: AttestationRootDescriptorTerms,
+    enrolled_at: datetime,
+) -> None:
+    if not isinstance(descriptor, AttestationRootDescriptorTerms):
+        raise _refused(
+            AttestationRefusalCode.MALFORMED_DESCRIPTOR, "descriptor has wrong type"
+        )
+    expected = {
+        "candidate_release_signer": "dotmac.foundation.candidate-artifact.v2",
+        "host_attester": "dotmac.foundation.installed-host.v2",
+    }.get(custody_domain)
+    if expected is None or descriptor.evidence_purpose != expected:
+        raise _refused(
+            AttestationRefusalCode.PURPOSE_MISMATCH,
+            "descriptor purpose does not match custody domain",
+        )
+    if not all(
+        isinstance(value, str) and value and value == value.strip()
+        for value in (descriptor.issuer, descriptor.attestation_key_id)
+    ):
+        raise _refused(
+            AttestationRefusalCode.MALFORMED_DESCRIPTOR, "descriptor text is malformed"
+        )
+    if (
+        enrolled_at.tzinfo is None
+        or descriptor.not_after.tzinfo is None
+        or descriptor.not_after <= enrolled_at
+    ):
+        raise _refused(
+            AttestationRefusalCode.MALFORMED_DESCRIPTOR,
+            "descriptor validity window is malformed",
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AttestationRootView:
     """A typed, read-only projection. No ORM object, session or raw row ever
     crosses this boundary -- every field here is a plain string, bool or
@@ -168,6 +220,24 @@ class AttestationRootView:
     algorithm: str
     enrolled_at: datetime
     standing: str  # HostAttesterStanding.value
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationAdmissionRootView:
+    """Complete immutable root material required by ADR-0073 preparation."""
+
+    custody_domain: str
+    subject: str
+    public_key_fingerprint: str
+    public_key_b64: str
+    algorithm: str
+    enrolled_at: datetime
+    standing: str
+    root_version: str
+    issuer: str
+    attestation_key_id: str
+    evidence_purpose: str
+    not_after: datetime
 
 
 def _closure(
@@ -197,6 +267,48 @@ def _current_fingerprint(
             AttestationCurrentRoot.subject == subject,
         )
     ).scalar_one_or_none()
+
+
+def _lock_subject(db: Session, *, custody_domain: str, subject: str) -> None:
+    """Create once, then lock the permanent serialization row.
+
+    It deliberately carries no standing and is never deleted; the append-only
+    enrolments/closures remain the sole trust truth.
+    """
+    if db.get(AttestationSubjectLock, (custody_domain, subject)) is None:
+        try:
+            with conflict_savepoint(db):
+                db.add(
+                    AttestationSubjectLock(
+                        custody_domain=custody_domain, subject=subject
+                    )
+                )
+                db.flush()
+        except IntegrityError:
+            # A concurrent creator won the permanent primary-key slot.
+            pass
+    db.execute(
+        select(AttestationSubjectLock)
+        .where(
+            AttestationSubjectLock.custody_domain == custody_domain,
+            AttestationSubjectLock.subject == subject,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+
+
+def lock_attestation_subjects(
+    db: Session, *, subjects: tuple[tuple[str, str], ...]
+) -> None:
+    """Lock permanent subject rows in one canonical order.
+
+    The caller must already hold its target/credential/policy locks. Duplicate
+    coordinates are collapsed before ordering so one subject is never locked
+    twice through two policy roles.
+    """
+    for custody_domain, subject in sorted(set(subjects)):
+        _lock_subject(db, custody_domain=custody_domain, subject=subject)
 
 
 def _derive_current_fingerprint(
@@ -318,6 +430,15 @@ def repair_current_root(db: Session, *, custody_domain: str, subject: str) -> No
     the anomaly needs a human; this function will not decide it for them by
     writing one of the candidates down.
     """
+    # Every OTHER writer of this projection's underlying truth
+    # (`enrol_root`/`rotate_root`/`revoke_root`) takes this permanent
+    # serialization row first. Repair is a projection writer too -- it can
+    # only persist what the append-only truth already implies, so it was not
+    # itself exploitable without this -- but locking here makes "every writer
+    # of current-root state is serialized on the subject lock" true without a
+    # case analysis, rather than true only for the enrolment/rotation/
+    # revocation writers.
+    _lock_subject(db, custody_domain=custody_domain, subject=subject)
     open_count = _count_open_enrolments(
         db, custody_domain=custody_domain, subject=subject
     )
@@ -488,6 +609,7 @@ class AttestationRootRefusal(StrEnum):
     #: `reconcile_current_root`/`repair_current_root` are the separate,
     #: explicit write path, and this read path does not call either.
     DRIFT = "attestation_root_drift"
+    MISSING_DESCRIPTOR = "attestation_root_missing_descriptor"
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,6 +756,49 @@ def resolve_current_root(
     )
 
 
+def resolve_admission_root(
+    db: Session, *, custody_domain: str, subject: str
+) -> tuple[AttestationAdmissionRootView | None, AttestationRootRefusal | None]:
+    """Resolve one current root plus its immutable ADR-0073 descriptor.
+
+    The caller owns subject locking. This reader neither creates lock rows nor
+    repairs the current-root projection. Legacy enrolments without descriptor
+    metadata refuse permanently and must be replaced through the normal
+    enrolment/rotation writer.
+    """
+    resolution = resolve_current_root(
+        db, custody_domain=custody_domain, subject=subject
+    )
+    if resolution.root is None:
+        return None, resolution.refusal
+    root = resolution.root
+    enrolment = db.execute(
+        select(AttestationEnrolment).where(
+            AttestationEnrolment.public_key_fingerprint == root.public_key_fingerprint
+        )
+    ).scalar_one()
+    descriptor = db.get(AttestationRootDescriptor, enrolment.id)
+    if descriptor is None:
+        return None, AttestationRootRefusal.MISSING_DESCRIPTOR
+    return (
+        AttestationAdmissionRootView(
+            custody_domain=root.custody_domain,
+            subject=root.subject,
+            public_key_fingerprint=root.public_key_fingerprint,
+            public_key_b64=root.public_key_b64,
+            algorithm=root.algorithm,
+            enrolled_at=root.enrolled_at,
+            standing=root.standing,
+            root_version=str(enrolment.id),
+            issuer=descriptor.issuer,
+            attestation_key_id=descriptor.attestation_key_id,
+            evidence_purpose=descriptor.evidence_purpose,
+            not_after=descriptor.not_after,
+        ),
+        None,
+    )
+
+
 def enrol_root(
     db: Session,
     *,
@@ -643,6 +808,7 @@ def enrol_root(
     algorithm: str,
     key_custody_pointer: str,
     enrolment_authority: str,
+    descriptor: AttestationRootDescriptorTerms,
     enrolled_at: datetime | None = None,
 ) -> AttestationRootView:
     """Enrol a brand-new root: either the FIRST root for this subject, or a
@@ -652,8 +818,10 @@ def enrol_root(
     Only a Control service may call this; it is not reachable from any
     inbound envelope-verification path in this module.
     """
-    fingerprint = PublicKeyFingerprintV1.from_public_key_b64(public_key_b64).canonical
     when = enrolled_at or datetime.now(UTC)
+    _validate_descriptor_terms(custody_domain, descriptor, when)
+    _lock_subject(db, custody_domain=custody_domain, subject=subject)
+    fingerprint = PublicKeyFingerprintV1.from_public_key_b64(public_key_b64).canonical
     # Reused, not reimplemented: `require_custody_pointer` already carries the
     # `bao://` shape check (`host_attester_enrolment.py`). A pointer that
     # fails this is refused before anything is written -- the column type
@@ -678,6 +846,15 @@ def enrol_root(
                 enrolment_authority=enrolment_authority,
             )
             db.add(enrolment)
+            db.add(
+                AttestationRootDescriptor(
+                    enrolment_id=enrolment.id,
+                    issuer=descriptor.issuer,
+                    attestation_key_id=descriptor.attestation_key_id,
+                    evidence_purpose=descriptor.evidence_purpose,
+                    not_after=descriptor.not_after,
+                )
+            )
             db.flush()
     except IntegrityError as exc:
         raise _refused(
@@ -717,6 +894,7 @@ def rotate_root(
     algorithm: str,
     key_custody_pointer: str,
     enrolment_authority: str,
+    descriptor: AttestationRootDescriptorTerms,
     enrolled_at: datetime | None = None,
 ) -> AttestationRootView:
     """Retire `supersedes_fingerprint` and make a new fingerprint current.
@@ -730,6 +908,7 @@ def rotate_root(
     corrupted projection cannot be used to close another subject's
     legitimate, open fingerprint.
     """
+    _lock_subject(db, custody_domain=custody_domain, subject=subject)
     fingerprint = PublicKeyFingerprintV1.from_public_key_b64(public_key_b64).canonical
     if fingerprint == supersedes_fingerprint:
         raise _refused(
@@ -737,6 +916,7 @@ def rotate_root(
             "a rotation must name a NEW fingerprint",
         )
     when = enrolled_at or datetime.now(UTC)
+    _validate_descriptor_terms(custody_domain, descriptor, when)
     key_custody_pointer = require_custody_pointer(
         key_custody_pointer, where="rotate_root"
     )
@@ -797,6 +977,15 @@ def rotate_root(
                 enrolment_authority=enrolment_authority,
             )
             db.add(enrolment)
+            db.add(
+                AttestationRootDescriptor(
+                    enrolment_id=enrolment.id,
+                    issuer=descriptor.issuer,
+                    attestation_key_id=descriptor.attestation_key_id,
+                    evidence_purpose=descriptor.evidence_purpose,
+                    not_after=descriptor.not_after,
+                )
+            )
             db.flush()
     except IntegrityError as exc:
         raise _refused(
@@ -889,6 +1078,9 @@ def revoke_root(
             AttestationRefusalCode.UNKNOWN_FINGERPRINT,
             f"{fingerprint!r} has never been enrolled",
         )
+    _lock_subject(
+        db, custody_domain=enrolment.custody_domain, subject=enrolment.subject
+    )
     when = revoked_at or datetime.now(UTC)
 
     try:

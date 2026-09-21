@@ -100,333 +100,709 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0012_rehearsal_lifecycle",
+    lineage_head="dc_0013_host_admission",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
-    tables=(
-        _table(
-            "attestation_current_roots",
+    tables=tuple(
+        sorted(
             (
-                _column("custody_domain", 1, _VARCHAR_40, nullable=False),
-                _column("subject", 2, _VARCHAR_200, nullable=False),
-                _column("current_fingerprint", 3, _VARCHAR_128, nullable=False),
-                _column("created_at", 4, _TIMESTAMPTZ, nullable=False, default="now()"),
-                _column("updated_at", 5, _TIMESTAMPTZ, nullable=False, default="now()"),
+                # dc_0013 entries are kept in canonical table-name order below.
+                _table(
+                    "attestation_root_descriptors",
+                    (
+                        _column("enrolment_id", 1, _UUID, nullable=False),
+                        _column("issuer", 2, _VARCHAR_200, nullable=False),
+                        _column("attestation_key_id", 3, _VARCHAR_200, nullable=False),
+                        _column("evidence_purpose", 4, _VARCHAR_200, nullable=False),
+                        _column("not_after", 5, _TIMESTAMPTZ, nullable=False),
+                        _column(
+                            "created_at",
+                            6,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "attestation_subject_locks",
+                    (
+                        _column("custody_domain", 1, _VARCHAR_40, nullable=False),
+                        _column("subject", 2, _VARCHAR_200, nullable=False),
+                        _column(
+                            "created_at",
+                            3,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            4,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "target_admission_policies",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("target_id", 2, _UUID, nullable=False),
+                        _column("host_association_id", 3, _UUID, nullable=False),
+                        _column(
+                            "candidate_root_subject", 4, _VARCHAR_200, nullable=False
+                        ),
+                        _column("candidate_audience", 5, _VARCHAR_200, nullable=False),
+                        _column("installed_audience", 6, _VARCHAR_200, nullable=False),
+                        _column(
+                            "expected_foundation_package",
+                            7,
+                            _VARCHAR_200,
+                            nullable=False,
+                        ),
+                        _column("effective_at", 8, _TIMESTAMPTZ, nullable=False),
+                        _column("authority", 9, _VARCHAR_200, nullable=False),
+                        _column(
+                            "created_at",
+                            10,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            11,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "target_admission_policy_closures",
+                    (
+                        _column("policy_id", 1, _UUID, nullable=False),
+                        _column("closed_at", 2, _TIMESTAMPTZ, nullable=False),
+                        _column("authority", 3, _VARCHAR_200, nullable=False),
+                        _column("successor_id", 4, _UUID, nullable=True),
+                        _column(
+                            "created_at",
+                            5,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            6,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "target_current_admission_policies",
+                    (
+                        _column("target_id", 1, _UUID, nullable=False),
+                        _column("policy_id", 2, _UUID, nullable=False),
+                        _column(
+                            "created_at",
+                            3,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            4,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "target_current_hosts",
+                    (
+                        _column("target_id", 1, _UUID, nullable=False),
+                        _column("association_id", 2, _UUID, nullable=False),
+                        _column(
+                            "created_at",
+                            3,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            4,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "target_host_association_closures",
+                    (
+                        _column("association_id", 1, _UUID, nullable=False),
+                        _column("closed_at", 2, _TIMESTAMPTZ, nullable=False),
+                        _column("authority", 3, _VARCHAR_200, nullable=False),
+                        _column("successor_id", 4, _UUID, nullable=True),
+                        _column(
+                            "created_at",
+                            5,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            6,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "target_host_associations",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("target_id", 2, _UUID, nullable=False),
+                        _column("host_id", 3, _VARCHAR_200, nullable=False),
+                        _column("bound_at", 4, _TIMESTAMPTZ, nullable=False),
+                        _column("authority", 5, _VARCHAR_200, nullable=False),
+                        _column(
+                            "created_at",
+                            6,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "attestation_current_roots",
+                    (
+                        _column("custody_domain", 1, _VARCHAR_40, nullable=False),
+                        _column("subject", 2, _VARCHAR_200, nullable=False),
+                        _column("current_fingerprint", 3, _VARCHAR_128, nullable=False),
+                        _column(
+                            "created_at",
+                            4,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            5,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "attestation_enrolments",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("custody_domain", 2, _VARCHAR_40, nullable=False),
+                        _column("subject", 3, _VARCHAR_200, nullable=False),
+                        _column("public_key_b64", 4, _VARCHAR_200, nullable=False),
+                        _column(
+                            "public_key_fingerprint", 5, _VARCHAR_128, nullable=False
+                        ),
+                        _column("algorithm", 6, _VARCHAR_60, nullable=False),
+                        _column("key_custody_pointer", 7, _VARCHAR_512, nullable=False),
+                        _column(
+                            "supersedes_fingerprint", 8, _VARCHAR_128, nullable=True
+                        ),
+                        _column("enrolled_at", 9, _TIMESTAMPTZ, nullable=False),
+                        _column("enrolment_authority", 10, _VARCHAR_60, nullable=False),
+                        _column("enrolment_envelope", 11, _JSONB, nullable=True),
+                        _column(
+                            "created_at",
+                            12,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            13,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "attestation_fingerprint_closures",
+                    (
+                        _column("fingerprint", 1, _VARCHAR_128, nullable=False),
+                        _column("closure_kind", 2, _VARCHAR_20, nullable=False),
+                        _column("closed_at", 3, _TIMESTAMPTZ, nullable=False),
+                        _column("closure_authority", 4, _VARCHAR_60, nullable=False),
+                        _column("closure_reason", 5, _VARCHAR_500, nullable=True),
+                        _column(
+                            "superseded_by_fingerprint", 6, _VARCHAR_128, nullable=True
+                        ),
+                        _column(
+                            "created_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            8,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_plans",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("target_id", 2, _UUID, nullable=False),
+                        _column("sequence", 3, _INTEGER, nullable=False),
+                        _column("status", 4, _VARCHAR_24, nullable=False),
+                        _column("snapshot", 5, _JSONB, nullable=True),
+                        _column("desired_revision", 6, _INTEGER, nullable=False),
+                        # dc_0001 created VARCHAR(64); dc_0002 establishes this final
+                        # post-lineage-head width without rewriting existing values.
+                        _column("plan_digest", 7, _VARCHAR_128, nullable=True),
+                        _column("requires_approval", 8, _BOOLEAN, nullable=False),
+                        _column("approval_policy_code", 9, _VARCHAR_120, nullable=True),
+                        _column("approval_policy_version", 10, _INTEGER, nullable=True),
+                        _column(
+                            "approval_decision_ref", 11, _VARCHAR_200, nullable=True
+                        ),
+                        _column("approved_at", 12, _TIMESTAMPTZ, nullable=True),
+                        _column("superseded_by_id", 13, _UUID, nullable=True),
+                        _column("record_version", 14, _INTEGER, nullable=False),
+                        _column(
+                            "created_at",
+                            15,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            16,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0003 APPENDS these four. PostgreSQL assigns `attnum` in
+                        # ADD COLUMN order, so they sit after the timestamps rather
+                        # than beside `plan_digest` where a reader would expect them —
+                        # this declaration records the physical truth, not the tidy
+                        # one, because the clean-room comparison is against a migrated
+                        # database.
+                        _column("operation", 17, _VARCHAR_20, nullable=True),
+                        _column(
+                            "execution_plan_digest", 18, _VARCHAR_128, nullable=True
+                        ),
+                        _column("authorized_operation", 19, _VARCHAR_20, nullable=True),
+                        _column(
+                            "authorized_execution_plan_digest",
+                            20,
+                            _VARCHAR_128,
+                            nullable=True,
+                        ),
+                        # dc_0004 APPENDS these four, after dc_0003's, for the same
+                        # physical reason. Deliberately NO image column here: the
+                        # authorized image set lives inside `snapshot` (ordinal 5),
+                        # which is the document `plan_digest` covers.
+                        _column(
+                            "approval_decision_status", 21, _VARCHAR_24, nullable=True
+                        ),
+                        _column("approval_revoked_at", 22, _TIMESTAMPTZ, nullable=True),
+                        _column(
+                            "approval_revocation_ref", 23, _VARCHAR_200, nullable=True
+                        ),
+                        _column(
+                            "approval_revocation_reason",
+                            24,
+                            _VARCHAR_200,
+                            nullable=True,
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_targets",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("target_ref", 2, _VARCHAR_200, nullable=False),
+                        _column("subject_ref", 3, _VARCHAR_200, nullable=False),
+                        _column("product_code", 4, _VARCHAR_120, nullable=False),
+                        _column("environment", 5, _VARCHAR_60, nullable=False),
+                        _column("status", 6, _VARCHAR_24, nullable=False),
+                        _column("desired_release_ref", 7, _VARCHAR_200, nullable=True),
+                        _column("desired_spec", 8, _JSONB, nullable=True),
+                        _column("licence_ref", 9, _VARCHAR_200, nullable=True),
+                        _column("brand_profile_ref", 10, _VARCHAR_200, nullable=True),
+                        _column("desired_revision", 11, _INTEGER, nullable=False),
+                        _column(
+                            "observed_release_ref", 12, _VARCHAR_200, nullable=True
+                        ),
+                        _column(
+                            "observed_spec_digest", 13, _VARCHAR_128, nullable=True
+                        ),
+                        _column("observed_revision", 14, _INTEGER, nullable=True),
+                        _column("last_observed_at", 15, _TIMESTAMPTZ, nullable=True),
+                        _column("record_version", 16, _INTEGER, nullable=False),
+                        _column(
+                            "created_at",
+                            17,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            18,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0004 appends the declared authorized image set here, on
+                        # the TARGET, where desired state is mutable and revisioned.
+                        _column("desired_images", 19, _JSONB, nullable=True),
+                        # dc_0006 appends the trusted execution high-water coordinate.
+                        _column("last_execution_sequence", 20, _INTEGER, nullable=True),
+                        _column(
+                            "last_execution_attempt_no", 21, _INTEGER, nullable=True
+                        ),
+                        _column(
+                            "last_execution_state_digest",
+                            22,
+                            _VARCHAR_128,
+                            nullable=True,
+                        ),
+                    ),
+                ),
+                _table(
+                    "observation_attempts",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("received_at", 2, _TIMESTAMPTZ, nullable=False),
+                        _column("raw_body", 3, _BYTEA, nullable=True),
+                        _column("raw_body_truncated", 4, _BOOLEAN, nullable=False),
+                        _column("raw_body_digest", 5, _VARCHAR_128, nullable=True),
+                        _column("signature_status", 6, _VARCHAR_20, nullable=False),
+                        _column(
+                            "eligibility_at_receipt", 7, _VARCHAR_20, nullable=False
+                        ),
+                        _column("key_id", 8, _VARCHAR_200, nullable=True),
+                        _column(
+                            "authenticated_target_ref", 9, _VARCHAR_200, nullable=True
+                        ),
+                        _column("claimed_target_ref", 10, _VARCHAR_200, nullable=True),
+                        _column("report_id", 11, _VARCHAR_200, nullable=True),
+                        _column("disposition", 12, _VARCHAR_40, nullable=False),
+                        _column("receipt_id", 13, _UUID, nullable=True),
+                        _column(
+                            "created_at",
+                            14,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            15,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "observation_receipts",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column(
+                            "authenticated_target_ref", 2, _VARCHAR_200, nullable=False
+                        ),
+                        _column("report_id", 3, _VARCHAR_200, nullable=False),
+                        _column("payload", 4, _BYTEA, nullable=True),
+                        _column("payload_digest", 5, _VARCHAR_128, nullable=True),
+                        _column("key_id", 6, _VARCHAR_200, nullable=False),
+                        _column("first_received_at", 7, _TIMESTAMPTZ, nullable=False),
+                        _column("original_verdict", 8, _VARCHAR_40, nullable=False),
+                        _column("observed_release_ref", 9, _VARCHAR_200, nullable=True),
+                        _column(
+                            "observed_spec_digest", 10, _VARCHAR_128, nullable=True
+                        ),
+                        _column(
+                            "created_at",
+                            11,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            12,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0006 appends the signed execution coordinate and the
+                        # substantive-state digest carried by this canonical receipt.
+                        _column("execution_sequence", 13, _INTEGER, nullable=True),
+                        _column("attempt_no", 14, _INTEGER, nullable=True),
+                        _column(
+                            "observed_state_digest", 15, _VARCHAR_128, nullable=True
+                        ),
+                    ),
+                ),
+                _table(
+                    "recovery_grants",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("grant_id", 2, _VARCHAR_200, nullable=False),
+                        _column("target_id", 3, _UUID, nullable=False),
+                        _column("product_code", 4, _VARCHAR_120, nullable=False),
+                        _column("environment", 5, _VARCHAR_60, nullable=False),
+                        _column(
+                            "recovery_execution_plan_digest",
+                            6,
+                            _VARCHAR_128,
+                            nullable=False,
+                        ),
+                        _column(
+                            "recovery_bundle_digest", 7, _VARCHAR_128, nullable=False
+                        ),
+                        _column(
+                            "incumbent_prestate_digest", 8, _VARCHAR_128, nullable=False
+                        ),
+                        # The signed document itself. The five columns above are a
+                        # lookup projection of terms inside it; this is the authority.
+                        _column("grant_envelope", 9, _JSONB, nullable=False),
+                        _column("not_before", 10, _TIMESTAMPTZ, nullable=False),
+                        _column("issued_at", 11, _TIMESTAMPTZ, nullable=False),
+                        _column("expires_at", 12, _TIMESTAMPTZ, nullable=False),
+                        # Revocation is a state change; the row stays so the trail can
+                        # still answer who withdrew this grant and when.
+                        _column("revoked_at", 13, _TIMESTAMPTZ, nullable=True),
+                        _column("revocation_ref", 14, _VARCHAR_200, nullable=True),
+                        _column("revocation_reason", 15, _VARCHAR_500, nullable=True),
+                        _column("record_version", 16, _INTEGER, nullable=False),
+                        _column(
+                            "created_at",
+                            17,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            18,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0009. Ordinal 19 because `ALTER TABLE ADD COLUMN` appends:
+                        # it sits after the timestamps rather than beside the digest it
+                        # describes, the same way dc_0007's four columns did.
+                        #
+                        # NULLABLE. Foundation owns the identity and Control requires
+                        # it, but a row written before this term must remain
+                        # DISTINGUISHABLE so it can be refused as historical. NOT NULL
+                        # with a default would make absence unrepresentable and recreate
+                        # the defect `incumbent_prestate_digest` shows one column over.
+                        _column(
+                            "incumbent_prestate_discriminator",
+                            19,
+                            _VARCHAR_128,
+                            nullable=True,
+                        ),
+                    ),
+                ),
+                _table(
+                    "rehearsal_grants",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("grant_id", 2, _VARCHAR_512, nullable=False),
+                        _column(
+                            "single_use_reference", 3, _VARCHAR_512, nullable=False
+                        ),
+                        _column("state", 4, _VARCHAR_20, nullable=False),
+                        _column("revoked_at", 5, _TIMESTAMPTZ, nullable=True),
+                        _column("revocation_ref", 6, _VARCHAR_200, nullable=True),
+                        _column("spent_at", 7, _TIMESTAMPTZ, nullable=True),
+                        _column(
+                            "created_at",
+                            8,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            9,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "rollout_attempt_settlements",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("attempt_id", 2, _UUID, nullable=False),
+                        _column("outcome", 3, _VARCHAR_20, nullable=False),
+                        _column("integrator_ref", 4, _VARCHAR_200, nullable=True),
+                        _column("error_code", 5, _VARCHAR_60, nullable=True),
+                        _column("detail", 6, _TEXT, nullable=True),
+                        _column("settled_at", 7, _TIMESTAMPTZ, nullable=True),
+                        _column(
+                            "created_at",
+                            8,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            9,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "rollout_attempts",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("rollout_id", 2, _UUID, nullable=False),
+                        _column("attempt_no", 3, _INTEGER, nullable=False),
+                        _column("outcome", 4, _VARCHAR_20, nullable=False),
+                        _column("integrator_ref", 5, _VARCHAR_200, nullable=True),
+                        _column("error_code", 6, _VARCHAR_60, nullable=True),
+                        _column("detail", 7, _TEXT, nullable=True),
+                        _column("dispatched_at", 8, _TIMESTAMPTZ, nullable=True),
+                        _column("settled_at", 9, _TIMESTAMPTZ, nullable=True),
+                        _column(
+                            "created_at",
+                            10,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            11,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0007 appends the exact signed attempt coordinate. NULL is
+                        # reserved for pre-a11 history; the existing append-only
+                        # trigger makes the value immutable after INSERT.
+                        _column("dispatch_envelope", 12, _JSONB, nullable=True),
+                    ),
+                ),
+                _table(
+                    "rollouts",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("rollout_ref", 2, _VARCHAR_200, nullable=False),
+                        _column("target_id", 3, _UUID, nullable=False),
+                        _column("plan_id", 4, _UUID, nullable=False),
+                        _column("status", 5, _VARCHAR_24, nullable=False),
+                        _column("reason", 6, _TEXT, nullable=True),
+                        _column("completed_at", 7, _TIMESTAMPTZ, nullable=True),
+                        _column("record_version", 8, _INTEGER, nullable=False),
+                        _column(
+                            "created_at",
+                            9,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            10,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0005 appends the immutable portable authorization.
+                        _column("authorization_envelope", 11, _JSONB, nullable=True),
+                        # dc_0006 appends the per-target monotonic execution coordinate.
+                        _column("execution_sequence", 12, _INTEGER, nullable=True),
+                    ),
+                ),
+                _table(
+                    "target_credentials",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("target_id", 2, _UUID, nullable=False),
+                        _column("key_id", 3, _VARCHAR_200, nullable=False),
+                        _column("public_key_b64", 4, _VARCHAR_200, nullable=False),
+                        _column(
+                            "public_key_fingerprint", 5, _VARCHAR_128, nullable=False
+                        ),
+                        _column("status", 6, _VARCHAR_20, nullable=False),
+                        _column("activated_at", 7, _TIMESTAMPTZ, nullable=True),
+                        _column("retired_at", 8, _TIMESTAMPTZ, nullable=True),
+                        _column("revoked_at", 9, _TIMESTAMPTZ, nullable=True),
+                        _column("revocation_reason", 10, _VARCHAR_200, nullable=True),
+                        _column(
+                            "enrollment_authority", 11, _VARCHAR_60, nullable=False
+                        ),
+                        _column(
+                            "created_at",
+                            12,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            13,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        # dc_0006 appends the exact verification interpretation. NULL
+                        # is only for legacy rows whose algorithm was never recorded.
+                        _column("algorithm", 14, _VARCHAR_60, nullable=True),
+                        _column("purpose", 15, _VARCHAR_60, nullable=True),
+                    ),
+                ),
             ),
-        ),
-        _table(
-            "attestation_enrolments",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("custody_domain", 2, _VARCHAR_40, nullable=False),
-                _column("subject", 3, _VARCHAR_200, nullable=False),
-                _column("public_key_b64", 4, _VARCHAR_200, nullable=False),
-                _column("public_key_fingerprint", 5, _VARCHAR_128, nullable=False),
-                _column("algorithm", 6, _VARCHAR_60, nullable=False),
-                _column("key_custody_pointer", 7, _VARCHAR_512, nullable=False),
-                _column("supersedes_fingerprint", 8, _VARCHAR_128, nullable=True),
-                _column("enrolled_at", 9, _TIMESTAMPTZ, nullable=False),
-                _column("enrolment_authority", 10, _VARCHAR_60, nullable=False),
-                _column("enrolment_envelope", 11, _JSONB, nullable=True),
-                _column(
-                    "created_at", 12, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 13, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-            ),
-        ),
-        _table(
-            "attestation_fingerprint_closures",
-            (
-                _column("fingerprint", 1, _VARCHAR_128, nullable=False),
-                _column("closure_kind", 2, _VARCHAR_20, nullable=False),
-                _column("closed_at", 3, _TIMESTAMPTZ, nullable=False),
-                _column("closure_authority", 4, _VARCHAR_60, nullable=False),
-                _column("closure_reason", 5, _VARCHAR_500, nullable=True),
-                _column("superseded_by_fingerprint", 6, _VARCHAR_128, nullable=True),
-                _column("created_at", 7, _TIMESTAMPTZ, nullable=False, default="now()"),
-                _column("updated_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
-            ),
-        ),
-        _table(
-            "deployment_plans",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("target_id", 2, _UUID, nullable=False),
-                _column("sequence", 3, _INTEGER, nullable=False),
-                _column("status", 4, _VARCHAR_24, nullable=False),
-                _column("snapshot", 5, _JSONB, nullable=True),
-                _column("desired_revision", 6, _INTEGER, nullable=False),
-                # dc_0001 created VARCHAR(64); dc_0002 establishes this final
-                # post-lineage-head width without rewriting existing values.
-                _column("plan_digest", 7, _VARCHAR_128, nullable=True),
-                _column("requires_approval", 8, _BOOLEAN, nullable=False),
-                _column("approval_policy_code", 9, _VARCHAR_120, nullable=True),
-                _column("approval_policy_version", 10, _INTEGER, nullable=True),
-                _column("approval_decision_ref", 11, _VARCHAR_200, nullable=True),
-                _column("approved_at", 12, _TIMESTAMPTZ, nullable=True),
-                _column("superseded_by_id", 13, _UUID, nullable=True),
-                _column("record_version", 14, _INTEGER, nullable=False),
-                _column(
-                    "created_at", 15, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 16, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0003 APPENDS these four. PostgreSQL assigns `attnum` in
-                # ADD COLUMN order, so they sit after the timestamps rather
-                # than beside `plan_digest` where a reader would expect them —
-                # this declaration records the physical truth, not the tidy
-                # one, because the clean-room comparison is against a migrated
-                # database.
-                _column("operation", 17, _VARCHAR_20, nullable=True),
-                _column("execution_plan_digest", 18, _VARCHAR_128, nullable=True),
-                _column("authorized_operation", 19, _VARCHAR_20, nullable=True),
-                _column(
-                    "authorized_execution_plan_digest",
-                    20,
-                    _VARCHAR_128,
-                    nullable=True,
-                ),
-                # dc_0004 APPENDS these four, after dc_0003's, for the same
-                # physical reason. Deliberately NO image column here: the
-                # authorized image set lives inside `snapshot` (ordinal 5),
-                # which is the document `plan_digest` covers.
-                _column("approval_decision_status", 21, _VARCHAR_24, nullable=True),
-                _column("approval_revoked_at", 22, _TIMESTAMPTZ, nullable=True),
-                _column("approval_revocation_ref", 23, _VARCHAR_200, nullable=True),
-                _column("approval_revocation_reason", 24, _VARCHAR_200, nullable=True),
-            ),
-        ),
-        _table(
-            "deployment_targets",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("target_ref", 2, _VARCHAR_200, nullable=False),
-                _column("subject_ref", 3, _VARCHAR_200, nullable=False),
-                _column("product_code", 4, _VARCHAR_120, nullable=False),
-                _column("environment", 5, _VARCHAR_60, nullable=False),
-                _column("status", 6, _VARCHAR_24, nullable=False),
-                _column("desired_release_ref", 7, _VARCHAR_200, nullable=True),
-                _column("desired_spec", 8, _JSONB, nullable=True),
-                _column("licence_ref", 9, _VARCHAR_200, nullable=True),
-                _column("brand_profile_ref", 10, _VARCHAR_200, nullable=True),
-                _column("desired_revision", 11, _INTEGER, nullable=False),
-                _column("observed_release_ref", 12, _VARCHAR_200, nullable=True),
-                _column("observed_spec_digest", 13, _VARCHAR_128, nullable=True),
-                _column("observed_revision", 14, _INTEGER, nullable=True),
-                _column("last_observed_at", 15, _TIMESTAMPTZ, nullable=True),
-                _column("record_version", 16, _INTEGER, nullable=False),
-                _column(
-                    "created_at", 17, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 18, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0004 appends the declared authorized image set here, on
-                # the TARGET, where desired state is mutable and revisioned.
-                _column("desired_images", 19, _JSONB, nullable=True),
-                # dc_0006 appends the trusted execution high-water coordinate.
-                _column("last_execution_sequence", 20, _INTEGER, nullable=True),
-                _column("last_execution_attempt_no", 21, _INTEGER, nullable=True),
-                _column("last_execution_state_digest", 22, _VARCHAR_128, nullable=True),
-            ),
-        ),
-        _table(
-            "observation_attempts",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("received_at", 2, _TIMESTAMPTZ, nullable=False),
-                _column("raw_body", 3, _BYTEA, nullable=True),
-                _column("raw_body_truncated", 4, _BOOLEAN, nullable=False),
-                _column("raw_body_digest", 5, _VARCHAR_128, nullable=True),
-                _column("signature_status", 6, _VARCHAR_20, nullable=False),
-                _column("eligibility_at_receipt", 7, _VARCHAR_20, nullable=False),
-                _column("key_id", 8, _VARCHAR_200, nullable=True),
-                _column("authenticated_target_ref", 9, _VARCHAR_200, nullable=True),
-                _column("claimed_target_ref", 10, _VARCHAR_200, nullable=True),
-                _column("report_id", 11, _VARCHAR_200, nullable=True),
-                _column("disposition", 12, _VARCHAR_40, nullable=False),
-                _column("receipt_id", 13, _UUID, nullable=True),
-                _column(
-                    "created_at", 14, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 15, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-            ),
-        ),
-        _table(
-            "observation_receipts",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("authenticated_target_ref", 2, _VARCHAR_200, nullable=False),
-                _column("report_id", 3, _VARCHAR_200, nullable=False),
-                _column("payload", 4, _BYTEA, nullable=True),
-                _column("payload_digest", 5, _VARCHAR_128, nullable=True),
-                _column("key_id", 6, _VARCHAR_200, nullable=False),
-                _column("first_received_at", 7, _TIMESTAMPTZ, nullable=False),
-                _column("original_verdict", 8, _VARCHAR_40, nullable=False),
-                _column("observed_release_ref", 9, _VARCHAR_200, nullable=True),
-                _column("observed_spec_digest", 10, _VARCHAR_128, nullable=True),
-                _column(
-                    "created_at", 11, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 12, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0006 appends the signed execution coordinate and the
-                # substantive-state digest carried by this canonical receipt.
-                _column("execution_sequence", 13, _INTEGER, nullable=True),
-                _column("attempt_no", 14, _INTEGER, nullable=True),
-                _column("observed_state_digest", 15, _VARCHAR_128, nullable=True),
-            ),
-        ),
-        _table(
-            "recovery_grants",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("grant_id", 2, _VARCHAR_200, nullable=False),
-                _column("target_id", 3, _UUID, nullable=False),
-                _column("product_code", 4, _VARCHAR_120, nullable=False),
-                _column("environment", 5, _VARCHAR_60, nullable=False),
-                _column(
-                    "recovery_execution_plan_digest", 6, _VARCHAR_128, nullable=False
-                ),
-                _column("recovery_bundle_digest", 7, _VARCHAR_128, nullable=False),
-                _column("incumbent_prestate_digest", 8, _VARCHAR_128, nullable=False),
-                # The signed document itself. The five columns above are a
-                # lookup projection of terms inside it; this is the authority.
-                _column("grant_envelope", 9, _JSONB, nullable=False),
-                _column("not_before", 10, _TIMESTAMPTZ, nullable=False),
-                _column("issued_at", 11, _TIMESTAMPTZ, nullable=False),
-                _column("expires_at", 12, _TIMESTAMPTZ, nullable=False),
-                # Revocation is a state change; the row stays so the trail can
-                # still answer who withdrew this grant and when.
-                _column("revoked_at", 13, _TIMESTAMPTZ, nullable=True),
-                _column("revocation_ref", 14, _VARCHAR_200, nullable=True),
-                _column("revocation_reason", 15, _VARCHAR_500, nullable=True),
-                _column("record_version", 16, _INTEGER, nullable=False),
-                _column(
-                    "created_at", 17, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 18, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0009. Ordinal 19 because `ALTER TABLE ADD COLUMN` appends:
-                # it sits after the timestamps rather than beside the digest it
-                # describes, the same way dc_0007's four columns did.
-                #
-                # NULLABLE. Foundation owns the identity and Control requires
-                # it, but a row written before this term must remain
-                # DISTINGUISHABLE so it can be refused as historical. NOT NULL
-                # with a default would make absence unrepresentable and recreate
-                # the defect `incumbent_prestate_digest` shows one column over.
-                _column(
-                    "incumbent_prestate_discriminator", 19, _VARCHAR_128, nullable=True
-                ),
-            ),
-        ),
-        _table(
-            "rehearsal_grants",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("grant_id", 2, _VARCHAR_512, nullable=False),
-                _column("single_use_reference", 3, _VARCHAR_512, nullable=False),
-                _column("state", 4, _VARCHAR_20, nullable=False),
-                _column("revoked_at", 5, _TIMESTAMPTZ, nullable=True),
-                _column("revocation_ref", 6, _VARCHAR_200, nullable=True),
-                _column("spent_at", 7, _TIMESTAMPTZ, nullable=True),
-                _column("created_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
-                _column("updated_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
-            ),
-        ),
-        _table(
-            "rollout_attempt_settlements",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("attempt_id", 2, _UUID, nullable=False),
-                _column("outcome", 3, _VARCHAR_20, nullable=False),
-                _column("integrator_ref", 4, _VARCHAR_200, nullable=True),
-                _column("error_code", 5, _VARCHAR_60, nullable=True),
-                _column("detail", 6, _TEXT, nullable=True),
-                _column("settled_at", 7, _TIMESTAMPTZ, nullable=True),
-                _column("created_at", 8, _TIMESTAMPTZ, nullable=False, default="now()"),
-                _column("updated_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
-            ),
-        ),
-        _table(
-            "rollout_attempts",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("rollout_id", 2, _UUID, nullable=False),
-                _column("attempt_no", 3, _INTEGER, nullable=False),
-                _column("outcome", 4, _VARCHAR_20, nullable=False),
-                _column("integrator_ref", 5, _VARCHAR_200, nullable=True),
-                _column("error_code", 6, _VARCHAR_60, nullable=True),
-                _column("detail", 7, _TEXT, nullable=True),
-                _column("dispatched_at", 8, _TIMESTAMPTZ, nullable=True),
-                _column("settled_at", 9, _TIMESTAMPTZ, nullable=True),
-                _column(
-                    "created_at", 10, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 11, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0007 appends the exact signed attempt coordinate. NULL is
-                # reserved for pre-a11 history; the existing append-only
-                # trigger makes the value immutable after INSERT.
-                _column("dispatch_envelope", 12, _JSONB, nullable=True),
-            ),
-        ),
-        _table(
-            "rollouts",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("rollout_ref", 2, _VARCHAR_200, nullable=False),
-                _column("target_id", 3, _UUID, nullable=False),
-                _column("plan_id", 4, _UUID, nullable=False),
-                _column("status", 5, _VARCHAR_24, nullable=False),
-                _column("reason", 6, _TEXT, nullable=True),
-                _column("completed_at", 7, _TIMESTAMPTZ, nullable=True),
-                _column("record_version", 8, _INTEGER, nullable=False),
-                _column("created_at", 9, _TIMESTAMPTZ, nullable=False, default="now()"),
-                _column(
-                    "updated_at", 10, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0005 appends the immutable portable authorization.
-                _column("authorization_envelope", 11, _JSONB, nullable=True),
-                # dc_0006 appends the per-target monotonic execution coordinate.
-                _column("execution_sequence", 12, _INTEGER, nullable=True),
-            ),
-        ),
-        _table(
-            "target_credentials",
-            (
-                _column("id", 1, _UUID, nullable=False),
-                _column("target_id", 2, _UUID, nullable=False),
-                _column("key_id", 3, _VARCHAR_200, nullable=False),
-                _column("public_key_b64", 4, _VARCHAR_200, nullable=False),
-                _column("public_key_fingerprint", 5, _VARCHAR_128, nullable=False),
-                _column("status", 6, _VARCHAR_20, nullable=False),
-                _column("activated_at", 7, _TIMESTAMPTZ, nullable=True),
-                _column("retired_at", 8, _TIMESTAMPTZ, nullable=True),
-                _column("revoked_at", 9, _TIMESTAMPTZ, nullable=True),
-                _column("revocation_reason", 10, _VARCHAR_200, nullable=True),
-                _column("enrollment_authority", 11, _VARCHAR_60, nullable=False),
-                _column(
-                    "created_at", 12, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                _column(
-                    "updated_at", 13, _TIMESTAMPTZ, nullable=False, default="now()"
-                ),
-                # dc_0006 appends the exact verification interpretation. NULL
-                # is only for legacy rows whose algorithm was never recorded.
-                _column("algorithm", 14, _VARCHAR_60, nullable=True),
-                _column("purpose", 15, _VARCHAR_60, nullable=True),
-            ),
-        ),
+            key=lambda table: table.name,
+        )
     ),
 )
 

@@ -28,8 +28,8 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Iterator
-from datetime import UTC, datetime
+from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -55,6 +55,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.orm import Session, sessionmaker
 
+import dotmac_deployment_control.host_admission_coordinator as admission_coordinator
 import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     PRESTATE_DISCRIMINATOR,
@@ -66,6 +67,13 @@ from dotmac_deployment_control import (
     CredentialTransitionCommand,
     DesiredDeployment,
     EnrolCredentialCommand,
+    EnrolHostAdmissionCredentialCommand,
+    HostAdmissionPresentationStatementV1,
+    HostAdmissionPresentationV1,
+    HostAdmissionRefusalCode,
+    HostAdmissionRefusedError,
+    HostAdmissionStateRefusalCode,
+    HostAdmissionStateRefusedError,
     ObservationAttempt,
     ObservationDisposition,
     ObservationReceipt,
@@ -87,15 +95,20 @@ from dotmac_deployment_control import (
     cancel_rollout,
     dispatch_attempt,
     enrol_credential,
+    enrol_host_admission_credential,
+    finalize_host_admission,
     get_rollout,
     get_target,
+    install_host_admission_security,
     issue_execution_observation_envelope,
     list_targets,
     module,
+    prepare_host_admission,
     propose_plan,
     record_observation,
     register_target,
     request_rollout,
+    retire_credential,
     revoke_credential,
     revoke_plan_approval,
     set_desired_state,
@@ -103,6 +116,22 @@ from dotmac_deployment_control import (
     spec_digest,
 )
 from dotmac_deployment_control import versions_dir as deploy_versions_dir
+from dotmac_deployment_control.attestation_trust_registry import (
+    AttestationRootDescriptorTerms,
+    enrol_root,
+    revoke_root,
+    rotate_root,
+)
+from dotmac_deployment_control.host_admission_service import (
+    BindTargetHostCommand,
+    SetTargetAdmissionPolicyCommand,
+    bind_target_host,
+    revise_target_admission_policy,
+    revoke_target_admission_policy,
+    revoke_target_host,
+    rotate_target_host,
+    set_target_admission_policy,
+)
 from dotmac_deployment_control.models import (
     DeploymentPlan,
     DeploymentTarget,
@@ -120,6 +149,24 @@ from tests.execution_observation_support import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+_CANDIDATE_ATTESTATION_DIGEST = "sha256:" + "ca" * 32
+_INSTALLED_ATTESTATION_DIGEST = "sha256:" + "1d" * 32
+
+
+def _stage_dispatch_consumption(
+    db: Session,
+    *,
+    attempt_id: uuid.UUID,
+    expected_target: control_service._ExpectedDispatchTarget,
+):
+    return control_service._stage_dispatch_consumption(
+        db,
+        attempt_id=attempt_id,
+        expected_target=expected_target,
+        candidate_attestation_envelope_digest=_CANDIDATE_ATTESTATION_DIGEST,
+        installed_attestation_envelope_digest=_INSTALLED_ATTESTATION_DIGEST,
+    )
+
 
 # ── SECOND CHANGE, 2026-09-01 — `dc_0003`'s binding, recorded not absorbed ───
 #
@@ -170,12 +217,30 @@ TABLES = (
     "observation_attempts",
     "recovery_grants",
     "rehearsal_grants",
+    "attestation_enrolments",
+    "attestation_fingerprint_closures",
+    "attestation_current_roots",
+    "attestation_subject_locks",
+    "attestation_root_descriptors",
+    "target_host_associations",
+    "target_host_association_closures",
+    "target_current_hosts",
+    "target_admission_policies",
+    "target_admission_policy_closures",
+    "target_current_admission_policies",
 )
 EVIDENCE_TABLES = (
     "rollout_attempts",
     "rollout_attempt_settlements",
     "observation_attempts",
     "observation_receipts",
+    "attestation_enrolments",
+    "attestation_fingerprint_closures",
+    "attestation_root_descriptors",
+    "target_host_associations",
+    "target_host_association_closures",
+    "target_admission_policies",
+    "target_admission_policy_closures",
 )
 MUTABLE_TABLES = (
     "deployment_targets",
@@ -186,6 +251,9 @@ MUTABLE_TABLES = (
     # the record of the withdrawal.
     "recovery_grants",
     "rehearsal_grants",
+    "attestation_current_roots",
+    "target_current_hosts",
+    "target_current_admission_policies",
 )
 
 #: All seven. A revoke that covers six is not a revoke.
@@ -462,7 +530,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0012_rehearsal_lifecycle",
+                revision="dc_0013_host_admission",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -576,7 +644,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 178 columns across thirteen tables; `dc_0005` is 105.
+    The head extent is 227 columns across twenty-one tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -612,7 +680,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 178
+                    == 227
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -662,7 +730,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 178
+                    == 227
                 )
         finally:
             admin.dispose()
@@ -724,14 +792,18 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                 ).scalar_one()
                 == "spent"
             )
+            # PostgreSQL runs the requested multi-revision downgrade in one
+            # transaction.  dc_0013's empty-table downgrade executes first,
+            # then dc_0012 refuses to discard the spent grant; that exception
+            # rolls the whole command back to the exact pre-command head.
             assert (
                 conn.execute(
                     text(
-                        "SELECT count(*) FROM public.alembic_version "
-                        "WHERE version_num = 'dc_0012_rehearsal_lifecycle'"
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == 1
+                == "dc_0013_host_admission"
             )
     finally:
         engine.dispose()
@@ -940,6 +1012,81 @@ class TestTheOnlinePlatformRoleCanActuallyWork:
         admin_url, _, _ = migrated_scratch
         assert not _has_privilege(admin_url, table, "UPDATE", role="platform_api")
 
+    def test_platform_api_can_actually_lock_an_attestation_subject_row(
+        self, migrated_scratch
+    ) -> None:
+        """`attestation_subject_locks` is neither `EVIDENCE_TABLES` nor
+        `MUTABLE_TABLES`: it is a permanent serialization row that every
+        admission and root mutation takes `SELECT ... FOR UPDATE` on, which
+        PostgreSQL only permits with the UPDATE privilege held (in addition to
+        SELECT) -- a `has_table_privilege` check would pass on a superset grant
+        that a real locking statement still fails on, so this executes the
+        actual statement `_lock_subject` issues, through the platform_api
+        role's own connection."""
+        admin_url, platform_url, _ = migrated_scratch
+        admin_engine = create_engine(admin_url)
+        try:
+            with admin_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_subject_locks "
+                        "(custody_domain, subject) VALUES "
+                        "('host_attester', 'fixture-lock-subject') "
+                        "ON CONFLICT DO NOTHING"
+                    )
+                )
+        finally:
+            admin_engine.dispose()
+        platform_engine = create_engine(platform_url)
+        try:
+            with platform_engine.begin() as conn:
+                locked = conn.execute(
+                    text(
+                        "SELECT subject FROM mod_deploy.attestation_subject_locks "
+                        "WHERE custody_domain = 'host_attester' "
+                        "AND subject = 'fixture-lock-subject' FOR UPDATE"
+                    )
+                ).scalar()
+            assert locked == "fixture-lock-subject"
+        finally:
+            platform_engine.dispose()
+
+    def test_platform_api_cannot_rewrite_an_attestation_subject_lock(
+        self, migrated_scratch
+    ) -> None:
+        """The UPDATE grant above exists only so a locking read can succeed;
+        the append-only trigger must still refuse a genuine write."""
+        admin_url, platform_url, _ = migrated_scratch
+        admin_engine = create_engine(admin_url)
+        try:
+            with admin_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.attestation_subject_locks "
+                        "(custody_domain, subject) VALUES "
+                        "('host_attester', 'fixture-rewrite-subject') "
+                        "ON CONFLICT DO NOTHING"
+                    )
+                )
+        finally:
+            admin_engine.dispose()
+        platform_engine = create_engine(platform_url)
+        try:
+            with (
+                platform_engine.begin() as conn,
+                pytest.raises(DBAPIError, match="append-only"),
+            ):
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.attestation_subject_locks "
+                        "SET subject = 'rewritten' "
+                        "WHERE custody_domain = 'host_attester' "
+                        "AND subject = 'fixture-rewrite-subject'"
+                    )
+                )
+        finally:
+            platform_engine.dispose()
+
     def test_platform_api_can_insert_a_target_and_read_it_back(
         self, migrated_scratch
     ) -> None:
@@ -1118,6 +1265,43 @@ class _HoldOneTargetLock:
         self.acquired.set()
         if not self.release.wait(timeout=30):
             raise AssertionError("the target-lock holder was never released")
+
+
+class _HoldOneNamedRowLock:
+    """Pause one worker after PostgreSQL grants a named table row lock."""
+
+    def __init__(self, table: str, *, subject: str | None = None) -> None:
+        self.table = table
+        self.subject = subject
+        self.holder_thread_id: int | None = None
+        self.acquired = threading.Event()
+        self.release = threading.Event()
+
+    def after_cursor_execute(
+        self,
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if threading.get_ident() != self.holder_thread_id:
+            return
+        normalised = " ".join(statement.lower().split())
+        if (
+            f"from mod_deploy.{self.table}" not in normalised
+            or "for update" not in normalised
+        ):
+            return
+        if self.subject is not None and (
+            not isinstance(_parameters, Mapping)
+            or self.subject not in _parameters.values()
+        ):
+            return
+        self.acquired.set()
+        if not self.release.wait(timeout=30):
+            raise AssertionError(f"the {self.table} lock holder was never released")
 
 
 class _HoldOneRolloutLock:
@@ -2578,6 +2762,740 @@ def _expected_dispatch_target(engine: Engine, rollout_ref: str):
         return control_service._ExpectedDispatchTarget(target.id, target.target_ref)
 
 
+class _HostAdmissionClock:
+    def now(self) -> datetime:
+        return datetime.now(UTC)
+
+
+class _HostAdmissionVerifier:
+    def verify_host_admission_presentation(self, **values: object) -> bool:
+        return values["signature"] == "c2ln"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _installed_host_admission_security() -> Iterator[None]:
+    admission_coordinator._reset_host_admission_security_for_tests()
+    install_host_admission_security(
+        verifier=_HostAdmissionVerifier(), clock=_HostAdmissionClock()
+    )
+    yield
+    admission_coordinator._reset_host_admission_security_for_tests()
+
+
+def _seed_host_admission_coordinate(
+    engine: Engine, rollout_ref: str
+) -> tuple[
+    uuid.UUID,
+    uuid.UUID,
+    uuid.UUID,
+    HostAdmissionPresentationV1,
+    str,
+    str,
+    str,
+    str,
+]:
+    suffix = uuid.uuid4().hex[:10]
+    with Session(engine) as db:
+        attempt = db.execute(
+            select(RolloutAttempt)
+            .join(Rollout, RolloutAttempt.rollout_id == Rollout.id)
+            .where(Rollout.rollout_ref == rollout_ref)
+        ).scalar_one()
+        target_id = db.execute(
+            select(Rollout.target_id).where(Rollout.id == attempt.rollout_id)
+        ).scalar_one()
+        dispatch = control_service._stored_dispatch_coordinate(db, attempt.id)
+        assert dispatch is not None
+        key_id = f"host-admission-{suffix}"
+        credential_id = enrol_host_admission_credential(
+            db,
+            EnrolHostAdmissionCredentialCommand(
+                command_id=f"enrol-host-admission-{suffix}",
+                target_id=target_id,
+                key_id=key_id,
+                algorithm="ed25519",
+                public_key_b64=observation_public_key_b64(key_id),
+                enrollment_authority="platform-test",
+            ),
+        )
+        activate_credential(
+            db,
+            CredentialTransitionCommand(
+                command_id=f"activate-host-admission-{suffix}",
+                credential_id=credential_id,
+            ),
+        )
+        host_id = f"host-{suffix}"
+        bind_target_host(
+            db,
+            BindTargetHostCommand(
+                target_id=target_id,
+                host_id=host_id,
+                authority="platform-test",
+            ),
+        )
+        candidate_subject = f"foundation-release-{suffix}"
+        set_target_admission_policy(
+            db,
+            SetTargetAdmissionPolicyCommand(
+                target_id=target_id,
+                candidate_root_subject=candidate_subject,
+                candidate_audience="foundation-candidate",
+                installed_audience="foundation-installed",
+                expected_foundation_package="dotmac-sub",
+                authority="platform-test",
+            ),
+        )
+        admission_now = datetime.now(UTC)
+        candidate_root = enrol_root(
+            db,
+            custody_domain="candidate_release_signer",
+            subject=candidate_subject,
+            public_key_b64=observation_public_key_b64(candidate_subject),
+            algorithm="ed25519",
+            key_custody_pointer=(f"bao://secret/dotmac/test/{candidate_subject}"),
+            enrolment_authority="platform-test",
+            descriptor=AttestationRootDescriptorTerms(
+                issuer="platform-test",
+                attestation_key_id=f"candidate-key-{suffix}",
+                evidence_purpose="dotmac.foundation.candidate-artifact.v2",
+                not_after=admission_now + timedelta(days=1),
+            ),
+            enrolled_at=admission_now - timedelta(days=1),
+        )
+        host_root = enrol_root(
+            db,
+            custody_domain="host_attester",
+            subject=host_id,
+            public_key_b64=observation_public_key_b64(host_id),
+            algorithm="ed25519",
+            key_custody_pointer=f"bao://secret/dotmac/test/{host_id}",
+            enrolment_authority="platform-test",
+            descriptor=AttestationRootDescriptorTerms(
+                issuer="platform-test",
+                attestation_key_id=f"host-key-{suffix}",
+                evidence_purpose="dotmac.foundation.installed-host.v2",
+                not_after=admission_now + timedelta(days=1),
+            ),
+            enrolled_at=admission_now - timedelta(days=1),
+        )
+        presentation = HostAdmissionPresentationV1(
+            statement=HostAdmissionPresentationStatementV1(
+                presentation_id=f"presentation-{suffix}",
+                key_id=key_id,
+                dispatch_id=dispatch.dispatch_id,
+                candidate_attestation_envelope_digest=(_CANDIDATE_ATTESTATION_DIGEST),
+                installed_attestation_envelope_digest=(_INSTALLED_ATTESTATION_DIGEST),
+                issued_at=admission_now,
+                expires_at=admission_now + timedelta(minutes=5),
+            ),
+            signature="c2ln",
+        )
+        db.commit()
+        return (
+            attempt.id,
+            target_id,
+            credential_id,
+            presentation,
+            candidate_subject,
+            candidate_root.public_key_fingerprint,
+            host_id,
+            host_root.public_key_fingerprint,
+        )
+
+
+def _mutate_host_admission_coordinate(
+    db: Session,
+    *,
+    mutation: str,
+    target_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    candidate_subject: str,
+    candidate_fingerprint: str,
+    host_id: str,
+    host_fingerprint: str,
+    admission_instant: datetime,
+) -> None:
+    if mutation == "credential_revocation":
+        revoke_credential(
+            db,
+            CredentialTransitionCommand(
+                command_id=f"revoke-host-admission-{uuid.uuid4()}",
+                credential_id=credential_id,
+                reason="platform race proof",
+            ),
+        )
+        return
+    if mutation == "credential_retirement":
+        retire_credential(
+            db,
+            CredentialTransitionCommand(
+                command_id=f"retire-host-admission-{uuid.uuid4()}",
+                credential_id=credential_id,
+                reason="platform race proof",
+            ),
+        )
+        return
+    if mutation == "host_rotation":
+        rotate_target_host(
+            db,
+            BindTargetHostCommand(
+                target_id=target_id,
+                host_id=f"successor-{uuid.uuid4().hex[:10]}",
+                authority="platform-race-test",
+            ),
+        )
+        return
+    if mutation == "host_revocation":
+        revoke_target_host(db, target_id=target_id, authority="platform-race-test")
+        return
+    if mutation == "policy_revision":
+        revise_target_admission_policy(
+            db,
+            SetTargetAdmissionPolicyCommand(
+                target_id=target_id,
+                candidate_root_subject=candidate_subject,
+                candidate_audience="foundation-candidate",
+                installed_audience="foundation-installed",
+                expected_foundation_package="dotmac-other",
+                authority="platform-race-test",
+            ),
+        )
+        return
+    if mutation == "policy_revocation":
+        revoke_target_admission_policy(
+            db, target_id=target_id, authority="platform-race-test"
+        )
+        return
+    if mutation == "candidate_root_revocation":
+        revoke_root(
+            db,
+            fingerprint=candidate_fingerprint,
+            revocation_authority="platform-race-test",
+            revocation_reason="platform race proof",
+        )
+        return
+    if mutation in {"candidate_root_rotation", "host_root_rotation"}:
+        candidate = mutation == "candidate_root_rotation"
+        subject = candidate_subject if candidate else host_id
+        fingerprint = candidate_fingerprint if candidate else host_fingerprint
+        purpose = (
+            "dotmac.foundation.candidate-artifact.v2"
+            if candidate
+            else "dotmac.foundation.installed-host.v2"
+        )
+        custody_domain = "candidate_release_signer" if candidate else "host_attester"
+        # Keep the successor already valid at the signed presentation instant
+        # so this race exercises changed verification context, rather than the
+        # separate not-before refusal.
+        when = admission_instant - timedelta(microseconds=1)
+        rotate_root(
+            db,
+            custody_domain=custody_domain,
+            subject=subject,
+            supersedes_fingerprint=fingerprint,
+            public_key_b64=observation_public_key_b64(
+                f"successor-{mutation}-{uuid.uuid4()}"
+            ),
+            algorithm="ed25519",
+            key_custody_pointer=(f"bao://secret/dotmac/test/successor-{uuid.uuid4()}"),
+            enrolment_authority="platform-race-test",
+            descriptor=AttestationRootDescriptorTerms(
+                issuer="platform-race-test",
+                attestation_key_id=f"successor-{uuid.uuid4()}",
+                evidence_purpose=purpose,
+                not_after=when + timedelta(days=1),
+            ),
+            enrolled_at=when,
+        )
+        return
+    if mutation == "host_root_revocation":
+        revoke_root(
+            db,
+            fingerprint=host_fingerprint,
+            revocation_authority="platform-race-test",
+            revocation_reason="platform race proof",
+        )
+        return
+    raise AssertionError(f"unknown mutation {mutation!r}")
+
+
+_HOST_ADMISSION_MUTATIONS = (
+    (
+        "credential_revocation",
+        "deployment_targets",
+        HostAdmissionRefusalCode.CREDENTIAL_NOT_ACTIVE,
+        None,
+    ),
+    (
+        "credential_retirement",
+        "deployment_targets",
+        HostAdmissionRefusalCode.CREDENTIAL_NOT_ACTIVE,
+        None,
+    ),
+    (
+        "host_rotation",
+        "deployment_targets",
+        HostAdmissionRefusalCode.POLICY_HOST_MISMATCH,
+        None,
+    ),
+    (
+        "host_revocation",
+        "deployment_targets",
+        HostAdmissionStateRefusalCode.HOST_ABSENT,
+        None,
+    ),
+    (
+        "policy_revision",
+        "deployment_targets",
+        "foundation_context_changed",
+        "policy",
+    ),
+    (
+        "policy_revocation",
+        "deployment_targets",
+        HostAdmissionStateRefusalCode.POLICY_ABSENT,
+        None,
+    ),
+    (
+        "candidate_root_revocation",
+        "attestation_subject_locks",
+        HostAdmissionRefusalCode.ROOT_REFUSED,
+        None,
+    ),
+    (
+        "candidate_root_rotation",
+        "attestation_subject_locks",
+        "foundation_context_changed",
+        "candidate_root",
+    ),
+    (
+        "host_root_revocation",
+        "attestation_subject_locks",
+        HostAdmissionRefusalCode.ROOT_REFUSED,
+        None,
+    ),
+    (
+        "host_root_rotation",
+        "attestation_subject_locks",
+        "foundation_context_changed",
+        "host_root",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "lock_table", "expected_refusal", "verification_change"),
+    _HOST_ADMISSION_MUTATIONS,
+)
+def test_committed_coordinate_mutation_wins_before_host_admission(
+    observation_race: tuple[Engine, str, str, str],
+    mutation: str,
+    lock_table: str,
+    expected_refusal: object,
+    verification_change: str | None,
+) -> None:
+    """A committed identity/trust mutation refuses and writes no marker."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    (
+        attempt_id,
+        target_id,
+        credential_id,
+        presentation,
+        candidate_subject,
+        candidate_fingerprint,
+        host_id,
+        host_fingerprint,
+    ) = _seed_host_admission_coordinate(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    lock_subject = (
+        candidate_subject
+        if mutation.startswith("candidate_root_")
+        else host_id
+        if mutation.startswith("host_root_")
+        else None
+    )
+    gate = _HoldOneNamedRowLock(lock_table, subject=lock_subject)
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def mutate_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["mutation"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                _mutate_host_admission_coordinate(
+                    db,
+                    mutation=mutation,
+                    target_id=target_id,
+                    credential_id=credential_id,
+                    candidate_subject=candidate_subject,
+                    candidate_fingerprint=candidate_fingerprint,
+                    host_id=host_id,
+                    host_fingerprint=host_fingerprint,
+                    admission_instant=presentation.statement.issued_at,
+                )
+                db.commit()
+                outcomes["mutation"] = "committed"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def admit_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["admission"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                try:
+                    prepared = prepare_host_admission(
+                        db,
+                        attempt_id=attempt_id,
+                        presentation=presentation,
+                    )
+                    if verification_change == "policy":
+                        assert (
+                            prepared.facts.expected_foundation_package == "dotmac-other"
+                        )
+                        db.rollback()
+                        outcomes["admission"] = expected_refusal
+                        return
+                    if verification_change == "candidate_root":
+                        assert (
+                            prepared.facts.candidate_root.public_key_fingerprint
+                            != candidate_fingerprint
+                        )
+                        db.rollback()
+                        outcomes["admission"] = expected_refusal
+                        return
+                    if verification_change == "host_root":
+                        assert (
+                            prepared.facts.installed_root.public_key_fingerprint
+                            != host_fingerprint
+                        )
+                        db.rollback()
+                        outcomes["admission"] = expected_refusal
+                        return
+                    finalize_host_admission(
+                        db,
+                        prepared=prepared,
+                        candidate_attestation_envelope_digest=(
+                            prepared.facts.candidate_attestation_envelope_digest
+                        ),
+                        installed_attestation_envelope_digest=(
+                            prepared.facts.installed_attestation_envelope_digest
+                        ),
+                    )
+                    db.commit()
+                    outcomes["admission"] = "consumed"
+                except (
+                    HostAdmissionRefusedError,
+                    HostAdmissionStateRefusedError,
+                ) as exc:
+                    db.rollback()
+                    outcomes["admission"] = exc.code
+        except BaseException as exc:
+            errors.append(exc)
+
+    mutator = threading.Thread(target=mutate_first)
+    admission = threading.Thread(target=admit_second)
+    try:
+        mutator.start()
+        assert gate.acquired.wait(timeout=20), "mutation did not acquire its lock"
+        admission.start()
+        deadline = time.monotonic() + 10
+        while "admission" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "admission" in backend_pids, "admission did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["admission"])
+        gate.release.set()
+        for worker in (mutator, admission):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "host-admission mutation race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], errors
+    assert outcomes == {
+        "mutation": "committed",
+        "admission": expected_refusal,
+    }
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE,
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+    assert marker_count == 0
+
+
+@pytest.mark.parametrize(
+    ("mutation", "lock_table", "_expected_refusal", "_verification_change"),
+    _HOST_ADMISSION_MUTATIONS,
+)
+def test_committed_host_admission_wins_before_coordinate_mutation(
+    observation_race: tuple[Engine, str, str, str],
+    mutation: str,
+    lock_table: str,
+    _expected_refusal: object,
+    _verification_change: str | None,
+) -> None:
+    """Admission commits once; a later mutation cannot reclaim its marker."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    (
+        attempt_id,
+        target_id,
+        credential_id,
+        presentation,
+        candidate_subject,
+        candidate_fingerprint,
+        host_id,
+        host_fingerprint,
+    ) = _seed_host_admission_coordinate(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    lock_subject = (
+        candidate_subject
+        if mutation.startswith("candidate_root_")
+        else host_id
+        if mutation.startswith("host_root_")
+        else None
+    )
+    gate = _HoldOneNamedRowLock(lock_table, subject=lock_subject)
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+
+    def admit_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["admission"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                prepared = prepare_host_admission(
+                    db,
+                    attempt_id=attempt_id,
+                    presentation=presentation,
+                )
+                finalize_host_admission(
+                    db,
+                    prepared=prepared,
+                    candidate_attestation_envelope_digest=(
+                        prepared.facts.candidate_attestation_envelope_digest
+                    ),
+                    installed_attestation_envelope_digest=(
+                        prepared.facts.installed_attestation_envelope_digest
+                    ),
+                )
+                db.commit()
+                outcomes["admission"] = "consumed"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def mutate_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["mutation"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                _mutate_host_admission_coordinate(
+                    db,
+                    mutation=mutation,
+                    target_id=target_id,
+                    credential_id=credential_id,
+                    candidate_subject=candidate_subject,
+                    candidate_fingerprint=candidate_fingerprint,
+                    host_id=host_id,
+                    host_fingerprint=host_fingerprint,
+                    admission_instant=presentation.statement.issued_at,
+                )
+                db.commit()
+                outcomes["mutation"] = "committed"
+        except BaseException as exc:
+            errors.append(exc)
+
+    admission = threading.Thread(target=admit_first)
+    mutator = threading.Thread(target=mutate_second)
+    try:
+        admission.start()
+        assert gate.acquired.wait(timeout=20), "admission did not acquire its lock"
+        mutator.start()
+        deadline = time.monotonic() + 10
+        while "mutation" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "mutation" in backend_pids, "mutation did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["mutation"])
+        gate.release.set()
+        for worker in (admission, mutator):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "host-admission mutation race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], errors
+    assert outcomes == {"admission": "consumed", "mutation": "committed"}
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE,
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+    assert marker_count == 1
+
+
+def _prepare_and_finalize_host_admission(
+    db: Session,
+    *,
+    attempt_id: uuid.UUID,
+    presentation: HostAdmissionPresentationV1,
+) -> None:
+    prepared = prepare_host_admission(
+        db,
+        attempt_id=attempt_id,
+        presentation=presentation,
+    )
+    finalize_host_admission(
+        db,
+        prepared=prepared,
+        candidate_attestation_envelope_digest=(
+            prepared.facts.candidate_attestation_envelope_digest
+        ),
+        installed_attestation_envelope_digest=(
+            prepared.facts.installed_attestation_envelope_digest
+        ),
+    )
+
+
+def test_concurrent_host_admission_replay_commits_exactly_one_marker(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """The authenticated coordinator preserves Control's one-shot arbiter."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    (
+        attempt_id,
+        *_rest,
+        presentation,
+        _candidate_subject,
+        _candidate_fp,
+        _host,
+        _host_fp,
+    ) = _seed_host_admission_coordinate(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    gate = _HoldOneNamedRowLock("deployment_targets")
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: list[str] = []
+    errors: list[BaseException] = []
+
+    def admit(holder: bool) -> None:
+        try:
+            with sessions() as db:
+                if holder:
+                    gate.holder_thread_id = threading.get_ident()
+                backend_pids["first" if holder else "second"] = int(
+                    db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
+                )
+                try:
+                    _prepare_and_finalize_host_admission(
+                        db, attempt_id=attempt_id, presentation=presentation
+                    )
+                    db.commit()
+                    outcomes.append("consumed")
+                except control_service._DispatchConsumptionRefusedError as exc:
+                    db.rollback()
+                    outcomes.append(exc.code.value)
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=admit, args=(True,))
+    second = threading.Thread(target=admit, args=(False,))
+    try:
+        first.start()
+        assert gate.acquired.wait(timeout=20), "first admission did not lock target"
+        second.start()
+        deadline = time.monotonic() + 10
+        while "second" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "second" in backend_pids, "second admission did not open a backend"
+        _wait_until_postgres_reports_lock(engine, backend_pids["second"])
+        gate.release.set()
+        for worker in (first, second):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "concurrent host admission deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], errors
+    assert sorted(outcomes) == [
+        "consumed",
+        control_service._DispatchConsumptionRefusalCode.ALREADY_CONSUMED.value,
+    ]
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE,
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+    assert marker_count == 1
+
+
+def test_rolled_back_host_admission_leaves_the_dispatch_reusable(
+    observation_race: tuple[Engine, str, str, str],
+) -> None:
+    """A staged marker shares the caller's transaction and vanishes with it."""
+    engine, _target_ref, _key_id, rollout_ref = observation_race
+    (
+        attempt_id,
+        *_rest,
+        presentation,
+        _candidate_subject,
+        _candidate_fp,
+        _host,
+        _host_fp,
+    ) = _seed_host_admission_coordinate(engine, rollout_ref)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    with sessions() as abandoned:
+        _prepare_and_finalize_host_admission(
+            abandoned, attempt_id=attempt_id, presentation=presentation
+        )
+        abandoned.rollback()
+    with sessions() as retry:
+        _prepare_and_finalize_host_admission(
+            retry, attempt_id=attempt_id, presentation=presentation
+        )
+        retry.commit()
+    with sessions() as evidence:
+        marker_count = evidence.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE,
+                PlatformIdempotencyRecord.key == str(attempt_id),
+            )
+        ).scalar_one()
+    assert marker_count == 1
+
+
 def test_dispatch_consumption_rollback_and_commit_interruption(
     observation_race: tuple[Engine, str, str, str],
 ) -> None:
@@ -2587,18 +3505,18 @@ def test_dispatch_consumption_rollback_and_commit_interruption(
     expected_target = _expected_dispatch_target(engine, rollout_ref)
     sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     with sessions() as first:
-        control_service._stage_dispatch_consumption(
+        _stage_dispatch_consumption(
             first, attempt_id=attempt_id, expected_target=expected_target
         )
         first.rollback()
     with sessions() as winner:
-        control_service._stage_dispatch_consumption(
+        _stage_dispatch_consumption(
             winner, attempt_id=attempt_id, expected_target=expected_target
         )
         winner.commit()
     with sessions() as interrupted_retry:
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
+            _stage_dispatch_consumption(
                 interrupted_retry,
                 attempt_id=attempt_id,
                 expected_target=expected_target,
@@ -2634,7 +3552,7 @@ def test_consumption_refuses_a_settlement_after_its_session_cached_no_relation(
             )
             settler.commit()
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
+            _stage_dispatch_consumption(
                 stale, attempt_id=attempt_id, expected_target=expected_target
             )
         assert (
@@ -2789,7 +3707,7 @@ def test_dispatch_consumption_race_serializes_on_the_target_lock(
                     backend_pids["first" if holder else "second"] = int(
                         db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                     )
-                    control_service._stage_dispatch_consumption(
+                    _stage_dispatch_consumption(
                         db, attempt_id=attempt_id, expected_target=expected_target
                     )
                     db.commit()
@@ -2848,7 +3766,7 @@ def test_committed_revocation_refuses_a_dispatched_attempt(
         revoker.commit()
     with sessions() as consumer:
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
+            _stage_dispatch_consumption(
                 consumer, attempt_id=attempt_id, expected_target=expected_target
             )
         assert (
@@ -2903,7 +3821,7 @@ def test_revocation_wins_the_lock_race_and_consumption_writes_no_marker(
                     backend_pids["consumer"] = int(
                         db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                     )
-                    control_service._stage_dispatch_consumption(
+                    _stage_dispatch_consumption(
                         db,
                         attempt_id=attempt_id,
                         expected_target=expected_target,
@@ -2981,7 +3899,7 @@ def test_consumption_wins_the_lock_race_and_later_revocation_cannot_reclaim_it(
                 backend_pids["consumer"] = int(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
-                control_service._stage_dispatch_consumption(
+                _stage_dispatch_consumption(
                     db,
                     attempt_id=attempt_id,
                     expected_target=expected_target,
@@ -3042,7 +3960,7 @@ def test_consumption_wins_the_lock_race_and_later_revocation_cannot_reclaim_it(
         assert marker.expires_at is None
         assert marker.result["attempt_id"] == str(attempt_id)
         with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
-            control_service._stage_dispatch_consumption(
+            _stage_dispatch_consumption(
                 evidence,
                 attempt_id=attempt_id,
                 expected_target=expected_target,
@@ -3120,7 +4038,7 @@ def test_cancel_wins_the_lock_race_and_consumption_refuses_rollout_not_open(
                     backend_pids["consumer"] = int(
                         db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                     )
-                    control_service._stage_dispatch_consumption(
+                    _stage_dispatch_consumption(
                         db,
                         attempt_id=attempt_id,
                         expected_target=expected_target,
@@ -3213,7 +4131,7 @@ def test_consumption_wins_the_lock_race_and_cancel_still_records_its_own_outcome
                 backend_pids["consumer"] = int(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
-                control_service._stage_dispatch_consumption(
+                _stage_dispatch_consumption(
                     db,
                     attempt_id=attempt_id,
                     expected_target=expected_target,
@@ -3343,7 +4261,7 @@ def test_settle_wins_the_lock_race_and_consumption_refuses_attempt_not_pending(
                     backend_pids["consumer"] = int(
                         db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                     )
-                    control_service._stage_dispatch_consumption(
+                    _stage_dispatch_consumption(
                         db,
                         attempt_id=attempt_id,
                         expected_target=expected_target,
@@ -3514,7 +4432,7 @@ def test_consumption_wins_the_lock_race_and_settle_still_records_its_own_outcome
                 backend_pids["consumer"] = int(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
-                control_service._stage_dispatch_consumption(
+                _stage_dispatch_consumption(
                     db,
                     attempt_id=attempt_id,
                     expected_target=expected_target,

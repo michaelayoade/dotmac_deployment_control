@@ -28,6 +28,7 @@ from dotmac_kernel.namespaces import (
 )
 
 from dotmac_deployment_control import module
+from migration_bindings import ASSEMBLY_PREREQUISITE_BINDINGS
 from tests.architecture import adoption_evidence as evidence_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +60,11 @@ EVIDENCE_TABLES = (
     # or closure statement, never edited.
     "attestation_enrolments",
     "attestation_fingerprint_closures",
+    "attestation_root_descriptors",
+    "target_host_associations",
+    "target_host_association_closures",
+    "target_admission_policies",
+    "target_admission_policy_closures",
 )
 #: The tables the lifecycle legitimately mutates.
 MUTABLE_TABLES = (
@@ -75,6 +81,8 @@ MUTABLE_TABLES = (
     # derived pointer projection, moved by compare-and-swap and cleared by
     # revocation.
     "attestation_current_roots",
+    "target_current_hosts",
+    "target_current_admission_policies",
 )
 
 SIBLING_ROOTS = frozenset(
@@ -263,6 +271,8 @@ class TestThePlaneIsDeclaredNotDiscovered:
             AttestationCurrentRoot,
             AttestationEnrolment,
             AttestationFingerprintClosure,
+            AttestationRootDescriptor,
+            AttestationSubjectLock,
             DeploymentPlan,
             DeploymentTarget,
             ObservationAttempt,
@@ -272,7 +282,13 @@ class TestThePlaneIsDeclaredNotDiscovered:
             Rollout,
             RolloutAttempt,
             RolloutAttemptSettlement,
+            TargetAdmissionPolicy,
+            TargetAdmissionPolicyClosure,
             TargetCredential,
+            TargetCurrentAdmissionPolicy,
+            TargetCurrentHost,
+            TargetHostAssociation,
+            TargetHostAssociationClosure,
         )
 
         models = (
@@ -289,6 +305,14 @@ class TestThePlaneIsDeclaredNotDiscovered:
             AttestationEnrolment,
             AttestationFingerprintClosure,
             AttestationCurrentRoot,
+            AttestationSubjectLock,
+            AttestationRootDescriptor,
+            TargetHostAssociation,
+            TargetHostAssociationClosure,
+            TargetCurrentHost,
+            TargetAdmissionPolicy,
+            TargetAdmissionPolicyClosure,
+            TargetCurrentAdmissionPolicy,
         )
         assert {m.__tablename__ for m in models} == set(module.platform_tables)
         assert all(m.__table__.schema == SCHEMA for m in models)
@@ -655,7 +679,9 @@ class TestTheMigrationStatesItsWholeAccessSurface:
         assert "GRANT USAGE ON SCHEMA mod_deploy TO platform_api" in sql
         for table in module.platform_tables:
             assert re.search(
-                rf'_grant\("[A-Z, ]*SELECT[A-Z, ]*", "{table}", "platform_api"\)', sql
+                rf'_grant\(\s*"[A-Z, ]*SELECT[A-Z, ]*",\s*"{table}",'
+                r'\s*"platform_api"\s*,?\s*\)',
+                sql,
             ), table
 
     def test_the_evidence_tables_grant_no_update_or_delete_to_any_role(
@@ -663,7 +689,8 @@ class TestTheMigrationStatesItsWholeAccessSurface:
     ) -> None:
         for table in EVIDENCE_TABLES:
             for privileges, role in re.findall(
-                rf'_grant\("([A-Z, ]+)", "{table}", "(\w+)"\)', sql
+                rf'_grant\(\s*"([A-Z, ]+)",\s*"{table}",\s*"(\w+)"\s*,?\s*\)',
+                sql,
             ):
                 assert "UPDATE" not in privileges, (table, role)
                 assert "DELETE" not in privileges, (table, role)
@@ -674,13 +701,18 @@ class TestTheMigrationStatesItsWholeAccessSurface:
         """The other half: withholding UPDATE from a table whose lifecycle lives
         on it would make the module unusable while passing every test above."""
         for table in MUTABLE_TABLES:
-            assert f'_grant("UPDATE", "{table}", "platform_api")' in sql or re.search(
-                rf'_grant\("[A-Z, ]*UPDATE[A-Z, ]*", "{table}", "platform_api"\)', sql
+            assert re.search(
+                rf'_grant\(\s*"[A-Z, ]*UPDATE[A-Z, ]*",\s*"{table}",'
+                r'\s*"platform_api"\s*,?\s*\)',
+                sql,
             ), table
 
     def test_the_append_only_trigger_covers_all_evidence_tables(self, sql: str) -> None:
         for table in EVIDENCE_TABLES:
-            assert f"BEFORE UPDATE OR DELETE ON mod_deploy.{table}" in sql
+            assert (
+                f"BEFORE UPDATE OR DELETE ON mod_deploy.{table}" in sql
+                or f'_append_only("{table}")' in sql
+            )
 
     def test_the_settlement_evidence_also_refuses_truncate(self, sql: str) -> None:
         assert "BEFORE TRUNCATE ON mod_deploy.rollout_attempt_settlements" in sql
@@ -718,7 +750,24 @@ class TestTheMigrationStatesItsWholeAccessSurface:
 
     def test_it_names_no_foreign_revision(self, sql: str) -> None:
         assert "depends_on = resolve_depends_on(COMMON_REQUIRES)" in sql
-        assert not re.search(r'depends_on\s*=\s*[\'"]', sql)
+        assert not re.search(r"depends_on\s*=\s*[\'\"]", sql)
+
+    def test_the_standalone_assembly_binds_both_kernel_effects_exactly(self) -> None:
+        assert {
+            (
+                binding.prerequisite,
+                binding.provider_revision,
+                binding.provider_owner,
+            )
+            for binding in ASSEMBLY_PREREQUISITE_BINDINGS
+        } == {
+            ("idempotency_ledger.v1", "0018_idempotency_one_owner", "kernel"),
+            ("platform_audit_log.v1", "0026_platform_audit_log", "kernel"),
+        }
+        env_source = (REPO_ROOT / "alembic/env.py").read_text()
+        assert "install_prerequisite_bindings(ASSEMBLY_PREREQUISITE_BINDINGS)" in (
+            env_source
+        )
 
     def test_it_verifies_both_prerequisites_before_any_ddl(self, sql: str) -> None:
         verify_at = sql.index("require_prerequisites(op.get_bind(), REQUIRES)")
