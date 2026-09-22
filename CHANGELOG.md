@@ -9,17 +9,29 @@ changes, each called out here.
 
 ### Added
 
-- A distinct purpose-bound host-admission presentation credential, canonical
-  signed presentation contract, and same-transaction prepare/finalize service.
-  Control derives target and Fleet host identity from locked stored state,
-  emits complete immutable but non-authorizing candidate/installed root facts,
-  and mints an opaque Session-bound capability. Finalize refuses copied facts
-  or a forged object and stages the existing replay marker only after the exact
-  verified evidence coordinate is returned.
+- A distinct purpose-bound host-admission presentation credential and
+  canonical signed presentation contract.
+- A three-phase host-admission boundary, redesigned 2026-09-22 from an
+  initial same-transaction prepare/finalize shape specifically to hold ZERO
+  database locks during Foundation's out-of-process verification call (the
+  original shape held a lock global to a host attester, not scoped to one
+  target, for that call's entire duration — a real availability/recovery
+  hazard, not an authorization gap). `resolve_host_admission_context`
+  authenticates and resolves every current fact with plain, non-locking
+  reads, returning a freely-copyable, non-authorizing
+  `HostAdmissionVerificationContextV1` whose `context_digest` is Control's own
+  canonical fingerprint over the complete resolved context. The caller then
+  runs Foundation verification with no open transaction.
+  `admit_and_consume_host_admission` re-authenticates with a fresh clock,
+  re-locks everything fresh in the prior design's same canonical order,
+  re-derives every fact, and refuses on any drift against the resolved
+  context or against the caller-supplied
+  `HostAdmissionForeignVerificationEvidenceV1` (Control's own DTO for
+  Foundation's verification result — Control never imports Foundation's
+  actual result type) before staging the existing replay marker.
 - An install-once host-admission security seam. Trusted composition fixes the
-  presentation verifier and clock at startup; request-time prepare accepts only
-  the attempt and parsed presentation, refuses if startup wiring is absent, and
-  cannot replace either dependency.
+  presentation verifier and clock at startup; both phases fail closed if
+  startup wiring is absent, and it cannot be replaced.
 - Append-only target-to-host associations and target admission-policy revisions,
   each with append-only closure/successor evidence and a separately mutable
   one-current projection. Admission derives truth from history and refuses
@@ -35,8 +47,9 @@ changes, each called out here.
 
 - Dispatch consumption keeps the existing Kernel scope and dispatch-id key but
   now fingerprints the canonical dispatch + candidate-envelope + installed-
-  envelope coordinate. The sole production caller is the authenticated
-  finalizer; rollback writes no marker and a committed replay remains spent.
+  envelope coordinate. The sole production caller is
+  `admit_and_consume_host_admission`; rollback writes no marker and a
+  committed replay remains spent.
 - Every credential transition uses target-then-credential lock ordering, and
   trust-root writers serialize through permanent subject rows.
 - The standalone Alembic verification assembly now installs explicit Kernel

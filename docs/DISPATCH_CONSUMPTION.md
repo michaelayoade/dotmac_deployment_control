@@ -22,9 +22,9 @@ coordinate's `target_id` must come from the Control-stored credential selected
 by that authentication, and its `target_ref` from the corresponding target row;
 neither may come from the presented envelope. The coordinate is compared to the
 locked target; it is not itself authentication. Its sole production caller is
-ADR-0073's `finalize_host_admission`, after `prepare_host_admission` has
-authenticated and locked the complete coordinate. It does not accept an
-envelope, verifier or standing assertion from an untrusted caller.
+ADR-0073's `admit_and_consume_host_admission`, after that function has
+re-authenticated and re-locked the complete coordinate fresh. It does not
+accept an envelope, verifier or standing assertion from an untrusted caller.
 
 Within one caller-owned transaction, Control locks target, plan and the mutable
 rollout in the same order as approval revocation, then reads immutable attempt
@@ -45,63 +45,106 @@ commits first, that is the final authorization cut-off; recovery requires a new
 signed dispatch attempt. This is distinct from at-most-once external delivery,
 which stays with Integrator/outbox.
 
-## Authenticated host-admission extension
+## Authenticated host-admission extension (redesigned 2026-09-22)
 
-ADR-0073 requires a private Control preparation/finalization path for a signed
-host-admission presentation. It retains this scope and the signed dispatch
-envelope's `dispatch_id` as the Kernel key.  Its fingerprint is instead the
-SHA-256 of the canonical admission-coordinate mapping containing the dispatch,
-candidate-attestation and installed-attestation envelope digests.  Therefore a
-replay of the exact coordinate is consumed, while the same dispatch with changed
-attestation evidence is an integrity conflict; no second replay ledger exists.
+ADR-0073 requires a three-phase Control boundary for a signed host-admission
+presentation, redesigned from an earlier single-transaction shape specifically
+to eliminate a lock held across an out-of-process Foundation verification
+call (see "Why this redesigned the original shape" below). It retains the
+signed dispatch envelope's `dispatch_id` as the Kernel key. Its fingerprint is
+the SHA-256 of the canonical admission-coordinate mapping containing the
+dispatch, candidate-attestation and installed-attestation envelope digests.
+Therefore a replay of the exact coordinate is consumed, while the same
+dispatch with changed attestation evidence is an integrity conflict; no second
+replay ledger exists.
 
-The implemented preparation and finalization use one caller-owned transaction.
-Trusted composition first installs the purpose-specific presentation verifier
-and trusted clock exactly once; preparation has no request-time verifier or
-clock parameter and fails closed before authentication if startup wiring is
-absent. A second install is refused.
-Preparation exposes immutable verification facts but registers the separately
-opaque, non-public finalization capability in that Session and root transaction.
-Copied facts or a forged object cannot reach consumption. Finalization calls
-this private staging seam, consumes that capability, and returns its private
-staged result. Neither Control service commits or rolls back.
+**Phase 1 — `resolve_host_admission_context` (no lock, no transaction
+affinity).** Authenticates the presentation and resolves every current fact
+Foundation verification needs — target, credential, current host association
+and admission policy, both attestation root contexts, the stored dispatch
+coordinate — with plain, non-locking reads. Returns
+`HostAdmissionVerificationContextV1`: a freely-copyable, non-authorizing plain
+value. Nothing about possessing it grants anything; it carries no Session or
+transaction reference. Its `context_digest` field is Control's own canonical
+digest over the ENTIRE resolved context (the signed presentation including its
+signature, the dispatch coordinate, full credential/target/host identity, the
+immutable association and admission-policy row UUIDs, both audiences, the
+expected package, and every field of both root contexts) — an
+optimistic-concurrency fingerprint, recomputed and compared in phase 3, never
+trusted from this returned copy alone. The caller is responsible for closing
+(committing) the short read transaction this ran in before proceeding to phase
+2 — this function itself never commits or rolls back.
 
-**Lock-duration bound is a stated CP obligation, not a Control mechanism.**
-Between `prepare_host_admission` returning and `finalize_host_admission` being
-called, the caller-owned transaction holds row locks on the target, the
-selected credential, the current host-association and admission-policy
-projections, and both candidate/installed attestation-subject rows. Foundation
-verification and any network round-trip the trusted adapter performs happen
-inside that window by design — finalize re-checks everything against the
-locked state rather than a fresh read, which is only safe because nothing
-under those locks can change. This is correct for correctness but has no
-Control-side time bound: a stalled or slow presenter/adapter keeps those locks
-— including the `("host_attester", host_id)` subject lock, which is global to
-that host attester, not scoped to one target — held for as long as the
-transaction stays open, which can delay an operator's emergency root
-revocation or any other mutation of the locked target. Control cannot bound
-this itself without taking over session configuration; the composing CP
-adapter MUST set a `statement_timeout`/`lock_timeout` (and should consider
-`idle_in_transaction_session_timeout`) on the connection used for the
-prepare/finalize transaction, sized to the real Foundation-verification and
-network latency it expects, so an admission attempt fails closed rather than
-holding fleet-wide locks indefinitely. This is not yet enforced by any test in
-this distribution.
+**Phase 2 — Foundation verification, no open database transaction.** The
+trusted CP adapter calls Foundation's `verify_attestation_pair` with the real
+candidate/installed envelopes, passing `context.context_digest` as its opaque
+`verification_context_digest` parameter. Foundation does not interpret or
+reproduce this value — it verifies the presented evidence exactly as before,
+and, on success only, returns a typed
+`AttestationPairVerificationResultV1` echoing that same digest back unchanged,
+alongside the two envelope digests it independently computed from the real
+parsed envelope objects. No Control lock is held anywhere during this phase,
+however long it takes — this is the entire point of the redesign.
 
-**The CP adapter must pass Foundation's computed digests to finalize, never
-the digests `prepare_host_admission` already returned.** Finalization's
-`EVIDENCE_CHANGED` check (comparing the caller-supplied digests against the
-prepared coordinate) is the ONLY thing binding what Foundation actually
-verified to what the presenter signed. Feeding `prepare`'s own returned facts
-straight back into `finalize` — the shape every test in this distribution
-uses, because no real Foundation call is available in-process — makes that
-check compare a value to itself and defeats it silently; Control cannot detect
-an adapter that does this, because both call sites are, by construction, given
-exactly the same interface. A real adapter must call Foundation's
-`attestation_envelope_digest` on the envelopes it verified and pass THAT
-result, never the value it read out of `prepare`'s facts. This deserves a
-fixed cross-repository vector test on the adapter itself, since Control
-structurally cannot enforce it from its own side of the boundary.
+**Phase 3 — `admit_and_consume_host_admission` (fresh clock, full re-lock,
+full re-derivation, then consume).** Trusted composition first installs the
+purpose-specific presentation verifier and trusted clock exactly once at
+startup; a second install is refused, same as before. This function
+re-authenticates the presentation with a FRESH clock read (not any timestamp
+carried over from phase 1 — real time passes during phase 2, and a
+presentation that expired during that gap must refuse cleanly here, via the
+dedicated `CONTEXT_EXPIRED` code, checked before re-authentication even runs).
+It then re-locks target, credential, current host association and admission
+policy, and both attestation-subject rows, in the SAME canonical order the
+prior single-transaction design used, re-derives every fact from those locked
+rows, and refuses (`PREPARED_STATE_CHANGED`, or the resolver's own natural
+refusal such as `HOST_ABSENT`/`POLICY_ABSENT`/`ROOT_REFUSED` where one of the
+re-derivation calls itself raises) on any drift against the resolved
+`context`. It recomputes the context digest from that freshly re-derived state
+and requires it to equal `context.context_digest`; it separately requires the
+caller-supplied `HostAdmissionForeignVerificationEvidenceV1.verification_context_digest`
+to ALSO equal `context.context_digest` (`FOREIGN_EVIDENCE_CONTEXT_MISMATCH` if
+not) — binding Foundation's success to the exact context Control resolved,
+without either package reproducing the other's digest algorithm — and that its
+two envelope digests match the presentation's own signed claims
+(`EVIDENCE_CHANGED` if not). Only then does it call this private staging seam
+and return its result. Neither Control service commits or rolls back.
+
+**Why this redesigned the original shape.** The prior single-transaction
+design held row locks — including the `("host_attester", host_id)` subject
+lock, which is GLOBAL to that host attester, not scoped to one target — for
+the entire duration of phase 2's out-of-process Foundation call. A stalled or
+slow presenter/adapter could hold those locks indefinitely, which could delay
+an operator's emergency root revocation or any other mutation of the locked
+target. Splitting resolve from admit-and-consume, with zero locks held during
+Foundation verification, eliminates that exposure structurally rather than
+bounding it with a timeout. Finite `statement_timeout`/`lock_timeout`/
+`idle_in_transaction_session_timeout` GUCs on the now-short phase-3 transaction
+remain worthwhile defense-in-depth against a genuinely pathological hang
+inside that transaction itself, but they are no longer the primary correctness
+mechanism the way they would have had to be under the old design.
+
+**The CP adapter must construct `HostAdmissionForeignVerificationEvidenceV1`
+from Foundation's ACTUAL returned result, never fabricate it from `context`.**
+Every test in this distribution necessarily constructs matching (or
+deliberately mismatched) evidence directly from `context`'s own fields,
+because no real Foundation call is available in-process — that is a known,
+explicit test-suite limitation, not a pattern to copy. A real adapter's
+`candidate_attestation_envelope_digest`/`installed_attestation_envelope_digest`
+must come from Foundation's typed result (computed by Foundation from the
+actual parsed envelope bytes it verified), and
+`verification_context_digest` must be the value Foundation itself returned
+(the blind echo of what the adapter gave it), never a value the adapter reads
+back out of its own copy of `context`. Control's checks above cannot
+distinguish "Foundation genuinely verified this" from "the adapter fabricated
+matching public fields without ever calling Foundation" — that is a property
+of the adapter's own wiring, not something a digest comparison can prove from
+Control's side of the boundary. A required test for any real CP adapter,
+before it composes against a released Control/Foundation pair: swap in a
+stub/broken `verify_attestation_pair` binding and prove the adapter's own
+production code path cannot reach `admit_and_consume_host_admission` with a
+result that produces a consumption — using fixed, signed test fixtures, no
+published candidate required.
 
 ## The cut-off class also covers cancel and settle
 
