@@ -254,6 +254,7 @@ from dotmac_deployment_control.host_admission import (
 )
 from dotmac_deployment_control.host_admission_coordinator import (
     HostAdmissionClock,
+    HostAdmissionForeignRootV1,
     HostAdmissionForeignVerificationEvidenceV1,
     HostAdmissionRefusalCode,
     HostAdmissionRefusedError,
@@ -790,6 +791,7 @@ __all__ = [
     "BindTargetHostCommand",
     "EnrolHostAdmissionCredentialCommand",
     "HostAdmissionClock",
+    "HostAdmissionForeignRootV1",
     "HostAdmissionForeignVerificationEvidenceV1",
     "HostAdmissionRefusalCode",
     "HostAdmissionRefusedError",

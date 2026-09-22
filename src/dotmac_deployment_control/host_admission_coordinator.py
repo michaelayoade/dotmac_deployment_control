@@ -131,6 +131,9 @@ class HostAdmissionRefusalCode(StrEnum):
     FOREIGN_EVIDENCE_CONTEXT_MISMATCH = (
         "host_admission_foreign_evidence_context_mismatch"
     )
+    FOREIGN_EVIDENCE_SEMANTIC_MISMATCH = (
+        "host_admission_foreign_evidence_semantic_mismatch"
+    )
     PREPARED_STATE_CHANGED = "host_admission_prepared_state_changed"
 
 
@@ -159,16 +162,48 @@ class HostAdmissionRootContextV1:
 
 
 @dataclass(frozen=True, slots=True)
+class HostAdmissionForeignRootV1:
+    """Control's own shape for the trust root Foundation reports it actually
+    matched and authenticated -- mirrors HostAdmissionRootContextV1's
+    identity fields (not its full record: no not_before/not_after/revoked/
+    public_key_base64/subject/standing, since those are Control's own policy
+    configuration, already present on `context`, not something Foundation's
+    report needs to re-state)."""
+
+    public_key_fingerprint: str
+    root_version: str
+    key_id: str
+    algorithm: str
+    purpose: str
+    custody_domain: str
+    issuer: str
+
+
+@dataclass(frozen=True, slots=True)
 class HostAdmissionForeignVerificationEvidenceV1:
     """What Control accepts as Foundation's verification result -- Control does
     NOT import dotmac_deployment_foundation's actual result type (the two
     packages never import each other, per ADR-0073). The CP adapter is the sole
     mapper from Foundation's `AttestationPairVerificationResultV1` into this
-    Control-owned shape."""
+    Control-owned shape.
+
+    Widened to carry everything Foundation actually verified, not only
+    digests -- admit_and_consume_host_admission compares every field here
+    against its OWN freshly re-derived context before allowing consumption,
+    closing the gap where a caller could otherwise hand Foundation a
+    correct-looking-but-wrong expectation with nothing downstream to catch
+    it."""
 
     candidate_attestation_envelope_digest: str
     installed_attestation_envelope_digest: str
     verification_context_digest: str
+    verified_host_identity: str
+    verified_observation_id: str
+    verified_package: str
+    verified_candidate_audience: str
+    verified_installed_audience: str
+    verified_candidate_root: HostAdmissionForeignRootV1
+    verified_installed_root: HostAdmissionForeignRootV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -694,6 +729,39 @@ def admit_and_consume_host_admission(
             "Foundation's echoed verification context digest does not match "
             "Control's own resolved context",
         )
+    if (
+        foreign_evidence.verified_host_identity != context.host_id
+        or foreign_evidence.verified_observation_id != context.attempt_id.hex
+        or foreign_evidence.verified_package != context.expected_foundation_package
+        or foreign_evidence.verified_candidate_audience != context.candidate_audience
+        or foreign_evidence.verified_installed_audience != context.installed_audience
+        or foreign_evidence.verified_candidate_root
+        != HostAdmissionForeignRootV1(
+            public_key_fingerprint=context.candidate_root.public_key_fingerprint,
+            root_version=context.candidate_root.root_version,
+            key_id=context.candidate_root.key_id,
+            algorithm=context.candidate_root.algorithm,
+            purpose=context.candidate_root.purpose,
+            custody_domain=context.candidate_root.custody_domain,
+            issuer=context.candidate_root.issuer,
+        )
+        or foreign_evidence.verified_installed_root
+        != HostAdmissionForeignRootV1(
+            public_key_fingerprint=context.installed_root.public_key_fingerprint,
+            root_version=context.installed_root.root_version,
+            key_id=context.installed_root.key_id,
+            algorithm=context.installed_root.algorithm,
+            purpose=context.installed_root.purpose,
+            custody_domain=context.installed_root.custody_domain,
+            issuer=context.installed_root.issuer,
+        )
+    ):
+        raise _refuse(
+            HostAdmissionRefusalCode.FOREIGN_EVIDENCE_SEMANTIC_MISMATCH,
+            "Foundation's reported verified host identity, observation id, "
+            "package, audience, or root identity does not match what "
+            "Control freshly re-derived for this attempt",
+        )
     statement = context.presentation.statement
     if (
         foreign_evidence.candidate_attestation_envelope_digest
@@ -722,6 +790,7 @@ def admit_and_consume_host_admission(
 
 __all__ = [
     "HostAdmissionClock",
+    "HostAdmissionForeignRootV1",
     "HostAdmissionForeignVerificationEvidenceV1",
     "HostAdmissionRefusalCode",
     "HostAdmissionRefusedError",

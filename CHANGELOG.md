@@ -29,6 +29,19 @@ changes, each called out here.
   `HostAdmissionForeignVerificationEvidenceV1` (Control's own DTO for
   Foundation's verification result — Control never imports Foundation's
   actual result type) before staging the existing replay marker.
+  `HostAdmissionForeignVerificationEvidenceV1` is widened, alongside a new
+  `HostAdmissionForeignRootV1` mirror of the trust-root identity fields, to
+  carry every semantic fact Foundation reports it actually verified —
+  `verified_host_identity`, `verified_observation_id`, `verified_package`,
+  `verified_candidate_audience`, `verified_installed_audience`,
+  `verified_candidate_root`, `verified_installed_root` — and
+  `admit_and_consume_host_admission` compares all seven against the freshly
+  re-derived context, refusing with the new
+  `FOREIGN_EVIDENCE_SEMANTIC_MISMATCH` code on any disagreement. This closes
+  the second half of the caller-supplied-expectation gap an independent
+  review found on `dotmac_platform_control_plane`#192: a digest match alone
+  proved only that Foundation echoed back what Control gave it, never that
+  what Control gave it was the caller's genuine expectation.
 - An install-once host-admission security seam. Trusted composition fixes the
   presentation verifier and clock at startup; both phases fail closed if
   startup wiring is absent, and it cannot be replaced.

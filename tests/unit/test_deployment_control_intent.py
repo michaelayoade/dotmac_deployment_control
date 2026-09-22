@@ -21,6 +21,7 @@ import copy
 import re
 import uuid
 from collections.abc import Generator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -1643,7 +1644,40 @@ def _matching_foreign_evidence(context) -> HostAdmissionForeignVerificationEvide
             context.presentation.statement.installed_attestation_envelope_digest
         ),
         verification_context_digest=context.context_digest,
+        verified_host_identity=context.host_id,
+        verified_observation_id=context.attempt_id.hex,
+        verified_package=context.expected_foundation_package,
+        verified_candidate_audience=context.candidate_audience,
+        verified_installed_audience=context.installed_audience,
+        verified_candidate_root=admission_coordinator.HostAdmissionForeignRootV1(
+            public_key_fingerprint=context.candidate_root.public_key_fingerprint,
+            root_version=context.candidate_root.root_version,
+            key_id=context.candidate_root.key_id,
+            algorithm=context.candidate_root.algorithm,
+            purpose=context.candidate_root.purpose,
+            custody_domain=context.candidate_root.custody_domain,
+            issuer=context.candidate_root.issuer,
+        ),
+        verified_installed_root=admission_coordinator.HostAdmissionForeignRootV1(
+            public_key_fingerprint=context.installed_root.public_key_fingerprint,
+            root_version=context.installed_root.root_version,
+            key_id=context.installed_root.key_id,
+            algorithm=context.installed_root.algorithm,
+            purpose=context.installed_root.purpose,
+            custody_domain=context.installed_root.custody_domain,
+            issuer=context.installed_root.issuer,
+        ),
     )
+
+
+def _corrupted_foreign_evidence(
+    context,  # type: ignore[no-untyped-def]
+    **overrides: object,
+) -> HostAdmissionForeignVerificationEvidenceV1:
+    """`_matching_foreign_evidence` with exactly the named fields replaced --
+    used to prove each of the seven new semantic fields is independently
+    compared, one at a time, with the other six held correct."""
+    return replace(_matching_foreign_evidence(context), **overrides)
 
 
 class TestAuthenticatedHostAdmission:
@@ -1698,18 +1732,87 @@ class TestAuthenticatedHostAdmission:
     ) -> None:
         context = _resolve_admission_fixture(db)
         db.commit()
-        bad_evidence = HostAdmissionForeignVerificationEvidenceV1(
+        bad_evidence = _corrupted_foreign_evidence(
+            context,
             candidate_attestation_envelope_digest="sha256:" + "ee" * 32,
-            installed_attestation_envelope_digest=(
-                context.presentation.statement.installed_attestation_envelope_digest
-            ),
-            verification_context_digest=context.context_digest,
         )
         with pytest.raises(HostAdmissionRefusedError) as caught:
             admit_and_consume_host_admission(
                 db, context=context, foreign_evidence=bad_evidence
             )
         assert caught.value.code is HostAdmissionRefusalCode.EVIDENCE_CHANGED
+        assert (
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=context.dispatch_id)
+            .count()
+            == 0
+        )
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"verified_host_identity": "host-two"}, id="host_identity"),
+            pytest.param(
+                {"verified_observation_id": uuid.uuid4().hex}, id="observation_id"
+            ),
+            pytest.param({"verified_package": "dotmac-other"}, id="package"),
+            pytest.param(
+                {"verified_candidate_audience": "foundation-candidate-other"},
+                id="candidate_audience",
+            ),
+            pytest.param(
+                {"verified_installed_audience": "foundation-installed-other"},
+                id="installed_audience",
+            ),
+        ],
+    )
+    def test_a_mismatched_verified_field_is_refused_without_consumption(
+        self, db: Session, overrides: dict[str, object]
+    ) -> None:
+        context = _resolve_admission_fixture(db)
+        db.commit()
+        bad_evidence = _corrupted_foreign_evidence(context, **overrides)
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            admit_and_consume_host_admission(
+                db, context=context, foreign_evidence=bad_evidence
+            )
+        assert (
+            caught.value.code
+            is HostAdmissionRefusalCode.FOREIGN_EVIDENCE_SEMANTIC_MISMATCH
+        )
+        assert (
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=context.dispatch_id)
+            .count()
+            == 0
+        )
+
+    @pytest.mark.parametrize(
+        "root_field", ["verified_candidate_root", "verified_installed_root"]
+    )
+    def test_a_mismatched_verified_root_is_refused_without_consumption(
+        self, db: Session, root_field: str
+    ) -> None:
+        context = _resolve_admission_fixture(db)
+        db.commit()
+        wrong_root = admission_coordinator.HostAdmissionForeignRootV1(
+            public_key_fingerprint="sha256:" + "ff" * 32,
+            root_version="v-wrong",
+            key_id="wrong-key",
+            algorithm="ed25519",
+            purpose="dotmac.foundation.candidate-artifact.v2",
+            custody_domain="candidate_release_signer",
+            issuer="wrong-issuer",
+        )
+        bad_evidence = _corrupted_foreign_evidence(context, **{root_field: wrong_root})
+        with pytest.raises(HostAdmissionRefusedError) as caught:
+            admit_and_consume_host_admission(
+                db, context=context, foreign_evidence=bad_evidence
+            )
+        assert (
+            caught.value.code
+            is HostAdmissionRefusalCode.FOREIGN_EVIDENCE_SEMANTIC_MISMATCH
+        )
         assert (
             db.query(PlatformIdempotencyRecord)
             .filter_by(key=context.dispatch_id)
