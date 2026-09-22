@@ -350,6 +350,19 @@ def _context_digest(
     candidate_root: HostAdmissionRootContextV1,
     installed_root: HostAdmissionRootContextV1,
 ) -> str:
+    if credential.algorithm is None or credential.purpose is None:
+        # `TargetCredential.algorithm`/`.purpose` are nullable at the ORM
+        # level; both call sites already checked the credential's INITIAL
+        # (candidate) lookup for this, but a fresh re-read is a different
+        # object mypy cannot narrow from that earlier check. Re-asserting it
+        # here, once, for both callers is correctness, not just a type-checker
+        # appeasement: a credential row that lost these fields between the
+        # initial lookup and this digest computation must refuse, not digest
+        # `None` into a string field.
+        raise _refuse(
+            HostAdmissionRefusalCode.CREDENTIAL_CHANGED,
+            "credential lacks immutable verification terms",
+        )
     return compute_host_admission_context_digest(
         presentation_canonical_digest=compute_host_admission_presentation_digest(
             presentation.as_mapping()
@@ -444,10 +457,11 @@ def resolve_host_admission_context(
     # entirely in `admit_and_consume_host_admission`, which re-locks and
     # re-derives every one of these facts from scratch.
     credential = db.get(TargetCredential, candidate.id)
-    if credential is None:
+    if credential is None or credential.algorithm is None or credential.purpose is None:
         raise _refuse(
             HostAdmissionRefusalCode.CREDENTIAL_CHANGED,
-            "credential disappeared before resolution completed",
+            "credential disappeared or lost its immutable verification terms "
+            "before resolution completed",
         )
     if credential.purpose != HOST_ADMISSION_PRESENTATION_PURPOSE:
         raise _refuse(
