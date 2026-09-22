@@ -43,17 +43,22 @@ only.
   independently refusable terms, so a compromised controller and a
   compromised signing key are each independently detectable.
 - `REHEARSAL_ISSUER_PURPOSE = "deployment_rehearsal_issuer"`, distinct from
-  every other purpose in this package (`deployment_authorization`,
-  `deployment_dispatch`, `target_execution_observation`,
-  `deployment_recovery`, `deployment_rehearsal`).
-- 19 refusal codes (`RehearsalIssuerAuthorizationRefusalCode`), one per
+  every other purpose this package exports — proved by a test that DERIVES
+  the full inventory from `dotmac_deployment_control.__all__` at test time
+  rather than a hand-maintained list, after independent review found the
+  first version's hand-maintained list covered 5 of at least 7 real purposes
+  while its own test name claimed exhaustiveness.
+- 20 refusal codes (`RehearsalIssuerAuthorizationRefusalCode`), one per
   binding, matching `rehearsal_grant.RehearsalGrantRefusalCode`'s own
-  discipline. Two additions beyond the originally enumerated design, made
+  discipline. Three additions beyond the originally enumerated design, made
   under that same "one code per binding" rule and named in the module's
   docstring rather than silently applied: `DESIRED_STATE_MISMATCH` (the
-  fifth A6.4 value had no dedicated mismatch code in the decided list) and
+  fifth A6.4 value had no dedicated mismatch code in the decided list),
   `RehearsalIssuerAuthorizationSubject.signer_public_key_fingerprint` (needed
-  to make the decided `SIGNER_MISMATCH` refusal reachable at all).
+  to make the decided `SIGNER_MISMATCH` refusal reachable at all), and
+  `LEASE_MISMATCH`/`RehearsalIssuerAuthorizationSubject.lease_id` (`lease_id`
+  was signed into the statement and never compared — caught in independent
+  security review of the first version, commit `71915aa`).
 - `issue_rehearsal_issuer_authorization`/`verify_rehearsal_issuer_authorization`/
   `rehearsal_issuer_standing`, mirroring `rehearsal_grant.py`'s function trio
   in shape and ordering discipline (authenticity, then window/revocation/

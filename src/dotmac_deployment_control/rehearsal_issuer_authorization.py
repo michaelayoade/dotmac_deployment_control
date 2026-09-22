@@ -14,10 +14,17 @@ This module is a different document for a different act. It authorizes
 operating a PROTECTED, DISPOSABLE REHEARSAL issuer for one bounded lease —
 never the production issuer, never a step in standing that issuer up, and
 never a substitute for its bootstrap. `REHEARSAL_ONLY_ENVIRONMENT` is the
-structural device that keeps the two from being confused: this contract can
-never be presented as authority over the target the bootstrap protects,
-because its `environment` term is pinned to exactly one value and every other
-value is refused before any other field is even read.
+structural device that keeps the two from being confused, stated precisely
+rather than over-claimed: a statement's `environment` term can never be
+anything other than `"rehearsal"`, so this document can never claim to BE
+authority over a non-rehearsal environment. It says nothing about, and
+cannot refuse, a statement that names a specific real target id (e.g.
+`platform-cp-01`) while still, truthfully, declaring `environment="rehearsal"`
+— refusing THAT is a production consumer's own schema/purpose/target-identity
+policy, not a property this pin establishes. What the pin actually forecloses
+is narrower and real: there is no route by which this contract's OWN
+`environment` field is ever anything but the one value that marks it as
+non-production.
 
 `dotmac_platform_control_plane`'s ADR-0013 amendment A6.4 is Platform CP's
 rule, cited here by repository per that ADR's own instruction:
@@ -90,13 +97,13 @@ a statement whose bound terms disagree with what the caller states, and
 refuse every value on this contract other than the one rehearsal environment
 it is pinned to.
 
-## Two additions beyond the literal brief, made under the "one code per binding" rule
+## Three additions beyond the literal brief, made under the "one code per binding" rule
 
 `RehearsalGrantRefusalCode`'s own docstring states the rule this module's
 refusal codes obey: *"One code per binding, so a caller is told WHICH term
 disagreed rather than being sent round the loop once per field."* Applying
-that rule mechanically surfaces two gaps in the enumerated design and this
-module closes both, named here rather than silently:
+that rule mechanically surfaces three gaps in the enumerated design and this
+module closes all three, named here rather than silently:
 
 1. **`DESIRED_STATE_MISMATCH`.** A6.4 names five derived values — target,
    desired state, profile digest, authorized images, execution-plan inputs —
@@ -118,6 +125,20 @@ module closes both, named here rather than silently:
    statement's `public_key_fingerprint`, and flags the addition here rather
    than silently dropping the requested code or silently widening the
    subject beyond its documented field list without comment.
+3. **`LEASE_MISMATCH` and `RehearsalIssuerAuthorizationSubject.lease_id`.**
+   `lease_id` is bound into the signed statement — this whole contract's
+   stated scope is authority "for one bounded lease" — but the originally
+   enumerated design left it out of both the subject's field list and the
+   refusal-code list, so it was signed and never compared. Caught in
+   independent review of the first version of this module. Added for the
+   identical reason as (1): a bound term with no refusal code is silent.
+
+An independent security review of the first version of this module (commit
+`71915aa`) confirmed additions (1) and (2) above as the correct, permanent
+shape and separately found this third gap by the same method — reading the
+canonical-bytes/parse code directly rather than trusting the docstring — which
+is exactly the "provable, not asserted" standard this module tries to hold
+itself to elsewhere.
 """
 
 from __future__ import annotations
@@ -159,15 +180,22 @@ __all__ = [
     "verify_rehearsal_issuer_authorization",
 ]
 
-#: Distinct from every other signer purpose in this package
-#: (`deployment_authorization`, `deployment_dispatch`,
-#: `target_execution_observation`, `deployment_recovery` and
-#: `deployment_rehearsal`) for the reason all of them are separated: one key
-#: answering two questions cannot be used to contradict itself. This purpose
-#: authorizes STANDING UP the rehearsal issuer for a lease; `deployment_rehearsal`
-#: authorizes one provoked act performed once the issuer already stands. They
-#: are different signers because a compromise of one must not extend to the
-#: other.
+#: Distinct from every other signer purpose in this package for the reason all
+#: of them are separated: one key answering two questions cannot be used to
+#: contradict itself. This purpose authorizes STANDING UP the rehearsal issuer
+#: for a lease; `deployment_rehearsal` (`rehearsal_grant.py`) authorizes one
+#: provoked act performed once the issuer already stands — the two are
+#: different signers because a compromise of one must not extend to the
+#: other. The complete inventory is not hand-listed here, on purpose: a
+#: hand-maintained list drifts (an earlier version of this comment named five
+#: purposes and missed two real ones,
+#: `authorization_v3.HEALTH_EVIDENCE_PURPOSE` and
+#: `host_attester_enrolment.HOST_ATTESTER_ENROLMENT_PURPOSE`, caught in
+#: independent review). `tests/unit/test_rehearsal_issuer_authorization.py`
+#: instead derives the full set from `dotmac_deployment_control.__all__` at
+#: test time and proves every member is refused, so a future purpose this
+#: package adds is covered automatically rather than by remembering to edit
+#: a comment.
 REHEARSAL_ISSUER_PURPOSE: Final = "deployment_rehearsal_issuer"
 REHEARSAL_ISSUER_AUTHORIZATION_SCHEMA: Final = (
     "dotmac.deployment_control.rehearsal_issuer_authorization"
@@ -231,6 +259,12 @@ class RehearsalIssuerAuthorizationRefusalCode(StrEnum):
     SIGNER_MISMATCH = "rehearsal_issuer_authorization_signer_mismatch"
     CONTROLLER_MISMATCH = "rehearsal_issuer_authorization_controller_mismatch"
     TARGET_MISMATCH = "rehearsal_issuer_authorization_target_mismatch"
+    #: `lease_id` disagrees. Added under the same "one code per binding" rule
+    #: as `DESIRED_STATE_MISMATCH` below: this whole contract's stated scope
+    #: is authority "for one bounded lease", so a bound `lease_id` with no
+    #: refusal code would be exactly the "silent" shape A6.4 forbids, applied
+    #: to the term the module's own name is about.
+    LEASE_MISMATCH = "rehearsal_issuer_authorization_lease_mismatch"
     #: See the module docstring's closing section: added under the "one code
     #: per binding" rule because `desired_state_digest` is bound but the
     #: originally enumerated design named no code for it.
@@ -280,7 +314,8 @@ class RehearsalIssuerAuthorizationStanding(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class RehearsalIssuerAuthorizationSignerIdentity:
-    """The rehearsal-issuer signer, which must be none of the other five."""
+    """The rehearsal-issuer signer, which must be none of this package's other
+    purposes (see `REHEARSAL_ISSUER_PURPOSE`'s own docstring for why)."""
 
     key_id: str
     algorithm: str
@@ -345,11 +380,15 @@ class RehearsalIssuerAuthorizationSubject:
     """What the caller says it is about to operate the rehearsal issuer for.
 
     Stated by the caller and compared against the signed statement term by
-    term. Everything the statement binds except the signer/lease/window/replay
-    machinery, PLUS one addition — `signer_public_key_fingerprint` — needed to
-    make the decided `SIGNER_MISMATCH` refusal reachable; see the module
-    docstring's closing section for why that field is here despite not being
-    in the originally enumerated subject field list.
+    term. Everything the statement binds except the window/replay machinery
+    (`not_before`/`issued_at`/`expires_at`/`single_use_reference`, which are
+    properties of the authorization document itself, not of the rehearsal
+    being compared against it), PLUS two additions beyond the originally
+    enumerated subject field list — `signer_public_key_fingerprint` (needed to
+    make the decided `SIGNER_MISMATCH` refusal reachable) and `lease_id`
+    (bound into the statement but originally left off both the subject and
+    the refusal-code list, caught in independent review). See the module
+    docstring's closing section for why both are here.
     """
 
     immutable_reference: str
@@ -362,6 +401,7 @@ class RehearsalIssuerAuthorizationSubject:
     controller_fingerprint: str
     environment: str
     signer_public_key_fingerprint: str
+    lease_id: str
 
 
 def _require_provenance(value: object) -> A6ProvenanceKind:
@@ -476,6 +516,8 @@ class RehearsalIssuerAuthorizationStatementV1:
     public_key_fingerprint: str
     #: Bound by VALUE only, same discipline `authorization_v3.py` uses for
     #: Foundation's `HostLease.v2`: Control does not own the lease type.
+    #: Compared against the subject's own `lease_id` with `LEASE_MISMATCH`
+    #: (added after independent review found it signed but never compared).
     lease_id: str
     #: The per-lease replay coordinate. See the module docstring's
     #: "single-use is PER LEASE" section — a re-presentable authorization is
@@ -692,6 +734,7 @@ class RehearsalIssuerAuthorizationStatementV1:
             controller_fingerprint=self.controller_fingerprint,
             environment=self.environment,
             signer_public_key_fingerprint=self.public_key_fingerprint,
+            lease_id=self.lease_id,
         )
 
 
@@ -1029,6 +1072,7 @@ def verify_rehearsal_issuer_authorization(
             "controller_fingerprint",
             RehearsalIssuerAuthorizationRefusalCode.CONTROLLER_MISMATCH,
         ),
+        ("lease_id", RehearsalIssuerAuthorizationRefusalCode.LEASE_MISMATCH),
     ):
         bound = getattr(statement, field)
         asked = getattr(subject, field)

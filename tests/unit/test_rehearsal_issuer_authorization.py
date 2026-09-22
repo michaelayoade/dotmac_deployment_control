@@ -13,13 +13,7 @@ from typing import Any
 
 import pytest
 
-from dotmac_deployment_control.authorization import AUTHORIZATION_PURPOSE
-from dotmac_deployment_control.dispatch_envelope import DISPATCH_PURPOSE
-from dotmac_deployment_control.execution_observation import (
-    EXECUTION_OBSERVATION_PURPOSE,
-)
-from dotmac_deployment_control.recovery_grant import RECOVERY_PURPOSE
-from dotmac_deployment_control.rehearsal_grant import REHEARSAL_PURPOSE
+import dotmac_deployment_control
 from dotmac_deployment_control.rehearsal_issuer_authorization import (
     REHEARSAL_ISSUER_PURPOSE,
     REHEARSAL_ONLY_ENVIRONMENT,
@@ -181,19 +175,43 @@ def test_purpose_mismatch_is_refused() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "other_purpose",
-    [
-        AUTHORIZATION_PURPOSE,
-        DISPATCH_PURPOSE,
-        EXECUTION_OBSERVATION_PURPOSE,
-        RECOVERY_PURPOSE,
-        REHEARSAL_PURPOSE,
-    ],
-)
-def test_every_other_purpose_in_the_repository_is_refused(other_purpose: str) -> None:
-    """Purpose separation. A signer/verifier bound to any of the other five
-    existing purposes must not satisfy this contract."""
+def _every_other_purpose_in_the_package() -> list[str]:
+    """DERIVED, not hand-maintained: every public `*_PURPOSE` string constant
+    the top-level package exports, other than this module's own.
+
+    A hand-maintained list is exactly the "asserted, not provable" shape
+    AGENTS.md's guard rule warns about — an independent review found the
+    original static list here covered 5 of at least 7 real purposes and its
+    own test name claimed exhaustiveness it didn't have. Scanning
+    `dotmac_deployment_control.__all__` at test time means a future purpose
+    is covered automatically, and this function's own sensitivity is
+    provable: it necessarily finds at least one match (this module's import
+    already put several `*_PURPOSE` constants into the package namespace),
+    so it cannot be vacuously empty.
+    """
+    found = [
+        name
+        for name in dotmac_deployment_control.__all__
+        if name.endswith("_PURPOSE")
+        and getattr(dotmac_deployment_control, name) != REHEARSAL_ISSUER_PURPOSE
+    ]
+    assert found, "the scan itself found nothing — the guard would be vacuous"
+    return [getattr(dotmac_deployment_control, name) for name in found]
+
+
+def test_the_purpose_inventory_scan_is_not_vacuous() -> None:
+    """SENSITIVITY for `_every_other_purpose_in_the_package` itself: it must
+    name a real, non-trivial set, not just "some string"."""
+    other_purposes = _every_other_purpose_in_the_package()
+    assert len(other_purposes) >= 6, other_purposes
+    assert REHEARSAL_ISSUER_PURPOSE not in other_purposes
+
+
+@pytest.mark.parametrize("other_purpose", _every_other_purpose_in_the_package())
+def test_every_other_purpose_in_the_package_is_refused(other_purpose: str) -> None:
+    """Purpose separation. A signer/verifier bound to ANY other purpose this
+    package exports — derived, not a hand-maintained list — must not satisfy
+    this contract."""
     assert other_purpose != REHEARSAL_ISSUER_PURPOSE
     with pytest.raises(RehearsalIssuerAuthorizationRefusedError) as refused:
         RehearsalIssuerAuthorizationSignerIdentity("k", "ed25519", "fp", other_purpose)
@@ -243,6 +261,7 @@ def test_a_subject_naming_a_non_rehearsal_environment_is_refused_at_verification
         controller_fingerprint=statement.controller_fingerprint,
         environment="production",
         signer_public_key_fingerprint=statement.public_key_fingerprint,
+        lease_id=statement.lease_id,
     )
     with pytest.raises(RehearsalIssuerAuthorizationRefusedError) as refused:
         verify_rehearsal_issuer_authorization(
@@ -357,10 +376,28 @@ def test_desired_state_mismatch_only() -> None:
     )
 
 
+def test_lease_mismatch_only() -> None:
+    """Added under the "one code per binding" rule after independent review
+    found `lease_id` signed into the statement and never compared: this
+    contract's whole stated scope is authority "for one bounded lease", so a
+    presented lease that disagrees with the authorized one must refuse."""
+    subject = _subject_from(_statement())
+    other = dataclasses.replace(subject, lease_id="lease-other")
+    with pytest.raises(RehearsalIssuerAuthorizationRefusedError) as refused:
+        verify_rehearsal_issuer_authorization(
+            _envelope(), verifier=_Verifier(), subject=other, at=NOW
+        )
+    assert refused.value.code is RehearsalIssuerAuthorizationRefusalCode.LEASE_MISMATCH
+
+
 def test_matching_subject_is_admitted() -> None:
-    # SENSITIVITY, the near-miss half for every mismatch test above.
+    # SENSITIVITY, the near-miss half for every mismatch test above,
+    # including `lease_id` — `.subject` carries the statement's own
+    # `lease_id`, so a genuinely matching subject (this one) must still pass.
+    subject = _statement().subject
+    assert subject.lease_id == "lease-1"
     verify_rehearsal_issuer_authorization(
-        _envelope(), verifier=_Verifier(), subject=_statement().subject, at=NOW
+        _envelope(), verifier=_Verifier(), subject=subject, at=NOW
     )
 
 
