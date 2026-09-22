@@ -100,11 +100,12 @@ from dotmac_deployment_control.host_admission import (
     HostAdmissionPresentationV1,
 )
 from dotmac_deployment_control.host_admission_coordinator import (
+    HostAdmissionForeignVerificationEvidenceV1,
     HostAdmissionRefusalCode,
     HostAdmissionRefusedError,
-    finalize_host_admission,
+    admit_and_consume_host_admission,
     install_host_admission_security,
-    prepare_host_admission,
+    resolve_host_admission_context,
 )
 from dotmac_deployment_control.host_admission_service import (
     BindTargetHostCommand,

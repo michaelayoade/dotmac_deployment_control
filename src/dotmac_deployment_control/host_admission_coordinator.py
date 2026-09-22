@@ -1,16 +1,22 @@
-"""ADR-0073 authenticated prepare/finalize transaction boundary.
+"""ADR-0073 (amended) three-phase host-admission boundary.
 
-The preparation result is deliberately non-serializable: it carries the exact
-caller-owned Session and root transaction whose locks protect the facts in the
-public fields. Foundation verifies those facts without either repository
-importing the other. Finalization accepts only the two verified envelope
-digests, rechecks the locked coordinate, and stages Control's existing replay
-marker. Neither function commits or rolls back.
+`resolve_host_admission_context` authenticates the presentation and resolves
+every current fact needed for Foundation verification WITHOUT taking any
+database row lock -- the out-of-process Foundation verification call the
+caller makes between the two functions in this module therefore holds zero
+locks for its entire duration. The returned context is a plain, freely
+copyable value: nothing about possessing it grants anything, and it carries no
+Session or transaction affinity. `admit_and_consume_host_admission`
+re-authenticates, re-locks everything fresh in the same canonical order the
+prior single-transaction design used, re-derives every fact from the locked
+rows, requires exact equality against the resolved context and against
+Foundation's echoed verification evidence, and stages Control's existing
+replay marker. Neither function commits or rolls back.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from threading import Lock
@@ -24,7 +30,11 @@ from dotmac_deployment_control.attestation_trust_registry import (
     lock_attestation_subjects,
     resolve_admission_root,
 )
-from dotmac_deployment_control.digests import PublicKeyFingerprintV1
+from dotmac_deployment_control.digests import (
+    PublicKeyFingerprintV1,
+    compute_host_admission_context_digest,
+    compute_host_admission_presentation_digest,
+)
 from dotmac_deployment_control.host_admission import (
     CANDIDATE_ATTESTATION_PURPOSE,
     HOST_ADMISSION_PRESENTATION_PURPOSE,
@@ -35,13 +45,17 @@ from dotmac_deployment_control.host_admission import (
     verify_host_admission_presentation,
 )
 from dotmac_deployment_control.host_admission_service import (
-    TargetAdmissionPolicyView,
-    TargetHostAssociationView,
     lock_target,
     require_current_target_admission_policy_locked,
     require_current_target_host_locked,
+    resolve_current_target_admission_policy_unlocked,
+    resolve_current_target_host_unlocked,
 )
-from dotmac_deployment_control.models import CredentialStatus, TargetCredential
+from dotmac_deployment_control.models import (
+    CredentialStatus,
+    DeploymentTarget,
+    TargetCredential,
+)
 from dotmac_deployment_control.ports import DeploymentControlError
 from dotmac_deployment_control.service import (
     _credential_by_key_id,
@@ -112,8 +126,11 @@ class HostAdmissionRefusalCode(StrEnum):
     ROOT_NOT_YET_VALID = "host_admission_root_not_yet_valid"
     ROOT_EXPIRED = "host_admission_root_expired"
     ROOT_PURPOSE_MISMATCH = "host_admission_root_purpose_mismatch"
-    TRANSACTION_CHANGED = "host_admission_transaction_changed"
+    CONTEXT_EXPIRED = "host_admission_context_expired"
     EVIDENCE_CHANGED = "host_admission_evidence_changed"
+    FOREIGN_EVIDENCE_CONTEXT_MISMATCH = (
+        "host_admission_foreign_evidence_context_mismatch"
+    )
     PREPARED_STATE_CHANGED = "host_admission_prepared_state_changed"
 
 
@@ -142,65 +159,48 @@ class HostAdmissionRootContextV1:
 
 
 @dataclass(frozen=True, slots=True)
-class HostAdmissionVerificationFactsV1:
-    """Non-authorizing facts supplied to Foundation for stateless verification."""
+class HostAdmissionForeignVerificationEvidenceV1:
+    """What Control accepts as Foundation's verification result -- Control does
+    NOT import dotmac_deployment_foundation's actual result type (the two
+    packages never import each other, per ADR-0073). The CP adapter is the sole
+    mapper from Foundation's `AttestationPairVerificationResultV1` into this
+    Control-owned shape."""
+
+    candidate_attestation_envelope_digest: str
+    installed_attestation_envelope_digest: str
+    verification_context_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class HostAdmissionVerificationContextV1:
+    """Non-authorizing, freely copyable -- no opaque capability, no held lock,
+    no session/transaction affinity. Every field here is a plain value; nothing
+    about possessing this object grants anything. `context_digest` is Control's
+    own optimistic-concurrency fingerprint over every field below (see
+    compute_host_admission_context_digest); admit_and_consume_host_admission
+    recomputes it from FRESH state and requires equality -- this object's own
+    copy of the digest is never trusted at that point, only compared against."""
 
     attempt_id: UUID
     dispatch_id: str
     dispatch_envelope_digest: str
-    candidate_attestation_envelope_digest: str
-    installed_attestation_envelope_digest: str
     target_id: UUID
     target_ref: str
     host_id: str
-    public_key_fingerprint: str
-    trust_root_version: str
+    credential_id: UUID
+    credential_key_id: str
+    credential_fingerprint: str
+    credential_algorithm: str
+    credential_purpose: str
+    association_id: UUID
+    policy_id: UUID
     candidate_root: HostAdmissionRootContextV1
     installed_root: HostAdmissionRootContextV1
     candidate_audience: str
     installed_audience: str
     expected_foundation_package: str
-
-
-_PREPARED_MINT = object()
-_PREPARED_SESSION_KEY = object()
-
-
-class _PreparedHostAdmission:
-    """Opaque capability minted only by :func:`prepare_host_admission`.
-
-    The public ``facts`` are not authority and may be copied freely.  Finalize
-    accepts this opaque object and resolves its authoritative state from the
-    caller-owned Session registry populated by prepare in the same root
-    transaction.  Constructing or copying facts therefore cannot manufacture
-    a dispatch-consumption capability.
-    """
-
-    __slots__ = ("_facts",)
-
-    def __init__(
-        self, *, mint: object, facts: HostAdmissionVerificationFactsV1
-    ) -> None:
-        if mint is not _PREPARED_MINT:
-            raise TypeError("prepared host admission is minted by prepare only")
-        self._facts = facts
-
-    @property
-    def facts(self) -> HostAdmissionVerificationFactsV1:
-        return self._facts
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedHostAdmissionState:
-    facts: HostAdmissionVerificationFactsV1
-    credential_id: UUID
-    credential_key_id: str
-    credential_fingerprint: str
-    association: TargetHostAssociationView
-    policy: TargetAdmissionPolicyView
-    prepared_at: datetime
-    session: Session = field(repr=False, compare=False)
-    transaction: object = field(repr=False, compare=False)
+    presentation: HostAdmissionPresentationV1
+    context_digest: str
 
 
 def _refuse(code: HostAdmissionRefusalCode, detail: str) -> HostAdmissionRefusedError:
@@ -317,6 +317,63 @@ def _resolve_root_context(
     )
 
 
+def _render_instant(value: datetime) -> str:
+    """Same rendering `host_admission.py`'s own `_render` uses for a signed
+    instant -- an isoformat string with a literal `Z` rather than `+00:00` --
+    so a root's `not_before`/`not_after` fold into the context digest through
+    the one convention this package already uses for a datetime, rather than a
+    second one invented here. `canonical_json` -> `json.dumps` cannot encode a
+    raw `datetime` at all, so this conversion is required, not cosmetic."""
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _root_context_for_digest(root: HostAdmissionRootContextV1) -> dict[str, object]:
+    payload = asdict(root)
+    payload["not_before"] = _render_instant(root.not_before)
+    payload["not_after"] = _render_instant(root.not_after)
+    return payload
+
+
+def _context_digest(
+    *,
+    presentation: HostAdmissionPresentationV1,
+    dispatch: _StoredDispatchCoordinate,
+    target_id: UUID,
+    target_ref: str,
+    host_id: str,
+    credential: TargetCredential,
+    association_id: UUID,
+    policy_id: UUID,
+    candidate_audience: str,
+    installed_audience: str,
+    expected_foundation_package: str,
+    candidate_root: HostAdmissionRootContextV1,
+    installed_root: HostAdmissionRootContextV1,
+) -> str:
+    return compute_host_admission_context_digest(
+        presentation_canonical_digest=compute_host_admission_presentation_digest(
+            presentation.as_mapping()
+        ),
+        dispatch_id=dispatch.dispatch_id,
+        dispatch_envelope_digest=dispatch.dispatch_envelope_digest,
+        target_id=str(target_id),
+        target_ref=target_ref,
+        host_id=host_id,
+        credential_id=str(credential.id),
+        credential_key_id=credential.key_id,
+        credential_fingerprint=credential.public_key_fingerprint,
+        credential_algorithm=credential.algorithm,
+        credential_purpose=credential.purpose,
+        association_id=str(association_id),
+        policy_id=str(policy_id),
+        candidate_audience=candidate_audience,
+        installed_audience=installed_audience,
+        expected_foundation_package=expected_foundation_package,
+        candidate_root=_root_context_for_digest(candidate_root),
+        installed_root=_root_context_for_digest(installed_root),
+    )
+
+
 def _require_stored_dispatch(
     db: Session, *, attempt_id: UUID, target_id: UUID
 ) -> _StoredDispatchCoordinate:
@@ -340,13 +397,18 @@ def _require_stored_dispatch(
     return coordinate
 
 
-def prepare_host_admission(
+def resolve_host_admission_context(
     db: Session,
     *,
     attempt_id: UUID,
     presentation: HostAdmissionPresentationV1,
-) -> _PreparedHostAdmission:
-    """Authenticate, lock and return immutable verification facts only."""
+) -> HostAdmissionVerificationContextV1:
+    """Authenticate the presentation and resolve every current fact needed for
+    Foundation verification, WITHOUT taking any row lock. The caller is
+    responsible for this being a short, read-only transaction that it commits
+    or closes immediately on return -- this function itself does not commit or
+    roll back (same non-transaction-owning discipline every other function in
+    this module already follows)."""
     if not isinstance(presentation, HostAdmissionPresentationV1):
         raise _refuse(
             HostAdmissionRefusalCode.AUTHENTICATION_FAILED,
@@ -360,7 +422,6 @@ def prepare_host_admission(
             HostAdmissionRefusalCode.AUTHENTICATION_FAILED,
             "presentation key is unknown or lacks immutable verification terms",
         )
-    initial_identity = _credential_identity(candidate)
     verify_host_admission_presentation(
         presentation,
         verifier=security.verifier,
@@ -370,18 +431,23 @@ def prepare_host_admission(
         now=now,
     )
 
-    target = lock_target(db, candidate.target_id)
-    try:
-        credential = _load_credential_for_update(db, candidate.id)
-    except DeploymentControlError as exc:
+    target = db.get(DeploymentTarget, candidate.target_id)
+    if target is None:
+        raise _refuse(
+            HostAdmissionRefusalCode.TARGET_MISMATCH,
+            "authenticated credential names a deployment target that no longer exists",
+        )
+    # A plain, non-locking re-read of the SAME row the authenticated `candidate`
+    # was just resolved from -- this is the resolver's whole point: it takes no
+    # lock, so it cannot protect against a concurrent write the way the old
+    # design's `_load_credential_for_update` did. That protection now lives
+    # entirely in `admit_and_consume_host_admission`, which re-locks and
+    # re-derives every one of these facts from scratch.
+    credential = db.get(TargetCredential, candidate.id)
+    if credential is None:
         raise _refuse(
             HostAdmissionRefusalCode.CREDENTIAL_CHANGED,
-            "credential disappeared before the lock was acquired",
-        ) from exc
-    if _credential_identity(credential) != initial_identity:
-        raise _refuse(
-            HostAdmissionRefusalCode.CREDENTIAL_CHANGED,
-            "credential verification terms changed before the lock was acquired",
+            "credential disappeared before resolution completed",
         )
     if credential.purpose != HOST_ADMISSION_PRESENTATION_PURPOSE:
         raise _refuse(
@@ -391,7 +457,7 @@ def prepare_host_admission(
     if not _credential_is_active(credential, now=now):
         raise _refuse(
             HostAdmissionRefusalCode.CREDENTIAL_NOT_ACTIVE,
-            "credential is not active at the trusted preparation instant",
+            "credential is not active at the trusted resolution instant",
         )
     recomputed = PublicKeyFingerprintV1.from_public_key_b64(
         credential.public_key_b64
@@ -402,18 +468,13 @@ def prepare_host_admission(
             "credential public material disagrees with its fingerprint",
         )
 
-    association = require_current_target_host_locked(db, target.id)
-    policy = require_current_target_admission_policy_locked(db, target.id)
+    association = resolve_current_target_host_unlocked(db, target.id)
+    policy = resolve_current_target_admission_policy_unlocked(db, target.id)
     if policy.host_association_id != association.association_id:
         raise _refuse(
             HostAdmissionRefusalCode.POLICY_HOST_MISMATCH,
             "current admission policy does not bind the current host association",
         )
-    subjects = (
-        ("candidate_release_signer", policy.candidate_root_subject),
-        ("host_attester", association.host_id),
-    )
-    lock_attestation_subjects(db, subjects=subjects)
     candidate_root = _resolve_root_context(
         db,
         custody_domain="candidate_release_signer",
@@ -435,184 +496,224 @@ def prepare_host_admission(
             HostAdmissionRefusalCode.DISPATCH_MISMATCH,
             "presentation does not name the signed stored dispatch id",
         )
-    transaction = db.get_transaction()
-    if transaction is None or not transaction.is_active:
-        raise _refuse(
-            HostAdmissionRefusalCode.TRANSACTION_CHANGED,
-            "preparation has no active caller-owned root transaction",
-        )
-    facts = HostAdmissionVerificationFactsV1(
-        attempt_id=attempt_id,
-        dispatch_id=dispatch.dispatch_id,
-        dispatch_envelope_digest=dispatch.dispatch_envelope_digest,
-        candidate_attestation_envelope_digest=(
-            statement.candidate_attestation_envelope_digest
-        ),
-        installed_attestation_envelope_digest=(
-            statement.installed_attestation_envelope_digest
-        ),
+
+    context_digest = _context_digest(
+        presentation=presentation,
+        dispatch=dispatch,
         target_id=target.id,
         target_ref=target.target_ref,
         host_id=association.host_id,
-        public_key_fingerprint=installed_root.public_key_fingerprint,
-        trust_root_version=installed_root.root_version,
+        credential=credential,
+        association_id=association.association_id,
+        policy_id=policy.policy_id,
+        candidate_audience=policy.candidate_audience,
+        installed_audience=policy.installed_audience,
+        expected_foundation_package=policy.expected_foundation_package,
+        candidate_root=candidate_root,
+        installed_root=installed_root,
+    )
+    return HostAdmissionVerificationContextV1(
+        attempt_id=attempt_id,
+        dispatch_id=dispatch.dispatch_id,
+        dispatch_envelope_digest=dispatch.dispatch_envelope_digest,
+        target_id=target.id,
+        target_ref=target.target_ref,
+        host_id=association.host_id,
+        credential_id=credential.id,
+        credential_key_id=credential.key_id,
+        credential_fingerprint=credential.public_key_fingerprint,
+        credential_algorithm=credential.algorithm,
+        credential_purpose=credential.purpose,
+        association_id=association.association_id,
+        policy_id=policy.policy_id,
         candidate_root=candidate_root,
         installed_root=installed_root,
         candidate_audience=policy.candidate_audience,
         installed_audience=policy.installed_audience,
         expected_foundation_package=policy.expected_foundation_package,
+        presentation=presentation,
+        context_digest=context_digest,
     )
-    prepared = _PreparedHostAdmission(mint=_PREPARED_MINT, facts=facts)
-    state = _PreparedHostAdmissionState(
-        facts=facts,
-        credential_id=credential.id,
-        credential_key_id=credential.key_id,
-        credential_fingerprint=credential.public_key_fingerprint,
-        association=association,
-        policy=policy,
-        prepared_at=now,
-        session=db,
-        transaction=transaction,
-    )
-    registry = db.info.setdefault(_PREPARED_SESSION_KEY, {})
-    assert isinstance(registry, dict)
-    registry[id(prepared)] = (prepared, state)
-    return prepared
 
 
-def _require_prepared_state(
-    db: Session, prepared: object
-) -> _PreparedHostAdmissionState:
-    registry = db.info.get(_PREPARED_SESSION_KEY)
-    entry = registry.get(id(prepared)) if isinstance(registry, dict) else None
+def admit_and_consume_host_admission(
+    db: Session,
+    *,
+    context: HostAdmissionVerificationContextV1,
+    foreign_evidence: HostAdmissionForeignVerificationEvidenceV1,
+) -> _StagedDispatchConsumption:
+    """Re-authenticate, re-lock everything fresh, re-derive every fact from
+    locked state, require exact equality against `context` and against
+    `foreign_evidence`, then stage exactly one consumption. `context` and
+    `foreign_evidence` are both untrusted, non-authorizing data -- everything
+    here is re-derived from Control's own locked rows before being trusted."""
+    security = _require_installed_security()
+    now = _utc(security.clock.now())
+    # Checked BEFORE re-authentication, and with Control's own named refusal
+    # code: `verify_host_admission_presentation` below would otherwise raise
+    # its own (differently-typed) expiry refusal first, which would hide the
+    # specific "the gap between resolve and admit outlived the presentation"
+    # finding this redesign exists to surface.
+    if now >= context.presentation.statement.expires_at:
+        raise _refuse(
+            HostAdmissionRefusalCode.CONTEXT_EXPIRED,
+            "resolved admission context outlived the presentation's liveness window",
+        )
+    # Same unlocked re-authentication shape `resolve_host_admission_context`
+    # itself used: verify against a plain, unlocked read of the credential
+    # named by the presentation's own key id, before any lock is taken. The
+    # locked, authoritative credential is re-loaded and re-checked below.
+    reauthenticated = _credential_by_key_id(db, context.presentation.statement.key_id)
     if (
-        not isinstance(prepared, _PreparedHostAdmission)
-        or not isinstance(entry, tuple)
-        or len(entry) != 2
-        or entry[0] is not prepared
-        or not isinstance(entry[1], _PreparedHostAdmissionState)
+        reauthenticated is None
+        or reauthenticated.algorithm is None
+        or reauthenticated.purpose is None
     ):
         raise _refuse(
             HostAdmissionRefusalCode.AUTHENTICATION_FAILED,
-            "prepared capability was not minted by authentication in this session",
+            "presentation key is unknown or lacks immutable verification terms",
         )
-    state = entry[1]
-    current = db.get_transaction()
-    if (
-        state.session is not db
-        or current is None
-        or current is not state.transaction
-        or not current.is_active
-    ):
-        raise _refuse(
-            HostAdmissionRefusalCode.TRANSACTION_CHANGED,
-            "prepare and finalize must share one still-active root transaction",
-        )
-    return state
+    verify_host_admission_presentation(
+        context.presentation,
+        verifier=security.verifier,
+        algorithm=reauthenticated.algorithm,
+        public_key_fingerprint=reauthenticated.public_key_fingerprint,
+        public_key_b64=reauthenticated.public_key_b64,
+        now=now,
+    )
 
-
-def finalize_host_admission(
-    db: Session,
-    *,
-    prepared: object,
-    candidate_attestation_envelope_digest: str,
-    installed_attestation_envelope_digest: str,
-) -> _StagedDispatchConsumption:
-    """Recheck the prepared coordinate and stage exactly one consumption."""
-    state = _require_prepared_state(db, prepared)
-    facts = state.facts
-    if (
-        candidate_attestation_envelope_digest
-        != facts.candidate_attestation_envelope_digest
-        or installed_attestation_envelope_digest
-        != facts.installed_attestation_envelope_digest
-    ):
-        raise _refuse(
-            HostAdmissionRefusalCode.EVIDENCE_CHANGED,
-            "verified attestation digests differ from the signed presentation",
-        )
-    target = lock_target(db, facts.target_id)
-    if target.target_ref != facts.target_ref:
+    target = lock_target(db, context.target_id)
+    if target.target_ref != context.target_ref:
         raise _refuse(
             HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
-            "target reference differs from preparation",
+            "target reference differs from resolution",
         )
     try:
-        credential = _load_credential_for_update(db, state.credential_id)
+        credential = _load_credential_for_update(db, context.credential_id)
     except DeploymentControlError as exc:
         raise _refuse(
             HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
-            "credential disappeared after preparation",
+            "credential disappeared after resolution",
         ) from exc
     if (
-        credential.key_id != state.credential_key_id
-        or credential.public_key_fingerprint != state.credential_fingerprint
-        or credential.purpose != HOST_ADMISSION_PRESENTATION_PURPOSE
-        or not _credential_is_active(credential, now=state.prepared_at)
+        credential.key_id != context.credential_key_id
+        or credential.public_key_fingerprint != context.credential_fingerprint
+        or credential.purpose != context.credential_purpose
+        or not _credential_is_active(credential, now=now)
     ):
         raise _refuse(
             HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
-            "credential differs from preparation",
+            "credential differs from resolution",
         )
     association = require_current_target_host_locked(db, target.id)
     policy = require_current_target_admission_policy_locked(db, target.id)
-    if association != state.association or policy != state.policy:
+    if (
+        association.association_id != context.association_id
+        or policy.policy_id != context.policy_id
+    ):
         raise _refuse(
             HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
-            "host association or admission policy differs from preparation",
+            "host association or admission policy differs from resolution",
         )
+    subjects = (
+        ("candidate_release_signer", policy.candidate_root_subject),
+        ("host_attester", association.host_id),
+    )
+    lock_attestation_subjects(db, subjects=subjects)
     candidate_root = _resolve_root_context(
         db,
         custody_domain="candidate_release_signer",
         subject=policy.candidate_root_subject,
         purpose=CANDIDATE_ATTESTATION_PURPOSE,
-        now=state.prepared_at,
+        now=now,
     )
     installed_root = _resolve_root_context(
         db,
         custody_domain="host_attester",
         subject=association.host_id,
         purpose=INSTALLED_OBSERVATION_PURPOSE,
-        now=state.prepared_at,
-    )
-    if candidate_root != facts.candidate_root or installed_root != facts.installed_root:
-        raise _refuse(
-            HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
-            "attestation root coordinate differs from preparation",
-        )
-    dispatch = _require_stored_dispatch(
-        db, attempt_id=facts.attempt_id, target_id=target.id
+        now=now,
     )
     if (
-        dispatch.dispatch_id != facts.dispatch_id
-        or dispatch.dispatch_envelope_digest != facts.dispatch_envelope_digest
+        candidate_root != context.candidate_root
+        or installed_root != context.installed_root
     ):
         raise _refuse(
             HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
-            "stored dispatch differs from preparation",
+            "attestation root coordinate differs from resolution",
         )
-    staged = _stage_dispatch_consumption(
-        db,
-        attempt_id=facts.attempt_id,
-        expected_target=_ExpectedDispatchTarget(
-            target_id=facts.target_id, target_ref=facts.target_ref
-        ),
-        candidate_attestation_envelope_digest=(candidate_attestation_envelope_digest),
-        installed_attestation_envelope_digest=(installed_attestation_envelope_digest),
+    dispatch = _require_stored_dispatch(
+        db, attempt_id=context.attempt_id, target_id=target.id
     )
-    registry = db.info.get(_PREPARED_SESSION_KEY)
-    assert isinstance(registry, dict)
-    registry.pop(id(prepared), None)
-    return staged
+    if (
+        dispatch.dispatch_id != context.dispatch_id
+        or dispatch.dispatch_envelope_digest != context.dispatch_envelope_digest
+    ):
+        raise _refuse(
+            HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
+            "stored dispatch differs from resolution",
+        )
+
+    recomputed_digest = _context_digest(
+        presentation=context.presentation,
+        dispatch=dispatch,
+        target_id=target.id,
+        target_ref=target.target_ref,
+        host_id=association.host_id,
+        credential=credential,
+        association_id=association.association_id,
+        policy_id=policy.policy_id,
+        candidate_audience=policy.candidate_audience,
+        installed_audience=policy.installed_audience,
+        expected_foundation_package=policy.expected_foundation_package,
+        candidate_root=candidate_root,
+        installed_root=installed_root,
+    )
+    if recomputed_digest != context.context_digest:
+        raise _refuse(
+            HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
+            "freshly re-derived context digest differs from the resolved context",
+        )
+    if foreign_evidence.verification_context_digest != context.context_digest:
+        raise _refuse(
+            HostAdmissionRefusalCode.FOREIGN_EVIDENCE_CONTEXT_MISMATCH,
+            "Foundation's echoed verification context digest does not match "
+            "Control's own resolved context",
+        )
+    statement = context.presentation.statement
+    if (
+        foreign_evidence.candidate_attestation_envelope_digest
+        != statement.candidate_attestation_envelope_digest
+        or foreign_evidence.installed_attestation_envelope_digest
+        != statement.installed_attestation_envelope_digest
+    ):
+        raise _refuse(
+            HostAdmissionRefusalCode.EVIDENCE_CHANGED,
+            "verified attestation digests differ from the signed presentation",
+        )
+    return _stage_dispatch_consumption(
+        db,
+        attempt_id=context.attempt_id,
+        expected_target=_ExpectedDispatchTarget(
+            target_id=context.target_id, target_ref=context.target_ref
+        ),
+        candidate_attestation_envelope_digest=(
+            foreign_evidence.candidate_attestation_envelope_digest
+        ),
+        installed_attestation_envelope_digest=(
+            foreign_evidence.installed_attestation_envelope_digest
+        ),
+    )
 
 
 __all__ = [
     "HostAdmissionClock",
+    "HostAdmissionForeignVerificationEvidenceV1",
     "HostAdmissionRefusalCode",
     "HostAdmissionRefusedError",
     "HostAdmissionRootContextV1",
-    "HostAdmissionVerificationFactsV1",
-    "finalize_host_admission",
+    "HostAdmissionVerificationContextV1",
+    "admit_and_consume_host_admission",
     "install_host_admission_security",
-    "prepare_host_admission",
+    "resolve_host_admission_context",
 ]

@@ -203,6 +203,60 @@ def resolve_current_target_host(
     return require_current_target_host_locked(db, target_id)
 
 
+def _current_host_pointer_unlocked(
+    db: Session, target_id: UUID
+) -> TargetCurrentHost | None:
+    return db.execute(
+        select(TargetCurrentHost).where(TargetCurrentHost.target_id == target_id)
+    ).scalar_one_or_none()
+
+
+def resolve_current_target_host_unlocked(
+    db: Session, target_id: UUID
+) -> TargetHostAssociationView:
+    """Same drift/ambiguity resolution as `require_current_target_host_locked`,
+    without acquiring any row lock -- for the lock-free host-admission context
+    resolver only. A caller needing the locked coordinate for a mutation must
+    use the locked original instead."""
+    open_rows = _open_host_associations(db, target_id)
+    pointer = _current_host_pointer_unlocked(db, target_id)
+    if not open_rows:
+        if pointer is not None:
+            raise _refuse(
+                HostAdmissionStateRefusalCode.HOST_DRIFT,
+                "current-host projection exists but append-only truth is closed",
+            )
+        raise _refuse(
+            HostAdmissionStateRefusalCode.HOST_ABSENT,
+            "target has no open host association",
+        )
+    if len(open_rows) != 1:
+        raise _refuse(
+            HostAdmissionStateRefusalCode.HOST_AMBIGUOUS,
+            f"target has {len(open_rows)} open host associations",
+        )
+    row = open_rows[0]
+    if pointer is None or pointer.association_id != row.id:
+        raise _refuse(
+            HostAdmissionStateRefusalCode.HOST_DRIFT,
+            "current-host projection disagrees with append-only truth",
+        )
+    try:
+        host_id = require_host_id(row.host_id, where="current target host")
+    except HostAttesterEnrolmentRefusedError as exc:
+        raise _refuse(
+            HostAdmissionStateRefusalCode.MALFORMED,
+            f"stored host association {row.id} failed re-validation: {exc}",
+        ) from exc
+    return TargetHostAssociationView(
+        association_id=row.id,
+        target_id=row.target_id,
+        host_id=host_id,
+        bound_at=row.bound_at,
+        authority=row.authority,
+    )
+
+
 def _open_policies(db: Session, target_id: UUID) -> list[TargetAdmissionPolicy]:
     closed = select(TargetAdmissionPolicyClosure.policy_id)
     return list(
@@ -275,6 +329,50 @@ def resolve_current_target_admission_policy(
 ) -> TargetAdmissionPolicyView:
     lock_target(db, target_id)
     return require_current_target_admission_policy_locked(db, target_id)
+
+
+def _current_policy_pointer_unlocked(
+    db: Session, target_id: UUID
+) -> TargetCurrentAdmissionPolicy | None:
+    return db.execute(
+        select(TargetCurrentAdmissionPolicy).where(
+            TargetCurrentAdmissionPolicy.target_id == target_id
+        )
+    ).scalar_one_or_none()
+
+
+def resolve_current_target_admission_policy_unlocked(
+    db: Session, target_id: UUID
+) -> TargetAdmissionPolicyView:
+    """Same drift/ambiguity resolution as
+    `require_current_target_admission_policy_locked`, without acquiring any row
+    lock -- for the lock-free host-admission context resolver only. A caller
+    needing the locked coordinate for a mutation must use the locked original
+    instead."""
+    open_rows = _open_policies(db, target_id)
+    pointer = _current_policy_pointer_unlocked(db, target_id)
+    if not open_rows:
+        if pointer is not None:
+            raise _refuse(
+                HostAdmissionStateRefusalCode.POLICY_DRIFT,
+                "current-policy projection exists but append-only truth is closed",
+            )
+        raise _refuse(
+            HostAdmissionStateRefusalCode.POLICY_ABSENT,
+            "target has no open admission policy",
+        )
+    if len(open_rows) != 1:
+        raise _refuse(
+            HostAdmissionStateRefusalCode.POLICY_AMBIGUOUS,
+            f"target has {len(open_rows)} open admission policies",
+        )
+    row = open_rows[0]
+    if pointer is None or pointer.policy_id != row.id:
+        raise _refuse(
+            HostAdmissionStateRefusalCode.POLICY_DRIFT,
+            "current-policy projection disagrees with append-only truth",
+        )
+    return _policy_view(row)
 
 
 def bind_target_host(db: Session, command: BindTargetHostCommand) -> UUID:
@@ -478,7 +576,9 @@ __all__ = [
     "require_current_target_admission_policy_locked",
     "require_current_target_host_locked",
     "resolve_current_target_admission_policy",
+    "resolve_current_target_admission_policy_unlocked",
     "resolve_current_target_host",
+    "resolve_current_target_host_unlocked",
     "revise_target_admission_policy",
     "revoke_target_admission_policy",
     "revoke_target_host",

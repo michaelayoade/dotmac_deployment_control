@@ -139,6 +139,78 @@ def compute_host_admission_consumption_fingerprint(
     return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
+def compute_host_admission_presentation_digest(
+    presentation_mapping: Mapping[str, object],
+) -> str:
+    """Canonical digest over the complete signed presentation, INCLUDING its
+    signature -- `presentation.as_mapping()` from host_admission.py already
+    returns exactly `{"statement": {...}, "signature": ...}`, the shape this
+    hashes. This binds the exact bytes that were signed AND the signature
+    itself into Control's context digest, so a substituted signature over an
+    otherwise-identical statement changes the digest too."""
+    return hashlib.sha256(canonical_json(dict(presentation_mapping))).hexdigest()
+
+
+def compute_host_admission_context_digest(
+    *,
+    presentation_canonical_digest: str,
+    dispatch_id: str,
+    dispatch_envelope_digest: str,
+    target_id: str,
+    target_ref: str,
+    host_id: str,
+    credential_id: str,
+    credential_key_id: str,
+    credential_fingerprint: str,
+    credential_algorithm: str,
+    credential_purpose: str,
+    association_id: str,
+    policy_id: str,
+    candidate_audience: str,
+    installed_audience: str,
+    expected_foundation_package: str,
+    candidate_root: Mapping[str, object],
+    installed_root: Mapping[str, object],
+) -> str:
+    """Control's own optimistic-concurrency fingerprint over the ENTIRE resolved
+    admission context -- not shared with or reproduced by Foundation, which only
+    echoes an opaque copy of this value back (see host_admission_coordinator.py).
+
+    `candidate_root`/`installed_root` must each be the COMPLETE root context
+    mapping (custody_domain, subject, issuer, key_id, purpose, root_version,
+    not_before, not_after, algorithm, public_key_base64, public_key_fingerprint,
+    standing) -- every field, not a subset, because any of them changing between
+    resolve and admit-and-consume must change this digest. `association_id` and
+    `policy_id` are the immutable row UUIDs (never `host_id`/audience strings
+    alone), because only a non-reused identifier closes the ABA case where a
+    target's host or policy changes away and back to an equal-looking value
+    between resolve and finalize.
+    """
+    payload = {
+        "schema": "dotmac.control.host-admission-context",
+        "version": 1,
+        "presentation_canonical_digest": presentation_canonical_digest,
+        "dispatch_id": dispatch_id,
+        "dispatch_envelope_digest": dispatch_envelope_digest,
+        "target_id": target_id,
+        "target_ref": target_ref,
+        "host_id": host_id,
+        "credential_id": credential_id,
+        "credential_key_id": credential_key_id,
+        "credential_fingerprint": credential_fingerprint,
+        "credential_algorithm": credential_algorithm,
+        "credential_purpose": credential_purpose,
+        "association_id": association_id,
+        "policy_id": policy_id,
+        "candidate_audience": candidate_audience,
+        "installed_audience": installed_audience,
+        "expected_foundation_package": expected_foundation_package,
+        "candidate_root": dict(candidate_root),
+        "installed_root": dict(installed_root),
+    }
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
 def _refuse(subject: str, value: object, reason: str) -> DigestEncodingError:
     return DigestEncodingError(
         f"{value!r} is not a readable {subject}: {reason}. This is an ENCODING "
@@ -746,4 +818,6 @@ __all__ = [
     "PublicKeyFingerprintV1",
     "SpecDigestV1",
     "canonical_json",
+    "compute_host_admission_context_digest",
+    "compute_host_admission_presentation_digest",
 ]
