@@ -35,7 +35,6 @@ from dotmac_kernel.models import Base
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-import dotmac_deployment_control as public_api
 import dotmac_deployment_control.host_admission_coordinator as admission_coordinator
 import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
@@ -100,11 +99,12 @@ from dotmac_deployment_control.host_admission import (
     HostAdmissionPresentationV1,
 )
 from dotmac_deployment_control.host_admission_coordinator import (
+    HostAdmissionForeignVerificationEvidenceV1,
     HostAdmissionRefusalCode,
     HostAdmissionRefusedError,
-    finalize_host_admission,
+    admit_and_consume_host_admission,
     install_host_admission_security,
-    prepare_host_admission,
+    resolve_host_admission_context,
 )
 from dotmac_deployment_control.host_admission_service import (
     BindTargetHostCommand,
@@ -1627,23 +1627,33 @@ def _admission_fixture_inputs(
     return attempt.id, presentation
 
 
-def _prepare_admission_fixture(db: Session):  # type: ignore[no-untyped-def]
+def _resolve_admission_fixture(db: Session):  # type: ignore[no-untyped-def]
     attempt_id, presentation = _admission_fixture_inputs(db)
-    return prepare_host_admission(
-        db,
-        attempt_id=attempt_id,
-        presentation=presentation,
+    return resolve_host_admission_context(
+        db, attempt_id=attempt_id, presentation=presentation
+    )
+
+
+def _matching_foreign_evidence(context) -> HostAdmissionForeignVerificationEvidenceV1:  # type: ignore[no-untyped-def]
+    return HostAdmissionForeignVerificationEvidenceV1(
+        candidate_attestation_envelope_digest=(
+            context.presentation.statement.candidate_attestation_envelope_digest
+        ),
+        installed_attestation_envelope_digest=(
+            context.presentation.statement.installed_attestation_envelope_digest
+        ),
+        verification_context_digest=context.context_digest,
     )
 
 
 class TestAuthenticatedHostAdmission:
-    def test_prepare_fails_closed_until_startup_security_is_installed(
+    def test_resolve_fails_closed_until_startup_security_is_installed(
         self, db: Session
     ) -> None:
         attempt_id, presentation = _admission_fixture_inputs(db)
         admission_coordinator._reset_host_admission_security_for_tests()
         with pytest.raises(HostAdmissionRefusedError) as caught:
-            prepare_host_admission(
+            resolve_host_admission_context(
                 db,
                 attempt_id=attempt_id,
                 presentation=presentation,
@@ -1662,103 +1672,59 @@ class TestAuthenticatedHostAdmission:
                 verifier=_AdmissionVerifier(), clock=_AdmissionClock()
             )
 
-    def test_prepare_returns_locked_facts_and_finalize_stages_composite_coordinate(
+    def test_resolve_returns_context_and_admit_and_consume_stages_composite_coordinate(
         self, db: Session
     ) -> None:
-        prepared = _prepare_admission_fixture(db)
-        facts = prepared.facts
-        assert facts.host_id == "host-one"
-        assert facts.expected_foundation_package == "dotmac-sub"
-        assert facts.installed_root.public_key_base64.endswith("=")
+        context = _resolve_admission_fixture(db)
+        assert context.host_id == "host-one"
+        assert context.expected_foundation_package == "dotmac-sub"
+        assert context.installed_root.public_key_base64.endswith("=")
 
-        staged = finalize_host_admission(
-            db,
-            prepared=prepared,
-            candidate_attestation_envelope_digest=(
-                facts.candidate_attestation_envelope_digest
-            ),
-            installed_attestation_envelope_digest=(
-                facts.installed_attestation_envelope_digest
-            ),
+        # Prove the redesign's whole point: no lock survives resolve. Commit
+        # (releasing anything SQLAlchemy might otherwise hold pending) between
+        # resolve and admit-and-consume, then admit in the SAME session -- if
+        # any lock or transaction affinity had leaked across the gap, this
+        # would behave differently than a real CP adapter's two separate
+        # transactions.
+        db.commit()
+
+        staged = admit_and_consume_host_admission(
+            db, context=context, foreign_evidence=_matching_foreign_evidence(context)
         )
-        assert staged.dispatch_id == facts.dispatch_id
-
-    @pytest.mark.parametrize("forgery", ["public-facts", "private-object"])
-    def test_only_prepare_can_mint_a_finalizable_capability(
-        self, db: Session, forgery: str
-    ) -> None:
-        prepared = _prepare_admission_fixture(db)
-        facts = prepared.facts
-        assert not hasattr(public_api, "PreparedHostAdmissionV1")
-        if forgery == "public-facts":
-            forged: object = facts
-        else:
-            forged = object.__new__(admission_coordinator._PreparedHostAdmission)
-            object.__setattr__(forged, "_facts", facts)
-
-        with pytest.raises(HostAdmissionRefusedError) as caught:
-            finalize_host_admission(
-                db,
-                prepared=forged,
-                candidate_attestation_envelope_digest=(
-                    facts.candidate_attestation_envelope_digest
-                ),
-                installed_attestation_envelope_digest=(
-                    facts.installed_attestation_envelope_digest
-                ),
-            )
-        assert caught.value.code is HostAdmissionRefusalCode.AUTHENTICATION_FAILED
-        assert (
-            db.query(PlatformIdempotencyRecord).filter_by(key=facts.dispatch_id).count()
-            == 0
-        )
+        assert staged.dispatch_id == context.dispatch_id
 
     def test_one_field_evidence_substitution_refuses_without_consumption(
         self, db: Session
     ) -> None:
-        prepared = _prepare_admission_fixture(db)
-        facts = prepared.facts
+        context = _resolve_admission_fixture(db)
+        db.commit()
+        bad_evidence = HostAdmissionForeignVerificationEvidenceV1(
+            candidate_attestation_envelope_digest="sha256:" + "ee" * 32,
+            installed_attestation_envelope_digest=(
+                context.presentation.statement.installed_attestation_envelope_digest
+            ),
+            verification_context_digest=context.context_digest,
+        )
         with pytest.raises(HostAdmissionRefusedError) as caught:
-            finalize_host_admission(
-                db,
-                prepared=prepared,
-                candidate_attestation_envelope_digest="sha256:" + "ee" * 32,
-                installed_attestation_envelope_digest=(
-                    facts.installed_attestation_envelope_digest
-                ),
+            admit_and_consume_host_admission(
+                db, context=context, foreign_evidence=bad_evidence
             )
         assert caught.value.code is HostAdmissionRefusalCode.EVIDENCE_CHANGED
         assert (
-            db.query(PlatformIdempotencyRecord).filter_by(key=facts.dispatch_id).count()
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=context.dispatch_id)
+            .count()
             == 0
         )
-
-    def test_commit_between_prepare_and_finalize_refuses(self, db: Session) -> None:
-        prepared = _prepare_admission_fixture(db)
-        facts = prepared.facts
-        db.commit()
-        with pytest.raises(HostAdmissionRefusedError) as caught:
-            finalize_host_admission(
-                db,
-                prepared=prepared,
-                candidate_attestation_envelope_digest=(
-                    facts.candidate_attestation_envelope_digest
-                ),
-                installed_attestation_envelope_digest=(
-                    facts.installed_attestation_envelope_digest
-                ),
-            )
-        assert caught.value.code is HostAdmissionRefusalCode.TRANSACTION_CHANGED
 
     def test_host_rotation_requires_a_policy_revision_before_new_admission(
         self, db: Session
     ) -> None:
-        prepared = _prepare_admission_fixture(db)
-        facts = prepared.facts
+        context = _resolve_admission_fixture(db)
         rotate_target_host(
             db,
             BindTargetHostCommand(
-                target_id=facts.target_id,
+                target_id=context.target_id,
                 host_id="host-two",
                 authority="control-test",
             ),
@@ -1767,12 +1733,12 @@ class TestAuthenticatedHostAdmission:
             statement=HostAdmissionPresentationStatementV1(
                 presentation_id="presentation-2",
                 key_id="admission-key-1",
-                dispatch_id=facts.dispatch_id,
+                dispatch_id=context.dispatch_id,
                 candidate_attestation_envelope_digest=(
-                    facts.candidate_attestation_envelope_digest
+                    context.presentation.statement.candidate_attestation_envelope_digest
                 ),
                 installed_attestation_envelope_digest=(
-                    facts.installed_attestation_envelope_digest
+                    context.presentation.statement.installed_attestation_envelope_digest
                 ),
                 issued_at=_NOW,
                 expires_at=_NOW + timedelta(minutes=5),
@@ -1780,9 +1746,9 @@ class TestAuthenticatedHostAdmission:
             signature="c2ln",
         )
         with pytest.raises(HostAdmissionRefusedError) as caught:
-            prepare_host_admission(
+            resolve_host_admission_context(
                 db,
-                attempt_id=facts.attempt_id,
+                attempt_id=context.attempt_id,
                 presentation=presentation,
             )
         assert caught.value.code is HostAdmissionRefusalCode.POLICY_HOST_MISMATCH

@@ -10,6 +10,7 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 _PRODUCTION_ROOTS = (_ROOT / "src", _ROOT / "scripts", _ROOT / "alembic")
 _SEAM = "_stage_dispatch_consumption"
+_RESOLVE_CONTEXT_FUNCTION = "resolve_host_admission_context"
 _PREPARE_SIGNATURE = ((), ("db",), ("attempt_id", "presentation"), None, None)
 
 
@@ -54,7 +55,7 @@ def _prepare_signature(
     source: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], str | None, str | None]:
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.FunctionDef) and node.name == "prepare_host_admission":
+        if isinstance(node, ast.FunctionDef) and node.name == _RESOLVE_CONTEXT_FUNCTION:
             return (
                 tuple(argument.arg for argument in node.args.posonlyargs),
                 tuple(argument.arg for argument in node.args.args),
@@ -62,7 +63,7 @@ def _prepare_signature(
                 node.args.vararg.arg if node.args.vararg is not None else None,
                 node.args.kwarg.arg if node.args.kwarg is not None else None,
             )
-    raise AssertionError("prepare_host_admission definition is absent")
+    raise AssertionError(f"{_RESOLVE_CONTEXT_FUNCTION} definition is absent")
 
 
 def test_private_dispatch_consumption_has_exactly_one_production_caller() -> None:
@@ -128,5 +129,5 @@ def test_prepare_cannot_accept_request_selected_authentication_dependencies() ->
 def test_prepare_dependency_guard_has_renamed_and_vararg_plants(
     parameters: str,
 ) -> None:
-    planted = f"def prepare_host_admission({parameters}):\n    return None\n"
+    planted = f"def {_RESOLVE_CONTEXT_FUNCTION}({parameters}):\n    return None\n"
     assert _prepare_signature(planted) != _PREPARE_SIGNATURE

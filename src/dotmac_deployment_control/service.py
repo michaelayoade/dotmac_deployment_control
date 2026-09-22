@@ -254,7 +254,7 @@ class _ExpectedDispatchTarget:
     ``target_id`` from the Control-stored credential selected by successful
     presenter authentication, then load ``target_ref`` from that target row.
     Neither value may come from the presented envelope. ADR-0073's sole caller
-    is ``host_admission_coordinator.finalize_host_admission``.
+    is ``host_admission_coordinator.admit_and_consume_host_admission``.
     """
 
     target_id: UUID

@@ -68,6 +68,7 @@ from dotmac_deployment_control import (
     DesiredDeployment,
     EnrolCredentialCommand,
     EnrolHostAdmissionCredentialCommand,
+    HostAdmissionForeignVerificationEvidenceV1,
     HostAdmissionPresentationStatementV1,
     HostAdmissionPresentationV1,
     HostAdmissionRefusalCode,
@@ -90,24 +91,24 @@ from dotmac_deployment_control import (
     TargetFilter,
     TransitionRefusedError,
     activate_credential,
+    admit_and_consume_host_admission,
     approve_plan,
     build_database_catalog_snapshot,
     cancel_rollout,
     dispatch_attempt,
     enrol_credential,
     enrol_host_admission_credential,
-    finalize_host_admission,
     get_rollout,
     get_target,
     install_host_admission_security,
     issue_execution_observation_envelope,
     list_targets,
     module,
-    prepare_host_admission,
     propose_plan,
     record_observation,
     register_target,
     request_rollout,
+    resolve_host_admission_context,
     retire_credential,
     revoke_credential,
     revoke_plan_approval,
@@ -3024,19 +3025,19 @@ _HOST_ADMISSION_MUTATIONS = (
     (
         "credential_revocation",
         "deployment_targets",
-        HostAdmissionRefusalCode.CREDENTIAL_NOT_ACTIVE,
+        HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
         None,
     ),
     (
         "credential_retirement",
         "deployment_targets",
-        HostAdmissionRefusalCode.CREDENTIAL_NOT_ACTIVE,
+        HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
         None,
     ),
     (
         "host_rotation",
         "deployment_targets",
-        HostAdmissionRefusalCode.POLICY_HOST_MISMATCH,
+        HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
         None,
     ),
     (
@@ -3048,8 +3049,8 @@ _HOST_ADMISSION_MUTATIONS = (
     (
         "policy_revision",
         "deployment_targets",
-        "foundation_context_changed",
-        "policy",
+        HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
+        None,
     ),
     (
         "policy_revocation",
@@ -3066,8 +3067,8 @@ _HOST_ADMISSION_MUTATIONS = (
     (
         "candidate_root_rotation",
         "attestation_subject_locks",
-        "foundation_context_changed",
-        "candidate_root",
+        HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
+        None,
     ),
     (
         "host_root_revocation",
@@ -3078,14 +3079,14 @@ _HOST_ADMISSION_MUTATIONS = (
     (
         "host_root_rotation",
         "attestation_subject_locks",
-        "foundation_context_changed",
-        "host_root",
+        HostAdmissionRefusalCode.PREPARED_STATE_CHANGED,
+        None,
     ),
 )
 
 
 @pytest.mark.parametrize(
-    ("mutation", "lock_table", "expected_refusal", "verification_change"),
+    ("mutation", "lock_table", "expected_refusal", "_verification_change"),
     _HOST_ADMISSION_MUTATIONS,
 )
 def test_committed_coordinate_mutation_wins_before_host_admission(
@@ -3093,7 +3094,7 @@ def test_committed_coordinate_mutation_wins_before_host_admission(
     mutation: str,
     lock_table: str,
     expected_refusal: object,
-    verification_change: str | None,
+    _verification_change: str | None,
 ) -> None:
     """A committed identity/trust mutation refuses and writes no marker."""
     engine, _target_ref, _key_id, rollout_ref = observation_race
@@ -3114,6 +3115,25 @@ def test_committed_coordinate_mutation_wins_before_host_admission(
         else host_id
         if mutation.startswith("host_root_")
         else None
+    )
+    # `resolve_host_admission_context` takes no lock and cannot be blocked by
+    # a held row lock at all -- it is resolved ONCE, sequentially, before
+    # either thread starts. The real lock-contention race happens entirely
+    # around `admit_and_consume_host_admission`, which is where every row
+    # lock now lives.
+    with sessions() as resolver_session:
+        context = resolve_host_admission_context(
+            resolver_session, attempt_id=attempt_id, presentation=presentation
+        )
+        resolver_session.commit()
+    foreign_evidence = HostAdmissionForeignVerificationEvidenceV1(
+        candidate_attestation_envelope_digest=(
+            context.presentation.statement.candidate_attestation_envelope_digest
+        ),
+        installed_attestation_envelope_digest=(
+            context.presentation.statement.installed_attestation_envelope_digest
+        ),
+        verification_context_digest=context.context_digest,
     )
     gate = _HoldOneNamedRowLock(lock_table, subject=lock_subject)
     event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
@@ -3151,43 +3171,8 @@ def test_committed_coordinate_mutation_wins_before_host_admission(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
                 try:
-                    prepared = prepare_host_admission(
-                        db,
-                        attempt_id=attempt_id,
-                        presentation=presentation,
-                    )
-                    if verification_change == "policy":
-                        assert (
-                            prepared.facts.expected_foundation_package == "dotmac-other"
-                        )
-                        db.rollback()
-                        outcomes["admission"] = expected_refusal
-                        return
-                    if verification_change == "candidate_root":
-                        assert (
-                            prepared.facts.candidate_root.public_key_fingerprint
-                            != candidate_fingerprint
-                        )
-                        db.rollback()
-                        outcomes["admission"] = expected_refusal
-                        return
-                    if verification_change == "host_root":
-                        assert (
-                            prepared.facts.installed_root.public_key_fingerprint
-                            != host_fingerprint
-                        )
-                        db.rollback()
-                        outcomes["admission"] = expected_refusal
-                        return
-                    finalize_host_admission(
-                        db,
-                        prepared=prepared,
-                        candidate_attestation_envelope_digest=(
-                            prepared.facts.candidate_attestation_envelope_digest
-                        ),
-                        installed_attestation_envelope_digest=(
-                            prepared.facts.installed_attestation_envelope_digest
-                        ),
+                    admit_and_consume_host_admission(
+                        db, context=context, foreign_evidence=foreign_evidence
                     )
                     db.commit()
                     outcomes["admission"] = "consumed"
@@ -3281,19 +3266,20 @@ def test_committed_host_admission_wins_before_coordinate_mutation(
                 backend_pids["admission"] = int(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
-                prepared = prepare_host_admission(
-                    db,
-                    attempt_id=attempt_id,
-                    presentation=presentation,
+                context = resolve_host_admission_context(
+                    db, attempt_id=attempt_id, presentation=presentation
                 )
-                finalize_host_admission(
+                admit_and_consume_host_admission(
                     db,
-                    prepared=prepared,
-                    candidate_attestation_envelope_digest=(
-                        prepared.facts.candidate_attestation_envelope_digest
-                    ),
-                    installed_attestation_envelope_digest=(
-                        prepared.facts.installed_attestation_envelope_digest
+                    context=context,
+                    foreign_evidence=HostAdmissionForeignVerificationEvidenceV1(
+                        candidate_attestation_envelope_digest=(
+                            context.presentation.statement.candidate_attestation_envelope_digest
+                        ),
+                        installed_attestation_envelope_digest=(
+                            context.presentation.statement.installed_attestation_envelope_digest
+                        ),
+                        verification_context_digest=context.context_digest,
                     ),
                 )
                 db.commit()
@@ -3357,25 +3343,26 @@ def test_committed_host_admission_wins_before_coordinate_mutation(
     assert marker_count == 1
 
 
-def _prepare_and_finalize_host_admission(
+def _resolve_and_admit_host_admission(
     db: Session,
     *,
     attempt_id: uuid.UUID,
     presentation: HostAdmissionPresentationV1,
 ) -> None:
-    prepared = prepare_host_admission(
-        db,
-        attempt_id=attempt_id,
-        presentation=presentation,
+    context = resolve_host_admission_context(
+        db, attempt_id=attempt_id, presentation=presentation
     )
-    finalize_host_admission(
+    admit_and_consume_host_admission(
         db,
-        prepared=prepared,
-        candidate_attestation_envelope_digest=(
-            prepared.facts.candidate_attestation_envelope_digest
-        ),
-        installed_attestation_envelope_digest=(
-            prepared.facts.installed_attestation_envelope_digest
+        context=context,
+        foreign_evidence=HostAdmissionForeignVerificationEvidenceV1(
+            candidate_attestation_envelope_digest=(
+                context.presentation.statement.candidate_attestation_envelope_digest
+            ),
+            installed_attestation_envelope_digest=(
+                context.presentation.statement.installed_attestation_envelope_digest
+            ),
+            verification_context_digest=context.context_digest,
         ),
     )
 
@@ -3410,7 +3397,7 @@ def test_concurrent_host_admission_replay_commits_exactly_one_marker(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
                 try:
-                    _prepare_and_finalize_host_admission(
+                    _resolve_and_admit_host_admission(
                         db, attempt_id=attempt_id, presentation=presentation
                     )
                     db.commit()
@@ -3474,12 +3461,12 @@ def test_rolled_back_host_admission_leaves_the_dispatch_reusable(
     ) = _seed_host_admission_coordinate(engine, rollout_ref)
     sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     with sessions() as abandoned:
-        _prepare_and_finalize_host_admission(
+        _resolve_and_admit_host_admission(
             abandoned, attempt_id=attempt_id, presentation=presentation
         )
         abandoned.rollback()
     with sessions() as retry:
-        _prepare_and_finalize_host_admission(
+        _resolve_and_admit_host_admission(
             retry, attempt_id=attempt_id, presentation=presentation
         )
         retry.commit()
