@@ -195,7 +195,14 @@ __all__ = [
 #: instead derives the full set from `dotmac_deployment_control.__all__` at
 #: test time and proves every member is refused, so a future purpose this
 #: package adds is covered automatically rather than by remembering to edit
-#: a comment.
+#: a comment. That scan's own honest limit, closed in the same review round:
+#: it walks `dotmac_deployment_control.__all__`, so it only ever finds a
+#: purpose the TOP-LEVEL package re-exports.
+#: `host_attester_enrolment.HOST_ATTESTER_ENROLMENT_PURPOSE` was defined but
+#: NOT re-exported there — an oversight inconsistent with every sibling
+#: purpose constant, now fixed by re-exporting it alongside the others,
+#: which is what makes the scan's "a future purpose is covered automatically"
+#: claim true rather than caveated.
 REHEARSAL_ISSUER_PURPOSE: Final = "deployment_rehearsal_issuer"
 REHEARSAL_ISSUER_AUTHORIZATION_SCHEMA: Final = (
     "dotmac.deployment_control.rehearsal_issuer_authorization"

@@ -47,7 +47,13 @@ only.
   the full inventory from `dotmac_deployment_control.__all__` at test time
   rather than a hand-maintained list, after independent review found the
   first version's hand-maintained list covered 5 of at least 7 real purposes
-  while its own test name claimed exhaustiveness.
+  while its own test name claimed exhaustiveness. A second review pass then
+  found the derived scan itself still missed
+  `host_attester_enrolment.HOST_ATTESTER_ENROLMENT_PURPOSE`, because that
+  constant — unlike every sibling purpose — was never re-exported at the
+  top-level package; fixed by re-exporting it there (`__init__.py`), which is
+  what makes the scan's "a future purpose is covered automatically" claim
+  true rather than caveated.
 - 20 refusal codes (`RehearsalIssuerAuthorizationRefusalCode`), one per
   binding, matching `rehearsal_grant.RehearsalGrantRefusalCode`'s own
   discipline. Three additions beyond the originally enumerated design, made

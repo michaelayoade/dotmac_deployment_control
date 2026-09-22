@@ -280,6 +280,9 @@ from dotmac_deployment_control.host_admission_service import (
     rotate_target_host,
     set_target_admission_policy,
 )
+from dotmac_deployment_control.host_attester_enrolment import (
+    HOST_ATTESTER_ENROLMENT_PURPOSE,
+)
 from dotmac_deployment_control.images import (
     AuthorizedImage,
     authorized_image_set,
@@ -854,4 +857,5 @@ __all__ = [
     "revoke_target_host",
     "rotate_target_host",
     "set_target_admission_policy",
+    "HOST_ATTESTER_ENROLMENT_PURPOSE",
 ]

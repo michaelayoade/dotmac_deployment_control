@@ -203,7 +203,7 @@ def test_the_purpose_inventory_scan_is_not_vacuous() -> None:
     """SENSITIVITY for `_every_other_purpose_in_the_package` itself: it must
     name a real, non-trivial set, not just "some string"."""
     other_purposes = _every_other_purpose_in_the_package()
-    assert len(other_purposes) >= 6, other_purposes
+    assert len(other_purposes) >= 7, other_purposes
     assert REHEARSAL_ISSUER_PURPOSE not in other_purposes
 
 
