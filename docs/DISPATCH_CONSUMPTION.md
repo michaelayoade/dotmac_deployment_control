@@ -107,8 +107,22 @@ to ALSO equal `context.context_digest` (`FOREIGN_EVIDENCE_CONTEXT_MISMATCH` if
 not) — binding Foundation's success to the exact context Control resolved,
 without either package reproducing the other's digest algorithm — and that its
 two envelope digests match the presentation's own signed claims
-(`EVIDENCE_CHANGED` if not). Only then does it call this private staging seam
-and return its result. Neither Control service commits or rolls back.
+(`EVIDENCE_CHANGED` if not). It further requires every one of the seven
+semantic facts Foundation reports it actually verified —
+`verified_host_identity`, `verified_observation_id`, `verified_package`,
+`verified_candidate_audience`, `verified_installed_audience`, and the
+`verified_candidate_root`/`verified_installed_root` identity records
+(`public_key_fingerprint`/`root_version`/`key_id`/`algorithm`/`purpose`/
+`custody_domain`/`issuer`) — to equal the same freshly re-derived `context`
+(`FOREIGN_EVIDENCE_SEMANTIC_MISMATCH` if any one of them differs). This closes
+the gap an independent review found on `dotmac_platform_control_plane`#192:
+without this comparison, a caller could hand Foundation a correct-looking-but-
+wrong expected host identity, observation id, package, audience, or trust root
+and nothing downstream would catch it — a digest match alone proved only that
+Foundation echoed back what Control gave it, not that what Control gave it was
+what the caller should have asked for. Only then does it call this private
+staging seam and return its result. Neither Control service commits or rolls
+back.
 
 **Why this redesigned the original shape.** The prior single-transaction
 design held row locks — including the `("host_attester", host_id)` subject
@@ -126,6 +140,15 @@ mechanism the way they would have had to be under the old design.
 
 **The CP adapter must construct `HostAdmissionForeignVerificationEvidenceV1`
 from Foundation's ACTUAL returned result, never fabricate it from `context`.**
+This now covers seven more fields than the original digest-only shape: the
+adapter's mapper must populate `verified_host_identity`,
+`verified_observation_id`, `verified_package`, `verified_candidate_audience`,
+`verified_installed_audience`, `verified_candidate_root`, and
+`verified_installed_root` from Foundation's widened
+`AttestationPairVerificationResultV1` — the same fields it actually verified —
+never by reading them back out of the adapter's own copy of `context`. Doing
+the latter would silently defeat the whole point of the comparison above: it
+would make Control's check compare `context` against itself.
 Every test in this distribution necessarily constructs matching (or
 deliberately mismatched) evidence directly from `context`'s own fields,
 because no real Foundation call is available in-process — that is a known,

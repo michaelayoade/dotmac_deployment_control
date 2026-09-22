@@ -3021,6 +3021,46 @@ def _mutate_host_admission_coordinate(
     raise AssertionError(f"unknown mutation {mutation!r}")
 
 
+def _matching_foreign_evidence(
+    context,
+) -> HostAdmissionForeignVerificationEvidenceV1:
+    """Build evidence that matches exactly what `context` itself resolved --
+    the equivalent of Foundation genuinely verifying the same coordinate
+    Control did."""
+    return HostAdmissionForeignVerificationEvidenceV1(
+        candidate_attestation_envelope_digest=(
+            context.presentation.statement.candidate_attestation_envelope_digest
+        ),
+        installed_attestation_envelope_digest=(
+            context.presentation.statement.installed_attestation_envelope_digest
+        ),
+        verification_context_digest=context.context_digest,
+        verified_host_identity=context.host_id,
+        verified_observation_id=context.attempt_id.hex,
+        verified_package=context.expected_foundation_package,
+        verified_candidate_audience=context.candidate_audience,
+        verified_installed_audience=context.installed_audience,
+        verified_candidate_root=admission_coordinator.HostAdmissionForeignRootV1(
+            public_key_fingerprint=context.candidate_root.public_key_fingerprint,
+            root_version=context.candidate_root.root_version,
+            key_id=context.candidate_root.key_id,
+            algorithm=context.candidate_root.algorithm,
+            purpose=context.candidate_root.purpose,
+            custody_domain=context.candidate_root.custody_domain,
+            issuer=context.candidate_root.issuer,
+        ),
+        verified_installed_root=admission_coordinator.HostAdmissionForeignRootV1(
+            public_key_fingerprint=context.installed_root.public_key_fingerprint,
+            root_version=context.installed_root.root_version,
+            key_id=context.installed_root.key_id,
+            algorithm=context.installed_root.algorithm,
+            purpose=context.installed_root.purpose,
+            custody_domain=context.installed_root.custody_domain,
+            issuer=context.installed_root.issuer,
+        ),
+    )
+
+
 _HOST_ADMISSION_MUTATIONS = (
     (
         "credential_revocation",
@@ -3126,15 +3166,7 @@ def test_committed_coordinate_mutation_wins_before_host_admission(
             resolver_session, attempt_id=attempt_id, presentation=presentation
         )
         resolver_session.commit()
-    foreign_evidence = HostAdmissionForeignVerificationEvidenceV1(
-        candidate_attestation_envelope_digest=(
-            context.presentation.statement.candidate_attestation_envelope_digest
-        ),
-        installed_attestation_envelope_digest=(
-            context.presentation.statement.installed_attestation_envelope_digest
-        ),
-        verification_context_digest=context.context_digest,
-    )
+    foreign_evidence = _matching_foreign_evidence(context)
     gate = _HoldOneNamedRowLock(lock_table, subject=lock_subject)
     event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
     backend_pids: dict[str, int] = {}
@@ -3272,15 +3304,7 @@ def test_committed_host_admission_wins_before_coordinate_mutation(
                 admit_and_consume_host_admission(
                     db,
                     context=context,
-                    foreign_evidence=HostAdmissionForeignVerificationEvidenceV1(
-                        candidate_attestation_envelope_digest=(
-                            context.presentation.statement.candidate_attestation_envelope_digest
-                        ),
-                        installed_attestation_envelope_digest=(
-                            context.presentation.statement.installed_attestation_envelope_digest
-                        ),
-                        verification_context_digest=context.context_digest,
-                    ),
+                    foreign_evidence=_matching_foreign_evidence(context),
                 )
                 db.commit()
                 outcomes["admission"] = "consumed"
@@ -3355,15 +3379,7 @@ def _resolve_and_admit_host_admission(
     admit_and_consume_host_admission(
         db,
         context=context,
-        foreign_evidence=HostAdmissionForeignVerificationEvidenceV1(
-            candidate_attestation_envelope_digest=(
-                context.presentation.statement.candidate_attestation_envelope_digest
-            ),
-            installed_attestation_envelope_digest=(
-                context.presentation.statement.installed_attestation_envelope_digest
-            ),
-            verification_context_digest=context.context_digest,
-        ),
+        foreign_evidence=_matching_foreign_evidence(context),
     )
 
 
