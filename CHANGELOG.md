@@ -5,6 +5,64 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — the protected rehearsal issuer's authorization contract
+
+A pure, standalone typed contract (`dotmac_platform_control_plane` ADR-0013
+amendment A6.4, Gate 0/Gate 1 of the ADR-0070/ADR-0013 build-once programme).
+No transport, secret handling, migration or wiring — this PR adds the type
+only.
+
+### Added
+
+- `RehearsalIssuerAuthorizationStatementV1`/`RehearsalIssuerAuthorizationV1`
+  (`dotmac_deployment_control.rehearsal_issuer_authorization`) — authority to
+  operate the protected, disposable rehearsal issuer for one bounded lease.
+  Distinct from `rehearsal_grant.py`'s `RehearsalGrantV1` (which authorizes
+  one provoked act once the issuer already stands) and from the ADR-0013
+  §5-6 bootstrap launcher for the real operator-authorization issuer, which
+  this module does not touch, retire or weaken.
+- A6.4's five derived values (target, desired state, profile digest,
+  authorized images, execution-plan inputs) are each bound together with a
+  typed `A6ProvenanceKind` (`DERIVED`/`OVERRIDE`, closed at two members, no
+  third "silent" state) — an `OVERRIDE` requires a non-empty, caller-supplied
+  reason, refused as malformed if missing or if present on a `DERIVED` value.
+  `desired_state_digest` is parsed with `digests.PlanDigestV1` (Control's own
+  frozen desired-state snapshot digest), `profile_digest` with
+  `digests.DescriptorDigestV1` (the Foundation's descriptor digest, the same
+  type `AuthorizationStatementV3` already carries alongside `plan_digest`),
+  `authorized_image_digests` with `digests.ImageDigestV1` per entry, and
+  `execution_plan_digest` with `digests.ExecutionPlanDigestV1`.
+- `REHEARSAL_ONLY_ENVIRONMENT` — `environment` may equal exactly this one
+  value, validated unconditionally in `__post_init__`; a structural
+  non-production guard rather than a naming convention.
+- `single_use_reference` is a PER-LEASE replay coordinate (same discipline as
+  `rehearsal_grant.py`'s field of the same name), deliberately not a
+  one-time lifetime instance — composing with, rather than weakening, the
+  ADR-0013 §5-6 bootstrap's true single-use property.
+- `controller_fingerprint` and the signer's `public_key_fingerprint` are two
+  independently refusable terms, so a compromised controller and a
+  compromised signing key are each independently detectable.
+- `REHEARSAL_ISSUER_PURPOSE = "deployment_rehearsal_issuer"`, distinct from
+  every other purpose in this package (`deployment_authorization`,
+  `deployment_dispatch`, `target_execution_observation`,
+  `deployment_recovery`, `deployment_rehearsal`).
+- 19 refusal codes (`RehearsalIssuerAuthorizationRefusalCode`), one per
+  binding, matching `rehearsal_grant.RehearsalGrantRefusalCode`'s own
+  discipline. Two additions beyond the originally enumerated design, made
+  under that same "one code per binding" rule and named in the module's
+  docstring rather than silently applied: `DESIRED_STATE_MISMATCH` (the
+  fifth A6.4 value had no dedicated mismatch code in the decided list) and
+  `RehearsalIssuerAuthorizationSubject.signer_public_key_fingerprint` (needed
+  to make the decided `SIGNER_MISMATCH` refusal reachable at all).
+- `issue_rehearsal_issuer_authorization`/`verify_rehearsal_issuer_authorization`/
+  `rehearsal_issuer_standing`, mirroring `rehearsal_grant.py`'s function trio
+  in shape and ordering discipline (authenticity, then window/revocation/
+  replay, then subject term-by-term).
+- This module is pure and performs no I/O. It cannot itself enforce that a
+  verification subject was supplied by the disposable rehearsal harness
+  rather than by the application under rehearsal — that remains a
+  caller-side obligation, stated explicitly in the module's docstring.
+
 ## Unreleased — ADR-0073 authenticated host admission
 
 ### Added
