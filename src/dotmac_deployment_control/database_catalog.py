@@ -100,7 +100,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0013_host_admission",
+    lineage_head="dc_0014_rehearsal_issuer_ledger",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=tuple(
@@ -667,6 +667,49 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                         _column(
                             "updated_at",
                             9,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "rehearsal_issuer_authorizations",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("authorization_id", 2, _VARCHAR_512, nullable=False),
+                        _column(
+                            "single_use_reference", 3, _VARCHAR_512, nullable=False
+                        ),
+                        _column("lease_id", 4, _VARCHAR_512, nullable=False),
+                        _column("plan_id", 5, _UUID, nullable=False),
+                        _column("target_id", 6, _UUID, nullable=False),
+                        _column(
+                            "controller_fingerprint", 7, _VARCHAR_512, nullable=False
+                        ),
+                        _column(
+                            "harness_evidence_digest", 8, _VARCHAR_128, nullable=False
+                        ),
+                        # The verbatim signed C1 envelope; every other column
+                        # here is a lookup projection of terms inside it.
+                        _column("authorization_envelope", 9, _JSONB, nullable=False),
+                        _column("not_before", 10, _TIMESTAMPTZ, nullable=False),
+                        _column("issued_at", 11, _TIMESTAMPTZ, nullable=False),
+                        _column("expires_at", 12, _TIMESTAMPTZ, nullable=False),
+                        _column("state", 13, _VARCHAR_20, nullable=False),
+                        _column("revoked_at", 14, _TIMESTAMPTZ, nullable=True),
+                        _column("revocation_ref", 15, _VARCHAR_200, nullable=True),
+                        _column("spent_at", 16, _TIMESTAMPTZ, nullable=True),
+                        _column(
+                            "created_at",
+                            17,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            18,
                             _TIMESTAMPTZ,
                             nullable=False,
                             default="now()",

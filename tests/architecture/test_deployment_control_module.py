@@ -77,6 +77,9 @@ MUTABLE_TABLES = (
     "recovery_grants",
     # dc_0012: revocation and irreversible spend update one grant-state row.
     "rehearsal_grants",
+    # dc_0014: a SIBLING ledger, same shape -- revocation and irreversible
+    # spend update one authorization-state row.
+    "rehearsal_issuer_authorizations",
     # dc_0011: the one deliberately mutable table in the registry -- a
     # derived pointer projection, moved by compare-and-swap and cleared by
     # revocation.
@@ -279,6 +282,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             ObservationReceipt,
             RecoveryGrant,
             RehearsalGrant,
+            RehearsalIssuerAuthorizationRecord,
             Rollout,
             RolloutAttempt,
             RolloutAttemptSettlement,
@@ -302,6 +306,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             ObservationAttempt,
             RecoveryGrant,
             RehearsalGrant,
+            RehearsalIssuerAuthorizationRecord,
             AttestationEnrolment,
             AttestationFingerprintClosure,
             AttestationCurrentRoot,

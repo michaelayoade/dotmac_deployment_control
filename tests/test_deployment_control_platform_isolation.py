@@ -218,6 +218,7 @@ TABLES = (
     "observation_attempts",
     "recovery_grants",
     "rehearsal_grants",
+    "rehearsal_issuer_authorizations",
     "attestation_enrolments",
     "attestation_fingerprint_closures",
     "attestation_current_roots",
@@ -252,6 +253,9 @@ MUTABLE_TABLES = (
     # the record of the withdrawal.
     "recovery_grants",
     "rehearsal_grants",
+    # dc_0014: revocation and irreversible spend update one authorization-
+    # state row, same shape as `rehearsal_grants`.
+    "rehearsal_issuer_authorizations",
     "attestation_current_roots",
     "target_current_hosts",
     "target_current_admission_policies",
@@ -531,7 +535,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0013_host_admission",
+                revision="dc_0014_rehearsal_issuer_ledger",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -645,7 +649,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 227 columns across twenty-one tables; `dc_0005` is 105.
+    The head extent is 245 columns across twenty-two tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -681,7 +685,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 227
+                    == 245
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -731,7 +735,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 227
+                    == 245
                 )
         finally:
             admin.dispose()
@@ -794,9 +798,10 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                 == "spent"
             )
             # PostgreSQL runs the requested multi-revision downgrade in one
-            # transaction.  dc_0013's empty-table downgrade executes first,
-            # then dc_0012 refuses to discard the spent grant; that exception
-            # rolls the whole command back to the exact pre-command head.
+            # transaction.  dc_0014's and dc_0013's empty-table downgrades
+            # execute first, then dc_0012 refuses to discard the spent grant;
+            # that exception rolls the whole command back to the exact
+            # pre-command head.
             assert (
                 conn.execute(
                     text(
@@ -804,7 +809,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0013_host_admission"
+                == "dc_0014_rehearsal_issuer_ledger"
             )
     finally:
         engine.dispose()

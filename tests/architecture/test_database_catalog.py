@@ -32,17 +32,17 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0013_host_admission",
+            revision="dc_0014_rehearsal_issuer_ledger",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0013_host_admission"
+    assert database_catalog.lineage_head == "dc_0014_rehearsal_issuer_ledger"
 
 
-def test_catalogue_has_exact_twenty_one_table_227_column_extent() -> None:
+def test_catalogue_has_exact_twenty_two_table_245_column_extent() -> None:
     """Thirteen tables and 178 columns after `dc_0012`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
@@ -77,8 +77,13 @@ def test_catalogue_has_exact_twenty_one_table_227_column_extent() -> None:
     `dc_0013` adds eight host-admission tables and 49 columns: permanent
     attestation-subject locks, immutable root descriptors, append-only host and
     policy revisions plus closure/successor evidence, and two mutable current
-    projections. The exact post-revision extent is therefore 21 tables and 227
-    columns.
+    projections. That gave 21 tables and 227 columns.
+
+    `dc_0014` adds one more: the 18-column rehearsal-issuer-authorization
+    ledger, a SIBLING of `rehearsal_grants` recording a different authority
+    (operate the disposable rehearsal issuer for one lease, rather than the
+    provoked-rollback replay coordinate `rehearsal_grants` already records).
+    The exact post-revision extent is therefore 22 tables and 245 columns.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
@@ -94,6 +99,7 @@ def test_catalogue_has_exact_twenty_one_table_227_column_extent() -> None:
         "observation_receipts": 15,
         "recovery_grants": 19,
         "rehearsal_grants": 9,
+        "rehearsal_issuer_authorizations": 18,
         "rollout_attempts": 12,
         "rollout_attempt_settlements": 9,
         "rollouts": 12,
@@ -105,7 +111,7 @@ def test_catalogue_has_exact_twenty_one_table_227_column_extent() -> None:
         "target_host_association_closures": 6,
         "target_host_associations": 7,
     }
-    assert sum(counts.values()) == 227
+    assert sum(counts.values()) == 245
 
 
 def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
@@ -139,6 +145,64 @@ def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
         "character varying(512)",
         "character varying(512)",
     ]
+
+
+def test_rehearsal_issuer_authorizations_publishes_the_migration_column_shape() -> (
+    None
+):
+    """A SIBLING shape to `rehearsal_grants`, not the same table -- see
+    `dc_0014`'s own docstring for why the two authorities never share one."""
+    ledger = next(
+        table
+        for table in database_catalog.tables
+        if table.name == "rehearsal_issuer_authorizations"
+    )
+    assert [column.name for column in ledger.columns] == [
+        "id",
+        "authorization_id",
+        "single_use_reference",
+        "lease_id",
+        "plan_id",
+        "target_id",
+        "controller_fingerprint",
+        "harness_evidence_digest",
+        "authorization_envelope",
+        "not_before",
+        "issued_at",
+        "expires_at",
+        "state",
+        "revoked_at",
+        "revocation_ref",
+        "spent_at",
+        "created_at",
+        "updated_at",
+    ]
+    assert [column.ordinal for column in ledger.columns] == list(range(1, 19))
+    assert [column.nullable for column in ledger.columns] == [
+        False,  # id
+        False,  # authorization_id
+        False,  # single_use_reference
+        False,  # lease_id
+        False,  # plan_id
+        False,  # target_id
+        False,  # controller_fingerprint
+        False,  # harness_evidence_digest
+        False,  # authorization_envelope
+        False,  # not_before
+        False,  # issued_at
+        False,  # expires_at
+        False,  # state
+        True,  # revoked_at
+        True,  # revocation_ref
+        True,  # spent_at
+        False,  # created_at
+        False,  # updated_at
+    ]
+    assert (
+        next(c for c in ledger.columns if c.name == "authorization_envelope")
+        .postgres_type.formatted
+        == "jsonb"
+    )
 
 
 def test_dc_0005_appends_the_portable_authorization_to_the_rollout() -> None:
@@ -309,7 +373,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0013_host_admission",
+                revision="dc_0014_rehearsal_issuer_ledger",
             ),
         )
 
