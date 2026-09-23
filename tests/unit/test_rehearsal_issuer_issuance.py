@@ -139,8 +139,7 @@ def test_actor_ref_alone_is_not_forbidden_or_unexpected() -> None:
             db=None, request=request, harness_evidence_document=None
         )
     assert (
-        refused.value.code
-        == RehearsalIssuerIssuanceRefusalCode.SECURITY_NOT_INSTALLED
+        refused.value.code == RehearsalIssuerIssuanceRefusalCode.SECURITY_NOT_INSTALLED
     )
 
 
@@ -157,8 +156,7 @@ def test_uninstalled_security_refuses_before_evidence_or_database() -> None:
             db=None, request=request, harness_evidence_document=None
         )
     assert (
-        refused.value.code
-        == RehearsalIssuerIssuanceRefusalCode.SECURITY_NOT_INSTALLED
+        refused.value.code == RehearsalIssuerIssuanceRefusalCode.SECURITY_NOT_INSTALLED
     )
 
 

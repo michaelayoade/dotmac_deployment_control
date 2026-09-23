@@ -147,9 +147,7 @@ def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
     ]
 
 
-def test_rehearsal_issuer_authorizations_publishes_the_migration_column_shape() -> (
-    None
-):
+def test_rehearsal_issuer_authorizations_publishes_the_migration_column_shape() -> None:
     """A SIBLING shape to `rehearsal_grants`, not the same table -- see
     `dc_0014`'s own docstring for why the two authorities never share one."""
     ledger = next(
@@ -199,8 +197,9 @@ def test_rehearsal_issuer_authorizations_publishes_the_migration_column_shape() 
         False,  # updated_at
     ]
     assert (
-        next(c for c in ledger.columns if c.name == "authorization_envelope")
-        .postgres_type.formatted
+        next(
+            c for c in ledger.columns if c.name == "authorization_envelope"
+        ).postgres_type.formatted
         == "jsonb"
     )
 

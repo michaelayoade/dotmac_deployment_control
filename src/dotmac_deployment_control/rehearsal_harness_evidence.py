@@ -120,9 +120,7 @@ class RehearsalHarnessEvidenceRefusalCode(StrEnum):
 class RehearsalHarnessEvidenceRefusedError(DeploymentControlError):
     """Presented rehearsal-harness evidence is not authority, and why."""
 
-    def __init__(
-        self, code: RehearsalHarnessEvidenceRefusalCode, detail: str
-    ) -> None:
+    def __init__(self, code: RehearsalHarnessEvidenceRefusalCode, detail: str) -> None:
         super().__init__(f"{code}: {detail}")
         self.code = code
 
@@ -401,4 +399,3 @@ def verify_rehearsal_harness_evidence_signature(
             f"the rehearsal-harness evidence is issued at "
             f"{parsed.issued_at.isoformat()}, which is in the future",
         )
-

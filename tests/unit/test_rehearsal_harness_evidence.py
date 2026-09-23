@@ -174,7 +174,9 @@ def test_verifier_purpose_mismatch_is_refused_for_a_non_conforming_verifier() ->
     parsed = parse_signed_rehearsal_harness_evidence(_envelope())
     with pytest.raises(RehearsalHarnessEvidenceRefusedError) as refused:
         verify_rehearsal_harness_evidence_signature(
-            parsed, verifier=_NotAVerifier(), at=NOW  # type: ignore[arg-type]
+            parsed,
+            verifier=_NotAVerifier(),
+            at=NOW,  # type: ignore[arg-type]
         )
     assert (
         refused.value.code

@@ -5364,9 +5364,9 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                 text(
                     "INSERT INTO mod_deploy.deployment_targets "
                     "(id, target_ref, subject_ref, product_code, environment, "
-                    "status, record_version) "
+                    "status, desired_revision, record_version) "
                     "VALUES (:id, :target_ref, :subject_ref, 'dotmac_sub', "
-                    "'rehearsal', 'active', 1) RETURNING id"
+                    "'rehearsal', 'active', 0, 1) RETURNING id"
                 ),
                 {
                     "id": uuid.uuid4(),

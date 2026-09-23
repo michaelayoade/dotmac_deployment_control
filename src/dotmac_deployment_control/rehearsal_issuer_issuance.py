@@ -218,16 +218,12 @@ def install_rehearsal_issuer_security(
     """
     if not isinstance(signer, RehearsalIssuerAuthorizationSigner):
         raise TypeError("rehearsal-issuer signer does not satisfy its port")
-    if not isinstance(
-        authorization_verifier, RehearsalIssuerAuthorizationVerifier
-    ):
+    if not isinstance(authorization_verifier, RehearsalIssuerAuthorizationVerifier):
         raise TypeError(
             "rehearsal-issuer authorization verifier does not satisfy its port"
         )
     if not isinstance(harness_verifier, RehearsalHarnessEvidenceVerifier):
-        raise TypeError(
-            "rehearsal-harness-evidence verifier does not satisfy its port"
-        )
+        raise TypeError("rehearsal-harness-evidence verifier does not satisfy its port")
     if not isinstance(authorization_ttl, timedelta):
         raise TypeError("authorization_ttl must be a timedelta")
     if authorization_ttl <= timedelta(0):
