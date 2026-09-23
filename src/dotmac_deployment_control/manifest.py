@@ -17,17 +17,19 @@ The deployments themselves are separate applications. They learn what to do
 through the Integrator and report back through a signed envelope the kernel
 verifies (ADR-0007) — never by reading this schema (ADR-0024).
 
-## Four audit actions, split by SUBJECT
+## Five audit actions, split by SUBJECT
 
 `deployment.target.changed`, `deployment.credential.changed`,
-`deployment.rollout.changed`, `deployment.observation.recorded`.
+`deployment.rollout.changed`, `deployment.observation.recorded`,
+`deployment.rehearsal_issuer.changed`.
 
 Split by subject rather than by verb, because an operator reading an audit trail
-is asking one of four genuinely different questions: did the fleet's INTENT
+is asking one of five genuinely different questions: did the fleet's INTENT
 change, did a deployment's IDENTITY change, did we DECIDE to roll something out,
-or did a deployment TELL us something? Collapsing them would make each of those
-require opening every detail blob; splitting per verb would put the lifecycle in
-two places and let the manifest and the enums drift.
+did a deployment TELL us something, or did rehearsal-issuer authority for one
+lease change? Collapsing them would make each of those require opening every
+detail blob; splitting per verb would put the lifecycle in two places and let
+the manifest and the enums drift.
 
 Contrast `dotmac-commercial-agreements`, which declares exactly one because every
 transition there is the same actor doing the same kind of thing.
@@ -144,6 +146,7 @@ module = ModuleManifest(
         "deployment.credential.changed",
         "deployment.rollout.changed",
         "deployment.observation.recorded",
+        "deployment.rehearsal_issuer.changed",
     ),
     database_catalog=database_catalog,
 )
