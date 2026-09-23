@@ -153,17 +153,14 @@ from dotmac_deployment_control.rehearsal_issuer_authorization import (
     REHEARSAL_ONLY_ENVIRONMENT,
     RehearsalIssuerAuthorizationSignature,
     RehearsalIssuerAuthorizationSignerIdentity,
-    RehearsalIssuerAuthorizationV1,
 )
 from dotmac_deployment_control.rehearsal_issuer_issuance import (
     RehearsalIssuerIssuanceRefusedError,
+    _reset_rehearsal_issuer_security_for_tests,
     install_rehearsal_issuer_security,
     issue_rehearsal_issuer_authorization_for_plan,
     revoke_rehearsal_issuer_authorization,
     stage_rehearsal_issuer_consumption,
-)
-from dotmac_deployment_control.rehearsal_issuer_issuance import (
-    _reset_rehearsal_issuer_security_for_tests,
 )
 from tests.authorization_support import SIGNER, VERIFIER
 from tests.dispatch_support import DISPATCH_SIGNER
@@ -5127,7 +5124,7 @@ def test_concurrent_issuance_for_one_lease_commits_exactly_one_row(
                 except RehearsalIssuerIssuanceRefusedError as exc:
                     db.rollback()
                     outcomes[name] = f"refused:{exc.code}"
-                except BaseException as exc:  # noqa: BLE001
+                except BaseException as exc:
                     db.rollback()
                     errors.append(exc)
 
@@ -5136,7 +5133,9 @@ def test_concurrent_issuance_for_one_lease_commits_exactly_one_row(
             threading.Thread(target=worker, args=("second", f"cmd-second-{suffix}")),
         ]
         threads[0].start()
-        assert lock_gate.acquired.wait(timeout=10), "the first FOR UPDATE was not reached"
+        assert lock_gate.acquired.wait(
+            timeout=10
+        ), "the first FOR UPDATE was not reached"
         threads[1].start()
         assert waiter_ready.wait(timeout=10), "the second backend did not start"
         _wait_until_postgres_reports_lock(engine, backend_pids["second"])
@@ -5289,7 +5288,7 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
                 except RehearsalIssuerIssuanceRefusedError as exc:
                     db.rollback()
                     outcomes[name] = f"refused:{exc.code}"
-                except BaseException as exc:  # noqa: BLE001
+                except BaseException as exc:
                     db.rollback()
                     errors.append(exc)
 
@@ -5298,7 +5297,9 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
             threading.Thread(target=worker, args=("second", second)),
         ]
         threads[0].start()
-        assert ledger_gate.acquired.wait(timeout=10), "the first FOR UPDATE was not reached"
+        assert ledger_gate.acquired.wait(
+            timeout=10
+        ), "the first FOR UPDATE was not reached"
         threads[1].start()
         assert waiter_ready.wait(timeout=10), "the second backend did not start"
         _wait_until_postgres_reports_lock(engine, backend_pids["second"])
@@ -5318,8 +5319,20 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
             ).scalar_one()
         assert row.state == expected_state
         with sessions() as db:
+            # Scoped to THIS test's own authorization_id, not a bare
+            # whole-table count: `migrated_scratch` is shared across this
+            # test's own parametrized invocations, so a prior invocation's
+            # row(s) legitimately remain in the table when this one runs —
+            # what this test proves is that exactly ONE row exists for the
+            # lease/authorization IT created, not that the table is empty
+            # otherwise.
             count = db.execute(
-                select(func.count()).select_from(RehearsalIssuerAuthorizationRecord)
+                select(func.count())
+                .select_from(RehearsalIssuerAuthorizationRecord)
+                .where(
+                    RehearsalIssuerAuthorizationRecord.authorization_id
+                    == authorization_id
+                )
             ).scalar_one()
         assert count == 1
     finally:
@@ -5418,7 +5431,9 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
             )
 
         # Duplicate lease_id.
-        with pytest.raises(IntegrityError, match="uq_rehearsal_issuer_authorizations_lease_id"):
+        with pytest.raises(
+            IntegrityError, match="uq_rehearsal_issuer_authorizations_lease_id"
+        ):
             with engine.begin() as conn:
                 _insert(
                     conn,
@@ -5441,7 +5456,9 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                 )
 
         # The window CHECK rejects a violating row.
-        with pytest.raises(DBAPIError, match="ck_rehearsal_issuer_authorizations_window"):
+        with pytest.raises(
+            DBAPIError, match="ck_rehearsal_issuer_authorizations_window"
+        ):
             with engine.begin() as conn:
                 conn.execute(
                     text(

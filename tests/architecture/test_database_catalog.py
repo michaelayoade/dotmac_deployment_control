@@ -389,5 +389,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 227
+    assert sum(len(table.columns) for table in restored.tables) == 245
     assert {table.plane.value for table in restored.tables} == {"platform"}

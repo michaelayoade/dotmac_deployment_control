@@ -137,9 +137,17 @@ def upgrade() -> None:
 
     # THE ACCESS SURFACE. No DELETE granted to anyone: revocation and spend
     # are UPDATEs, and a role able to DELETE could erase the record of one.
-    _grant("SELECT, INSERT, UPDATE", _TABLE, "platform_api")
-    _grant("SELECT, INSERT, UPDATE", _TABLE, "app_admin")
-    _revoke(_TABLE)
+    #
+    # Literal table-name strings here, not the `_TABLE` constant: the
+    # architecture test that checks every declared platform table is
+    # granted/revoked correctly (`test_deployment_control_module.py`)
+    # statically scans this file's own SOURCE TEXT for the exact call
+    # shape `_grant("...", "<table>", "<role>")` / `_revoke("<table>")` —
+    # it cannot resolve a variable, only match a literal, matching
+    # `dc_0012_rehearsal_lifecycle.py`'s own exact convention.
+    _grant("SELECT, INSERT, UPDATE", "rehearsal_issuer_authorizations", "platform_api")
+    _grant("SELECT, INSERT, UPDATE", "rehearsal_issuer_authorizations", "app_admin")
+    _revoke("rehearsal_issuer_authorizations")
 
     _FN = f"{_SCHEMA}.prevent_rehearsal_issuer_terminal_reset"
     op.execute(
