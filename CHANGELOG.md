@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## Unreleased — Control's real issuance boundary for the rehearsal-issuer contract
+## 0.1.0a14 (published 2026-09-23) — Control's real issuance boundary for the rehearsal-issuer contract
 
 DB-backed issuance, revocation, staged consumption and standing for C1's
 `rehearsal_issuer_authorization` contract (the section immediately below).
@@ -61,7 +61,7 @@ whole lifecycle, backed by a durable ledger.
   originally `<`, admitting equal-timestamp-but-distinct evidence as
   "later" — tightened.
 
-## Unreleased — the protected rehearsal issuer's authorization contract
+## 0.1.0a14 (published 2026-09-23) — the protected rehearsal issuer's authorization contract
 
 A pure, standalone typed contract (`dotmac_platform_control_plane` ADR-0013
 amendment A6.4, Gate 0/Gate 1 of the ADR-0070/ADR-0013 build-once programme).
@@ -130,7 +130,7 @@ only.
   rather than by the application under rehearsal — that remains a
   caller-side obligation, stated explicitly in the module's docstring.
 
-## Unreleased — ADR-0073 authenticated host admission
+## 0.1.0a14 (published 2026-09-23) — ADR-0073 authenticated host admission
 
 ### Added
 
