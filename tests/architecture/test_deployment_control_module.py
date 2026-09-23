@@ -77,6 +77,9 @@ MUTABLE_TABLES = (
     "recovery_grants",
     # dc_0012: revocation and irreversible spend update one grant-state row.
     "rehearsal_grants",
+    # dc_0014: a SIBLING ledger, same shape -- revocation and irreversible
+    # spend update one authorization-state row.
+    "rehearsal_issuer_authorizations",
     # dc_0011: the one deliberately mutable table in the registry -- a
     # derived pointer projection, moved by compare-and-swap and cleared by
     # revocation.
@@ -279,6 +282,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             ObservationReceipt,
             RecoveryGrant,
             RehearsalGrant,
+            RehearsalIssuerAuthorizationRecord,
             Rollout,
             RolloutAttempt,
             RolloutAttemptSettlement,
@@ -302,6 +306,7 @@ class TestThePlaneIsDeclaredNotDiscovered:
             ObservationAttempt,
             RecoveryGrant,
             RehearsalGrant,
+            RehearsalIssuerAuthorizationRecord,
             AttestationEnrolment,
             AttestationFingerprintClosure,
             AttestationCurrentRoot,
@@ -576,10 +581,15 @@ class TestThePublishedFactsMatchWhatIsEmitted:
         assert emitted == set(PUBLISHED_EVENT_TYPES)
 
     def test_every_published_type_is_referenced_by_the_service(self) -> None:
+        """`rehearsal_issuer_issuance.py` is a sibling service module (see
+        `TestTheAuditActionsAreDeclaredAndConsumed` above for why), so both
+        files are scanned rather than `service.py` alone."""
         from dotmac_deployment_control import PUBLISHED_EVENT_TYPES
         from dotmac_deployment_control import facts as facts_module
 
-        service_source = (SRC / "service.py").read_text()
+        combined_source = (SRC / "service.py").read_text() + (
+            SRC / "rehearsal_issuer_issuance.py"
+        ).read_text()
         by_value = {
             value: name
             for name, value in vars(facts_module).items()
@@ -588,7 +598,7 @@ class TestThePublishedFactsMatchWhatIsEmitted:
         unreferenced = [
             value
             for value in PUBLISHED_EVENT_TYPES
-            if f"facts.{by_value[value]}" not in service_source
+            if f"facts.{by_value[value]}" not in combined_source
         ]
         assert not unreferenced, unreferenced
 
@@ -599,10 +609,16 @@ class TestThePublishedFactsMatchWhatIsEmitted:
 
 
 class TestTheAuditActionsAreDeclaredAndConsumed:
-    def test_the_manifest_declares_exactly_the_four_the_service_writes(self) -> None:
+    def test_the_manifest_declares_exactly_the_five_the_module_writes(self) -> None:
+        """`rehearsal_issuer_issuance.py` is a SIBLING service module to
+        `service.py` (a different authority; see that module's own
+        docstring), so its audit action is consumed there rather than in
+        `service.py` -- both files are scanned below, not `service.py` alone.
+        """
         from dotmac_deployment_control import (
             AUDIT_ACTION_CREDENTIAL,
             AUDIT_ACTION_OBSERVATION,
+            AUDIT_ACTION_REHEARSAL_ISSUER,
             AUDIT_ACTION_ROLLOUT,
             AUDIT_ACTION_TARGET,
         )
@@ -612,15 +628,19 @@ class TestTheAuditActionsAreDeclaredAndConsumed:
             AUDIT_ACTION_CREDENTIAL,
             AUDIT_ACTION_ROLLOUT,
             AUDIT_ACTION_OBSERVATION,
+            AUDIT_ACTION_REHEARSAL_ISSUER,
         }
-        service_source = (SRC / "service.py").read_text()
+        combined_source = (SRC / "service.py").read_text() + (
+            SRC / "rehearsal_issuer_issuance.py"
+        ).read_text()
         for name in (
             "AUDIT_ACTION_TARGET",
             "AUDIT_ACTION_CREDENTIAL",
             "AUDIT_ACTION_ROLLOUT",
             "AUDIT_ACTION_OBSERVATION",
+            "AUDIT_ACTION_REHEARSAL_ISSUER",
         ):
-            assert f"action={name}" in service_source, name
+            assert f"action={name}" in combined_source, name
 
 
 class TestImmutableAttemptEvidenceIsNeverExplicitlyForUpdate:

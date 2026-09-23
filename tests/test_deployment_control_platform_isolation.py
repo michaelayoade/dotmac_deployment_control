@@ -23,6 +23,7 @@ Requires real Postgres (`make test-db-up` / `make test-integration`).
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -136,10 +137,30 @@ from dotmac_deployment_control.host_admission_service import (
 from dotmac_deployment_control.models import (
     DeploymentPlan,
     DeploymentTarget,
+    RehearsalIssuerAuthorizationRecord,
+    RehearsalIssuerAuthorizationState,
     Rollout,
     RolloutAttempt,
     RolloutAttemptSettlement,
     TargetCredential,
+)
+from dotmac_deployment_control.rehearsal_harness_evidence import (
+    REHEARSAL_HARNESS_EVIDENCE_SCHEMA,
+    REHEARSAL_HARNESS_EVIDENCE_VERSION,
+)
+from dotmac_deployment_control.rehearsal_issuer_authorization import (
+    REHEARSAL_ISSUER_PURPOSE,
+    REHEARSAL_ONLY_ENVIRONMENT,
+    RehearsalIssuerAuthorizationSignature,
+    RehearsalIssuerAuthorizationSignerIdentity,
+)
+from dotmac_deployment_control.rehearsal_issuer_issuance import (
+    RehearsalIssuerIssuanceRefusedError,
+    _reset_rehearsal_issuer_security_for_tests,
+    install_rehearsal_issuer_security,
+    issue_rehearsal_issuer_authorization_for_plan,
+    revoke_rehearsal_issuer_authorization,
+    stage_rehearsal_issuer_consumption,
 )
 from tests.authorization_support import SIGNER, VERIFIER
 from tests.dispatch_support import DISPATCH_SIGNER
@@ -218,6 +239,7 @@ TABLES = (
     "observation_attempts",
     "recovery_grants",
     "rehearsal_grants",
+    "rehearsal_issuer_authorizations",
     "attestation_enrolments",
     "attestation_fingerprint_closures",
     "attestation_current_roots",
@@ -252,6 +274,9 @@ MUTABLE_TABLES = (
     # the record of the withdrawal.
     "recovery_grants",
     "rehearsal_grants",
+    # dc_0014: revocation and irreversible spend update one authorization-
+    # state row, same shape as `rehearsal_grants`.
+    "rehearsal_issuer_authorizations",
     "attestation_current_roots",
     "target_current_hosts",
     "target_current_admission_policies",
@@ -531,7 +556,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0013_host_admission",
+                revision="dc_0014_rehearsal_issuer_ledger",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -645,7 +670,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 227 columns across twenty-one tables; `dc_0005` is 105.
+    The head extent is 245 columns across twenty-two tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -681,7 +706,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 227
+                    == 245
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -731,7 +756,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 227
+                    == 245
                 )
         finally:
             admin.dispose()
@@ -794,9 +819,10 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                 == "spent"
             )
             # PostgreSQL runs the requested multi-revision downgrade in one
-            # transaction.  dc_0013's empty-table downgrade executes first,
-            # then dc_0012 refuses to discard the spent grant; that exception
-            # rolls the whole command back to the exact pre-command head.
+            # transaction.  dc_0014's and dc_0013's empty-table downgrades
+            # execute first, then dc_0012 refuses to discard the spent grant;
+            # that exception rolls the whole command back to the exact
+            # pre-command head.
             assert (
                 conn.execute(
                     text(
@@ -804,7 +830,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0013_host_admission"
+                == "dc_0014_rehearsal_issuer_ledger"
             )
     finally:
         engine.dispose()
@@ -4856,4 +4882,685 @@ def test_rehearsal_spend_and_revocation_serialize_on_postgres(
             if thread.ident is not None:
                 thread.join(timeout=30)
         event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+        engine.dispose()
+
+
+# ── Rehearsal-issuer authorization ledger (`dc_0014`) ───────────────────────
+#
+# A SIBLING authority to `rehearsal_grants` above -- same lifecycle shape
+# (`issued -> spent | revoked`, one terminal-state-immutable trigger), a
+# DIFFERENT table and a different signer purpose. See
+# `RehearsalIssuerAuthorizationRecord`'s own docstring for why the two never
+# merge.
+
+
+class _FixtureRehearsalIssuerSigner:
+    """A genuine test signer: it can only produce `"SIG"`, and the verifier
+    below only accepts that exact value -- a stub that accepted anything
+    would prove nothing about the boundary being tested."""
+
+    def __init__(self, fingerprint: str = "fp-issuer-pg") -> None:
+        self._fingerprint = fingerprint
+
+    @property
+    def rehearsal_issuer_identity(self) -> RehearsalIssuerAuthorizationSignerIdentity:
+        return RehearsalIssuerAuthorizationSignerIdentity(
+            "k-issuer-pg", "ed25519", self._fingerprint
+        )
+
+    def sign_rehearsal_issuer_authorization(
+        self, canonical_bytes: bytes
+    ) -> RehearsalIssuerAuthorizationSignature:
+        assert canonical_bytes
+        return RehearsalIssuerAuthorizationSignature(
+            "k-issuer-pg", "ed25519", REHEARSAL_ISSUER_PURPOSE, self._fingerprint, "SIG"
+        )
+
+
+class _FixtureRehearsalIssuerAuthorizationVerifier:
+    """Accepts ONLY the fixture signer's real signature -- a negative control
+    for every other value, including a hand-crafted match."""
+
+    def verify_rehearsal_issuer_authorization(self, **kwargs: object) -> bool:
+        return kwargs["signature"] == "SIG"
+
+
+class _FixtureRehearsalHarnessVerifier:
+    """Accepts ONLY evidence signed `"SIG"` by `k-harness-pg` -- same negative
+    control discipline as the authorization verifier above."""
+
+    def verify_rehearsal_harness_evidence(self, **kwargs: object) -> bool:
+        return kwargs["key_id"] == "k-harness-pg" and kwargs["signature"] == b"SIG"
+
+
+def _fixture_harness_evidence(
+    *,
+    lease_id: str,
+    controller_fingerprint: str,
+    target_ref: str,
+    issued_at: datetime,
+    valid_until: datetime,
+    signature: bytes = b"SIG",
+) -> dict[str, object]:
+    document = {
+        "schema": REHEARSAL_HARNESS_EVIDENCE_SCHEMA,
+        "version": REHEARSAL_HARNESS_EVIDENCE_VERSION,
+        "lease_id": lease_id,
+        "controller_fingerprint": controller_fingerprint,
+        "target_ref": target_ref,
+        "environment": REHEARSAL_ONLY_ENVIRONMENT,
+        "issued_at": issued_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "valid_until": valid_until.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return {
+        "canonical_bytes": base64.b64encode(canonical).decode("ascii"),
+        "signature": {
+            "key_id": "k-harness-pg",
+            "algorithm": "ed25519",
+            "signature": base64.b64encode(signature).decode("ascii"),
+        },
+    }
+
+
+@pytest.fixture
+def _installed_rehearsal_issuer_security() -> Iterator[None]:
+    _reset_rehearsal_issuer_security_for_tests()
+    install_rehearsal_issuer_security(
+        signer=_FixtureRehearsalIssuerSigner(),
+        authorization_verifier=_FixtureRehearsalIssuerAuthorizationVerifier(),
+        harness_verifier=_FixtureRehearsalHarnessVerifier(),
+        authorization_ttl=timedelta(hours=1),
+    )
+    try:
+        yield
+    finally:
+        _reset_rehearsal_issuer_security_for_tests()
+
+
+def _seed_rehearsal_issuer_target_and_plan(
+    engine: Engine, suffix: str
+) -> tuple[str, uuid.UUID]:
+    """A REHEARSAL-environment target with one standing, deploy-operation
+    approval -- D6 and D8's own preconditions, seeded once per test."""
+    target_ref = f"rehearsal-issuer-target-{suffix}"
+    with Session(engine) as db:
+        target = register_target(
+            db,
+            RegisterTargetCommand(
+                command_id=f"seed-rehearsal-target-{suffix}",
+                target_ref=target_ref,
+                subject_ref=f"subject-{suffix}",
+                product_code="dotmac_sub",
+                environment=REHEARSAL_ONLY_ENVIRONMENT,
+            ),
+        )
+        set_desired_state(
+            db,
+            SetDesiredStateCommand(
+                command_id=f"seed-rehearsal-desired-{suffix}",
+                target_id=target.id,
+                desired=DesiredDeployment(
+                    release_ref="dotmac_sub@1", spec={"replicas": 1}, images=[]
+                ),
+            ),
+        )
+        plan = propose_plan(
+            db,
+            ProposePlanCommand(
+                command_id=f"seed-rehearsal-plan-{suffix}",
+                target_id=target.id,
+                operation="deploy",
+                descriptor_digest=_DESCRIPTOR,
+                execution_plan_digest=_EXECUTION_PLAN,
+                requires_approval=True,
+                approval_policy_code="deployment.production",
+                approval_policy_version=1,
+            ),
+        )
+        approve_plan(
+            db,
+            ApprovePlanCommand(
+                command_id=f"approve-rehearsal-plan-{suffix}",
+                plan_id=plan.id,
+                evidence=ApprovalEvidence(
+                    policy_code="deployment.production",
+                    policy_version=1,
+                    decision_ref=f"decision-rehearsal-{suffix}",
+                    content_digest=plan.plan_digest or "",
+                    decided_at=datetime.now(UTC),
+                    operation="deploy",
+                    execution_plan_digest=_EXECUTION_PLAN,
+                    decision_status="granted",
+                ),
+            ),
+        )
+        db.commit()
+    return target_ref, plan.id
+
+
+def test_concurrent_issuance_for_one_lease_commits_exactly_one_row(
+    migrated_scratch: tuple[str, str, str],
+    _installed_rehearsal_issuer_security: None,
+) -> None:
+    """Two different `command_id`s, identical harness evidence (same
+    `lease_id`): exactly one ledger row exists afterward, and the loser gets
+    `LEASE_ALREADY_AUTHORIZED`."""
+    engine = create_engine(migrated_scratch[0])
+    suffix = uuid.uuid4().hex
+    target_ref, plan_id = _seed_rehearsal_issuer_target_and_plan(engine, suffix)
+    lease_id = f"lease-{suffix}"
+    now = datetime.now(UTC)
+    evidence = _fixture_harness_evidence(
+        lease_id=lease_id,
+        controller_fingerprint="fp-controller",
+        target_ref=target_ref,
+        issued_at=now,
+        valid_until=now + timedelta(minutes=10),
+    )
+
+    class _HoldPlanTargetLock:
+        """Pause the winner after PostgreSQL grants the target row lock --
+        `_load_plan_with_target_for_update` locks the target BEFORE the
+        plan, so this is the real serialization point for two issuance
+        attempts against the same plan."""
+
+        def __init__(self) -> None:
+            self.holder_thread_id: int | None = None
+            self.acquired = threading.Event()
+            self.release = threading.Event()
+
+        def after_cursor_execute(
+            self,
+            _conn: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            if threading.get_ident() != self.holder_thread_id:
+                return
+            normalised = " ".join(statement.lower().split())
+            if (
+                "from mod_deploy.deployment_targets" not in normalised
+                or "for update" not in normalised
+            ):
+                return
+            self.acquired.set()
+            if not self.release.wait(timeout=30):
+                raise AssertionError("the target-lock holder was never released")
+
+    lock_gate = _HoldPlanTargetLock()
+    threads: list[threading.Thread] = []
+    event.listen(engine, "after_cursor_execute", lock_gate.after_cursor_execute)
+    try:
+        sessions = sessionmaker(bind=engine)
+        outcomes: dict[str, str] = {}
+        errors: list[BaseException] = []
+        backend_pids: dict[str, int] = {}
+        waiter_ready = threading.Event()
+
+        def worker(name: str, command_id: str) -> None:
+            with sessions() as db:
+                try:
+                    backend_pids[name] = db.execute(
+                        text("SELECT pg_backend_pid()")
+                    ).scalar_one()
+                    if name == "first":
+                        lock_gate.holder_thread_id = threading.get_ident()
+                    else:
+                        waiter_ready.set()
+                    issue_rehearsal_issuer_authorization_for_plan(
+                        db,
+                        {"command_id": command_id, "plan_id": str(plan_id)},
+                        harness_evidence_document=evidence,
+                    )
+                    db.commit()
+                    outcomes[name] = "issued"
+                except RehearsalIssuerIssuanceRefusedError as exc:
+                    db.rollback()
+                    outcomes[name] = f"refused:{exc.code}"
+                except BaseException as exc:
+                    db.rollback()
+                    errors.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=("first", f"cmd-first-{suffix}")),
+            threading.Thread(target=worker, args=("second", f"cmd-second-{suffix}")),
+        ]
+        threads[0].start()
+        assert lock_gate.acquired.wait(
+            timeout=10
+        ), "the first FOR UPDATE was not reached"
+        threads[1].start()
+        assert waiter_ready.wait(timeout=10), "the second backend did not start"
+        _wait_until_postgres_reports_lock(engine, backend_pids["second"])
+        lock_gate.release.set()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == [], errors
+        assert sorted(outcomes.values()) == [
+            "issued",
+            "refused:rehearsal_issuer_issuance_lease_already_authorized",
+        ]
+        with sessions() as db:
+            rows = (
+                db.execute(
+                    select(RehearsalIssuerAuthorizationRecord).where(
+                        RehearsalIssuerAuthorizationRecord.lease_id == lease_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(rows) == 1
+        assert rows[0].state == RehearsalIssuerAuthorizationState.ISSUED.value
+    finally:
+        lock_gate.release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=30)
+        event.remove(engine, "after_cursor_execute", lock_gate.after_cursor_execute)
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected_state"),
+    (
+        ("consume", "consume", "spent"),
+        ("consume", "revoke", "spent"),
+        ("revoke", "consume", "revoked"),
+    ),
+)
+def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
+    migrated_scratch: tuple[str, str, str],
+    _installed_rehearsal_issuer_security: None,
+    first: str,
+    second: str,
+    expected_state: str,
+) -> None:
+    """One issued ledger row; two threads race to consume/revoke it. Exactly
+    one wins, the loser gets a typed refusal (never a bare `IntegrityError`
+    or a deadlock), and the table holds exactly one row throughout."""
+    engine = create_engine(migrated_scratch[0])
+    suffix = uuid.uuid4().hex
+    target_ref, plan_id = _seed_rehearsal_issuer_target_and_plan(engine, suffix)
+    lease_id = f"lease-{suffix}"
+    now = datetime.now(UTC)
+    evidence = _fixture_harness_evidence(
+        lease_id=lease_id,
+        controller_fingerprint="fp-controller",
+        target_ref=target_ref,
+        issued_at=now,
+        valid_until=now + timedelta(minutes=30),
+    )
+    with Session(engine) as db:
+        envelope = issue_rehearsal_issuer_authorization_for_plan(
+            db,
+            {"command_id": f"cmd-issue-{suffix}", "plan_id": str(plan_id)},
+            harness_evidence_document=evidence,
+        )
+        db.commit()
+    authorization_id = envelope.statement.authorization_id
+    authorization_document = envelope.as_mapping()
+
+    # A GENUINELY different, later piece of consumption evidence -- issuance's
+    # own evidence must never be replayable at consumption (STALE_HARNESS_
+    # EVIDENCE). `_fixture_harness_evidence`'s digest is computed over the
+    # canonical INNER document (schema/lease_id/controller_fingerprint/
+    # target_ref/environment/issued_at/valid_until), not the outer signature
+    # bytes, so `issued_at` must actually differ for the digest to differ.
+    #
+    # Captured as REAL wall-clock time right here, after issuance has already
+    # committed -- NOT `envelope.statement.issued_at + a fixed offset`. A
+    # fixed future offset races against `verify_rehearsal_harness_evidence_
+    # signature`'s strict `now < parsed.issued_at` FUTURE_DATED check (no
+    # grace period): whichever thread actually presents this evidence calls
+    # `_control_now()` at consumption time, and if that real clock read still
+    # trails the offset, the evidence itself is refused as future-dated
+    # before the ledger row is ever touched -- which is exactly what made
+    # this test flake as "the first FOR UPDATE was not reached" / "PostgreSQL
+    # never reported a lock wait" (a `FUTURE_DATED` refusal outside the DB
+    # entirely, misread as a locking regression). A timestamp captured NOW,
+    # before either thread starts, is by construction already in the past by
+    # the time any thread reaches this evidence check, however long the
+    # thread-startup/locking dance below takes.
+    consumption_evidence_issued_at = datetime.now(UTC)
+    consumption_evidence = _fixture_harness_evidence(
+        lease_id=lease_id,
+        controller_fingerprint="fp-controller",
+        target_ref=target_ref,
+        issued_at=consumption_evidence_issued_at,
+        valid_until=consumption_evidence_issued_at + timedelta(minutes=30),
+    )
+
+    class _HoldLedgerLock:
+        """Pause the winner after PostgreSQL grants the ledger row lock."""
+
+        def __init__(self) -> None:
+            self.holder_thread_id: int | None = None
+            self.acquired = threading.Event()
+            self.release = threading.Event()
+
+        def after_cursor_execute(
+            self,
+            _conn: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            if threading.get_ident() != self.holder_thread_id:
+                return
+            normalised = " ".join(statement.lower().split())
+            if (
+                "from mod_deploy.rehearsal_issuer_authorizations" not in normalised
+                or "for update" not in normalised
+            ):
+                return
+            self.acquired.set()
+            if not self.release.wait(timeout=30):
+                raise AssertionError("the ledger-lock holder was never released")
+
+    ledger_gate = _HoldLedgerLock()
+    threads: list[threading.Thread] = []
+    event.listen(engine, "after_cursor_execute", ledger_gate.after_cursor_execute)
+    try:
+        sessions = sessionmaker(bind=engine)
+        outcomes: dict[str, str] = {}
+        errors: list[BaseException] = []
+        backend_pids: dict[str, int] = {}
+        waiter_ready = threading.Event()
+
+        def act(db: Session, action: str) -> None:
+            if action == "consume":
+                stage_rehearsal_issuer_consumption(
+                    db,
+                    authorization_document=authorization_document,
+                    harness_evidence_document=consumption_evidence,
+                )
+            else:
+                revoke_rehearsal_issuer_authorization(
+                    db,
+                    authorization_id=authorization_id,
+                    revocation_ref=f"revoke-{suffix}",
+                )
+
+        def worker(name: str, action: str) -> None:
+            with sessions() as db:
+                try:
+                    backend_pids[name] = db.execute(
+                        text("SELECT pg_backend_pid()")
+                    ).scalar_one()
+                    if name == "first":
+                        ledger_gate.holder_thread_id = threading.get_ident()
+                    else:
+                        waiter_ready.set()
+                    act(db, action)
+                    db.commit()
+                    outcomes[name] = action
+                except RehearsalIssuerIssuanceRefusedError as exc:
+                    db.rollback()
+                    outcomes[name] = f"refused:{exc.code}"
+                except BaseException as exc:
+                    db.rollback()
+                    errors.append(exc)
+
+        threads = [
+            threading.Thread(target=worker, args=("first", first)),
+            threading.Thread(target=worker, args=("second", second)),
+        ]
+        threads[0].start()
+        assert ledger_gate.acquired.wait(
+            timeout=10
+        ), "the first FOR UPDATE was not reached"
+        threads[1].start()
+        assert waiter_ready.wait(timeout=10), "the second backend did not start"
+        _wait_until_postgres_reports_lock(engine, backend_pids["second"])
+        ledger_gate.release.set()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == [], errors
+        assert outcomes["first"] == first
+        assert outcomes["second"].startswith("refused:")
+        with sessions() as db:
+            row = db.execute(
+                select(RehearsalIssuerAuthorizationRecord).where(
+                    RehearsalIssuerAuthorizationRecord.authorization_id
+                    == authorization_id
+                )
+            ).scalar_one()
+        assert row.state == expected_state
+        with sessions() as db:
+            # Scoped to THIS test's own authorization_id, not a bare
+            # whole-table count: `migrated_scratch` is shared across this
+            # test's own parametrized invocations, so a prior invocation's
+            # row(s) legitimately remain in the table when this one runs —
+            # what this test proves is that exactly ONE row exists for the
+            # lease/authorization IT created, not that the table is empty
+            # otherwise.
+            count = db.execute(
+                select(func.count())
+                .select_from(RehearsalIssuerAuthorizationRecord)
+                .where(
+                    RehearsalIssuerAuthorizationRecord.authorization_id
+                    == authorization_id
+                )
+            ).scalar_one()
+        assert count == 1
+    finally:
+        ledger_gate.release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=30)
+        event.remove(engine, "after_cursor_execute", ledger_gate.after_cursor_execute)
+        engine.dispose()
+
+
+def test_rehearsal_issuer_ledger_constraints_and_privileges(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    """Raw DB-level tests for the constraints/trigger/privileges a caller
+    that bypasses the type could still hit.
+
+    The `app_user`-has-no-privilege claim is ALSO covered generically by the
+    parametrized `test_app_user_holds_no_privilege` over `TABLES` (which now
+    includes `rehearsal_issuer_authorizations`); it is repeated here as a
+    real end-to-end statement execution, not just a catalog privilege check.
+    """
+    admin_url, _, app_user_url = migrated_scratch
+    engine = create_engine(admin_url)
+    suffix = uuid.uuid4().hex
+    try:
+        with engine.begin() as conn:
+            target_id = conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.deployment_targets "
+                    "(id, target_ref, subject_ref, product_code, environment, "
+                    "status, desired_revision, record_version) "
+                    "VALUES (:id, :target_ref, :subject_ref, 'dotmac_sub', "
+                    "'rehearsal', 'active', 0, 1) RETURNING id"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "target_ref": f"raw-rehearsal-target-{suffix}",
+                    "subject_ref": f"raw-subject-{suffix}",
+                },
+            ).scalar_one()
+            plan_id = conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.deployment_plans "
+                    "(id, target_id, sequence, snapshot, plan_digest, "
+                    "desired_revision, status, requires_approval, record_version) "
+                    "VALUES (:id, :target_id, 1, '{}'::jsonb, :digest, 1, "
+                    "'proposed', false, 1) RETURNING id"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "target_id": target_id,
+                    "digest": "sha256:" + suffix.ljust(64, "0")[:64],
+                },
+            ).scalar_one()
+
+        def _insert(
+            conn: object,
+            *,
+            authorization_id: str,
+            single_use_reference: str,
+            lease_id: str,
+        ) -> None:
+            now = datetime.now(UTC)
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_issuer_authorizations "
+                    "(id, authorization_id, single_use_reference, lease_id, "
+                    "plan_id, target_id, controller_fingerprint, "
+                    "harness_evidence_digest, authorization_envelope, "
+                    "not_before, issued_at, expires_at, state) "
+                    "VALUES (:id, :authorization_id, :single_use_reference, "
+                    ":lease_id, :plan_id, :target_id, 'fp', "
+                    "'sha256:" + "0" * 64 + "', '{}'::jsonb, "
+                    ":not_before, :issued_at, :expires_at, 'issued')"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "authorization_id": authorization_id,
+                    "single_use_reference": single_use_reference,
+                    "lease_id": lease_id,
+                    "plan_id": plan_id,
+                    "target_id": target_id,
+                    "not_before": now,
+                    "issued_at": now,
+                    "expires_at": now + timedelta(minutes=10),
+                },
+            )
+
+        with engine.begin() as conn:
+            _insert(
+                conn,
+                authorization_id=f"auth-{suffix}",
+                single_use_reference=f"ref-{suffix}",
+                lease_id=f"lease-{suffix}",
+            )
+
+        # Duplicate lease_id.
+        with pytest.raises(
+            IntegrityError, match="uq_rehearsal_issuer_authorizations_lease_id"
+        ):
+            with engine.begin() as conn:
+                _insert(
+                    conn,
+                    authorization_id=f"auth-2-{suffix}",
+                    single_use_reference=f"ref-2-{suffix}",
+                    lease_id=f"lease-{suffix}",
+                )
+
+        # Duplicate single_use_reference.
+        with pytest.raises(
+            IntegrityError,
+            match="uq_rehearsal_issuer_authorizations_single_use_reference",
+        ):
+            with engine.begin() as conn:
+                _insert(
+                    conn,
+                    authorization_id=f"auth-3-{suffix}",
+                    single_use_reference=f"ref-{suffix}",
+                    lease_id=f"lease-3-{suffix}",
+                )
+
+        # The window CHECK rejects a violating row.
+        with pytest.raises(
+            DBAPIError, match="ck_rehearsal_issuer_authorizations_window"
+        ):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_issuer_authorizations "
+                        "(id, authorization_id, single_use_reference, lease_id, "
+                        "plan_id, target_id, controller_fingerprint, "
+                        "harness_evidence_digest, authorization_envelope, "
+                        "not_before, issued_at, expires_at, state) "
+                        "VALUES (:id, :authorization_id, :single_use_reference, "
+                        ":lease_id, :plan_id, :target_id, 'fp', "
+                        "'sha256:" + "0" * 64 + "', '{}'::jsonb, "
+                        ":not_before, :issued_at, :expires_at, 'issued')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "authorization_id": f"auth-window-{suffix}",
+                        "single_use_reference": f"ref-window-{suffix}",
+                        "lease_id": f"lease-window-{suffix}",
+                        "plan_id": plan_id,
+                        "target_id": target_id,
+                        "not_before": datetime.now(UTC),
+                        "issued_at": datetime.now(UTC),
+                        # expires_at BEFORE issued_at -- violates the CHECK.
+                        "expires_at": datetime.now(UTC) - timedelta(minutes=5),
+                    },
+                )
+
+        # The trigger refuses to reopen a terminal row.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.rehearsal_issuer_authorizations "
+                    "SET state = 'revoked', revoked_at = now(), "
+                    "revocation_ref = 'trigger-test' "
+                    "WHERE authorization_id = :authorization_id"
+                ),
+                {"authorization_id": f"auth-{suffix}"},
+            )
+        with pytest.raises(DBAPIError, match="immutable"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rehearsal_issuer_authorizations "
+                        "SET state = 'issued', revoked_at = NULL, "
+                        "revocation_ref = NULL "
+                        "WHERE authorization_id = :authorization_id"
+                    ),
+                    {"authorization_id": f"auth-{suffix}"},
+                )
+
+        # The whitespace-only `revocation_ref` CHECK fires.
+        with pytest.raises(
+            DBAPIError, match="ck_rehearsal_issuer_authorizations_state_evidence"
+        ):
+            with engine.begin() as conn:
+                _insert(
+                    conn,
+                    authorization_id=f"auth-ws-{suffix}",
+                    single_use_reference=f"ref-ws-{suffix}",
+                    lease_id=f"lease-ws-{suffix}",
+                )
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.rehearsal_issuer_authorizations "
+                        "SET state = 'revoked', revoked_at = now(), "
+                        "revocation_ref = '   ' "
+                        "WHERE authorization_id = :authorization_id"
+                    ),
+                    {"authorization_id": f"auth-ws-{suffix}"},
+                )
+
+        # `app_user` has no privilege on the table at all.
+        app_user_engine = create_engine(app_user_url)
+        try:
+            with pytest.raises(DBAPIError):
+                with app_user_engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "SELECT 1 FROM mod_deploy.rehearsal_issuer_authorizations "
+                            "LIMIT 1"
+                        )
+                    )
+        finally:
+            app_user_engine.dispose()
+    finally:
         engine.dispose()

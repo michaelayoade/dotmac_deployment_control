@@ -192,11 +192,17 @@ class TestQueryConstructionStaysInThisModule:
         # must lock `RehearsalGrant`, and it exports no public callable.  A
         # future public reader, or a query for another model, has to move to
         # the service layer (or establish and test a new named owner).
+        # `rehearsal_issuer_issuance.py` is the sole data-access owner for
+        # the rehearsal-issuer-authorization ledger, the same way
+        # `host_admission_service.py` owns its own table family below --
+        # narrowed the same way, by asserting every `select()` target it
+        # contains rather than merely allowing the filename.
         permitted_query_builders = {
             "service.py",
             "attestation_trust_registry.py",
             "host_admission_service.py",
             "rehearsal_grant_lifecycle.py",
+            "rehearsal_issuer_issuance.py",
         }
 
         root = Path(service.__file__).parent
@@ -242,6 +248,24 @@ class TestQueryConstructionStaysInThisModule:
             "TargetCurrentHost",
             "TargetHostAssociation",
             "TargetHostAssociationClosure",
+        }
+        rehearsal_issuer_owner = root / "rehearsal_issuer_issuance.py"
+        rehearsal_issuer_tree = ast.parse(rehearsal_issuer_owner.read_text())
+        rehearsal_issuer_selected_models = {
+            (argument.id if isinstance(argument, ast.Name) else argument.value.id)
+            for node in ast.walk(rehearsal_issuer_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "select"
+            for argument in node.args
+            if isinstance(argument, ast.Name)
+            or (
+                isinstance(argument, ast.Attribute)
+                and isinstance(argument.value, ast.Name)
+            )
+        }
+        assert rehearsal_issuer_selected_models == {
+            "RehearsalIssuerAuthorizationRecord"
         }
         offenders = [
             path.name

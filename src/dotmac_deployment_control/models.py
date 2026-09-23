@@ -112,6 +112,7 @@ _ATTEMPTS = "rollout_attempts"
 _ATTEMPT_SETTLEMENTS = "rollout_attempt_settlements"
 _RECOVERY_GRANTS = "recovery_grants"
 _REHEARSAL_GRANTS = "rehearsal_grants"
+_REHEARSAL_ISSUER_AUTHORIZATIONS = "rehearsal_issuer_authorizations"
 _OBS_ATTEMPTS = "observation_attempts"
 _OBS_RECEIPTS = "observation_receipts"
 _ATTESTATION_ENROLMENTS = "attestation_enrolments"
@@ -224,6 +225,17 @@ class AttemptOutcome(StrEnum):
 
 
 class RehearsalGrantState(StrEnum):
+    ISSUED = "issued"
+    REVOKED = "revoked"
+    SPENT = "spent"
+
+
+class RehearsalIssuerAuthorizationState(StrEnum):
+    """A DIFFERENT authority than `RehearsalGrantState`: this ledger governs
+    ONE lease's rehearsal-issuer OPERATION, not the provoked-rollback grant
+    `RehearsalGrant` records. Deliberately not reused — see
+    `RehearsalIssuerAuthorizationRecord`'s own docstring."""
+
     ISSUED = "issued"
     REVOKED = "revoked"
     SPENT = "spent"
@@ -800,6 +812,112 @@ class RehearsalGrant(Base, TimestampMixin):
     id: Mapped[UUID] = uuid_pk()
     grant_id: Mapped[str] = mapped_column(String(512), nullable=False)
     single_use_reference: Mapped[str] = mapped_column(String(512), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="issued")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revocation_ref: Mapped[str | None] = mapped_column(String(200))
+    spent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RehearsalIssuerAuthorizationRecord(Base, TimestampMixin):
+    """The durable ledger for ONE lease's rehearsal-issuer-operation authority.
+
+    A DIFFERENT authority than `RehearsalGrant`: that table records the
+    replay coordinate for a provoked-rollback grant (a rehearsal ACT already
+    under way); this one records authority to OPERATE the disposable
+    rehearsal issuer for a bounded lease in the first place — the C1 contract
+    in `rehearsal_issuer_authorization.py`. Cloning `RehearsalGrant`'s
+    lifecycle SHAPE (`issued -> spent | revoked`, one row per lease, a
+    terminal-state-immutable trigger) is deliberate; sharing its TABLE would
+    not be, because the two answer different questions about different acts.
+
+    ## `authorization_envelope` is the authority; every other column is lookup
+
+    Same doctrine `RecoveryGrant.grant_envelope` documents: verification
+    re-derives canonical bytes from the envelope and checks the signature
+    over those. `authorization_id`, `single_use_reference`, `lease_id`,
+    `plan_id`, `target_id` and `controller_fingerprint` exist so a reader can
+    find and filter the right row in one statement; a drifted lookup column
+    can make a row hard to find, never make a bad envelope verify.
+
+    ## Strict per-lease uniqueness
+
+    `lease_id` carries its own UNIQUE constraint (D4): a revoked lease is not
+    reusable, and a genuine retry presents a NEW lease id — this codebase's
+    "recovery is a new attempt" doctrine, applied here.
+    """
+
+    __tablename__ = _REHEARSAL_ISSUER_AUTHORIZATIONS
+    __table_args__ = (
+        UniqueConstraint(
+            "authorization_id",
+            name="uq_rehearsal_issuer_authorizations_authorization_id",
+        ),
+        UniqueConstraint(
+            "single_use_reference",
+            name="uq_rehearsal_issuer_authorizations_single_use_reference",
+        ),
+        UniqueConstraint(
+            "lease_id", name="uq_rehearsal_issuer_authorizations_lease_id"
+        ),
+        CheckConstraint(
+            "state IN ('issued', 'revoked', 'spent')",
+            name="ck_rehearsal_issuer_authorizations_state",
+        ),
+        CheckConstraint(
+            or_(
+                text(
+                    "state = 'issued' AND revoked_at IS NULL "
+                    "AND revocation_ref IS NULL AND spent_at IS NULL"
+                ),
+                and_(
+                    text(
+                        "state = 'revoked' AND revoked_at IS NOT NULL "
+                        "AND revocation_ref IS NOT NULL AND spent_at IS NULL"
+                    ),
+                    column("revocation_ref").regexp_match(r"\S"),
+                ),
+                text(
+                    "state = 'spent' AND spent_at IS NOT NULL "
+                    "AND revoked_at IS NULL AND revocation_ref IS NULL"
+                ),
+            ),
+            name="ck_rehearsal_issuer_authorizations_state_evidence",
+        ),
+        CheckConstraint(
+            "not_before <= issued_at AND issued_at < expires_at",
+            name="ck_rehearsal_issuer_authorizations_window",
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    id: Mapped[UUID] = uuid_pk()
+    authorization_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    single_use_reference: Mapped[str] = mapped_column(String(512), nullable=False)
+    lease_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_PLANS}.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    controller_fingerprint: Mapped[str] = mapped_column(String(512), nullable=False)
+    harness_evidence_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: The verbatim signed C1 envelope. NOT NULL: a row without one is a claim
+    #: of authority with nothing behind it.
+    authorization_envelope: Mapped[dict[str, Any]] = mapped_column(
+        _JSON_DOC, nullable=False
+    )
+    not_before: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     state: Mapped[str] = mapped_column(String(20), nullable=False, default="issued")
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revocation_ref: Mapped[str | None] = mapped_column(String(200))

@@ -67,6 +67,15 @@ ROLLOUT_CANCELLED_V1: Final[str] = "deployment.rollout.cancelled.v1"
 ROLLOUT_MANUAL_REPAIR_V1: Final[str] = "deployment.rollout.manual_repair.v1"
 OBSERVATION_RECORDED_V1: Final[str] = "deployment.observation.recorded.v1"
 DRIFT_DETECTED_V1: Final[str] = "deployment.drift.detected.v1"
+#: Rehearsal-issuer authority for one lease changed -- issued, revoked, or
+#: consumed. Emitted by `rehearsal_issuer_issuance.py`, a SIBLING service
+#: module to `service.py` rather than a function inside it (the rehearsal
+#: issuer is a different authority than the rollout lifecycle `service.py`
+#: owns), which is why `TestThePublishedFactsMatchWhatIsEmitted` reads both
+#: modules' source rather than `service.py` alone.
+REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1: Final[str] = (
+    "deployment.rehearsal_issuer_authorization.changed.v1"
+)
 
 #: Every type this module can emit. A consumer building a subscription set reads
 #: this rather than a hand-kept list that drifts, and the module's own test
@@ -94,6 +103,7 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         ROLLOUT_MANUAL_REPAIR_V1,
         OBSERVATION_RECORDED_V1,
         DRIFT_DETECTED_V1,
+        REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1,
     }
 )
 
@@ -743,6 +753,7 @@ __all__ = [
     "PLAN_CANCELLED_V1",
     "PLAN_PROPOSED_V1",
     "PUBLISHED_EVENT_TYPES",
+    "REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1",
     "ROLLOUT_CANCELLED_V1",
     "ROLLOUT_FAILED_V1",
     "ROLLOUT_MANUAL_REPAIR_V1",

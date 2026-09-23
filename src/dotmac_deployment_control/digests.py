@@ -519,6 +519,36 @@ class HealthEvidenceDigestV1(_ReceivedSha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class RehearsalHarnessEvidenceDigestV1(_ReceivedSha256Digest):
+    """`sha256` of the EXACT canonical bytes of one signed rehearsal-harness
+    evidence document — cloned from `HealthEvidenceDigestV1`'s exact shape.
+
+    ## Why this is a RECEIVED digest, never a computed one
+
+    The disposable rehearsal harness owns the canonicalization of its own
+    evidence document; Control hashes the RAW BYTES it was actually handed
+    (`over_bytes`) rather than re-serializing a parsed view, for the identical
+    reason `HealthEvidenceDigestV1` does — a second canonicalizer of a
+    document this module does not own would agree today and diverge the first
+    time either side's serialization changes.
+
+    ## What this type is not
+
+    Not `HealthEvidenceDigestV1` (Platform Health's evidence), not
+    `PlanDigestV1`, `ExecutionPlanDigestV1`, or `DescriptorDigestV1`. A
+    dataclass compares unequal across types, so none of them can satisfy a
+    rehearsal-harness-evidence-digest binding by arriving in the right shape,
+    and this one cannot satisfy theirs.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> RehearsalHarnessEvidenceDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the evidence bytes must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class ControlPlanDigestV1(_ReceivedSha256Digest):
     """The identity of ONE bound V3 authorization statement, computed by
     Control and re-derivable by anyone holding the full statement.
@@ -816,6 +846,7 @@ __all__ = [
     "ObservedExecutionStateDigestV1",
     "PlanDigestV1",
     "PublicKeyFingerprintV1",
+    "RehearsalHarnessEvidenceDigestV1",
     "SpecDigestV1",
     "canonical_json",
     "compute_host_admission_context_digest",

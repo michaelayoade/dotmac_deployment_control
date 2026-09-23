@@ -1469,6 +1469,31 @@ CATALOGUE_TABLES: tuple[
         ),
     ),
     (
+        "rehearsal_issuer_authorizations",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("authorization_id", 2, _V512, False, ""),
+            ("single_use_reference", 3, _V512, False, ""),
+            ("lease_id", 4, _V512, False, ""),
+            ("plan_id", 5, _UUID, False, ""),
+            ("target_id", 6, _UUID, False, ""),
+            ("controller_fingerprint", 7, _V512, False, ""),
+            ("harness_evidence_digest", 8, _V128, False, ""),
+            # The verbatim signed C1 envelope; every other column here is a
+            # lookup projection of terms inside it.
+            ("authorization_envelope", 9, _JSONB, False, ""),
+            ("not_before", 10, _TS, False, ""),
+            ("issued_at", 11, _TS, False, ""),
+            ("expires_at", 12, _TS, False, ""),
+            ("state", 13, _V20, False, ""),
+            ("revoked_at", 14, _TS, True, ""),
+            ("revocation_ref", 15, _V200, True, ""),
+            ("spent_at", 16, _TS, True, ""),
+            ("created_at", 17, _TS, False, "now()"),
+            ("updated_at", 18, _TS, False, "now()"),
+        ),
+    ),
+    (
         "rollout_attempt_settlements",
         (
             ("id", 1, _UUID, False, ""),
