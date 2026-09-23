@@ -158,6 +158,11 @@ class RehearsalIssuerIssuanceRefusalCode(StrEnum):
     EVIDENCE_WINDOW_EXCEEDED = "rehearsal_issuer_issuance_evidence_window_exceeded"
     NOT_RECORDED = "rehearsal_issuer_issuance_not_recorded"
     ENVELOPE_MISMATCH = "rehearsal_issuer_issuance_envelope_mismatch"
+    #: Standing cannot use a caller-owned session with an open transaction:
+    #: it could read the caller's uncommitted issuance row as valid authority.
+    STANDING_REQUIRES_COMMITTED_SESSION = (
+        "rehearsal_issuer_issuance_standing_requires_committed_session"
+    )
     #: The freshly minted envelope failed genuine cryptographic
     #: self-verification against the installed `authorization_verifier` --
     #: the same verifier every other caller must satisfy, never a shortcut.
@@ -168,7 +173,7 @@ class RehearsalIssuerIssuanceRefusalCode(StrEnum):
     #: exactly as a real consumer of this envelope would.
     SIGNER_IDENTITY_MISMATCH = "rehearsal_issuer_issuance_signer_identity_mismatch"
     #: The presented harness evidence at consumption is the exact evidence
-    #: used at issuance (a replay), or predates issuance outright -- neither
+    #: used at issuance (a replay), or is not later than issuance -- neither
     #: can be a later, fresh presentation.
     STALE_HARNESS_EVIDENCE = "rehearsal_issuer_issuance_stale_harness_evidence"
     #: The resolved target is not `TargetStatus.ACTIVE` -- checked at both
@@ -699,11 +704,11 @@ def stage_rehearsal_issuer_consumption(
             "second presentation of the same evidence is a replay, not a "
             "fresh presentation",
         )
-    if evidence.issued_at < _as_utc(row.issued_at):
+    if evidence.issued_at <= _as_utc(row.issued_at):
         raise _refused(
             RehearsalIssuerIssuanceRefusalCode.STALE_HARNESS_EVIDENCE,
             f"the presented harness evidence was issued at {evidence.issued_at} "
-            f"which predates authorization {statement.authorization_id}'s own "
+            f"which is not later than authorization {statement.authorization_id}'s own "
             f"issuance at {row.issued_at}; consumption evidence must be a "
             "later, fresh presentation",
         )
@@ -799,8 +804,18 @@ def rehearsal_issuer_standing_for(
     harness_evidence_document: object,
     now: datetime | None = None,
 ) -> RehearsalIssuerAuthorizationStandingResult:
-    """An UNLOCKED read. A document with no matching ledger row reads exactly
-    as C1's own absent/unresolved standing."""
+    """Read standing only from a clean post-commit session boundary.
+
+    A document with no matching ledger row reads as C1's own absent/unresolved
+    standing. An already-open transaction may see its own uncommitted issuance
+    row, so it cannot establish committed authority.
+    """
+    if db.in_transaction():
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.STANDING_REQUIRES_COMMITTED_SESSION,
+            "standing requires a session with no active transaction so an "
+            "uncommitted issuance row cannot be treated as authority",
+        )
     security = _require_installed_security()
     effective_now = now or _control_now()
     evidence = _fresh_harness_evidence(

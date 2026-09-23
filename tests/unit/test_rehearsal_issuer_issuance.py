@@ -517,6 +517,48 @@ def test_a_signed_but_never_recorded_envelope_does_not_authorize_standing(
     )
 
 
+def test_standing_refuses_uncommitted_issuance_then_accepts_commit(db: Session) -> None:
+    """The issuing session cannot validate its own uncommitted ledger row."""
+    suffix = uuid.uuid4().hex
+    _target, plan = _seed_rehearsal_target_and_plan(db, suffix)
+    _install_security()
+    evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=f"rehearsal-issuer-target-{suffix}",
+        issued_at=_NOW,
+        valid_until=_NOW + timedelta(minutes=30),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(issuance, "_control_now", lambda: _NOW)
+        envelope = issue_rehearsal_issuer_authorization_for_plan(
+            db,
+            {"command_id": _cmd(), "plan_id": str(plan.id)},
+            harness_evidence_document=evidence,
+        )
+        assert db.in_transaction()
+        with pytest.raises(RehearsalIssuerIssuanceRefusedError) as refused:
+            rehearsal_issuer_standing_for(
+                db,
+                authorization_document=envelope.as_mapping(),
+                harness_evidence_document=evidence,
+                now=_NOW,
+            )
+        assert (
+            refused.value.code
+            == RehearsalIssuerIssuanceRefusalCode.STANDING_REQUIRES_COMMITTED_SESSION
+        )
+        db.commit()
+        assert not db.in_transaction()
+        result = rehearsal_issuer_standing_for(
+            db,
+            authorization_document=envelope.as_mapping(),
+            harness_evidence_document=evidence,
+            now=_NOW,
+        )
+    assert result.authorizes
+
+
 # ── Fix 3: consumption evidence must be fresh, never a replay of issuance's ─
 
 
@@ -554,6 +596,45 @@ def test_replaying_the_exact_issuance_evidence_at_consumption_is_refused(
                 authorization_document=envelope.as_mapping(),
                 # The EXACT SAME evidence document presented at issuance.
                 harness_evidence_document=evidence,
+            )
+    assert (
+        refused.value.code == RehearsalIssuerIssuanceRefusalCode.STALE_HARNESS_EVIDENCE
+    )
+
+
+def test_distinct_evidence_at_equal_issuance_time_is_stale(db: Session) -> None:
+    """Different canonical bytes at an equal timestamp are not later evidence."""
+    suffix = uuid.uuid4().hex
+    _target, plan = _seed_rehearsal_target_and_plan(db, suffix)
+    _install_security()
+    evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=f"rehearsal-issuer-target-{suffix}",
+        issued_at=_NOW,
+        valid_until=_NOW + timedelta(minutes=30),
+    )
+    distinct_evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=f"rehearsal-issuer-target-{suffix}",
+        issued_at=_NOW,
+        valid_until=_NOW + timedelta(minutes=31),
+    )
+    assert distinct_evidence["canonical_bytes"] != evidence["canonical_bytes"]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(issuance, "_control_now", lambda: _NOW)
+        envelope = issue_rehearsal_issuer_authorization_for_plan(
+            db,
+            {"command_id": _cmd(), "plan_id": str(plan.id)},
+            harness_evidence_document=evidence,
+        )
+        db.commit()
+        with pytest.raises(RehearsalIssuerIssuanceRefusedError) as refused:
+            stage_rehearsal_issuer_consumption(
+                db,
+                authorization_document=envelope.as_mapping(),
+                harness_evidence_document=distinct_evidence,
             )
     assert (
         refused.value.code == RehearsalIssuerIssuanceRefusalCode.STALE_HARNESS_EVIDENCE
