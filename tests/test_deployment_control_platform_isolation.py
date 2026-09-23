@@ -5214,17 +5214,28 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
     # canonical INNER document (schema/lease_id/controller_fingerprint/
     # target_ref/environment/issued_at/valid_until), not the outer signature
     # bytes, so `issued_at` must actually differ for the digest to differ.
-    # Anchored to the REAL issuance timestamp (`envelope.statement.issued_at`,
-    # produced by `_control_now()` inside issuance) rather than this test's
-    # own pre-captured `now`, since issuance no longer accepts a caller-
-    # supplied clock (fix 2) and could genuinely run a moment after `now` was
-    # captured.
+    #
+    # Captured as REAL wall-clock time right here, after issuance has already
+    # committed -- NOT `envelope.statement.issued_at + a fixed offset`. A
+    # fixed future offset races against `verify_rehearsal_harness_evidence_
+    # signature`'s strict `now < parsed.issued_at` FUTURE_DATED check (no
+    # grace period): whichever thread actually presents this evidence calls
+    # `_control_now()` at consumption time, and if that real clock read still
+    # trails the offset, the evidence itself is refused as future-dated
+    # before the ledger row is ever touched -- which is exactly what made
+    # this test flake as "the first FOR UPDATE was not reached" / "PostgreSQL
+    # never reported a lock wait" (a `FUTURE_DATED` refusal outside the DB
+    # entirely, misread as a locking regression). A timestamp captured NOW,
+    # before either thread starts, is by construction already in the past by
+    # the time any thread reaches this evidence check, however long the
+    # thread-startup/locking dance below takes.
+    consumption_evidence_issued_at = datetime.now(UTC)
     consumption_evidence = _fixture_harness_evidence(
         lease_id=lease_id,
         controller_fingerprint="fp-controller",
         target_ref=target_ref,
-        issued_at=envelope.statement.issued_at + timedelta(seconds=5),
-        valid_until=now + timedelta(minutes=30),
+        issued_at=consumption_evidence_issued_at,
+        valid_until=consumption_evidence_issued_at + timedelta(minutes=30),
     )
 
     class _HoldLedgerLock:

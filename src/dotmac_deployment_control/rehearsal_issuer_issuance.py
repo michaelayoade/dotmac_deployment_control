@@ -46,7 +46,7 @@ Overrides are not supported: every `*_provenance` field this module builds is
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from threading import Lock
 from typing import Any, Final
@@ -182,6 +182,24 @@ class RehearsalIssuerIssuanceRefusedError(DeploymentControlError):
     def __init__(self, code: RehearsalIssuerIssuanceRefusalCode, detail: str) -> None:
         super().__init__(f"{code}: {detail}")
         self.code = code
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Treat a naive value read back from OUR OWN ledger row as UTC.
+
+    Distinct from `authorization.py`/`authorization_v3.py`'s `_aware_utc`,
+    which REFUSES a naive value as malformed -- correct for a value arriving
+    over the wire from a caller, where a missing timezone is a genuine
+    ambiguity worth rejecting. `row.issued_at` is never a caller's claim: it
+    is this module's own previously-stored `DateTime(timezone=True)` column,
+    always written as UTC. SQLite (the unit-test backend) does not preserve
+    tzinfo on that column type the way PostgreSQL (production, and the
+    Postgres-backed platform-isolation canaries) does, so a value read back
+    inside the SQLite test suite can come back naive despite always meaning
+    UTC. Silently attaching UTC here is a storage-round-trip fix, not a
+    guess about caller intent.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _refused(
@@ -681,7 +699,7 @@ def stage_rehearsal_issuer_consumption(
             "second presentation of the same evidence is a replay, not a "
             "fresh presentation",
         )
-    if evidence.issued_at < row.issued_at:
+    if evidence.issued_at < _as_utc(row.issued_at):
         raise _refused(
             RehearsalIssuerIssuanceRefusalCode.STALE_HARNESS_EVIDENCE,
             f"the presented harness evidence was issued at {evidence.issued_at} "
