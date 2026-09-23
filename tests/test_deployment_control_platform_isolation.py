@@ -5117,7 +5117,6 @@ def test_concurrent_issuance_for_one_lease_commits_exactly_one_row(
                         db,
                         {"command_id": command_id, "plan_id": str(plan_id)},
                         harness_evidence_document=evidence,
-                        now=now,
                     )
                     db.commit()
                     outcomes[name] = "issued"
@@ -5204,17 +5203,27 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
             db,
             {"command_id": f"cmd-issue-{suffix}", "plan_id": str(plan_id)},
             harness_evidence_document=evidence,
-            now=now,
         )
         db.commit()
     authorization_id = envelope.statement.authorization_id
     authorization_document = envelope.as_mapping()
 
+    # A GENUINELY different, later piece of consumption evidence -- issuance's
+    # own evidence must never be replayable at consumption (STALE_HARNESS_
+    # EVIDENCE). `_fixture_harness_evidence`'s digest is computed over the
+    # canonical INNER document (schema/lease_id/controller_fingerprint/
+    # target_ref/environment/issued_at/valid_until), not the outer signature
+    # bytes, so `issued_at` must actually differ for the digest to differ.
+    # Anchored to the REAL issuance timestamp (`envelope.statement.issued_at`,
+    # produced by `_control_now()` inside issuance) rather than this test's
+    # own pre-captured `now`, since issuance no longer accepts a caller-
+    # supplied clock (fix 2) and could genuinely run a moment after `now` was
+    # captured.
     consumption_evidence = _fixture_harness_evidence(
         lease_id=lease_id,
         controller_fingerprint="fp-controller",
         target_ref=target_ref,
-        issued_at=now,
+        issued_at=envelope.statement.issued_at + timedelta(seconds=5),
         valid_until=now + timedelta(minutes=30),
     )
 
@@ -5263,7 +5272,6 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
                     db,
                     authorization_document=authorization_document,
                     harness_evidence_document=consumption_evidence,
-                    now=now,
                 )
             else:
                 revoke_rehearsal_issuer_authorization(

@@ -67,6 +67,7 @@ from dotmac_deployment_control.models import (
     DeploymentTarget,
     RehearsalIssuerAuthorizationRecord,
     RehearsalIssuerAuthorizationState,
+    TargetStatus,
 )
 from dotmac_deployment_control.ports import DeploymentControlError
 from dotmac_deployment_control.rehearsal_harness_evidence import (
@@ -157,10 +158,23 @@ class RehearsalIssuerIssuanceRefusalCode(StrEnum):
     EVIDENCE_WINDOW_EXCEEDED = "rehearsal_issuer_issuance_evidence_window_exceeded"
     NOT_RECORDED = "rehearsal_issuer_issuance_not_recorded"
     ENVELOPE_MISMATCH = "rehearsal_issuer_issuance_envelope_mismatch"
-    #: The gap this correction closes in C1's own issuer: it only compares the
-    #: signer's `public_key_fingerprint` before minting, not `key_id`/
-    #: `algorithm`/`purpose`. This module re-checks all four after issuance.
+    #: The freshly minted envelope failed genuine cryptographic
+    #: self-verification against the installed `authorization_verifier` --
+    #: the same verifier every other caller must satisfy, never a shortcut.
+    #: This is NOT a metadata comparison (an earlier version of this check
+    #: compared `key_id`/`algorithm`/`public_key_fingerprint` against the
+    #: same statement object used to build them, which can never disagree);
+    #: it re-derives and checks the signature over the canonical bytes,
+    #: exactly as a real consumer of this envelope would.
     SIGNER_IDENTITY_MISMATCH = "rehearsal_issuer_issuance_signer_identity_mismatch"
+    #: The presented harness evidence at consumption is the exact evidence
+    #: used at issuance (a replay), or predates issuance outright -- neither
+    #: can be a later, fresh presentation.
+    STALE_HARNESS_EVIDENCE = "rehearsal_issuer_issuance_stale_harness_evidence"
+    #: The resolved target is not `TargetStatus.ACTIVE` -- checked at both
+    #: issuance and consumption, since a target can be suspended or
+    #: decommissioned between the two.
+    TARGET_NOT_ACTIVE = "rehearsal_issuer_issuance_target_not_active"
     NOT_REVOCABLE = "rehearsal_issuer_issuance_not_revocable"
 
 
@@ -288,7 +302,6 @@ def issue_rehearsal_issuer_authorization_for_plan(
     request: dict[str, Any],
     *,
     harness_evidence_document: object,
-    now: datetime | None = None,
 ) -> RehearsalIssuerAuthorizationV1:
     """Mint a rehearsal-issuer authorization for one lease against a plan's
     OWN standing terms -- never against caller-supplied values.
@@ -320,7 +333,7 @@ def issue_rehearsal_issuer_authorization_for_plan(
         )
 
     security = _require_installed_security()
-    effective_now = now or _control_now()
+    effective_now = _control_now()
 
     # Verified BEFORE touching the database, per the brief: a forged or
     # expired presentation never earns a database lock.
@@ -358,6 +371,12 @@ def issue_rehearsal_issuer_authorization_for_plan(
             )
         assert isinstance(terms, _StandingPlanTerms)  # narrows for mypy
 
+        if terms.target.status != TargetStatus.ACTIVE.value:
+            raise _refused(
+                RehearsalIssuerIssuanceRefusalCode.TARGET_NOT_ACTIVE,
+                f"target {terms.target.target_ref} is {terms.target.status!r}, "
+                "not active",
+            )
         if terms.target.environment != REHEARSAL_ONLY_ENVIRONMENT:
             raise _refused(
                 RehearsalIssuerIssuanceRefusalCode.NOT_A_REHEARSAL_TARGET,
@@ -434,19 +453,41 @@ def issue_rehearsal_issuer_authorization_for_plan(
         envelope = issue_rehearsal_issuer_authorization(
             statement, signer=security.signer
         )
-        signed = envelope.statement
-        if (
-            signed.key_id != identity.key_id
-            or signed.algorithm != identity.algorithm
-            or signed.public_key_fingerprint != identity.public_key_fingerprint
-        ):
+
+        # Genuine cryptographic self-verification against the INSTALLED
+        # verifier -- the same one every other caller must satisfy, never a
+        # shortcut. A metadata comparison against `statement` proves nothing:
+        # `envelope.statement` IS the same object `statement` already built
+        # from `identity`, so such a comparison can never disagree.
+        self_check_subject = RehearsalIssuerAuthorizationSubject(
+            immutable_reference=str(terms.plan.id),
+            target_id=str(terms.target.id),
+            target_ref=terms.target.target_ref,
+            desired_state_digest=terms.plan_digest.canonical,
+            profile_digest=terms.descriptor_digest.canonical,
+            authorized_image_digests=_authorized_image_digest_projection(
+                terms.authorized_images
+            ),
+            execution_plan_digest=terms.execution_plan_digest.canonical,
+            controller_fingerprint=evidence.controller_fingerprint,
+            environment=REHEARSAL_ONLY_ENVIRONMENT,
+            signer_public_key_fingerprint=identity.public_key_fingerprint,
+            lease_id=evidence.lease_id,
+        )
+        try:
+            verify_rehearsal_issuer_authorization(
+                envelope.as_mapping(),
+                verifier=security.authorization_verifier,
+                subject=self_check_subject,
+                at=effective_now,
+                revoked_authorization_ids=frozenset(),
+                consumed_references=frozenset(),
+            )
+        except RehearsalIssuerAuthorizationRefusedError as exc:
             raise _refused(
                 RehearsalIssuerIssuanceRefusalCode.SIGNER_IDENTITY_MISMATCH,
-                "the issued statement's signer identity does not match the "
-                "installed signer's own identity; C1's issuer only compares "
-                "public_key_fingerprint before minting, so this boundary "
-                "re-checks key_id/algorithm/public_key_fingerprint itself",
-            )
+                f"self-verification of the freshly issued envelope failed: {exc}",
+            ) from exc
 
         record = RehearsalIssuerAuthorizationRecord(
             id=uuid4(),
@@ -577,14 +618,13 @@ def stage_rehearsal_issuer_consumption(
     *,
     authorization_document: object,
     harness_evidence_document: object,
-    now: datetime | None = None,
 ) -> RehearsalIssuerConsumptionStaged:
     """Spend one lease's rehearsal-issuer authority against Control's OWN
     re-verified, locked state -- never against the presented document's own
     claimed fields. This is what discharges C1's stated caller obligation
     ("the application does not authorize itself")."""
     security = _require_installed_security()
-    effective_now = now or _control_now()
+    effective_now = _control_now()
 
     # A SEPARATE, FRESH presentation from issuance-time evidence.
     evidence = _fresh_harness_evidence(
@@ -633,6 +673,23 @@ def stage_rehearsal_issuer_consumption(
             "not match the ledger's stored envelope byte-for-byte",
         )
 
+    if evidence.digest.canonical == row.harness_evidence_digest:
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.STALE_HARNESS_EVIDENCE,
+            f"the presented harness evidence for {statement.authorization_id} "
+            "is byte-identical to the evidence presented at issuance; a "
+            "second presentation of the same evidence is a replay, not a "
+            "fresh presentation",
+        )
+    if evidence.issued_at < row.issued_at:
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.STALE_HARNESS_EVIDENCE,
+            f"the presented harness evidence was issued at {evidence.issued_at} "
+            f"which predates authorization {statement.authorization_id}'s own "
+            f"issuance at {row.issued_at}; consumption evidence must be a "
+            "later, fresh presentation",
+        )
+
     # Re-derive standing terms from Control's OWN locked state -- never from
     # the presented document's claimed fields.
     terms = _standing_plan_terms(db, plan)
@@ -644,6 +701,19 @@ def stage_rehearsal_issuer_consumption(
             f"plan {plan.id} no longer has a standing approval: {detail}",
         )
     assert isinstance(terms, _StandingPlanTerms)
+
+    if terms.target.status != TargetStatus.ACTIVE.value:
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.TARGET_NOT_ACTIVE,
+            f"target {terms.target.target_ref} is {terms.target.status!r}, "
+            "not active",
+        )
+    if evidence.target_ref != terms.target.target_ref:
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.TARGET_MISMATCH,
+            f"the harness evidence names target_ref {evidence.target_ref!r} "
+            f"and plan {plan.id} resolves to {terms.target.target_ref!r}",
+        )
 
     subject = RehearsalIssuerAuthorizationSubject(
         immutable_reference=str(terms.plan.id),
@@ -736,13 +806,24 @@ def rehearsal_issuer_standing_for(
         )
     ).scalar_one_or_none()
 
+    # A document with no matching ledger row, or one whose presented envelope
+    # does not byte-match the ledger's own stored envelope, reads exactly as
+    # C1's own absent/unresolved standing -- it must NOT be resolved into a
+    # real subject just because the presented statement parses and names a
+    # real plan/target. The ledger row is the sole source of truth for what
+    # this authorization_id actually is.
+    envelope_matches_ledger = row is not None and canonical_json(
+        presented.as_mapping()["statement"]
+    ) == canonical_json(row.authorization_envelope["statement"])
+
     target, plan = None, None
-    try:
-        plan = db.get(DeploymentPlan, UUID(statement.immutable_reference))
-    except ValueError:
-        plan = None
-    if plan is not None:
-        target = db.get(DeploymentTarget, plan.target_id)
+    if envelope_matches_ledger:
+        try:
+            plan = db.get(DeploymentPlan, UUID(statement.immutable_reference))
+        except ValueError:
+            plan = None
+        if plan is not None:
+            target = db.get(DeploymentTarget, plan.target_id)
 
     if plan is None or target is None:
         subject = _absent_subject(evidence)
