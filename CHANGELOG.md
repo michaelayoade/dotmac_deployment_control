@@ -5,6 +5,62 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — Control's real issuance boundary for the rehearsal-issuer contract
+
+DB-backed issuance, revocation, staged consumption and standing for C1's
+`rehearsal_issuer_authorization` contract (the section immediately below).
+Closes the exact defect that motivated this whole redesign: a prior CP-side
+design derived A6.4 values itself and invented a same-process "harness
+witness" object, empirically forgeable two ways (`dataclasses.replace()` on a
+legitimate binding, and importing the "private" sentinel that guarded it from
+outside its own module). This module is the correction — Control owns the
+whole lifecycle, backed by a durable ledger.
+
+### Added
+
+- `rehearsal_harness_evidence.py` — a pure, signature-verified way to know a
+  lease presentation came from the disposable rehearsal harness, mirroring
+  `authorization_v3.HealthEvidenceVerifier`'s pattern exactly; a verifier's
+  boolean answer replaces the forgeable witness. `RehearsalHarnessEvidenceDigestV1`
+  (`digests.py`) is a RECEIVED, never-computed digest over its canonical bytes.
+- `RehearsalIssuerAuthorizationRecord` (migration `dc_0014_rehearsal_issuer_ledger`)
+  — a durable `issued → spent | revoked` ledger, a SIBLING of `RehearsalGrant`
+  for a different authority (operating the issuer, not a provoked act once it
+  already stands): one `SELECT ... FOR UPDATE` lock, a BEFORE UPDATE trigger
+  making terminal rows immutable, a CHECK tying `state` to its evidence
+  columns, and `UNIQUE(lease_id)` — a revoked lease is not reusable; a genuine
+  retry presents a new lease id.
+- `install_rehearsal_issuer_security`/`issue_rehearsal_issuer_authorization_for_plan`/
+  `revoke_rehearsal_issuer_authorization`/`stage_rehearsal_issuer_consumption`/
+  `rehearsal_issuer_standing_for` (`rehearsal_issuer_issuance.py`) — the
+  install-once protected-composition boundary (no public function accepts a
+  verifier as a per-call parameter) and the five lifecycle operations.
+  Issuance derives every A6.4 value from the plan's OWN standing terms
+  (`service._standing_plan_terms`, extracted for this reuse) — never from a
+  caller — and refuses unless the resolved target's environment is exactly
+  `REHEARSAL_ONLY_ENVIRONMENT` and its authorized operation is `"deploy"`.
+- An independent adversarial review of the merged design, run twice (a full
+  pass, then a limited re-review of the corrected diff), found and closed
+  seven real gaps CI could not catch on its own: (1) `rehearsal_issuer_standing_for`
+  resolved a real subject from a presented statement's own claimed
+  plan/target even with no matching ledger row, contradicting its own
+  documented contract — standing now requires the ledger row to exist AND
+  byte-match; (2) the two mutating functions accepted a caller-supplied clock,
+  unlike every other mutating function in this package — removed; (3)
+  consumption never compared its presented harness evidence against the
+  evidence used at issuance, so replaying issuance's own evidence always
+  worked — closed with `STALE_HARNESS_EVIDENCE`, refusing a byte-identical or
+  non-later (`<=`) presentation; (4) the post-issuance "signer identity
+  re-check" compared the minted envelope's statement against the same object
+  used to build it, which can never disagree — replaced with genuine
+  cryptographic self-verification against the installed verifier; (5) neither
+  issuance nor consumption checked `TargetStatus.ACTIVE` — added; (6) the
+  issuing session could read its own uncommitted ledger row as valid standing
+  — closed with `STANDING_REQUIRES_COMMITTED_SESSION`, refusing standing on a
+  session with an open transaction; (7) the `<=` boundary above was
+  originally `<`, admitting equal-timestamp-but-distinct evidence as
+  "later" — tightened.
+
 ## Unreleased — the protected rehearsal issuer's authorization contract
 
 A pure, standalone typed contract (`dotmac_platform_control_plane` ADR-0013
