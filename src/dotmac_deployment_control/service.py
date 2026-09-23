@@ -4242,97 +4242,44 @@ def _lookup_refusal(
     )
 
 
-def find_approved_plan(
-    db: Session,
-    *,
-    plan_digest: str,
-    authorization_id: UUID | str | None = None,
-    expected_descriptor_digest: str | None = None,
-    expected_execution_plan_digest: str | None = None,
-    verifier: AuthorizationVerifier | None = None,
-    at: datetime | None = None,
-) -> facts.ApprovedPlanLookup:
-    """Resolve a plan digest to a STANDING authorization, or to a typed refusal.
+@dataclass(frozen=True, slots=True)
+class _StandingPlanTerms:
+    """What "this plan's approval currently stands for" means, extracted so a
+    second caller — the rehearsal-issuer issuance path
+    (`rehearsal_issuer_issuance.py`) — asks `find_approved_plan`'s own
+    question rather than reimplementing it. See `_standing_plan_terms`."""
 
-    A READ. It opens no transaction of its own, writes nothing, and derives
-    nothing: every term it returns was frozen at proposal or written at
-    approval. In particular it does NOT reconstruct or re-hash anything —
-    `execution_plan_digest` is handed back exactly as the Deployment Foundation
-    issued it and Control froze it, because Control is structurally unable to
-    recompute that value and this function does not become the place it starts
-    trying.
+    plan: DeploymentPlan
+    target: DeploymentTarget
+    plan_digest: PlanDigestV1
+    descriptor_digest: DescriptorDigestV1
+    execution_plan_digest: ExecutionPlanDigestV1
+    authorized_operation: str
+    authorized_images: tuple[AuthorizedImage, ...]
+    release_ref: str | None
+    #: Read once inside `_standing_plan_terms` and already known non-None by
+    #: construction (a `None` value returns a refusal before this type is
+    #: built) — carried here rather than re-read off `row` by a caller, so
+    #: mypy's narrowing survives the function boundary and a second read
+    #: cannot silently observe a different value than the one the refusals
+    #: above were decided against.
+    approval_decision_status: str
 
-    ## Total, and never ambiguous
 
-    Every path returns an `ApprovedPlanLookup` carrying EXACTLY one of an
-    authorization or a typed refusal — never an empty answer, and never a bare
-    `None` that a caller could read as either "not approved" or "nothing came
-    back". The result is falsy for every refusal (see
-    `ApprovedPlanLookup.__bool__`), so `if find_approved_plan(...)` cannot pass
-    on a no.
+def _standing_plan_terms(
+    db: Session, row: DeploymentPlan
+) -> _StandingPlanTerms | facts.ApprovedPlanLookup:
+    """`find_approved_plan`'s steps 2-5 (approval status, decision standing,
+    execution binding, authorized images, descriptor binding), MOVED VERBATIM
+    rather than reimplemented — `find_approved_plan` calls this after its own
+    step 1 (digest-to-row resolution) and must produce byte-identical results
+    to before this extraction.
 
-    ## Revocation is answered HERE
-
-    A consumer asking "is this plan approved?" gets `APPROVAL_REVOKED` for a
-    plan whose decision was withdrawn — from this one call, not from a second
-    query it has to remember to make. That is the whole reason revocation is
-    reachable from the lookup: a consumer that gets a yes for a revoked plan is
-    worse off than one with no API, because the one with no API asks a person.
-
-    ## `expected_execution_plan_digest` is optional and is compared as a VALUE
-
-    Supply it and the lookup confirms the authorization binds that exact
-    Foundation execution; omit it and no such claim is made. The comparison is
-    between two `ExecutionPlanDigestV1` values, never between two strings —
-    see `digests` for what a string comparison of these costs.
-
-    Raises `DigestEncodingError` for nothing and `ApprovalRefusedError` for
-    nothing: this function has no failure mode that is not a refusal. The
-    raising entry point is `require_approved_plan`.
+    Returns the standing terms, or a `facts.ApprovedPlanLookup` carrying
+    exactly the refusal `find_approved_plan` itself would have returned at
+    this point — the same refusal type, so a caller of either function
+    branches on one vocabulary.
     """
-    # ── 1. Can the caller's digest be READ at all? ──────────────────────────
-    #
-    # Its own outcome, separate from "no plan holds it", and the separation is
-    # the `0.1.0a4` lesson applied to the read path. "I cannot read what you
-    # sent" is a fault in the caller's encoding and says nothing about any
-    # plan; "nothing holds that digest" is a statement about this database.
-    # Collapsing them would hand an operator a security-shaped answer for a
-    # formatting bug — the failure shape that looks exactly like the system
-    # working.
-    try:
-        wanted = PlanDigestV1.parse_accepting_a4_bare_hex(plan_digest)
-    except DigestEncodingError as exc:
-        return _lookup_refusal(
-            facts.ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
-            f"the plan digest supplied to this lookup cannot be read: {exc} "
-            "NOTHING was looked up and no claim is made about any plan — this "
-            "is an encoding fault in the caller, not a statement that the plan "
-            "is unapproved or missing.",
-        )
-
-    # A VALUE lookup, expressed as the two encodings that value can be stored
-    # in. `0.1.0a4` wrote bare hex and everything since writes canonical, so a
-    # single equality against the caller's text would silently miss half the
-    # rows — and would be a string comparison of a digest, which is the defect
-    # `test_digest_comparison_is_typed.py` exists to keep out. Both renderings
-    # come from the parsed VALUE, so neither is the caller's spelling.
-    row = (
-        db.execute(
-            select(DeploymentPlan).where(
-                DeploymentPlan.plan_digest.in_((wanted.canonical, wanted.a4_bare_hex))
-            )
-        )
-        .scalars()
-        .one_or_none()
-    )
-    if row is None:
-        return _lookup_refusal(
-            facts.ApprovedPlanRefusalCode.DIGEST_UNRESOLVED,
-            f"no plan in this control plane holds digest {wanted.canonical}. "
-            "The value was read as a well-formed digest, so this is an answer "
-            "about this database and not about the caller's encoding.",
-        )
-
     # ── 2. Is it approved? ─────────────────────────────────────────────────
     if row.status != PlanStatus.APPROVED.value:
         exempt = (
@@ -4345,8 +4292,9 @@ def find_approved_plan(
         )
         return _lookup_refusal(
             facts.ApprovedPlanRefusalCode.NOT_APPROVED,
-            f"plan {row.id} holds digest {wanted.canonical} and its status is "
-            f"{row.status!r}, not {PlanStatus.APPROVED.value!r}.{exempt}",
+            f"plan {row.id} holds digest {_frozen_plan_digest(row).canonical} "
+            f"and its status is {row.status!r}, not "
+            f"{PlanStatus.APPROVED.value!r}.{exempt}",
             plan=row,
         )
 
@@ -4439,6 +4387,123 @@ def find_approved_plan(
             "descriptor digest from the execution plan or its own plan digest.",
             plan=row,
         )
+
+    snapshot = row.snapshot or {}
+    target = _load_target(db, row.target_id)
+    return _StandingPlanTerms(
+        plan=row,
+        target=target,
+        plan_digest=_frozen_plan_digest(row),
+        descriptor_digest=descriptor,
+        execution_plan_digest=authorized_execution,
+        authorized_operation=authorized_operation,
+        authorized_images=images,
+        release_ref=snapshot.get("release_ref"),
+        approval_decision_status=decision_status,
+    )
+
+
+def find_approved_plan(
+    db: Session,
+    *,
+    plan_digest: str,
+    authorization_id: UUID | str | None = None,
+    expected_descriptor_digest: str | None = None,
+    expected_execution_plan_digest: str | None = None,
+    verifier: AuthorizationVerifier | None = None,
+    at: datetime | None = None,
+) -> facts.ApprovedPlanLookup:
+    """Resolve a plan digest to a STANDING authorization, or to a typed refusal.
+
+    A READ. It opens no transaction of its own, writes nothing, and derives
+    nothing: every term it returns was frozen at proposal or written at
+    approval. In particular it does NOT reconstruct or re-hash anything —
+    `execution_plan_digest` is handed back exactly as the Deployment Foundation
+    issued it and Control froze it, because Control is structurally unable to
+    recompute that value and this function does not become the place it starts
+    trying.
+
+    ## Total, and never ambiguous
+
+    Every path returns an `ApprovedPlanLookup` carrying EXACTLY one of an
+    authorization or a typed refusal — never an empty answer, and never a bare
+    `None` that a caller could read as either "not approved" or "nothing came
+    back". The result is falsy for every refusal (see
+    `ApprovedPlanLookup.__bool__`), so `if find_approved_plan(...)` cannot pass
+    on a no.
+
+    ## Revocation is answered HERE
+
+    A consumer asking "is this plan approved?" gets `APPROVAL_REVOKED` for a
+    plan whose decision was withdrawn — from this one call, not from a second
+    query it has to remember to make. That is the whole reason revocation is
+    reachable from the lookup: a consumer that gets a yes for a revoked plan is
+    worse off than one with no API, because the one with no API asks a person.
+
+    ## `expected_execution_plan_digest` is optional and is compared as a VALUE
+
+    Supply it and the lookup confirms the authorization binds that exact
+    Foundation execution; omit it and no such claim is made. The comparison is
+    between two `ExecutionPlanDigestV1` values, never between two strings —
+    see `digests` for what a string comparison of these costs.
+
+    Raises `DigestEncodingError` for nothing and `ApprovalRefusedError` for
+    nothing: this function has no failure mode that is not a refusal. The
+    raising entry point is `require_approved_plan`.
+    """
+    # ── 1. Can the caller's digest be READ at all? ──────────────────────────
+    #
+    # Its own outcome, separate from "no plan holds it", and the separation is
+    # the `0.1.0a4` lesson applied to the read path. "I cannot read what you
+    # sent" is a fault in the caller's encoding and says nothing about any
+    # plan; "nothing holds that digest" is a statement about this database.
+    # Collapsing them would hand an operator a security-shaped answer for a
+    # formatting bug — the failure shape that looks exactly like the system
+    # working.
+    try:
+        wanted = PlanDigestV1.parse_accepting_a4_bare_hex(plan_digest)
+    except DigestEncodingError as exc:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
+            f"the plan digest supplied to this lookup cannot be read: {exc} "
+            "NOTHING was looked up and no claim is made about any plan — this "
+            "is an encoding fault in the caller, not a statement that the plan "
+            "is unapproved or missing.",
+        )
+
+    # A VALUE lookup, expressed as the two encodings that value can be stored
+    # in. `0.1.0a4` wrote bare hex and everything since writes canonical, so a
+    # single equality against the caller's text would silently miss half the
+    # rows — and would be a string comparison of a digest, which is the defect
+    # `test_digest_comparison_is_typed.py` exists to keep out. Both renderings
+    # come from the parsed VALUE, so neither is the caller's spelling.
+    row = (
+        db.execute(
+            select(DeploymentPlan).where(
+                DeploymentPlan.plan_digest.in_((wanted.canonical, wanted.a4_bare_hex))
+            )
+        )
+        .scalars()
+        .one_or_none()
+    )
+    if row is None:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.DIGEST_UNRESOLVED,
+            f"no plan in this control plane holds digest {wanted.canonical}. "
+            "The value was read as a well-formed digest, so this is an answer "
+            "about this database and not about the caller's encoding.",
+        )
+
+    # ── 2-5. Approval status, decision standing, execution binding,
+    # authorized images, descriptor binding — `find_approved_plan`'s own
+    # question, extracted so the rehearsal-issuer issuance path asks it
+    # identically rather than reimplementing it. See `_standing_plan_terms`.
+    terms = _standing_plan_terms(db, row)
+    if isinstance(terms, facts.ApprovedPlanLookup):
+        return terms
+    descriptor = terms.descriptor_digest
+    authorized_execution = terms.execution_plan_digest
+    images = terms.authorized_images
     if expected_descriptor_digest is not None:
         try:
             expected_descriptor = DescriptorDigestV1.parse(expected_descriptor_digest)
@@ -4513,7 +4578,7 @@ def find_approved_plan(
             "from this database is not signature verification",
             plan=row,
         )
-    target = _load_target(db, row.target_id)
+    target = terms.target
     try:
         envelope = _verified_rollout_envelope(
             rollout, row, target, verifier=verifier, at=at
@@ -4543,11 +4608,11 @@ def find_approved_plan(
             # Handed back AS FROZEN. Control received this from the Foundation
             # and has no constructor that could rebuild it.
             execution_plan_digest=authorized_execution.canonical,
-            operation=authorized_operation,
+            operation=terms.authorized_operation,
             approval_policy_code=row.approval_policy_code,
             approval_policy_version=row.approval_policy_version,
             approval_decision_ref=row.approval_decision_ref,
-            approval_decision_status=decision_status,
+            approval_decision_status=terms.approval_decision_status,
             approved_at=row.approved_at,
             control_version=envelope.statement.control_version,
             authorized_images=images,
