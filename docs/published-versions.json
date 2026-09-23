@@ -333,6 +333,26 @@
       "pinnable": true,
       "release_run_note": "Published by run 34687474025 from the exact tip of protected main (8173954886396e8d2fbb8e3b470aa2dfddbe64b0); that run built and uploaded but neither verified itself nor tagged. INDEPENDENT verify run 34687542590 returned VERIFIED — both registry-served artifacts matched the release build by sha256, publisher read-back succeeded, a clean dependency-complete read-only consumer installed and imported the wheel, all FIFTEEN behavioural canaries passed against that installed artifact, and only then did tag_once.py write the annotated tag object 5b63f293ce93781f627151992d7034f1698213ff. The release contents and their honestly open cutover items are recorded under the 0.1.0a13 sections in CHANGELOG.md.",
       "adoption_note": "PIN a13 when a consumer needs the Control-owned durable attestation trust registry or the public read-only resolve_current_root, fingerprint_standing and AttestationRootRefusal facade; a12 is published, verified and pinnable but predates those surfaces. Publication does not make Control authoritative in production: the consumer must compose the facade, bind its authorization boundary and retire the caller-supplied evaluator path separately."
+    },
+    {
+      "version": "0.1.0a14",
+      "tag": "dotmac-deployment-control-v0.1.0a14",
+      "tag_object": "9769096c2129589d4818d8ba2357111c6b249d1f",
+      "peeled_commit": "f555f4384fbeb7eb18822bdaff70055fedbe1480",
+      "release_run": "35859642778",
+      "verify_run": "35859932041",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a14-py3-none-any.whl": "3e66851fd03708ba8f296b7be13f36cbd6548341136380534937d554d672bbf5",
+        "dotmac_deployment_control-0.1.0a14.tar.gz": "c53d402a5829cc192ec6413394458eca751081ef8dfebb7ce2c3ca6b9af42944"
+      },
+      "supersedes": "0.1.0a13",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published by build run 35859642778 from the exact tip of protected main (f555f4384fbeb7eb18822bdaff70055fedbe1480); that run built and uploaded but neither verified itself nor tagged. INDEPENDENT verify run 35859932041 returned VERIFIED: publisher read-back succeeded, both registry-served artifacts were fetched by exact filename and matched the release build by sha256, a clean dependency-complete read-only consumer installed and imported the wheel, and all FIFTEEN installed-artifact behavioural canaries passed. Only after verification did tag_once.py write annotated tag object 9769096c2129589d4818d8ba2357111c6b249d1f; the recorder then opened PR #64 for this human disposition.",
+      "adoption_note": "PIN a14 when a consumer needs ADR-0073 three-phase authenticated host admission and/or Control-owned protected rehearsal-issuer issuance, revocation, staged consumption and standing. a13 remains immutable, verified and pinnable but predates these surfaces. Publication does not activate an issuer, supply Control Plane signer/verifier/harness composition, prove Lane 3, allocate a Foundation successor, or retire the incompatible Control Plane caller-derived/witness path; each remains a separate cutover obligation."
     }
   ],
   "tags_remain_in_source_for": [
