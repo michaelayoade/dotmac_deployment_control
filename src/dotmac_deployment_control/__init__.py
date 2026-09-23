@@ -160,6 +160,7 @@ from dotmac_deployment_control.digests import (
     ObservedExecutionStateDigestV1,
     PlanDigestV1,
     PublicKeyFingerprintV1,
+    RehearsalHarnessEvidenceDigestV1,
     SpecDigestV1,
 )
 from dotmac_deployment_control.dispatch_envelope import (
@@ -388,6 +389,17 @@ from dotmac_deployment_control.rehearsal_grant import (
     issue_rehearsal_grant,
     rehearsal_standing,
     verify_rehearsal_grant,
+)
+from dotmac_deployment_control.rehearsal_harness_evidence import (
+    REHEARSAL_HARNESS_EVIDENCE_PURPOSE,
+    REHEARSAL_HARNESS_EVIDENCE_SCHEMA,
+    REHEARSAL_HARNESS_EVIDENCE_VERSION,
+    ParsedRehearsalHarnessEvidence,
+    RehearsalHarnessEvidenceRefusalCode,
+    RehearsalHarnessEvidenceRefusedError,
+    RehearsalHarnessEvidenceVerifier,
+    parse_signed_rehearsal_harness_evidence,
+    verify_rehearsal_harness_evidence_signature,
 )
 from dotmac_deployment_control.rehearsal_issuer_authorization import (
     REHEARSAL_ISSUER_AUTHORIZATION_SCHEMA,
@@ -680,6 +692,7 @@ __all__ = [
     "PublicKeyFingerprintV1",
     "RecordObservationCommand",
     "RegisterTargetCommand",
+    "RehearsalHarnessEvidenceDigestV1",
     "RequestRolloutCommand",
     "RevokePlanApprovalCommand",
     "Rollout",
@@ -791,6 +804,15 @@ __all__ = [
     "issue_rehearsal_grant",
     "rehearsal_standing",
     "verify_rehearsal_grant",
+    "REHEARSAL_HARNESS_EVIDENCE_PURPOSE",
+    "REHEARSAL_HARNESS_EVIDENCE_SCHEMA",
+    "REHEARSAL_HARNESS_EVIDENCE_VERSION",
+    "ParsedRehearsalHarnessEvidence",
+    "RehearsalHarnessEvidenceRefusalCode",
+    "RehearsalHarnessEvidenceRefusedError",
+    "RehearsalHarnessEvidenceVerifier",
+    "parse_signed_rehearsal_harness_evidence",
+    "verify_rehearsal_harness_evidence_signature",
     "REHEARSAL_ISSUER_AUTHORIZATION_SCHEMA",
     "REHEARSAL_ISSUER_AUTHORIZATION_VERSION",
     "REHEARSAL_ISSUER_PURPOSE",
