@@ -100,7 +100,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0014_rehearsal_issuer_ledger",
+    lineage_head="dc_0015_plan_purpose",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=tuple(
@@ -450,6 +450,12 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                             24,
                             _VARCHAR_200,
                             nullable=True,
+                        ),
+                        _column(
+                            "purpose",
+                            25,
+                            _VARCHAR_40,
+                            nullable=False,
                         ),
                     ),
                 ),

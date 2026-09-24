@@ -137,6 +137,7 @@ from dotmac_deployment_control.models import (
     ObservationAttempt,
     ObservationDisposition,
     ObservationReceipt,
+    PlanPurpose,
     PlanStatus,
     RecoveryGrant,
     Rollout,
@@ -296,13 +297,15 @@ def _stored_dispatch_coordinate(
     db: Session, attempt_id: UUID
 ) -> _StoredDispatchCoordinate | None:
     row = db.execute(
-        select(RolloutAttempt, Rollout.target_id)
+        select(RolloutAttempt, Rollout.target_id, DeploymentPlan)
         .join(Rollout, Rollout.id == RolloutAttempt.rollout_id)
+        .join(DeploymentPlan, DeploymentPlan.id == Rollout.plan_id)
         .where(RolloutAttempt.id == attempt_id)
     ).one_or_none()
     if row is None or row[0].dispatch_envelope is None:
         return None
-    attempt, target_id = row
+    attempt, target_id, plan = row
+    _require_foundation_execution(plan)
     dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
     return _StoredDispatchCoordinate(
         attempt_id=attempt.id,
@@ -371,6 +374,13 @@ def _stage_dispatch_consumption(
             "locked dispatch target",
         )
     plan = _load_plan_for_update(db, rollout_locator.plan_id)
+    try:
+        _require_foundation_execution(plan)
+    except PlanRefusedError as exc:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+            f"dispatch cannot consume a non-Foundation plan: {exc}",
+        ) from exc
     rollout = db.execute(
         select(Rollout)
         .where(Rollout.id == locator)
@@ -643,6 +653,7 @@ class ProposePlanCommand:
     #: on construction for ENCODING only: this refuses a value that cannot be
     #: read, and it never rewrites one that can.
     execution_plan_digest: str
+    purpose: str
     requires_approval: bool = True
     approval_policy_code: str | None = None
     approval_policy_version: int | None = None
@@ -666,6 +677,12 @@ class ProposePlanCommand:
         the finding they need.
         """
         require_operation(self.operation, where="ProposePlanCommand.operation")
+        _require_plan_purpose(self.purpose)
+        if (
+            self.purpose == PlanPurpose.REHEARSAL_ISSUER_OPERATION.value
+            and not self.requires_approval
+        ):
+            raise PlanRefusedError("a rehearsal-issuer plan requires standing approval")
 
 
 @dataclass(frozen=True, slots=True)
@@ -799,7 +816,10 @@ def _control_now() -> datetime:
 
 
 def plan_snapshot(
-    target: DeploymentTarget, *, descriptor_digest: str | None = None
+    target: DeploymentTarget,
+    *,
+    descriptor_digest: str | None = None,
+    purpose: str,
 ) -> dict[str, Any]:
     """The canonical frozen snapshot of a target's desired state.
 
@@ -839,6 +859,7 @@ def plan_snapshot(
     of one absence would be two digests for one plan.
     """
     return {
+        "plan_purpose": _require_plan_purpose(purpose).value,
         "target_ref": target.target_ref,
         "product_code": target.product_code,
         "environment": target.environment,
@@ -903,6 +924,44 @@ def spec_digest(spec: Mapping[str, Any]) -> str:
 
 
 # ── Internals ───────────────────────────────────────────────────────────────
+
+
+def _require_plan_purpose(value: str) -> PlanPurpose:
+    try:
+        return PlanPurpose(value)
+    except ValueError as exc:
+        raise PlanRefusedError(f"unknown deployment plan purpose {value!r}") from exc
+
+
+def _frozen_plan_purpose(row: DeploymentPlan) -> PlanPurpose:
+    """Read the persisted class and require its frozen snapshot to agree.
+
+    Historical snapshots predate this field; the migration classifies those
+    rows as Foundation only. New plans bind the class into their plan digest.
+    """
+    purpose = _require_plan_purpose(row.purpose)
+    snapshot = row.snapshot or {}
+    frozen = snapshot.get("plan_purpose")
+    if frozen is None and purpose is PlanPurpose.FOUNDATION_EXECUTION:
+        return purpose
+    if frozen != purpose.value:
+        raise PlanRefusedError(
+            f"plan {row.id} persisted purpose {purpose.value!r} differs from "
+            f"its frozen snapshot purpose {frozen!r}"
+        )
+    if plan_digest_of(snapshot) != _frozen_plan_digest(row):
+        raise PlanRefusedError(
+            f"plan {row.id} purpose-bearing snapshot differs from its frozen digest"
+        )
+    return purpose
+
+
+def _require_foundation_execution(row: DeploymentPlan) -> None:
+    if _frozen_plan_purpose(row) is not PlanPurpose.FOUNDATION_EXECUTION:
+        raise PlanRefusedError(
+            f"plan {row.id} is a rehearsal-issuer operation, not Foundation "
+            "execution authority"
+        )
 
 
 def _frozen_plan_digest(row: DeploymentPlan) -> PlanDigestV1:
@@ -1089,6 +1148,7 @@ def _verified_rollout_envelope(
     at: datetime | None = None,
 ) -> AuthorizationEnvelopeV2:
     """Verify signature and every database-backed term without rewriting history."""
+    _require_foundation_execution(plan)
     if rollout.authorization_envelope is None:
         raise AuthorizationEnvelopeRefusedError(
             AuthorizationEnvelopeRefusalCode.ABSENT,
@@ -1529,6 +1589,7 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         desired_revision=row.desired_revision,
         record_version=row.record_version,
         plan_digest=row.plan_digest,
+        purpose=_frozen_plan_purpose(row).value,
         descriptor_digest=None if descriptor is None else descriptor.canonical,
         operation=row.operation,
         execution_plan_digest=row.execution_plan_digest,
@@ -2239,7 +2300,11 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         ).scalar()
         sequence = int(highest or 0) + 1
 
-        snapshot = plan_snapshot(target, descriptor_digest=command.descriptor_digest)
+        snapshot = plan_snapshot(
+            target,
+            descriptor_digest=command.descriptor_digest,
+            purpose=command.purpose,
+        )
         row = DeploymentPlan(
             target_id=target.id,
             sequence=sequence,
@@ -2247,6 +2312,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
             snapshot=snapshot,
             desired_revision=target.desired_revision,
             plan_digest=plan_digest_of(snapshot).canonical,
+            purpose=command.purpose,
             # FROZEN AS RECEIVED. `command.operation` and
             # `command.execution_plan_digest` are stored as the caller sent
             # them, not as this module would render them: the command's
@@ -2299,6 +2365,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
                 "target_ref": target.target_ref,
                 "sequence": row.sequence,
                 "plan_digest": row.plan_digest,
+                "purpose": row.purpose,
                 "descriptor_digest": command.descriptor_digest,
                 "operation": row.operation,
                 "execution_plan_digest": row.execution_plan_digest,
@@ -2315,7 +2382,12 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         command_type=SCOPE_PROPOSE_PLAN,
         handler=handler,
     )
-    return _plan_view(_load_plan(db, UUID(str(outcome.result["id"]))))
+    plan = _load_plan(db, UUID(str(outcome.result["id"])))
+    if _frozen_plan_purpose(plan).value != command.purpose:
+        raise PlanRefusedError(
+            "the proposal command replay resolved a plan with another purpose"
+        )
+    return _plan_view(plan)
 
 
 def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
@@ -2328,6 +2400,7 @@ def approve_plan(db: Session, command: ApprovePlanCommand) -> facts.PlanView:
 
     def handler(session: Session) -> Mapping[str, object]:
         _target, row = _load_plan_with_target_for_update(session, command.plan_id)
+        _frozen_plan_purpose(row)
         _require_expected(
             f"plan {row.id}",
             status=row.status,
@@ -2688,6 +2761,12 @@ def request_rollout(
             select(Rollout).where(Rollout.rollout_ref == command.rollout_ref)
         ).scalar_one_or_none()
         if existing is not None:
+            if existing.plan_id != command.plan_id:
+                raise TransitionRefusedError(
+                    f"rollout reference {command.rollout_ref!r} already names "
+                    "another frozen plan"
+                )
+            _require_foundation_execution(_load_plan(session, existing.plan_id))
             return {"id": str(existing.id)}
         plan_target_id = session.execute(
             select(DeploymentPlan.target_id).where(DeploymentPlan.id == command.plan_id)
@@ -2696,6 +2775,7 @@ def request_rollout(
             raise TransitionRefusedError(f"deployment plan {command.plan_id} not found")
         target = _load_target_for_update(session, plan_target_id)
         plan = _load_plan_for_update(session, command.plan_id)
+        _require_foundation_execution(plan)
         if plan.requires_approval and plan.status != PlanStatus.APPROVED.value:
             raise ApprovalRefusedError(
                 f"plan {plan.id} is {plan.status!r} and requires approval; a "
@@ -2850,7 +2930,13 @@ def request_rollout(
         command_type=SCOPE_REQUEST_ROLLOUT,
         handler=handler,
     )
-    return _rollout_view(db, _load_rollout(db, UUID(str(outcome.result["id"]))))
+    rollout = _load_rollout(db, UUID(str(outcome.result["id"])))
+    if rollout.plan_id != command.plan_id:
+        raise TransitionRefusedError(
+            "the rollout command replay resolved another frozen plan"
+        )
+    _require_foundation_execution(_load_plan(db, rollout.plan_id))
+    return _rollout_view(db, rollout)
 
 
 def dispatch_attempt(
@@ -2884,6 +2970,7 @@ def dispatch_attempt(
             raise TransitionRefusedError(f"rollout {rollout_id} not found")
         target = _load_target_for_update(session, locator.target_id)
         plan = _load_plan_for_update(session, locator.plan_id)
+        _require_foundation_execution(plan)
         rollout = session.execute(
             select(Rollout)
             .where(Rollout.id == rollout_id)
@@ -3023,6 +3110,7 @@ def dispatch_attempt(
             "the dispatch idempotency result carries an invalid attempt_id"
         ) from exc
     plan = _load_plan(db, rollout.plan_id)
+    _require_foundation_execution(plan)
     target = _load_target(db, rollout.target_id)
     attempt = db.get(RolloutAttempt, attempt_id)
     if attempt is None or attempt.rollout_id != rollout.id:
@@ -4178,7 +4266,7 @@ def preview_plan_proposal(
     if target is None:
         return None
 
-    snapshot = plan_snapshot(target)
+    snapshot = plan_snapshot(target, purpose=PlanPurpose.FOUNDATION_EXECUTION.value)
     derived = plan_digest_of(snapshot)
 
     current = db.execute(
@@ -4498,6 +4586,13 @@ def find_approved_plan(
     # authorized images, descriptor binding — `find_approved_plan`'s own
     # question, extracted so the rehearsal-issuer issuance path asks it
     # identically rather than reimplementing it. See `_standing_plan_terms`.
+    if _frozen_plan_purpose(row) is not PlanPurpose.FOUNDATION_EXECUTION:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.WRONG_PLAN_PURPOSE,
+            f"plan {row.id} is an approved rehearsal-issuer operation and "
+            "cannot authorize Foundation execution",
+            plan=row,
+        )
     terms = _standing_plan_terms(db, row)
     if isinstance(terms, facts.ApprovedPlanLookup):
         return terms

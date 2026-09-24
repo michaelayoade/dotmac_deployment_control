@@ -205,6 +205,7 @@ class PlanView:
     status: str
     desired_revision: int
     record_version: int
+    purpose: str
     plan_digest: str | None = None
     descriptor_digest: str | None = None
     #: The execution binding, in two pairs: what was PROPOSED and what was
@@ -296,6 +297,7 @@ class ApprovedPlanRefusalCode(StrEnum):
     DIGEST_UNREADABLE = "digest_unreadable"
     #: Well-formed, and no plan in this control plane holds it.
     DIGEST_UNRESOLVED = "digest_unresolved"
+    WRONG_PLAN_PURPOSE = "wrong_plan_purpose"
     #: A plan holds it and it is not approved. `detail` names the actual status,
     #: because "draft", "superseded" and "cancelled" send an operator three
     #: different places.

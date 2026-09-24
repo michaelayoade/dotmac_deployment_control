@@ -1352,6 +1352,7 @@ CATALOGUE_TABLES: tuple[
             ("approval_revoked_at", 22, _TS, True, ""),
             ("approval_revocation_ref", 23, _V200, True, ""),
             ("approval_revocation_reason", 24, _V200, True, ""),
+            ("purpose", 25, _V40, False, ""),
         ),
     ),
     (

@@ -167,6 +167,7 @@ def _propose(db: Session, target_id):  # type: ignore[no-untyped-def]
             operation="deploy",
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose="foundation_execution",
             requires_approval=True,
             approval_policy_code="deployment.production",
             approval_policy_version=4,
@@ -233,10 +234,10 @@ class TestTheImageSetIsInsideThePlanDigest:
         )
         assert target is not None
 
-        with_a = plan_snapshot(target)
+        with_a = plan_snapshot(target, purpose="foundation_execution")
         target.desired_images = [_image("api", _IMAGE_B)]
         db.flush()
-        with_b = plan_snapshot(target)
+        with_b = plan_snapshot(target, purpose="foundation_execution")
 
         # As shipped: the key is in the document, so the digests differ.
         assert plan_digest_of(with_a) != plan_digest_of(with_b)
@@ -266,13 +267,13 @@ class TestTheImageSetIsInsideThePlanDigest:
         target = db.get(DeploymentTarget, _target(db, images=None).id)
         assert target is not None
 
-        absent = plan_snapshot(target)
+        absent = plan_snapshot(target, purpose="foundation_execution")
         target.desired_images = []
         db.flush()
-        empty = plan_snapshot(target)
+        empty = plan_snapshot(target, purpose="foundation_execution")
         target.desired_images = [_image("api", _IMAGE_A)]
         db.flush()
-        populated = plan_snapshot(target)
+        populated = plan_snapshot(target, purpose="foundation_execution")
 
         assert absent["authorized_images"] is None
         assert empty["authorized_images"] == []

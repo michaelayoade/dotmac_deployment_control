@@ -32,17 +32,17 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0014_rehearsal_issuer_ledger",
+            revision="dc_0015_plan_purpose",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0014_rehearsal_issuer_ledger"
+    assert database_catalog.lineage_head == "dc_0015_plan_purpose"
 
 
-def test_catalogue_has_exact_twenty_two_table_245_column_extent() -> None:
+def test_catalogue_has_exact_twenty_two_table_246_column_extent() -> None:
     """Thirteen tables and 178 columns after `dc_0012`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
@@ -83,7 +83,8 @@ def test_catalogue_has_exact_twenty_two_table_245_column_extent() -> None:
     ledger, a SIBLING of `rehearsal_grants` recording a different authority
     (operate the disposable rehearsal issuer for one lease, rather than the
     provoked-rollback replay coordinate `rehearsal_grants` already records).
-    The exact post-revision extent is therefore 22 tables and 245 columns.
+    `dc_0015` appends the frozen plan-purpose column. The exact post-revision
+    extent is therefore 22 tables and 246 columns.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
@@ -93,7 +94,7 @@ def test_catalogue_has_exact_twenty_two_table_245_column_extent() -> None:
         "attestation_fingerprint_closures": 8,
         "attestation_root_descriptors": 7,
         "attestation_subject_locks": 4,
-        "deployment_plans": 24,
+        "deployment_plans": 25,
         "deployment_targets": 22,
         "observation_attempts": 15,
         "observation_receipts": 15,
@@ -111,7 +112,7 @@ def test_catalogue_has_exact_twenty_two_table_245_column_extent() -> None:
         "target_host_association_closures": 6,
         "target_host_associations": 7,
     }
-    assert sum(counts.values()) == 245
+    assert sum(counts.values()) == 246
 
 
 def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
@@ -254,7 +255,9 @@ def test_dc_0004_appends_the_approval_standing_and_the_target_image_set() -> Non
     targets = next(
         table for table in database_catalog.tables if table.name == "deployment_targets"
     )
-    tail = {column.name: column for column in plans.columns if column.ordinal > 20}
+    tail = {
+        column.name: column for column in plans.columns if 20 < column.ordinal <= 24
+    }
 
     assert [
         (name, tail[name].ordinal)
@@ -372,7 +375,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0014_rehearsal_issuer_ledger",
+                revision="dc_0015_plan_purpose",
             ),
         )
 
@@ -388,5 +391,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 245
+    assert sum(len(table.columns) for table in restored.tables) == 246
     assert {table.plane.value for table in restored.tables} == {"platform"}

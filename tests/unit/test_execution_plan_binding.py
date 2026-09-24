@@ -239,6 +239,7 @@ def _propose(db: Session, target_id, **overrides: object):  # type: ignore[no-un
         "command_id": _cmd(),
         "target_id": target_id,
         "operation": "deploy",
+        "purpose": "foundation_execution",
         "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _PLAN_A,
         "requires_approval": True,
@@ -505,6 +506,7 @@ class TestTheOperationVocabularyIsClosed:
                 target_id=uuid.uuid4(),
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_PLAN_A,
+                purpose="foundation_execution",
             )
 
     def test_an_unknown_operation_is_refused_at_construction(self) -> None:
@@ -513,6 +515,7 @@ class TestTheOperationVocabularyIsClosed:
                 command_id=_cmd(),
                 target_id=uuid.uuid4(),
                 operation="redeploy",
+                purpose="foundation_execution",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_PLAN_A,
             )

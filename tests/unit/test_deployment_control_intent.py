@@ -226,6 +226,7 @@ def _plan(db: Session, target_id, **overrides: object):  # type: ignore[no-untyp
         "command_id": _cmd(),
         "target_id": target_id,
         "operation": "deploy",
+        "purpose": "foundation_execution",
         "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _EXECUTION_PLAN,
         "requires_approval": True,

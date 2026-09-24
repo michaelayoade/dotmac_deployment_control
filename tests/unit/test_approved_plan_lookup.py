@@ -185,6 +185,7 @@ def _propose(db: Session, target_id, **overrides: object):  # type: ignore[no-un
         "command_id": _cmd(),
         "target_id": target_id,
         "operation": "deploy",
+        "purpose": "foundation_execution",
         "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _EXECUTION_PLAN,
         "requires_approval": True,
@@ -496,6 +497,7 @@ class TestEachRefusalIsItsOwnFinding:
         assert row is not None
         snapshot = dict(row.snapshot or {})
         del snapshot["authorized_images"]
+        snapshot.pop("plan_purpose")  # simulate a historical pre-purpose row
         row.snapshot = snapshot
         db.flush()
 
@@ -544,6 +546,7 @@ class TestEachRefusalIsItsOwnFinding:
         assert row is not None
         snapshot = dict(row.snapshot or {})
         snapshot.pop("descriptor_digest")
+        snapshot.pop("plan_purpose")  # simulate a historical pre-purpose row
         row.snapshot = snapshot
         db.flush()
         lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
@@ -625,6 +628,7 @@ class TestEachRefusalIsItsOwnFinding:
         observed = {
             ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
             ApprovedPlanRefusalCode.DIGEST_UNRESOLVED,
+            ApprovedPlanRefusalCode.WRONG_PLAN_PURPOSE,
             ApprovedPlanRefusalCode.NOT_APPROVED,
             ApprovedPlanRefusalCode.APPROVAL_REVOKED,
             ApprovedPlanRefusalCode.APPROVAL_STANDING_UNRECORDED,

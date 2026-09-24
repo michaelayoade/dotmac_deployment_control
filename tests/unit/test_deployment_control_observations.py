@@ -247,6 +247,7 @@ def _bound_rollout_ref(db: Session, target_ref: object) -> str | None:
             operation="deploy",
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose="foundation_execution",
             requires_approval=False,
         ),
     )
@@ -1247,6 +1248,7 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
                 operation="deploy",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
+                purpose="foundation_execution",
                 requires_approval=False,
             ),
         )
@@ -1322,6 +1324,7 @@ class TestDriftIsMeasuredAgainstWhatWasRolledOut:
                 operation="deploy",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
+                purpose="foundation_execution",
                 requires_approval=False,
             ),
         )
