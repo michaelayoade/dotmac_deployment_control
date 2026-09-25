@@ -298,6 +298,14 @@ class ApprovedPlanRefusalCode(StrEnum):
     #: Well-formed, and no plan in this control plane holds it.
     DIGEST_UNRESOLVED = "digest_unresolved"
     WRONG_PLAN_PURPOSE = "wrong_plan_purpose"
+    #: The row's persisted `purpose` column and its frozen snapshot marker
+    #: disagree, the purpose is not a member of `PlanPurpose`, or a marked
+    #: snapshot no longer hashes to the plan's own frozen digest. This is a
+    #: ROW-INTEGRITY finding, not a caller error and not "this plan is the
+    #: wrong kind" (that is `WRONG_PLAN_PURPOSE`, decided on a purpose the row
+    #: itself trusts) — the row cannot be trusted to name its own purpose at
+    #: all, so the lookup refuses rather than raising past its own caller.
+    PLAN_PURPOSE_INCONSISTENT = "plan_purpose_inconsistent"
     #: A plan holds it and it is not approved. `detail` names the actual status,
     #: because "draft", "superseded" and "cancelled" send an operator three
     #: different places.

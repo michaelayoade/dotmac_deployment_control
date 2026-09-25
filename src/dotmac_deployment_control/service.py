@@ -1589,7 +1589,16 @@ def _plan_view(row: DeploymentPlan) -> facts.PlanView:
         desired_revision=row.desired_revision,
         record_version=row.record_version,
         plan_digest=row.plan_digest,
-        purpose=_frozen_plan_purpose(row).value,
+        # The stored value, projected for DISPLAY — never `_frozen_plan_purpose`,
+        # which ENFORCES consistency between the column, the frozen snapshot
+        # marker and the plan digest and raises `PlanRefusedError` when they
+        # disagree. A view is read by `list_plans`/`get_plan` and by
+        # `_lookup_refusal` (which builds a view for a refusal it is already
+        # returning) and must never raise for a row-integrity problem it did
+        # not cause; enforcement stays at the authority checks (rollout,
+        # dispatch, consumption, issuance) that already call
+        # `_frozen_plan_purpose`/`_require_foundation_execution` directly.
+        purpose=row.purpose,
         descriptor_digest=None if descriptor is None else descriptor.canonical,
         operation=row.operation,
         execution_plan_digest=row.execution_plan_digest,
@@ -4586,7 +4595,15 @@ def find_approved_plan(
     # authorized images, descriptor binding — `find_approved_plan`'s own
     # question, extracted so the rehearsal-issuer issuance path asks it
     # identically rather than reimplementing it. See `_standing_plan_terms`.
-    if _frozen_plan_purpose(row) is not PlanPurpose.FOUNDATION_EXECUTION:
+    try:
+        purpose = _frozen_plan_purpose(row)
+    except PlanRefusedError as exc:
+        return _lookup_refusal(
+            facts.ApprovedPlanRefusalCode.PLAN_PURPOSE_INCONSISTENT,
+            str(exc),
+            plan=row,
+        )
+    if purpose is not PlanPurpose.FOUNDATION_EXECUTION:
         return _lookup_refusal(
             facts.ApprovedPlanRefusalCode.WRONG_PLAN_PURPOSE,
             f"plan {row.id} is an approved rehearsal-issuer operation and "
