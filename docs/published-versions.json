@@ -353,6 +353,26 @@
       "pinnable": true,
       "release_run_note": "Published by build run 35859642778 from the exact tip of protected main (f555f4384fbeb7eb18822bdaff70055fedbe1480); that run built and uploaded but neither verified itself nor tagged. INDEPENDENT verify run 35859932041 returned VERIFIED: publisher read-back succeeded, both registry-served artifacts were fetched by exact filename and matched the release build by sha256, a clean dependency-complete read-only consumer installed and imported the wheel, and all FIFTEEN installed-artifact behavioural canaries passed. Only after verification did tag_once.py write annotated tag object 9769096c2129589d4818d8ba2357111c6b249d1f; the recorder then opened PR #64 for this human disposition.",
       "adoption_note": "PIN a14 when a consumer needs ADR-0073 three-phase authenticated host admission and/or Control-owned protected rehearsal-issuer issuance, revocation, staged consumption and standing. a13 remains immutable, verified and pinnable but predates these surfaces. Publication does not activate an issuer, supply Control Plane signer/verifier/harness composition, prove Lane 3, allocate a Foundation successor, or retire the incompatible Control Plane caller-derived/witness path; each remains a separate cutover obligation."
+    },
+    {
+      "version": "0.1.0a15",
+      "tag": "dotmac-deployment-control-v0.1.0a15",
+      "tag_object": "466f48d2b9a75f6dc46aacb641f9e48c9a37ab8c",
+      "peeled_commit": "cd887722b3ffc909d98ef624032fd19cf31ba497",
+      "release_run": "36162943891",
+      "verify_run": "36163228780",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a15-py3-none-any.whl": "edd32c0fb528316689d2540eafb9c587dadbc9f99c0b5e45f6872180b0611532",
+        "dotmac_deployment_control-0.1.0a15.tar.gz": "1aba41fd61413644afa0e82ddc01bbee2e569dbcf4bc2210af47234aa8b254ad"
+      },
+      "supersedes": "0.1.0a14",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published by build run 36162943891 from the exact tip of protected main (cd887722b3ffc909d98ef624032fd19cf31ba497); that run built and uploaded but neither verified itself nor tagged. INDEPENDENT verify run 36163228780 returned VERIFIED: publisher read-back succeeded, both registry-served artifacts were fetched by exact filename and matched the release build by sha256, a clean dependency-complete read-only consumer installed and imported the wheel, and all FIFTEEN installed-artifact behavioural canaries passed. Only after verification did tag_once.py write annotated tag object 466f48d2b9a75f6dc46aacb641f9e48c9a37ab8c; the recorder then opened PR #68 for this human disposition.",
+      "adoption_note": "COMPATIBILITY RULING, NOT A RUNTIME ADOPTION CLAIM: no consumer composes a15, and the only production consumer (Control Plane main) still pins 0.1.0a6. PIN a15 when a consumer needs the frozen Control plan purpose (FOUNDATION_EXECUTION versus REHEARSAL_ISSUER_OPERATION, refused as PLAN_PURPOSE_INCONSISTENT) and/or the single Foundation V3 execution consumption. MANDATORY UPGRADE PRECONDITION: stop every 0.1.0a14 process before migration dc_0015_plan_purpose runs. dc_0015 revokes outstanding a14 issuer grants and refuses a14's marker-less plan INSERT, but nothing in the database stops a live a14 process issuing a new grant from a historical approved plan. The precondition is NOT enforced by any deployment path: Control Plane's deploy_production.sh migrates while the previous app container still serves. A consumer that never ran a14 in production is not exposed. a14 remains immutable, verified and pinnable but predates these surfaces. Publication does not activate an issuer, supply Control Plane signer/verifier/harness composition, prove Lane 3, allocate a Foundation successor, or retire the incompatible Control Plane caller-derived/witness path; each remains a separate cutover obligation."
     }
   ],
   "tags_remain_in_source_for": [
