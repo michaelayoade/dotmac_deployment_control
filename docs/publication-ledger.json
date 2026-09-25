@@ -12,8 +12,8 @@
     "",
     "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 and 0.1.0a5 are",
     "published, verified, and refused for adoption; 0.1.0a6 through 0.1.0a12",
-    "remain published and verified; 0.1.0a13 is published, independently verified,",
-    "and is the version to pin until 0.1.0a14 is verified. All of them live in",
+    "remain published and verified; 0.1.0a13 and 0.1.0a14 are published and",
+    "independently verified, and 0.1.0a14 is the version to pin until 0.1.0a15 is verified. All of them live in",
     "docs/published-versions.json,",
     "each superseding disposition APPENDED to its original record rather than",
     "replacing it.",
@@ -23,16 +23,22 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout.",
     "",
-    "NOT EMPTY: 0.1.0a14 is the tree's current declaration, derived as the",
+    "NOT EMPTY: 0.1.0a15 is the tree's current declaration, derived as the",
     "successor of the highest version in docs/published-versions.json",
-    "(0.1.0a13). main's bytes stopped being a13's the moment PR #61 (Control's",
-    "real issuance/revocation/consumption/standing boundary for the",
-    "rehearsal-issuer contract) landed after a13 was tagged, so a bare",
-    "0.1.0a13 declaration would misname the tree's current bytes as a13's own.",
-    "It is not yet built, tagged, released or verified; this row exists only",
-    "so the declared-publication gate can account for it, and it is removed,",
-    "without ever having named a real release, the moment 0.1.0a14 is verified",
-    "and tagged or the tree bumps past it."
+    "(0.1.0a14). main's bytes stopped being a14's the moment PRs #65 (the frozen",
+    "plan authority purpose) and #66 (the single Foundation V3 execution",
+    "consumption) landed after a14 was tagged, so a bare 0.1.0a14 declaration",
+    "would misname the tree's current bytes as a14's own. It is not yet built,",
+    "tagged, released or verified; this row exists only so the",
+    "declared-publication gate can account for it, and it is removed, without",
+    "ever having named a real release, the moment 0.1.0a15 is verified and",
+    "tagged or the tree bumps past it."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a15": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "Declared as the successor of the published floor 0.1.0a14 (see docs/published-versions.json), per this same file's own prior statement of the next number. Allocation of the name only: no build, tag, release run or verify run has occurred for 0.1.0a15. This row exists only so the declared-publication gate can account for the declaration; it is removed, without ever having named a real release on its own, the moment a release run tags and verifies it."
+    }
+  }
 }
