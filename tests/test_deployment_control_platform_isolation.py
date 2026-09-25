@@ -328,6 +328,25 @@ def _url_for(base_url: str, dbname: str, *, user: str | None = None) -> str:
 @pytest.fixture(scope="module")
 def migrated_scratch() -> Iterator[tuple[str, str, str]]:
     """`(admin_url, platform_api_url, app_user_url)` at the composed head."""
+    yield from _migrated_database()
+
+
+@pytest.fixture
+def isolated_migrated_scratch() -> Iterator[tuple[str, str, str]]:
+    """A private database at the composed head, for tests whose premise is
+    the absence of rows other tests in the module leave behind (downgrades)."""
+    previous = os.environ.get("MIGRATION_DATABASE_URL")
+    try:
+        yield from _migrated_database()
+    finally:
+        # The module-scoped database is still in use by later tests.
+        if previous is None:
+            os.environ.pop("MIGRATION_DATABASE_URL", None)
+        else:
+            os.environ["MIGRATION_DATABASE_URL"] = previous
+
+
+def _migrated_database() -> Iterator[tuple[str, str, str]]:
     superuser = _superuser_url()
     name = f"deploy_{uuid.uuid4().hex[:12]}"
     server = create_engine(superuser, isolation_level="AUTOCOMMIT")
@@ -980,13 +999,19 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
 
 
 def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
-    migrated_scratch: tuple[str, str, str],
+    isolated_migrated_scratch: tuple[str, str, str],
 ) -> None:
-    """A rollback cannot erase the durable single-use cut-off."""
+    """A rollback cannot erase the durable single-use cut-off.
+
+    Runs on a private database: dc_0015's downgrade rightly refuses while any
+    purpose-marked plan exists, and plans other tests in this module leave in
+    the shared database would otherwise refuse first and hide dc_0012's own
+    refusal, which is what this test proves.
+    """
     from alembic import command
     from alembic.config import Config
 
-    admin_url, _, _ = migrated_scratch
+    admin_url, _, _ = isolated_migrated_scratch
     grant_id = f"downgrade-{uuid.uuid4().hex}"
     engine = create_engine(admin_url)
     try:
@@ -1020,7 +1045,8 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                 == "spent"
             )
             # PostgreSQL runs the requested multi-revision downgrade in one
-            # transaction.  dc_0014's and dc_0013's empty-table downgrades
+            # transaction.  dc_0015's (no purpose-marked plans on this private
+            # database), dc_0014's and dc_0013's empty-table downgrades
             # execute first, then dc_0012 refuses to discard the spent grant;
             # that exception rolls the whole command back to the exact
             # pre-command head.
