@@ -19,9 +19,7 @@ from uuid import UUID
 
 from dotmac_kernel.idempotency_models import (
     IdempotencyStatus,
-    PlatformIdempotencyRecord,
 )
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control.authorization import (
@@ -44,6 +42,7 @@ from dotmac_deployment_control.ports import DeploymentControlError
 from dotmac_deployment_control.service import (
     _SCOPE_CONSUME_DISPATCH_CHALLENGE,
     _ExpectedFoundationConsumption,
+    _foundation_v3_consumption_record,
 )
 
 
@@ -297,7 +296,20 @@ def _verify_foundation_execution_request(
     receipt = _receipt_from_pair(authorization, dispatch)
     if request.control_consumption_ref != f"control-dispatch:{receipt.dispatch_id}":
         raise FoundationConsumptionRefusedError("Control recovery coordinate differs")
-    if request.expected_execution_plan_digest != receipt.execution_plan_digest:
+    # TYPED. Comparing the text would make one digest's two encodings unequal
+    # (ADR-0018's digest-comparison gate) -- parse both sightings into
+    # `ExecutionPlanDigestV1` values before the `!=`, and refuse (rather than
+    # crash) a value this module cannot read.
+    try:
+        expected_execution = ExecutionPlanDigestV1.parse(
+            request.expected_execution_plan_digest
+        )
+        signed_execution = ExecutionPlanDigestV1.parse(receipt.execution_plan_digest)
+    except DeploymentControlError as exc:
+        raise FoundationConsumptionRefusedError(
+            f"execution plan digest cannot be read: {exc}"
+        ) from exc
+    if expected_execution != signed_execution:
         raise FoundationConsumptionRefusedError("execution plan digest differs")
     context = request.expected_context
     if not isinstance(context, FoundationExecutionContextV1):
@@ -343,12 +355,7 @@ def lookup_foundation_execution_consumption(
             raise ValueError("dispatch ID is not canonical")
     except ValueError as exc:
         raise FoundationConsumptionRefusedError("invalid dispatch ID") from exc
-    record = db.execute(
-        select(PlatformIdempotencyRecord).where(
-            PlatformIdempotencyRecord.scope == _SCOPE_CONSUME_DISPATCH_CHALLENGE,
-            PlatformIdempotencyRecord.key == dispatch_id,
-        )
-    ).scalar_one_or_none()
+    record = _foundation_v3_consumption_record(db, dispatch_id=dispatch_id)
     if record is None:
         return None
     result = record.result

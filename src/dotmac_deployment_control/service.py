@@ -61,6 +61,7 @@ from uuid import UUID, uuid4
 
 from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.idempotency import IdempotencyConflict, execute_once_platform
+from dotmac_kernel.idempotency_models import PlatformIdempotencyRecord
 from dotmac_kernel.messaging import enqueue_platform_event, process_once_platform
 from dotmac_kernel.transactions import conflict_savepoint
 
@@ -501,10 +502,30 @@ def _stage_dispatch_consumption(
         "attempt_no": statement.attempt_no,
     }
     descriptor = _frozen_descriptor_digest(plan)
+    # TYPED. Comparing the text would make one digest's two encodings unequal
+    # (ADR-0018's digest-comparison gate) -- parse all four sightings of the
+    # Foundation's execution plan digest into `ExecutionPlanDigestV1` values
+    # before any `!=`, and refuse (rather than crash) one this module cannot
+    # read.
+    try:
+        signed_execution = ExecutionPlanDigestV1.parse(signed.execution_plan_digest)
+        expected_execution = ExecutionPlanDigestV1.parse(
+            foundation_expected.execution_plan_digest
+        )
+        authorized_execution = ExecutionPlanDigestV1.parse(
+            plan.authorized_execution_plan_digest
+        )
+        stored_execution = ExecutionPlanDigestV1.parse(plan.execution_plan_digest)
+    except DigestEncodingError as exc:
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+            f"an execution plan digest bound to plan {plan.id}'s consumption "
+            f"cannot be read: {exc}",
+        ) from exc
     if actual_terms != signed_terms or (
-        foundation_expected.execution_plan_digest != signed.execution_plan_digest
-        or plan.authorized_execution_plan_digest != signed.execution_plan_digest
-        or plan.execution_plan_digest != signed.execution_plan_digest
+        expected_execution != signed_execution
+        or authorized_execution != signed_execution
+        or stored_execution != signed_execution
         or plan.operation != signed.operation
         or descriptor is None
         or descriptor.canonical != signed.descriptor_digest
@@ -596,6 +617,27 @@ def _stage_dispatch_consumption(
         candidate_attestation_envelope_digest=candidate_attestation_envelope_digest,
         installed_attestation_envelope_digest=installed_attestation_envelope_digest,
     )
+
+
+def _foundation_v3_consumption_record(
+    db: Session, *, dispatch_id: str
+) -> PlatformIdempotencyRecord | None:
+    """Read back the committed Foundation V3 consumption marker, by its
+    permanent bare-fingerprint key.
+
+    Query construction stays in this module (`TestQueryConstructionStaysInThis
+    Module`); the sole caller is `foundation_consumption
+    .lookup_foundation_execution_consumption`, which runs this in a NEW,
+    post-commit Session for crash recovery and owns every interpretation of
+    the row this returns. This function itself takes no lock and makes no
+    claim about the row beyond "this is what is stored".
+    """
+    return db.execute(
+        select(PlatformIdempotencyRecord).where(
+            PlatformIdempotencyRecord.scope == _SCOPE_CONSUME_DISPATCH_CHALLENGE,
+            PlatformIdempotencyRecord.key == dispatch_id,
+        )
+    ).scalar_one_or_none()
 
 
 # ── Commands ────────────────────────────────────────────────────────────────
