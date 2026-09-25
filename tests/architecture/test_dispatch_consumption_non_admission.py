@@ -1,11 +1,17 @@
-"""The private staging seam has one authenticated Control finalizer caller."""
+"""Only Control's unified authenticated finalizer may reach the private stage."""
 
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import pytest
+
+from dotmac_deployment_control import (
+    admit_and_consume_host_admission,
+    install_foundation_consumption_security,
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _PRODUCTION_ROOTS = (_ROOT / "src", _ROOT / "scripts", _ROOT / "alembic")
@@ -73,7 +79,7 @@ def test_private_dispatch_consumption_has_exactly_one_production_caller() -> Non
         for _ in range(_calls(source))
     ]
     assert callers == [
-        _ROOT / "src" / "dotmac_deployment_control" / "host_admission_coordinator.py"
+        _ROOT / "src" / "dotmac_deployment_control" / "host_admission_coordinator.py",
     ]
 
 
@@ -116,6 +122,53 @@ def test_prepare_cannot_accept_request_selected_authentication_dependencies() ->
         _ROOT / "src" / "dotmac_deployment_control" / "host_admission_coordinator.py"
     ).read_text()
     assert _prepare_signature(source) == _PREPARE_SIGNATURE
+
+
+def test_foundation_finalizer_has_no_per_call_verifier_or_clock() -> None:
+    parameters = tuple(inspect.signature(admit_and_consume_host_admission).parameters)
+    assert parameters == ("db", "context", "foreign_evidence", "execution")
+    assert (
+        inspect.signature(admit_and_consume_host_admission)
+        .parameters["execution"]
+        .default
+        is inspect.Parameter.empty
+    )
+    installed = tuple(
+        inspect.signature(install_foundation_consumption_security).parameters
+    )
+    assert installed == ("authorization_verifier", "dispatch_verifier", "clock")
+
+
+def _requires_verified_v3_expectation(function: object) -> bool:
+    parameter = inspect.signature(function).parameters.get("foundation_expected")
+    return (
+        parameter is not None
+        and parameter.default is inspect.Parameter.empty
+        and parameter.annotation == "_ExpectedFoundationConsumption"
+    )
+
+
+def test_private_stage_requires_verified_v3_expectation_with_sensitivity() -> None:
+    from dotmac_deployment_control.service import _stage_dispatch_consumption
+
+    assert _requires_verified_v3_expectation(_stage_dispatch_consumption)
+
+    def missing(*, foundation_expected=None):  # type: ignore[no-untyped-def]
+        return foundation_expected
+
+    def optional(  # type: ignore[no-untyped-def]
+        *, foundation_expected: object | None = None
+    ):
+        return foundation_expected
+
+    assert not _requires_verified_v3_expectation(missing)
+    assert not _requires_verified_v3_expectation(optional)
+
+
+def test_private_stage_is_not_a_published_product_api() -> None:
+    import dotmac_deployment_control as control
+
+    assert _SEAM not in control.__all__
 
 
 @pytest.mark.parametrize(

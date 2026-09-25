@@ -238,6 +238,17 @@ from dotmac_deployment_control.facts import (
     TargetPage,
     TargetView,
 )
+from dotmac_deployment_control.foundation_consumption import (
+    FoundationCommittedConsumptionV1,
+    FoundationConsumptionClock,
+    FoundationConsumptionRefusedError,
+    FoundationDispatchConsumptionV1,
+    FoundationExecutionContextV1,
+    FoundationSignedReceiptV2,
+    attest_foundation_execution_pair,
+    install_foundation_consumption_security,
+    lookup_foundation_execution_consumption,
+)
 from dotmac_deployment_control.host_admission import (
     CANDIDATE_ATTESTATION_PURPOSE,
     HOST_ADMISSION_PRESENTATION_AUDIENCE,
@@ -530,6 +541,15 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "FoundationCommittedConsumptionV1",
+    "FoundationConsumptionClock",
+    "FoundationConsumptionRefusedError",
+    "FoundationDispatchConsumptionV1",
+    "FoundationExecutionContextV1",
+    "FoundationSignedReceiptV2",
+    "attest_foundation_execution_pair",
+    "install_foundation_consumption_security",
+    "lookup_foundation_execution_consumption",
     "PRESTATE_DISCRIMINATOR",
     "ALGORITHM",
     "APPROVAL_DECISION_STATUSES",

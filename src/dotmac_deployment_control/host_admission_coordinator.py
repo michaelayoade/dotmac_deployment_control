@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -34,6 +34,11 @@ from dotmac_deployment_control.digests import (
     PublicKeyFingerprintV1,
     compute_host_admission_context_digest,
     compute_host_admission_presentation_digest,
+)
+from dotmac_deployment_control.foundation_consumption import (
+    FoundationDispatchConsumptionV1,
+    FoundationExecutionContextV1,
+    _verify_foundation_execution_request,
 )
 from dotmac_deployment_control.host_admission import (
     CANDIDATE_ATTESTATION_PURPOSE,
@@ -590,12 +595,26 @@ def admit_and_consume_host_admission(
     *,
     context: HostAdmissionVerificationContextV1,
     foreign_evidence: HostAdmissionForeignVerificationEvidenceV1,
+    execution: FoundationDispatchConsumptionV1,
 ) -> _StagedDispatchConsumption:
     """Re-authenticate, re-lock everything fresh, re-derive every fact from
     locked state, require exact equality against `context` and against
     `foreign_evidence`, then stage exactly one consumption. `context` and
     `foreign_evidence` are both untrusted, non-authorizing data -- everything
     here is re-derived from Control's own locked rows before being trusted."""
+    # Pure, startup-fixed cryptographic verification runs before any row lock.
+    verified_execution = _verify_foundation_execution_request(execution)
+    execution_context = cast(FoundationExecutionContextV1, verified_execution.context)
+    if (
+        verified_execution.dispatch.statement.dispatch_id != context.dispatch_id
+        or verified_execution.dispatch.statement.dispatch_id != str(context.attempt_id)
+        or execution_context.target_id != str(context.target_id)
+        or execution_context.target_ref != context.target_ref
+    ):
+        raise _refuse(
+            HostAdmissionRefusalCode.DISPATCH_MISMATCH,
+            "verified execution pair disagrees with resolved host admission",
+        )
     security = _require_installed_security()
     now = _utc(security.clock.now())
     # Checked BEFORE re-authentication, and with Control's own named refusal
@@ -731,7 +750,7 @@ def admit_and_consume_host_admission(
         )
     if (
         foreign_evidence.verified_host_identity != context.host_id
-        or foreign_evidence.verified_observation_id != context.attempt_id.hex
+        or foreign_evidence.verified_observation_id != context.dispatch_id
         or foreign_evidence.verified_package != context.expected_foundation_package
         or foreign_evidence.verified_candidate_audience != context.candidate_audience
         or foreign_evidence.verified_installed_audience != context.installed_audience
@@ -785,6 +804,7 @@ def admit_and_consume_host_admission(
         installed_attestation_envelope_digest=(
             foreign_evidence.installed_attestation_envelope_digest
         ),
+        foundation_expected=verified_execution,
     )
 
 

@@ -15,16 +15,14 @@ commit outcome gives no launch or automatic replay authority; the adapter must
 resolve durable standing before any further action. A committed spend remains
 final; no unspend path is implied here.
 
-`_stage_dispatch_consumption` is an internal service seam. It accepts only a
-Control attempt identifier and an independently resolved expected target
-coordinate after trusted composition has authenticated a presenter. The
-coordinate's `target_id` must come from the Control-stored credential selected
-by that authentication, and its `target_ref` from the corresponding target row;
-neither may come from the presented envelope. The coordinate is compared to the
-locked target; it is not itself authentication. Its sole production caller is
-ADR-0073's `admit_and_consume_host_admission`, after that function has
-re-authenticated and re-locked the complete coordinate fresh. It does not
-accept an envelope, verifier or standing assertion from an untrusted caller.
+`_stage_dispatch_consumption` is an internal service seam with exactly one
+production caller: `admit_and_consume_host_admission`. The finalizer derives
+`target_id` from the authenticated Control credential and `target_ref` from
+its target row, checks CP's independently observed Control execution context,
+and verifies the exact V3 signed pair before taking row locks. Neither the
+presented envelope nor the request authenticates a target on its own.
+The stage itself requires the verified V3 expectation; an F2-only call cannot
+create the permanent dispatch marker.
 
 Within one caller-owned transaction, Control locks target, plan and the mutable
 rollout in the same order as approval revocation, then reads immutable attempt
@@ -32,9 +30,12 @@ evidence without explicit `FOR UPDATE`; parses and compares the exact
 stored authorization/dispatch coordinate; checks target liveness, rollout and
 attempt state, authorization lifetime, and current approval standing; then calls
 Kernel `execute_once_platform`. Its key is the stored signed dispatch id, its
-scope is `deployment.consume_dispatch_challenge.v1`, its fingerprint is the
-bare 64-hex SHA-256 over the canonical dispatch/candidate/installed evidence
-coordinate, and `expires_at` is always `NULL`.
+scope is `deployment.consume_dispatch_challenge.v1`, and `expires_at` is always
+`NULL`. The ONE bare-hex fingerprint remains ADR-0073's canonical
+dispatch/candidate/installed-attestation coordinate. The signed dispatch
+already binds the authorization envelope digest; no second fingerprint, key,
+ledger or consumption path is created for V3. The marker result additionally
+records authorization digest, execution-plan digest, both F2 digests and kind.
 
 The locked plan must also have frozen `foundation_execution` purpose. The
 purpose check runs at this consumption boundary even for a planted rollout and
@@ -50,6 +51,32 @@ consumption refuses even though dispatch history stays immutable. If consumption
 commits first, that is the final authorization cut-off; recovery requires a new
 signed dispatch attempt. This is distinct from at-most-once external delivery,
 which stays with Integrator/outbox.
+
+## Foundation V3 in the single host-admission finalizer
+
+`install_foundation_consumption_security` fixes Control's authorization and
+dispatch verifiers and clock once at assembly startup.
+`attest_foundation_execution_pair` verifies both signed purposes and returns a
+typed Control projection for CP to map to Foundation's receipt value. The
+attestation is not a consumption. The sole public
+`admit_and_consume_host_admission` requires a frozen
+`FoundationDispatchConsumptionV1` on every call. It carries canonical exact
+authorization/dispatch JSON bytes, CP's independently observed Control context,
+the execution-plan digest and deterministic `control-dispatch:<dispatch_id>`
+coordinate; neither a verifier nor clock can be supplied per call. Control
+verifies the V3 pair before locks, then freshly reauthenticates and rederives
+F2 host admission, exact stored pair and locked plan, approval, rollout,
+attempt and target standing. A frozen non-`foundation_execution` plan refuses.
+Controller and host identity remain CP/F2 observations; Control cannot read
+their owners' state and does not accept those as Control-owned facts.
+
+Control stages and flushes only. CP owns the commit and returns to Foundation
+only after it succeeds. A failed commit leaves no authority marker. After a
+crash, CP opens a new read transaction and calls
+`lookup_foundation_execution_consumption` with the deterministic key; it
+returns a typed immutable record for a committed Foundation V3 spend. No
+network or Foundation call is made while Control rows are locked. Lookup
+validates the stored marker against the original admission fingerprint.
 
 ## Authenticated host-admission extension (redesigned 2026-09-22)
 
@@ -89,7 +116,9 @@ reproduce this value — it verifies the presented evidence exactly as before,
 and, on success only, returns a typed
 `AttestationPairVerificationResultV1` echoing that same digest back unchanged,
 alongside the two envelope digests it independently computed from the real
-parsed envelope objects. No Control lock is held anywhere during this phase,
+parsed envelope objects. The expected installed observation is the exact
+signed `context.dispatch_id`, not the attempt UUID's hyphenless `.hex` form.
+No Control lock is held anywhere during this phase,
 however long it takes — this is the entire point of the redesign.
 
 **Phase 3 — `admit_and_consume_host_admission` (fresh clock, full re-lock,

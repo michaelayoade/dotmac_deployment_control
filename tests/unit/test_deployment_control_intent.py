@@ -46,12 +46,15 @@ from dotmac_deployment_control import (
     AuthorizationEnvelopeV1,
     AuthorizationEnvelopeV2,
     CredentialTransitionCommand,
+    DeploymentControlError,
     DesiredDeployment,
     DigestEncodingError,
     DispatchEnvelopeV1,
     EnrolCredentialCommand,
     EnrolHostAdmissionCredentialCommand,
     ExpectedStateError,
+    FoundationDispatchConsumptionV1,
+    FoundationExecutionContextV1,
     PlanDigestV1,
     PlanRefusedError,
     PlanStatus,
@@ -79,6 +82,8 @@ from dotmac_deployment_control import (
     get_plan,
     get_rollout,
     get_target,
+    install_foundation_consumption_security,
+    lookup_foundation_execution_consumption,
     module,
     propose_plan,
     register_target,
@@ -94,6 +99,10 @@ from dotmac_deployment_control import (
 from dotmac_deployment_control.attestation_trust_registry import (
     AttestationRootDescriptorTerms,
     enrol_root,
+)
+from dotmac_deployment_control.foundation_consumption import (
+    _receipt_from_pair,
+    _reset_foundation_consumption_security_for_tests,
 )
 from dotmac_deployment_control.host_admission import (
     HostAdmissionPresentationStatementV1,
@@ -120,7 +129,11 @@ from dotmac_deployment_control.models import (
     RolloutAttemptSettlement,
 )
 from tests.authorization_support import SIGNER, VERIFIER
-from tests.dispatch_support import DISPATCH_SIGNER, TestDispatchSigner
+from tests.dispatch_support import (
+    DISPATCH_SIGNER,
+    DISPATCH_VERIFIER,
+    TestDispatchSigner,
+)
 from tests.execution_observation_support import observation_public_key_b64
 
 _NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -1296,6 +1309,57 @@ class TestDispatchConsumptionStaging:
     _CANDIDATE_DIGEST = "sha256:" + "ca" * 32
     _INSTALLED_DIGEST = "sha256:" + "1d" * 32
 
+    def test_direct_f2_only_stage_cannot_create_a_marker(self, db: Session) -> None:
+        attempt = self._attempt(db)
+        arguments = {
+            "attempt_id": attempt.id,
+            "expected_target": self._expected_target(db, attempt),
+            "candidate_attestation_envelope_digest": self._CANDIDATE_DIGEST,
+            "installed_attestation_envelope_digest": self._INSTALLED_DIGEST,
+        }
+        with pytest.raises(TypeError, match="foundation_expected"):
+            control_service._stage_dispatch_consumption(db, **arguments)
+        with pytest.raises(TypeError, match="verified Foundation V3 expectation"):
+            control_service._stage_dispatch_consumption(
+                db, **arguments, foundation_expected=None
+            )
+        assert (
+            db.query(PlatformIdempotencyRecord).filter_by(key=str(attempt.id)).count()
+            == 0
+        )
+
+    @staticmethod
+    def _verified_expected(
+        db: Session, attempt_id: uuid.UUID
+    ) -> control_service._ExpectedFoundationConsumption:
+        attempt = db.get(RolloutAttempt, attempt_id)
+        assert attempt is not None and attempt.dispatch_envelope is not None
+        rollout = db.get(Rollout, attempt.rollout_id)
+        assert rollout is not None and rollout.authorization_envelope is not None
+        authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+        dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+        receipt = _receipt_from_pair(authorization, dispatch)
+        context = FoundationExecutionContextV1(
+            product_code=receipt.product_code,
+            environment=receipt.environment,
+            target_id=receipt.target_id,
+            target_ref=receipt.target_ref,
+            operation=receipt.operation,
+            release_ref=receipt.release_ref,
+            rollout_ref=receipt.rollout_ref,
+            plan_id=receipt.plan_id,
+            approval_decision_ref=receipt.approval_decision_ref,
+            control_plan_digest=receipt.control_plan_digest,
+            execution_sequence=receipt.execution_sequence,
+            attempt_no=receipt.attempt_no,
+        )
+        return control_service._ExpectedFoundationConsumption(
+            authorization=authorization,
+            dispatch=dispatch,
+            context=context,
+            execution_plan_digest=receipt.execution_plan_digest,
+        )
+
     def _stage(
         self,
         db: Session,
@@ -1309,6 +1373,7 @@ class TestDispatchConsumptionStaging:
             expected_target=expected_target,
             candidate_attestation_envelope_digest=self._CANDIDATE_DIGEST,
             installed_attestation_envelope_digest=self._INSTALLED_DIGEST,
+            foundation_expected=self._verified_expected(db, attempt_id),
         )
 
     @staticmethod
@@ -1396,6 +1461,7 @@ class TestDispatchConsumptionStaging:
                 expected_target=expected,
                 candidate_attestation_envelope_digest="sha256:" + "ee" * 32,
                 installed_attestation_envelope_digest=self._INSTALLED_DIGEST,
+                foundation_expected=self._verified_expected(db, attempt.id),
             )
         assert (
             caught.value.code
@@ -1534,6 +1600,18 @@ class _AdmissionVerifier:
 
 
 @pytest.fixture(autouse=True)
+def _installed_foundation_consumption_security() -> Generator[None, None, None]:
+    _reset_foundation_consumption_security_for_tests()
+    install_foundation_consumption_security(
+        authorization_verifier=VERIFIER,
+        dispatch_verifier=DISPATCH_VERIFIER,
+        clock=_AdmissionClock(),
+    )
+    yield
+    _reset_foundation_consumption_security_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _installed_host_admission_security() -> Generator[None, None, None]:
     admission_coordinator._reset_host_admission_security_for_tests()
     install_host_admission_security(
@@ -1544,10 +1622,19 @@ def _installed_host_admission_security() -> Generator[None, None, None]:
 
 
 def _admission_fixture_inputs(
-    db: Session,
+    db: Session, *, operation: str = "deploy"
 ) -> tuple[uuid.UUID, HostAdmissionPresentationV1]:
     target = _desired(db, _target(db).id)
-    rollout = _rollout(db, _approved_plan(db, target.id).id)
+    plan = _plan(db, target.id, operation=operation)
+    approved = approve_plan(
+        db,
+        ApprovePlanCommand(
+            command_id=_cmd(),
+            plan_id=plan.id,
+            evidence=_evidence(plan.plan_digest or "", operation=operation),
+        ),
+    )
+    rollout = _rollout(db, approved.id)
     dispatch_attempt(
         db,
         command_id=_cmd(),
@@ -1629,8 +1716,8 @@ def _admission_fixture_inputs(
     return attempt.id, presentation
 
 
-def _resolve_admission_fixture(db: Session):  # type: ignore[no-untyped-def]
-    attempt_id, presentation = _admission_fixture_inputs(db)
+def _resolve_admission_fixture(db: Session, *, operation: str = "deploy"):  # type: ignore[no-untyped-def]
+    attempt_id, presentation = _admission_fixture_inputs(db, operation=operation)
     return resolve_host_admission_context(
         db, attempt_id=attempt_id, presentation=presentation
     )
@@ -1646,7 +1733,7 @@ def _matching_foreign_evidence(context) -> HostAdmissionForeignVerificationEvide
         ),
         verification_context_digest=context.context_digest,
         verified_host_identity=context.host_id,
-        verified_observation_id=context.attempt_id.hex,
+        verified_observation_id=context.dispatch_id,
         verified_package=context.expected_foundation_package,
         verified_candidate_audience=context.candidate_audience,
         verified_installed_audience=context.installed_audience,
@@ -1679,6 +1766,296 @@ def _corrupted_foreign_evidence(
     used to prove each of the seven new semantic fields is independently
     compared, one at a time, with the other six held correct."""
     return replace(_matching_foreign_evidence(context), **overrides)
+
+
+def _execution_for_context(
+    db: Session, context: admission_coordinator.HostAdmissionVerificationContextV1
+) -> FoundationDispatchConsumptionV1:
+    attempt = db.get(RolloutAttempt, context.attempt_id)
+    assert attempt is not None and attempt.dispatch_envelope is not None
+    rollout = db.get(Rollout, attempt.rollout_id)
+    assert rollout is not None and rollout.authorization_envelope is not None
+    authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+    receipt = _receipt_from_pair(authorization, dispatch)
+    observed = FoundationExecutionContextV1(
+        product_code=receipt.product_code,
+        environment=receipt.environment,
+        target_id=receipt.target_id,
+        target_ref=receipt.target_ref,
+        operation=receipt.operation,
+        release_ref=receipt.release_ref,
+        rollout_ref=receipt.rollout_ref,
+        plan_id=receipt.plan_id,
+        approval_decision_ref=receipt.approval_decision_ref,
+        control_plan_digest=receipt.control_plan_digest,
+        execution_sequence=receipt.execution_sequence,
+        attempt_no=receipt.attempt_no,
+    )
+    return FoundationDispatchConsumptionV1(
+        authorization_material_json=authorization.canonical_bytes,
+        dispatch_material_json=dispatch.canonical_bytes,
+        expected_context=observed,
+        expected_execution_plan_digest=receipt.execution_plan_digest,
+        control_consumption_ref=f"control-dispatch:{receipt.dispatch_id}",
+    )
+
+
+class TestUnifiedFoundationConsumption:
+    @pytest.mark.parametrize("operation", ["deploy", "rollback"])
+    def test_one_committed_marker_and_recovery_lookup(
+        self, db: Session, operation: str
+    ) -> None:
+        context = _resolve_admission_fixture(db, operation=operation)
+        execution = _execution_for_context(db, context)
+        assert context.dispatch_id == str(context.attempt_id)
+        assert context.dispatch_id != context.attempt_id.hex
+        assert execution.expected_context.operation == operation
+        evidence = _matching_foreign_evidence(context)
+        assert evidence.verified_observation_id == context.dispatch_id
+        db.commit()
+        staged = admit_and_consume_host_admission(
+            db, context=context, foreign_evidence=evidence, execution=execution
+        )
+        assert staged.dispatch_id == context.dispatch_id
+        assert (
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=context.dispatch_id)
+            .count()
+            == 1
+        )
+        db.commit()
+        with Session(db.get_bind()) as reader:
+            committed = lookup_foundation_execution_consumption(
+                reader, control_consumption_ref=execution.control_consumption_ref
+            )
+        assert committed is not None
+        assert committed.attempt_id == context.attempt_id
+        assert committed.dispatch_id == context.dispatch_id
+        assert (
+            committed.execution_plan_digest == execution.expected_execution_plan_digest
+        )
+        assert committed.candidate_attestation_envelope_digest == (
+            evidence.candidate_attestation_envelope_digest
+        )
+        assert committed.installed_attestation_envelope_digest == (
+            evidence.installed_attestation_envelope_digest
+        )
+        with pytest.raises(control_service._DispatchConsumptionRefusedError) as caught:
+            admit_and_consume_host_admission(
+                db, context=context, foreign_evidence=evidence, execution=execution
+            )
+        assert (
+            caught.value.code
+            is control_service._DispatchConsumptionRefusalCode.ALREADY_CONSUMED
+        )
+
+    def test_rollback_leaves_no_committed_consumption(self, db: Session) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        evidence = _matching_foreign_evidence(context)
+        db.commit()
+        admit_and_consume_host_admission(
+            db, context=context, foreign_evidence=evidence, execution=execution
+        )
+        db.rollback()
+        with Session(db.get_bind()) as reader:
+            assert (
+                lookup_foundation_execution_consumption(
+                    reader, control_consumption_ref=execution.control_consumption_ref
+                )
+                is None
+            )
+        admit_and_consume_host_admission(
+            db, context=context, foreign_evidence=evidence, execution=execution
+        )
+
+    @pytest.mark.parametrize("material", ["authorization", "dispatch"])
+    def test_wrong_pair_bytes_refuse_before_marker(
+        self, db: Session, material: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        db.commit()
+        changed = replace(
+            execution,
+            **{f"{material}_material_json": b"{}"},
+        )
+        monkeypatch.setattr(
+            admission_coordinator,
+            "lock_target",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("row lock reached before signed-pair refusal")
+            ),
+        )
+        with pytest.raises(DeploymentControlError):
+            admit_and_consume_host_admission(
+                db,
+                context=context,
+                foreign_evidence=_matching_foreign_evidence(context),
+                execution=changed,
+            )
+        assert (
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=context.dispatch_id)
+            .count()
+            == 0
+        )
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("target_ref", "wrong-target"),
+            ("execution_sequence", 999),
+            ("attempt_no", 999),
+            ("control_plan_digest", "sha256:" + "e" * 64),
+        ],
+    )
+    def test_independent_control_context_mismatch_refuses(
+        self, db: Session, field: str, value: object
+    ) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        db.commit()
+        changed = replace(
+            execution,
+            expected_context=replace(execution.expected_context, **{field: value}),
+        )
+        with pytest.raises(DeploymentControlError):
+            admit_and_consume_host_admission(
+                db,
+                context=context,
+                foreign_evidence=_matching_foreign_evidence(context),
+                execution=changed,
+            )
+
+    def test_digest_and_recovery_coordinate_mismatch_refuse(self, db: Session) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        db.commit()
+        for changed in (
+            replace(execution, expected_execution_plan_digest="sha256:" + "f" * 64),
+            replace(execution, control_consumption_ref="control-dispatch:wrong"),
+        ):
+            with pytest.raises(DeploymentControlError):
+                admit_and_consume_host_admission(
+                    db,
+                    context=context,
+                    foreign_evidence=_matching_foreign_evidence(context),
+                    execution=changed,
+                )
+
+    @pytest.mark.parametrize("cutoff", ["revocation", "settlement"])
+    def test_revocation_or_settlement_committing_first_refuses(
+        self, db: Session, cutoff: str
+    ) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        db.commit()
+        attempt = db.get(RolloutAttempt, context.attempt_id)
+        assert attempt is not None
+        rollout = db.get(Rollout, attempt.rollout_id)
+        assert rollout is not None
+        if cutoff == "revocation":
+            revoke_plan_approval(
+                db,
+                RevokePlanApprovalCommand(
+                    command_id=_cmd(),
+                    plan_id=rollout.plan_id,
+                    revocation_ref="withdrawn",
+                ),
+            )
+        else:
+            settle_attempt(
+                db,
+                SettleAttemptCommand(
+                    command_id=_cmd(),
+                    rollout_id=rollout.id,
+                    attempt_no=attempt.attempt_no,
+                    outcome=AttemptOutcome.SUCCEEDED.value,
+                ),
+            )
+        db.commit()
+        with pytest.raises(control_service._DispatchConsumptionRefusedError):
+            admit_and_consume_host_admission(
+                db,
+                context=context,
+                foreign_evidence=_matching_foreign_evidence(context),
+                execution=execution,
+            )
+
+    def test_security_install_is_startup_fixed(self) -> None:
+        with pytest.raises(RuntimeError, match="already installed"):
+            install_foundation_consumption_security(
+                authorization_verifier=VERIFIER,
+                dispatch_verifier=DISPATCH_VERIFIER,
+                clock=_AdmissionClock(),
+            )
+
+    def test_no_installed_v3_trust_has_no_fallback(self, db: Session) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        db.commit()
+        _reset_foundation_consumption_security_for_tests()
+        with pytest.raises(DeploymentControlError, match="not installed"):
+            admit_and_consume_host_admission(
+                db,
+                context=context,
+                foreign_evidence=_matching_foreign_evidence(context),
+                execution=execution,
+            )
+        assert (
+            db.query(PlatformIdempotencyRecord)
+            .filter_by(key=context.dispatch_id)
+            .count()
+            == 0
+        )
+
+    def test_issuer_purpose_cannot_consume_foundation_dispatch(
+        self, db: Session
+    ) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        attempt = db.get(RolloutAttempt, context.attempt_id)
+        assert attempt is not None
+        rollout = db.get(Rollout, attempt.rollout_id)
+        assert rollout is not None
+        plan = db.get(control_service.DeploymentPlan, rollout.plan_id)
+        assert plan is not None
+        plan.purpose = "rehearsal_issuer_operation"
+        db.commit()
+        markers_before = _consumption_markers(db)
+        with pytest.raises(DeploymentControlError):
+            admit_and_consume_host_admission(
+                db,
+                context=context,
+                foreign_evidence=_matching_foreign_evidence(context),
+                execution=execution,
+            )
+        db.rollback()
+        assert _consumption_markers(db) == markers_before
+
+    def test_lookup_refuses_changed_stored_coordinate(self, db: Session) -> None:
+        context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
+        evidence = _matching_foreign_evidence(context)
+        db.commit()
+        admit_and_consume_host_admission(
+            db, context=context, foreign_evidence=evidence, execution=execution
+        )
+        db.commit()
+        marker = (
+            db.query(PlatformIdempotencyRecord).filter_by(key=context.dispatch_id).one()
+        )
+        marker.result = {
+            **marker.result,
+            "installed_attestation_envelope_digest": "sha256:" + "e" * 64,
+        }
+        db.flush()
+        with pytest.raises(DeploymentControlError, match="stored consumption evidence"):
+            lookup_foundation_execution_consumption(
+                db, control_consumption_ref=execution.control_consumption_ref
+            )
 
 
 class TestAuthenticatedHostAdmission:
@@ -1714,6 +2091,7 @@ class TestAuthenticatedHostAdmission:
         assert context.host_id == "host-one"
         assert context.expected_foundation_package == "dotmac-sub"
         assert context.installed_root.public_key_base64.endswith("=")
+        execution = _execution_for_context(db, context)
 
         # Prove the redesign's whole point: no lock survives resolve. Commit
         # (releasing anything SQLAlchemy might otherwise hold pending) between
@@ -1724,7 +2102,10 @@ class TestAuthenticatedHostAdmission:
         db.commit()
 
         staged = admit_and_consume_host_admission(
-            db, context=context, foreign_evidence=_matching_foreign_evidence(context)
+            db,
+            context=context,
+            foreign_evidence=_matching_foreign_evidence(context),
+            execution=execution,
         )
         assert staged.dispatch_id == context.dispatch_id
 
@@ -1732,6 +2113,7 @@ class TestAuthenticatedHostAdmission:
         self, db: Session
     ) -> None:
         context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
         db.commit()
         bad_evidence = _corrupted_foreign_evidence(
             context,
@@ -1739,7 +2121,7 @@ class TestAuthenticatedHostAdmission:
         )
         with pytest.raises(HostAdmissionRefusedError) as caught:
             admit_and_consume_host_admission(
-                db, context=context, foreign_evidence=bad_evidence
+                db, context=context, foreign_evidence=bad_evidence, execution=execution
             )
         assert caught.value.code is HostAdmissionRefusalCode.EVIDENCE_CHANGED
         assert (
@@ -1771,11 +2153,12 @@ class TestAuthenticatedHostAdmission:
         self, db: Session, overrides: dict[str, object]
     ) -> None:
         context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
         db.commit()
         bad_evidence = _corrupted_foreign_evidence(context, **overrides)
         with pytest.raises(HostAdmissionRefusedError) as caught:
             admit_and_consume_host_admission(
-                db, context=context, foreign_evidence=bad_evidence
+                db, context=context, foreign_evidence=bad_evidence, execution=execution
             )
         assert (
             caught.value.code
@@ -1795,6 +2178,7 @@ class TestAuthenticatedHostAdmission:
         self, db: Session, root_field: str
     ) -> None:
         context = _resolve_admission_fixture(db)
+        execution = _execution_for_context(db, context)
         db.commit()
         wrong_root = admission_coordinator.HostAdmissionForeignRootV1(
             public_key_fingerprint="sha256:" + "ff" * 32,
@@ -1808,7 +2192,7 @@ class TestAuthenticatedHostAdmission:
         bad_evidence = _corrupted_foreign_evidence(context, **{root_field: wrong_root})
         with pytest.raises(HostAdmissionRefusedError) as caught:
             admit_and_consume_host_admission(
-                db, context=context, foreign_evidence=bad_evidence
+                db, context=context, foreign_evidence=bad_evidence, execution=execution
             )
         assert (
             caught.value.code
@@ -1856,3 +2240,20 @@ class TestAuthenticatedHostAdmission:
                 presentation=presentation,
             )
         assert caught.value.code is HostAdmissionRefusalCode.POLICY_HOST_MISMATCH
+
+
+def _consumption_markers(db) -> int:  # type: ignore[no-untyped-def]
+    """Committed dispatch-consumption markers: the proof nothing was consumed."""
+    from dotmac_kernel.idempotency_models import PlatformIdempotencyRecord
+    from sqlalchemy import func, select
+
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE
+            )
+        ).scalar_one()
+    )
