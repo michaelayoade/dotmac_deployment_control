@@ -455,6 +455,12 @@ def _insert_plan(  # type: ignore[no-untyped-def]
     the service wrote would only prove the service agrees with itself.
     """
     plan_id = uuid.uuid4()
+    # `target_id` is a digest-covered field on every real plan snapshot (see
+    # `plan_snapshot`'s `target_ref`); carrying it here too is what keeps two
+    # of these raw rows from freezing the same canonical bytes and colliding
+    # on `uq_plans_digest` -- a fixed literal snapshot made every plan in the
+    # fleet fixture digest-identical.
+    snapshot = {"plan_purpose": "foundation_execution", "target_id": str(target_id)}
     columns = (
         " id, target_id, sequence, status, desired_revision,"
         " plan_digest, requires_approval, record_version,"
@@ -466,8 +472,7 @@ def _insert_plan(  # type: ignore[no-untyped-def]
     )
     if not legacy:
         columns += ", purpose, snapshot"
-        values += ", 'foundation_execution', "
-        values += '\'{"plan_purpose":"foundation_execution"}\'::jsonb'
+        values += ", 'foundation_execution', CAST(:snapshot AS jsonb)"
     conn.execute(
         text(f"INSERT INTO mod_deploy.deployment_plans ({columns}) VALUES ({values})"),
         {
@@ -477,13 +482,12 @@ def _insert_plan(  # type: ignore[no-untyped-def]
             "digest": (
                 uuid.uuid4().hex
                 if legacy
-                else control_service.plan_digest_of(
-                    {"plan_purpose": "foundation_execution"}
-                ).canonical
+                else control_service.plan_digest_of(snapshot).canonical
             ),
             "decision": decision_status,
             "revoked_at": datetime(2026, 9, 4, 12, 0, tzinfo=UTC) if revoked else None,
             "revocation_ref": "apr-rev-pg" if revoked else None,
+            **({} if legacy else {"snapshot": json.dumps(snapshot)}),
         },
     )
     return plan_id
