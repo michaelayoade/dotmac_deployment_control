@@ -528,7 +528,7 @@ def _stage_dispatch_consumption(
         or stored_execution != signed_execution
         or plan.operation != signed.operation
         or descriptor is None
-        or descriptor.canonical != signed.descriptor_digest
+        or descriptor != DescriptorDigestV1.parse(signed.descriptor_digest)
     ):
         raise _DispatchConsumptionRefusedError(
             _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,

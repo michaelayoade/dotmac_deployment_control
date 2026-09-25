@@ -658,6 +658,7 @@ def test_planted_issuer_plan_is_refused_at_each_lower_execution_boundary(
             rollout_id=rollout.id,
             dispatch_signer=None,  # type: ignore[arg-type] -- guard fires first
         )
+    markers_before = _consumption_markers(db)
     with pytest.raises(_DispatchConsumptionRefusedError, match="non-Foundation"):
         _stage_dispatch_consumption(
             db,
@@ -672,6 +673,9 @@ def test_planted_issuer_plan_is_refused_at_each_lower_execution_boundary(
                 execution_plan_digest="",
             ),
         )
+    # A genuinely frozen rehearsal-issuer plan is refused BEFORE any
+    # consumption marker is written.
+    assert _consumption_markers(db) == markers_before
 
 
 def test_foundation_plan_still_rolls_out_and_dispatches(db: Session) -> None:
@@ -1146,3 +1150,20 @@ def test_consumption_refuses_a_target_suspended_after_issuance(db: Session) -> N
                 harness_evidence_document=consumption_evidence,
             )
     assert refused.value.code == RehearsalIssuerIssuanceRefusalCode.TARGET_NOT_ACTIVE
+
+
+def _consumption_markers(db) -> int:  # type: ignore[no-untyped-def]
+    """Committed dispatch-consumption markers: the proof nothing was consumed."""
+    from dotmac_kernel.idempotency_models import PlatformIdempotencyRecord
+    from sqlalchemy import func, select
+
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE
+            )
+        ).scalar_one()
+    )

@@ -2024,6 +2024,7 @@ class TestUnifiedFoundationConsumption:
         assert plan is not None
         plan.purpose = "rehearsal_issuer_operation"
         db.commit()
+        markers_before = _consumption_markers(db)
         with pytest.raises(DeploymentControlError):
             admit_and_consume_host_admission(
                 db,
@@ -2031,6 +2032,8 @@ class TestUnifiedFoundationConsumption:
                 foreign_evidence=_matching_foreign_evidence(context),
                 execution=execution,
             )
+        db.rollback()
+        assert _consumption_markers(db) == markers_before
 
     def test_lookup_refuses_changed_stored_coordinate(self, db: Session) -> None:
         context = _resolve_admission_fixture(db)
@@ -2237,3 +2240,20 @@ class TestAuthenticatedHostAdmission:
                 presentation=presentation,
             )
         assert caught.value.code is HostAdmissionRefusalCode.POLICY_HOST_MISMATCH
+
+
+def _consumption_markers(db) -> int:  # type: ignore[no-untyped-def]
+    """Committed dispatch-consumption markers: the proof nothing was consumed."""
+    from dotmac_kernel.idempotency_models import PlatformIdempotencyRecord
+    from sqlalchemy import func, select
+
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(PlatformIdempotencyRecord)
+            .where(
+                PlatformIdempotencyRecord.scope
+                == control_service._SCOPE_CONSUME_DISPATCH_CHALLENGE
+            )
+        ).scalar_one()
+    )
