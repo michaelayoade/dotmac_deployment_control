@@ -210,6 +210,7 @@ SCOPE_OBSERVE = "deployment.record_observation"
 # Integrator delivery retry.  Its marker deliberately has no expiry or reset.
 _SCOPE_CONSUME_DISPATCH_CHALLENGE = "deployment.consume_dispatch_challenge.v1"
 
+
 _ENTITY_TARGET = "deployment_target"
 _ENTITY_CREDENTIAL = "target_credential"
 _ENTITY_PLAN = "deployment_plan"
@@ -280,6 +281,16 @@ class _StagedDispatchConsumption:
 
 
 @dataclass(frozen=True, slots=True)
+class _ExpectedFoundationConsumption:
+    """Verified pair and CP-observed context for the sole public finalizer."""
+
+    authorization: AuthorizationEnvelopeV2
+    dispatch: DispatchEnvelopeV1
+    context: object
+    execution_plan_digest: str
+
+
+@dataclass(frozen=True, slots=True)
 class _StoredDispatchCoordinate:
     attempt_id: UUID
     target_id: UUID
@@ -324,6 +335,7 @@ def _stage_dispatch_consumption(
     expected_target: _ExpectedDispatchTarget,
     candidate_attestation_envelope_digest: str,
     installed_attestation_envelope_digest: str,
+    foundation_expected: _ExpectedFoundationConsumption,
 ) -> _StagedDispatchConsumption:
     """Stage one exact persisted dispatch for post-commit launch.
 
@@ -344,6 +356,13 @@ def _stage_dispatch_consumption(
     referential-integrity locks. Recovery is a newly signed dispatch attempt,
     never a reset or expiry of this marker.
     """
+    if not isinstance(foundation_expected, _ExpectedFoundationConsumption):
+        raise TypeError("verified Foundation V3 expectation is required")
+    if (
+        not candidate_attestation_envelope_digest
+        or not installed_attestation_envelope_digest
+    ):
+        raise TypeError("both host-admission digests are required")
     locator = db.execute(
         select(RolloutAttempt.rollout_id).where(RolloutAttempt.id == attempt_id)
     ).scalar_one_or_none()
@@ -434,6 +453,67 @@ def _stage_dispatch_consumption(
                 f"the stored dispatch does not bind this attempt's {field}",
             )
 
+    supplied_authorization = foundation_expected.authorization
+    supplied_dispatch = foundation_expected.dispatch
+    if (
+        supplied_authorization.canonical_bytes != authorization.canonical_bytes
+        or supplied_dispatch.canonical_bytes != dispatch.canonical_bytes
+    ):
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+            "the verified pair differs from Control's immutable stored pair",
+        )
+    signed = authorization.statement
+    context = foundation_expected.context
+    frozen = plan.snapshot or {}
+    actual_terms = {
+        "product_code": target.product_code,
+        "environment": target.environment,
+        "target_id": str(target.id),
+        "target_ref": target.target_ref,
+        "operation": plan.authorized_operation,
+        "release_ref": frozen.get("release_ref"),
+        "rollout_ref": rollout.rollout_ref,
+        "plan_id": str(plan.id),
+        "approval_decision_ref": plan.approval_decision_ref,
+        "control_plan_digest": plan.plan_digest,
+        "execution_sequence": rollout.execution_sequence,
+        "attempt_no": attempt.attempt_no,
+    }
+    for field, actual in actual_terms.items():
+        if getattr(context, field, None) != actual:
+            raise _DispatchConsumptionRefusedError(
+                _DispatchConsumptionRefusalCode.COORDINATE_MISMATCH,
+                f"fresh Control {field} differs from expected execution context",
+            )
+    signed_terms = {
+        "product_code": signed.product_code,
+        "environment": signed.environment,
+        "target_id": signed.target_id,
+        "target_ref": signed.target_ref,
+        "operation": signed.operation,
+        "release_ref": signed.release_ref,
+        "rollout_ref": signed.rollout_ref,
+        "plan_id": signed.plan_id,
+        "approval_decision_ref": signed.approval_decision_ref,
+        "control_plan_digest": signed.plan_digest,
+        "execution_sequence": signed.execution_sequence,
+        "attempt_no": statement.attempt_no,
+    }
+    descriptor = _frozen_descriptor_digest(plan)
+    if actual_terms != signed_terms or (
+        foundation_expected.execution_plan_digest != signed.execution_plan_digest
+        or plan.authorized_execution_plan_digest != signed.execution_plan_digest
+        or plan.execution_plan_digest != signed.execution_plan_digest
+        or plan.operation != signed.operation
+        or descriptor is None
+        or descriptor.canonical != signed.descriptor_digest
+    ):
+        raise _DispatchConsumptionRefusedError(
+            _DispatchConsumptionRefusalCode.ENVELOPE_MISMATCH,
+            "stored plan or target no longer agrees with signed execution pair",
+        )
+
     now = _control_now()
     if now >= _as_utc(authorization.statement.expires_at):
         raise _DispatchConsumptionRefusedError(
@@ -459,6 +539,7 @@ def _stage_dispatch_consumption(
     if plan.requires_approval and (
         plan.status != PlanStatus.APPROVED.value
         or plan.approval_decision_status != ApprovalDecisionStatus.GRANTED.value
+        or plan.approval_revoked_at is not None
     ):
         raise _DispatchConsumptionRefusedError(
             _DispatchConsumptionRefusalCode.APPROVAL_NOT_STANDING,
@@ -466,6 +547,25 @@ def _stage_dispatch_consumption(
             "authority even though the dispatch remains immutable history",
         )
 
+    fingerprint = admission_consumption_fingerprint(
+        dispatch_envelope_digest=digest.canonical,
+        candidate_attestation_envelope_digest=candidate_attestation_envelope_digest,
+        installed_attestation_envelope_digest=installed_attestation_envelope_digest,
+    )
+    result = {
+        "attempt_id": str(attempt.id),
+        "dispatch_id": statement.dispatch_id,
+        "dispatch_digest": digest.canonical,
+        "candidate_attestation_envelope_digest": candidate_attestation_envelope_digest,
+        "installed_attestation_envelope_digest": installed_attestation_envelope_digest,
+    }
+    result.update(
+        kind="foundation_v3",
+        authorization_envelope_digest=AuthorizationEnvelopeDigestV1.over_bytes(
+            authorization.canonical_bytes
+        ).canonical,
+        execution_plan_digest=foundation_expected.execution_plan_digest,
+    )
     try:
         outcome = execute_once_platform(
             db,
@@ -473,28 +573,10 @@ def _stage_dispatch_consumption(
             key=statement.dispatch_id,
             # Kernel fingerprints are deliberately bare 64-hex. This one binds
             # the immutable dispatch and both verified attestation envelopes.
-            fingerprint=admission_consumption_fingerprint(
-                dispatch_envelope_digest=digest.canonical,
-                candidate_attestation_envelope_digest=(
-                    candidate_attestation_envelope_digest
-                ),
-                installed_attestation_envelope_digest=(
-                    installed_attestation_envelope_digest
-                ),
-            ),
+            fingerprint=fingerprint,
             expires_at=None,
             operation_name=_SCOPE_CONSUME_DISPATCH_CHALLENGE,
-            operation=lambda _session: {
-                "attempt_id": str(attempt.id),
-                "dispatch_id": statement.dispatch_id,
-                "dispatch_digest": digest.canonical,
-                "candidate_attestation_envelope_digest": (
-                    candidate_attestation_envelope_digest
-                ),
-                "installed_attestation_envelope_digest": (
-                    installed_attestation_envelope_digest
-                ),
-            },
+            operation=lambda _session: result,
         )
     except IdempotencyConflict as exc:
         raise _DispatchConsumptionRefusedError(
@@ -511,8 +593,8 @@ def _stage_dispatch_consumption(
         attempt_id=attempt.id,
         dispatch_id=statement.dispatch_id,
         dispatch_digest=digest,
-        candidate_attestation_envelope_digest=(candidate_attestation_envelope_digest),
-        installed_attestation_envelope_digest=(installed_attestation_envelope_digest),
+        candidate_attestation_envelope_digest=candidate_attestation_envelope_digest,
+        installed_attestation_envelope_digest=installed_attestation_envelope_digest,
     )
 
 

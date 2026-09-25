@@ -665,6 +665,12 @@ def test_planted_issuer_plan_is_refused_at_each_lower_execution_boundary(
             expected_target=_ExpectedDispatchTarget(target.id, target.target_ref),
             candidate_attestation_envelope_digest="sha256:" + "a" * 64,
             installed_attestation_envelope_digest="sha256:" + "b" * 64,
+            foundation_expected=control_service._ExpectedFoundationConsumption(
+                authorization=None,  # type: ignore[arg-type] -- purpose refuses first
+                dispatch=None,  # type: ignore[arg-type] -- purpose refuses first
+                context=None,
+                execution_plan_digest="",
+            ),
         )
 
 

@@ -67,8 +67,11 @@ from dotmac_deployment_control import (
     AuthorizationEnvelopeV2,
     CredentialTransitionCommand,
     DesiredDeployment,
+    DispatchEnvelopeV1,
     EnrolCredentialCommand,
     EnrolHostAdmissionCredentialCommand,
+    FoundationDispatchConsumptionV1,
+    FoundationExecutionContextV1,
     HostAdmissionForeignVerificationEvidenceV1,
     HostAdmissionPresentationStatementV1,
     HostAdmissionPresentationV1,
@@ -101,6 +104,7 @@ from dotmac_deployment_control import (
     enrol_host_admission_credential,
     get_rollout,
     get_target,
+    install_foundation_consumption_security,
     install_host_admission_security,
     issue_execution_observation_envelope,
     list_targets,
@@ -123,6 +127,10 @@ from dotmac_deployment_control.attestation_trust_registry import (
     enrol_root,
     revoke_root,
     rotate_root,
+)
+from dotmac_deployment_control.foundation_consumption import (
+    _receipt_from_pair,
+    _reset_foundation_consumption_security_for_tests,
 )
 from dotmac_deployment_control.host_admission_service import (
     BindTargetHostCommand,
@@ -163,7 +171,7 @@ from dotmac_deployment_control.rehearsal_issuer_issuance import (
     stage_rehearsal_issuer_consumption,
 )
 from tests.authorization_support import SIGNER, VERIFIER
-from tests.dispatch_support import DISPATCH_SIGNER
+from tests.dispatch_support import DISPATCH_SIGNER, DISPATCH_VERIFIER
 from tests.execution_observation_support import (
     OBSERVATION_VERIFIER,
     TestExecutionObservationSigner,
@@ -181,12 +189,39 @@ def _stage_dispatch_consumption(
     attempt_id: uuid.UUID,
     expected_target: control_service._ExpectedDispatchTarget,
 ):
+    attempt = db.get(RolloutAttempt, attempt_id)
+    assert attempt is not None and attempt.dispatch_envelope is not None
+    rollout = db.get(Rollout, attempt.rollout_id)
+    assert rollout is not None and rollout.authorization_envelope is not None
+    authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+    receipt = _receipt_from_pair(authorization, dispatch)
+    foundation_expected = control_service._ExpectedFoundationConsumption(
+        authorization=authorization,
+        dispatch=dispatch,
+        context=FoundationExecutionContextV1(
+            product_code=receipt.product_code,
+            environment=receipt.environment,
+            target_id=receipt.target_id,
+            target_ref=receipt.target_ref,
+            operation=receipt.operation,
+            release_ref=receipt.release_ref,
+            rollout_ref=receipt.rollout_ref,
+            plan_id=receipt.plan_id,
+            approval_decision_ref=receipt.approval_decision_ref,
+            control_plan_digest=receipt.control_plan_digest,
+            execution_sequence=receipt.execution_sequence,
+            attempt_no=receipt.attempt_no,
+        ),
+        execution_plan_digest=receipt.execution_plan_digest,
+    )
     return control_service._stage_dispatch_consumption(
         db,
         attempt_id=attempt_id,
         expected_target=expected_target,
         candidate_attestation_envelope_digest=_CANDIDATE_ATTESTATION_DIGEST,
         installed_attestation_envelope_digest=_INSTALLED_ATTESTATION_DIGEST,
+        foundation_expected=foundation_expected,
     )
 
 
@@ -3048,11 +3083,18 @@ class _HostAdmissionVerifier:
 @pytest.fixture(scope="module", autouse=True)
 def _installed_host_admission_security() -> Iterator[None]:
     admission_coordinator._reset_host_admission_security_for_tests()
+    _reset_foundation_consumption_security_for_tests()
     install_host_admission_security(
         verifier=_HostAdmissionVerifier(), clock=_HostAdmissionClock()
     )
+    install_foundation_consumption_security(
+        authorization_verifier=VERIFIER,
+        dispatch_verifier=DISPATCH_VERIFIER,
+        clock=_HostAdmissionClock(),
+    )
     yield
     admission_coordinator._reset_host_admission_security_for_tests()
+    _reset_foundation_consumption_security_for_tests()
 
 
 def _seed_host_admission_coordinate(
@@ -3293,6 +3335,38 @@ def _mutate_host_admission_coordinate(
     raise AssertionError(f"unknown mutation {mutation!r}")
 
 
+def _foundation_execution_for_context(
+    db: Session, context: admission_coordinator.HostAdmissionVerificationContextV1
+) -> FoundationDispatchConsumptionV1:
+    attempt = db.get(RolloutAttempt, context.attempt_id)
+    assert attempt is not None and attempt.dispatch_envelope is not None
+    rollout = db.get(Rollout, attempt.rollout_id)
+    assert rollout is not None and rollout.authorization_envelope is not None
+    authorization = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+    dispatch = DispatchEnvelopeV1.parse(attempt.dispatch_envelope)
+    receipt = _receipt_from_pair(authorization, dispatch)
+    return FoundationDispatchConsumptionV1(
+        authorization_material_json=authorization.canonical_bytes,
+        dispatch_material_json=dispatch.canonical_bytes,
+        expected_context=FoundationExecutionContextV1(
+            product_code=receipt.product_code,
+            environment=receipt.environment,
+            target_id=receipt.target_id,
+            target_ref=receipt.target_ref,
+            operation=receipt.operation,
+            release_ref=receipt.release_ref,
+            rollout_ref=receipt.rollout_ref,
+            plan_id=receipt.plan_id,
+            approval_decision_ref=receipt.approval_decision_ref,
+            control_plan_digest=receipt.control_plan_digest,
+            execution_sequence=receipt.execution_sequence,
+            attempt_no=receipt.attempt_no,
+        ),
+        expected_execution_plan_digest=receipt.execution_plan_digest,
+        control_consumption_ref=f"control-dispatch:{receipt.dispatch_id}",
+    )
+
+
 def _matching_foreign_evidence(
     context,
 ) -> HostAdmissionForeignVerificationEvidenceV1:
@@ -3308,7 +3382,7 @@ def _matching_foreign_evidence(
         ),
         verification_context_digest=context.context_digest,
         verified_host_identity=context.host_id,
-        verified_observation_id=context.attempt_id.hex,
+        verified_observation_id=context.dispatch_id,
         verified_package=context.expected_foundation_package,
         verified_candidate_audience=context.candidate_audience,
         verified_installed_audience=context.installed_audience,
@@ -3437,6 +3511,7 @@ def test_committed_coordinate_mutation_wins_before_host_admission(
         context = resolve_host_admission_context(
             resolver_session, attempt_id=attempt_id, presentation=presentation
         )
+        execution = _foundation_execution_for_context(resolver_session, context)
         resolver_session.commit()
     foreign_evidence = _matching_foreign_evidence(context)
     gate = _HoldOneNamedRowLock(lock_table, subject=lock_subject)
@@ -3476,7 +3551,10 @@ def test_committed_coordinate_mutation_wins_before_host_admission(
                 )
                 try:
                     admit_and_consume_host_admission(
-                        db, context=context, foreign_evidence=foreign_evidence
+                        db,
+                        context=context,
+                        foreign_evidence=foreign_evidence,
+                        execution=execution,
                     )
                     db.commit()
                     outcomes["admission"] = "consumed"
@@ -3573,10 +3651,13 @@ def test_committed_host_admission_wins_before_coordinate_mutation(
                 context = resolve_host_admission_context(
                     db, attempt_id=attempt_id, presentation=presentation
                 )
+                execution = _foundation_execution_for_context(db, context)
+                db.commit()
                 admit_and_consume_host_admission(
                     db,
                     context=context,
                     foreign_evidence=_matching_foreign_evidence(context),
+                    execution=execution,
                 )
                 db.commit()
                 outcomes["admission"] = "consumed"
@@ -3648,10 +3729,13 @@ def _resolve_and_admit_host_admission(
     context = resolve_host_admission_context(
         db, attempt_id=attempt_id, presentation=presentation
     )
+    execution = _foundation_execution_for_context(db, context)
+    db.commit()
     admit_and_consume_host_admission(
         db,
         context=context,
         foreign_evidence=_matching_foreign_evidence(context),
+        execution=execution,
     )
 
 
@@ -3670,6 +3754,18 @@ def test_concurrent_host_admission_replay_commits_exactly_one_marker(
         _host_fp,
     ) = _seed_host_admission_coordinate(engine, rollout_ref)
     sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    # Resolve once before either worker starts.  The race this test claims to
+    # prove is at Control's final, locked admission/consumption boundary; doing
+    # the unlocked resolver inside each worker leaves room for one worker to
+    # finish before the other ever reaches the target lock, which is not a
+    # concurrency proof at all.
+    with sessions() as resolver:
+        context = resolve_host_admission_context(
+            resolver, attempt_id=attempt_id, presentation=presentation
+        )
+        execution = _foundation_execution_for_context(resolver, context)
+        resolver.commit()
+    foreign_evidence = _matching_foreign_evidence(context)
     gate = _HoldOneNamedRowLock("deployment_targets")
     event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
     backend_pids: dict[str, int] = {}
@@ -3685,8 +3781,11 @@ def test_concurrent_host_admission_replay_commits_exactly_one_marker(
                     db.execute(text("SELECT pg_backend_pid() ")).scalar_one()
                 )
                 try:
-                    _resolve_and_admit_host_admission(
-                        db, attempt_id=attempt_id, presentation=presentation
+                    admit_and_consume_host_admission(
+                        db,
+                        context=context,
+                        foreign_evidence=foreign_evidence,
+                        execution=execution,
                     )
                     db.commit()
                     outcomes.append("consumed")
