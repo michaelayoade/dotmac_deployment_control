@@ -84,6 +84,12 @@ def downgrade() -> None:
     # a14 cannot distinguish any post-dc0015 plan from its old issuer-eligible
     # rehearsal/deploy plans, even when the new plan was Foundation-only.
     # Historical marker-absent rows may be read by a14 as they were before.
+    #
+    # Locked before the check, mirroring dc_0014's downgrade: without the lock
+    # a concurrent proposer could insert a purpose-marked plan between this
+    # SELECT and the DROP below, and the downgrade would proceed against a
+    # database it never actually observed to be marker-free.
+    op.execute("LOCK TABLE mod_deploy.deployment_plans IN ACCESS EXCLUSIVE MODE")
     if (
         op.get_bind()
         .execute(
