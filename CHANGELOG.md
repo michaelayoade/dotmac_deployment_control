@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## Unreleased — one Foundation V3 execution consumption
+## 0.1.0a15 (published 2026-09-25) — one Foundation V3 execution consumption
 
 - `admit_and_consume_host_admission` now requires an `execution` argument and
   consumes the exact Control authorization/dispatch pair a Foundation V3
@@ -18,7 +18,7 @@ changes, each called out here.
   `foundation_execution`, before any marker is written.
 - Execution plan and descriptor digests are compared as parsed values.
 
-## Unreleased — frozen Control plan purpose
+## 0.1.0a15 (published 2026-09-25) — frozen Control plan purpose
 
 This change requires the next release coordinate `0.1.0a15`; version
 allocation and publication ledger updates belong to the release process.
