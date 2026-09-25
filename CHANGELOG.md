@@ -9,6 +9,15 @@ changes, each called out here.
 
 This change requires the next release coordinate `0.1.0a15`; version
 allocation and publication ledger updates belong to the release process.
+Stop every `0.1.0a14` process at migration time: until they stop, `a14` code
+against the migrated database still treats historical approved plans as
+issuer-eligible.
+
+- New public `ApprovedPlanRefusalCode` members: `wrong_plan_purpose` (an
+  approved rehearsal-issuer plan is not a Foundation execution plan) and
+  `plan_purpose_inconsistent` (the row's purpose column, frozen snapshot marker
+  and digest disagree, so it cannot be trusted to name its own purpose).
+  `PlanView.purpose` is display-only.
 
 - A plan now freezes a closed `foundation_execution` or
   `rehearsal_issuer_operation` purpose. New snapshots include that purpose in

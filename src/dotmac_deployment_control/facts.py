@@ -205,6 +205,9 @@ class PlanView:
     status: str
     desired_revision: int
     record_version: int
+    #: The stored purpose, for DISPLAY only — never authority. It is projected
+    #: without the column/marker/digest consistency check; every authority
+    #: decision re-derives the purpose from the plan row itself.
     purpose: str
     plan_digest: str | None = None
     descriptor_digest: str | None = None

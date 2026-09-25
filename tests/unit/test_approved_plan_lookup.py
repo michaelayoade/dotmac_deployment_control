@@ -633,7 +633,9 @@ class TestEachRefusalIsItsOwnFinding:
         row.purpose = PlanPurpose.REHEARSAL_ISSUER_OPERATION.value
         db.flush()
 
-        with pytest.raises(PlanRefusedError):
+        with pytest.raises(
+            PlanRefusedError, match="differs from its frozen snapshot purpose"
+        ):
             _rollout(db, plan)
 
     def test_a_different_expected_descriptor_is_its_own_refusal(self, db) -> None:
@@ -712,6 +714,7 @@ class TestEachRefusalIsItsOwnFinding:
             ApprovedPlanRefusalCode.DIGEST_UNREADABLE,
             ApprovedPlanRefusalCode.DIGEST_UNRESOLVED,
             ApprovedPlanRefusalCode.WRONG_PLAN_PURPOSE,
+            ApprovedPlanRefusalCode.PLAN_PURPOSE_INCONSISTENT,
             ApprovedPlanRefusalCode.NOT_APPROVED,
             ApprovedPlanRefusalCode.APPROVAL_REVOKED,
             ApprovedPlanRefusalCode.APPROVAL_STANDING_UNRECORDED,
