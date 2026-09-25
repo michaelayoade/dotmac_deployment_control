@@ -478,8 +478,15 @@ def _insert_plan(  # type: ignore[no-untyped-def]
     # `plan_snapshot`'s `target_ref`); carrying it here too is what keeps two
     # of these raw rows from freezing the same canonical bytes and colliding
     # on `uq_plans_digest` -- a fixed literal snapshot made every plan in the
-    # fleet fixture digest-identical.
-    snapshot = {"plan_purpose": "foundation_execution", "target_id": str(target_id)}
+    # fleet fixture digest-identical. `sequence` is carried for the same
+    # reason: two plans for the SAME target at different sequences would
+    # otherwise still freeze identical bytes and collide on that same
+    # constraint.
+    snapshot = {
+        "plan_purpose": "foundation_execution",
+        "target_id": str(target_id),
+        "sequence": sequence,
+    }
     columns = (
         " id, target_id, sequence, status, desired_revision,"
         " plan_digest, requires_approval, record_version,"
@@ -1031,7 +1038,10 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
         cfg = Config(str(REPO_ROOT / "alembic.ini"))
         cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
         cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
-        with pytest.raises(RuntimeError, match="refuses to discard"):
+        with pytest.raises(
+            RuntimeError,
+            match="dc_0012_rehearsal_lifecycle refuses to discard rehearsal grant",
+        ):
             command.downgrade(cfg, "dc_0011_attestation_registry")
         with engine.connect() as conn:
             assert (
