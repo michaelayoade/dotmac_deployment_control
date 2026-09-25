@@ -34,22 +34,32 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
 import dotmac_deployment_control.rehearsal_issuer_issuance as issuance
+import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     ApprovalEvidence,
     ApprovePlanCommand,
     DesiredDeployment,
     ProposePlanCommand,
     RegisterTargetCommand,
+    RequestRolloutCommand,
     SetDesiredStateCommand,
     TargetTransitionCommand,
     approve_plan,
+    find_approved_plan,
     module,
     propose_plan,
     register_target,
+    request_rollout,
     set_desired_state,
     suspend_target,
 )
-from dotmac_deployment_control.models import RehearsalIssuerAuthorizationRecord
+from dotmac_deployment_control.models import (
+    DeploymentPlan,
+    RehearsalIssuerAuthorizationRecord,
+    Rollout,
+    RolloutAttempt,
+)
+from dotmac_deployment_control.ports import PlanRefusedError, TransitionRefusedError
 from dotmac_deployment_control.rehearsal_harness_evidence import (
     REHEARSAL_HARNESS_EVIDENCE_SCHEMA,
     REHEARSAL_HARNESS_EVIDENCE_VERSION,
@@ -72,6 +82,16 @@ from dotmac_deployment_control.rehearsal_issuer_issuance import (
     revoke_rehearsal_issuer_authorization,
     stage_rehearsal_issuer_consumption,
 )
+from dotmac_deployment_control.service import (
+    _DispatchConsumptionRefusedError,
+    _ExpectedDispatchTarget,
+    _stage_dispatch_consumption,
+    _stored_dispatch_coordinate,
+    _verified_rollout_envelope,
+    dispatch_attempt,
+)
+from tests.authorization_support import SIGNER, VERIFIER
+from tests.dispatch_support import DISPATCH_SIGNER
 
 
 class _Signer:
@@ -367,7 +387,15 @@ def _cmd() -> str:
     return f"cmd-{uuid.uuid4().hex[:12]}"
 
 
-def _seed_rehearsal_target_and_plan(db: Session, suffix: str):  # type: ignore[no-untyped-def]
+def _seed_rehearsal_target_and_plan(
+    db: Session,
+    suffix: str,
+    *,
+    purpose: str = "rehearsal_issuer_operation",
+    proposal_command_id: str | None = None,
+    environment: str = REHEARSAL_ONLY_ENVIRONMENT,
+    operation: str = "deploy",
+):  # type: ignore[no-untyped-def]
     """A REHEARSAL-environment, ACTIVE target with one standing, deploy
     approval -- committed so it survives a later rollback of unrelated work."""
     target_ref = f"rehearsal-issuer-target-{suffix}"
@@ -378,7 +406,7 @@ def _seed_rehearsal_target_and_plan(db: Session, suffix: str):  # type: ignore[n
             target_ref=target_ref,
             subject_ref=f"subject-{suffix}",
             product_code="dotmac_sub",
-            environment=REHEARSAL_ONLY_ENVIRONMENT,
+            environment=environment,
         ),
     )
     set_desired_state(
@@ -394,11 +422,12 @@ def _seed_rehearsal_target_and_plan(db: Session, suffix: str):  # type: ignore[n
     plan = propose_plan(
         db,
         ProposePlanCommand(
-            command_id=_cmd(),
+            command_id=proposal_command_id or _cmd(),
             target_id=target.id,
-            operation="deploy",
+            operation=operation,
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose=purpose,
             requires_approval=True,
             approval_policy_code="deployment.production",
             approval_policy_version=1,
@@ -415,7 +444,7 @@ def _seed_rehearsal_target_and_plan(db: Session, suffix: str):  # type: ignore[n
                 decision_ref=f"decision-{suffix}",
                 content_digest=plan.plan_digest or "",
                 decided_at=_NOW,
-                operation="deploy",
+                operation=operation,
                 execution_plan_digest=_EXECUTION_PLAN,
                 decision_status="granted",
             ),
@@ -423,6 +452,359 @@ def _seed_rehearsal_target_and_plan(db: Session, suffix: str):  # type: ignore[n
     )
     db.commit()
     return target, plan
+
+
+def test_issuer_plan_can_be_approved_but_cannot_be_found_as_execution_authority(
+    db: Session,
+) -> None:
+    target, plan = _seed_rehearsal_target_and_plan(db, uuid.uuid4().hex)
+    assert plan.status == "approved"
+    assert plan.approval_decision_status == "granted"
+    assert plan.purpose == "rehearsal_issuer_operation"
+    assert plan.snapshot["plan_purpose"] == plan.purpose
+    lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+    assert not lookup.is_authorized
+    assert lookup.refusal is not None
+    assert lookup.refusal.code.value == "wrong_plan_purpose"
+
+    with pytest.raises(PlanRefusedError, match="rehearsal-issuer"):
+        request_rollout(
+            db,
+            RequestRolloutCommand(
+                command_id=_cmd(),
+                rollout_ref=f"issuer-rollout-{uuid.uuid4().hex}",
+                plan_id=plan.id,
+                authorization_expires_at=_NOW + timedelta(hours=1),
+            ),
+        )
+    assert target.environment == REHEARSAL_ONLY_ENVIRONMENT
+
+
+def test_foundation_plan_is_refused_at_issuer_issuance_even_on_rehearsal_target(
+    db: Session,
+) -> None:
+    suffix = uuid.uuid4().hex
+    target, plan = _seed_rehearsal_target_and_plan(
+        db, suffix, purpose="foundation_execution"
+    )
+    _install_security()
+    evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=target.target_ref,
+        issued_at=_NOW,
+        valid_until=_NOW + timedelta(minutes=30),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(issuance, "_control_now", lambda: _NOW)
+        with pytest.raises(RehearsalIssuerIssuanceRefusedError) as refused:
+            issue_rehearsal_issuer_authorization_for_plan(
+                db,
+                {"command_id": _cmd(), "plan_id": str(plan.id)},
+                harness_evidence_document=evidence,
+            )
+    assert refused.value.code == RehearsalIssuerIssuanceRefusalCode.WRONG_PLAN_PURPOSE
+
+
+def test_legacy_purpose_is_refused_on_issuance_replay_standing_and_consumption(
+    db: Session,
+) -> None:
+    suffix = uuid.uuid4().hex
+    target, plan = _seed_rehearsal_target_and_plan(db, suffix)
+    _install_security()
+    command_id = _cmd()
+    issuance_evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=target.target_ref,
+        issued_at=_NOW,
+        valid_until=_NOW + timedelta(minutes=30),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(issuance, "_control_now", lambda: _NOW)
+        envelope = issue_rehearsal_issuer_authorization_for_plan(
+            db,
+            {"command_id": command_id, "plan_id": str(plan.id)},
+            harness_evidence_document=issuance_evidence,
+        )
+    db.commit()
+    stored = db.get(DeploymentPlan, plan.id)
+    assert stored is not None
+    legacy_snapshot = dict(stored.snapshot)
+    legacy_snapshot.pop("plan_purpose")
+    stored.snapshot = legacy_snapshot
+    stored.purpose = "foundation_execution"
+    db.commit()  # SQLite simulates a row written before the migration trigger.
+
+    later = _NOW + timedelta(minutes=1)
+    fresh_evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=target.target_ref,
+        issued_at=later,
+        valid_until=later + timedelta(minutes=30),
+        nonce="fresh",
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(issuance, "_control_now", lambda: later)
+        with pytest.raises(RehearsalIssuerIssuanceRefusedError) as replay:
+            issue_rehearsal_issuer_authorization_for_plan(
+                db,
+                {"command_id": command_id, "plan_id": str(plan.id)},
+                harness_evidence_document=issuance_evidence,
+            )
+        assert (
+            replay.value.code == RehearsalIssuerIssuanceRefusalCode.WRONG_PLAN_PURPOSE
+        )
+        db.rollback()
+        standing = rehearsal_issuer_standing_for(
+            db,
+            authorization_document=envelope.as_mapping(),
+            harness_evidence_document=fresh_evidence,
+            now=later,
+        )
+        assert not standing.authorizes
+        db.rollback()
+        with pytest.raises(RehearsalIssuerIssuanceRefusedError) as consumption:
+            stage_rehearsal_issuer_consumption(
+                db,
+                authorization_document=envelope.as_mapping(),
+                harness_evidence_document=fresh_evidence,
+            )
+        assert (
+            consumption.value.code
+            == RehearsalIssuerIssuanceRefusalCode.WRONG_PLAN_PURPOSE
+        )
+
+
+@pytest.mark.parametrize(
+    ("environment", "operation", "expected"),
+    [
+        (
+            "production",
+            "deploy",
+            RehearsalIssuerIssuanceRefusalCode.NOT_A_REHEARSAL_TARGET,
+        ),
+        (
+            REHEARSAL_ONLY_ENVIRONMENT,
+            "rollback",
+            RehearsalIssuerIssuanceRefusalCode.WRONG_AUTHORIZED_OPERATION,
+        ),
+    ],
+)
+def test_issuer_purpose_still_requires_rehearsal_target_and_deploy_operation(
+    db: Session,
+    environment: str,
+    operation: str,
+    expected: RehearsalIssuerIssuanceRefusalCode,
+) -> None:
+    suffix = uuid.uuid4().hex
+    target, plan = _seed_rehearsal_target_and_plan(
+        db, suffix, environment=environment, operation=operation
+    )
+    _install_security()
+    evidence = _harness_evidence(
+        lease_id=f"lease-{suffix}",
+        controller_fingerprint="fp-controller",
+        target_ref=target.target_ref,
+        issued_at=_NOW,
+        valid_until=_NOW + timedelta(minutes=30),
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(issuance, "_control_now", lambda: _NOW)
+        with pytest.raises(RehearsalIssuerIssuanceRefusedError) as refused:
+            issue_rehearsal_issuer_authorization_for_plan(
+                db,
+                {"command_id": _cmd(), "plan_id": str(plan.id)},
+                harness_evidence_document=evidence,
+            )
+    assert refused.value.code == expected
+
+
+def test_planted_issuer_plan_is_refused_at_each_lower_execution_boundary(
+    db: Session,
+) -> None:
+    """The lower guards fire even if a rollout and attempt were planted."""
+    target, plan = _seed_rehearsal_target_and_plan(db, uuid.uuid4().hex)
+    rollout = Rollout(
+        id=uuid.uuid4(),
+        rollout_ref=f"planted-{uuid.uuid4().hex}",
+        target_id=target.id,
+        plan_id=plan.id,
+        status="requested",
+        execution_sequence=1,
+        record_version=1,
+    )
+    attempt = RolloutAttempt(
+        id=uuid.uuid4(),
+        rollout_id=rollout.id,
+        attempt_no=1,
+        outcome="pending",
+        dispatch_envelope={},
+    )
+    db.add_all((rollout, attempt))
+    db.flush()
+    stored = db.get(DeploymentPlan, plan.id)
+    assert stored is not None
+
+    with pytest.raises(PlanRefusedError, match="rehearsal-issuer"):
+        _verified_rollout_envelope(rollout, stored, target, verifier=None)
+    with pytest.raises(PlanRefusedError, match="rehearsal-issuer"):
+        _stored_dispatch_coordinate(db, attempt.id)
+    with pytest.raises(PlanRefusedError, match="rehearsal-issuer"):
+        dispatch_attempt(
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            dispatch_signer=None,  # type: ignore[arg-type] -- guard fires first
+        )
+    with pytest.raises(_DispatchConsumptionRefusedError, match="non-Foundation"):
+        _stage_dispatch_consumption(
+            db,
+            attempt_id=attempt.id,
+            expected_target=_ExpectedDispatchTarget(target.id, target.target_ref),
+            candidate_attestation_envelope_digest="sha256:" + "a" * 64,
+            installed_attestation_envelope_digest="sha256:" + "b" * 64,
+        )
+
+
+def test_foundation_plan_still_rolls_out_and_dispatches(db: Session) -> None:
+    _target, plan = _seed_rehearsal_target_and_plan(
+        db, uuid.uuid4().hex, purpose="foundation_execution"
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(control_service, "_control_now", lambda: _NOW)
+        rollout = request_rollout(
+            db,
+            RequestRolloutCommand(
+                command_id=_cmd(),
+                rollout_ref=f"foundation-{uuid.uuid4().hex}",
+                plan_id=plan.id,
+                authorization_expires_at=_NOW + timedelta(hours=1),
+            ),
+            signer=SIGNER,
+        )
+        intent = dispatch_attempt(
+            db,
+            command_id=_cmd(),
+            rollout_id=rollout.id,
+            verifier=VERIFIER,
+            dispatch_signer=DISPATCH_SIGNER,
+        )
+    assert intent.operation == "deploy"
+    assert intent.execution_plan_digest == _EXECUTION_PLAN
+
+
+def test_rollout_reference_and_command_replay_cannot_substitute_issuer_plan(
+    db: Session,
+) -> None:
+    _target, foundation = _seed_rehearsal_target_and_plan(
+        db, uuid.uuid4().hex, purpose="foundation_execution"
+    )
+    _other_target, issuer = _seed_rehearsal_target_and_plan(db, uuid.uuid4().hex)
+    command_id = _cmd()
+    rollout_ref = f"foundation-{uuid.uuid4().hex}"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(control_service, "_control_now", lambda: _NOW)
+        request_rollout(
+            db,
+            RequestRolloutCommand(
+                command_id=command_id,
+                rollout_ref=rollout_ref,
+                plan_id=foundation.id,
+                authorization_expires_at=_NOW + timedelta(hours=1),
+            ),
+            signer=SIGNER,
+        )
+        with pytest.raises(TransitionRefusedError, match="another frozen plan"):
+            request_rollout(
+                db,
+                RequestRolloutCommand(
+                    command_id=_cmd(),
+                    rollout_ref=rollout_ref,
+                    plan_id=issuer.id,
+                    authorization_expires_at=_NOW + timedelta(hours=1),
+                ),
+                signer=SIGNER,
+            )
+        with pytest.raises(TransitionRefusedError, match="replay resolved another"):
+            request_rollout(
+                db,
+                RequestRolloutCommand(
+                    command_id=command_id,
+                    rollout_ref=f"other-{uuid.uuid4().hex}",
+                    plan_id=issuer.id,
+                    authorization_expires_at=_NOW + timedelta(hours=1),
+                ),
+                signer=SIGNER,
+            )
+
+
+def test_proposal_replay_cannot_change_the_frozen_purpose(db: Session) -> None:
+    proposal_command_id = _cmd()
+    target, plan = _seed_rehearsal_target_and_plan(
+        db, uuid.uuid4().hex, proposal_command_id=proposal_command_id
+    )
+    with pytest.raises(PlanRefusedError, match="replay.*another purpose"):
+        propose_plan(
+            db,
+            ProposePlanCommand(
+                command_id=proposal_command_id,
+                target_id=target.id,
+                operation="deploy",
+                descriptor_digest=_DESCRIPTOR,
+                execution_plan_digest=_EXECUTION_PLAN,
+                purpose="foundation_execution",
+                approval_policy_code="deployment.production",
+                approval_policy_version=1,
+            ),
+        )
+    assert db.get(DeploymentPlan, plan.id).purpose == "rehearsal_issuer_operation"
+
+
+def test_snapshot_purpose_substitution_is_refused(db: Session) -> None:
+    _target, plan = _seed_rehearsal_target_and_plan(db, uuid.uuid4().hex)
+    row = db.get(DeploymentPlan, plan.id)
+    assert row is not None
+    row.purpose = "foundation_execution"
+    db.flush()  # SQLite has no migration trigger; the read guard still refuses.
+    with pytest.raises(PlanRefusedError, match="frozen snapshot purpose"):
+        control_service._frozen_plan_purpose(row)
+
+
+def test_historical_foundation_snapshot_without_purpose_remains_readable(
+    db: Session,
+) -> None:
+    _target, plan = _seed_rehearsal_target_and_plan(
+        db, uuid.uuid4().hex, purpose="foundation_execution"
+    )
+    row = db.get(DeploymentPlan, plan.id)
+    assert row is not None
+    snapshot = dict(row.snapshot)
+    snapshot.pop("plan_purpose")
+    row.snapshot = snapshot
+    row.plan_digest = control_service.plan_digest_of(snapshot).canonical
+    db.flush()
+    assert control_service._frozen_plan_purpose(row).value == "foundation_execution"
+    assert control_service.get_plan(db, plan.id).purpose == "foundation_execution"
+
+
+def test_unknown_and_approval_exempt_issuer_purposes_are_refused() -> None:
+    fields = {
+        "command_id": _cmd(),
+        "target_id": uuid.uuid4(),
+        "operation": "deploy",
+        "descriptor_digest": _DESCRIPTOR,
+        "execution_plan_digest": _EXECUTION_PLAN,
+    }
+    with pytest.raises(TypeError, match="purpose"):
+        ProposePlanCommand(**fields)  # type: ignore[arg-type]
+    with pytest.raises(PlanRefusedError, match="unknown deployment plan purpose"):
+        ProposePlanCommand(**fields, purpose="other")
+    with pytest.raises(PlanRefusedError, match="requires standing approval"):
+        ProposePlanCommand(
+            **fields, purpose="rehearsal_issuer_operation", requires_approval=False
+        )
 
 
 def _harness_evidence(

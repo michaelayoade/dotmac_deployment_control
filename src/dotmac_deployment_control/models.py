@@ -179,6 +179,13 @@ class PlanStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class PlanPurpose(StrEnum):
+    """Closed authority class frozen with a Control plan."""
+
+    FOUNDATION_EXECUTION = "foundation_execution"
+    REHEARSAL_ISSUER_OPERATION = "rehearsal_issuer_operation"
+
+
 class RolloutStatus(StrEnum):
     """The full outcome vocabulary, including the three states an implementation
     usually discovers it needs the hard way.
@@ -965,6 +972,12 @@ class DeploymentPlan(Base, TimestampMixin):
     #: digest columns on this plane so the next algorithm does not need a third
     #: width.
     plan_digest: Mapped[str | None] = mapped_column(String(128))
+    #: Frozen authority class. The database backfills only historical plans as
+    #: Foundation execution and refuses subsequent changes to this column.
+    purpose: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+    )
 
     # ── The execution binding: proposal, then authorization ─────────────────
     #

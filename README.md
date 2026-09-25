@@ -154,6 +154,30 @@ packaged templates, and authors none of those other things.
 
 ## A digest is a value, not a string
 
+### Plan purpose and authority
+
+Control freezes each plan as either `foundation_execution` or
+`rehearsal_issuer_operation`. The purpose is a persisted, closed class, carried
+in each new frozen snapshot and therefore in its Control plan digest.
+Every new proposal must name the purpose explicitly; the database supplies no
+default and refuses an INSERT whose snapshot marker is absent or disagrees.
+Approval records a standing decision for either class; it does not convert an issuer
+plan into Foundation execution authority. `request_rollout`, the Foundation
+approved-plan lookup, authorization verification, dispatch, and dispatch
+consumption check that authority class directly. Issuer authorization issuance
+requires the issuer class, a rehearsal environment, and an approved `deploy`
+operation; environment alone never selects the class. The Foundation deployment
+operation vocabulary remains unchanged.
+
+Historical plan snapshots lack `plan_purpose` and remain byte-for-byte intact.
+The `dc_0015_plan_purpose` migration classifies those rows as
+`foundation_execution` only. New ordinary plans include the class in the
+snapshot, so their Control plan digest intentionally differs from an otherwise
+identical pre-migration plan; old approvals continue to bind their original
+digest and are not rewritten. Outstanding a14 rehearsal-issuer authorizations
+are durably revoked by the migration; a replay cannot turn them into issuer
+authority under the new purpose contract.
+
 A plan's identity is `PlanDigestV1` — an algorithm and its bytes — serialized
 canonically as `sha256:<64 lowercase hex>`. Equality is over the bytes, so no
 encoding can change it, and nothing on the authorization path compares digest

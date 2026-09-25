@@ -659,6 +659,7 @@ def _proposed_plan(
     """register -> set desired -> propose, returning the frozen plan."""
     from dotmac_deployment_control import (
         DesiredDeployment,
+        PlanPurpose,
         ProposePlanCommand,
         RegisterTargetCommand,
         SetDesiredStateCommand,
@@ -699,6 +700,7 @@ def _proposed_plan(
             operation="deploy",
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose=PlanPurpose.FOUNDATION_EXECUTION.value,
             requires_approval=True,
             approval_policy_code=_POLICY,
             approval_policy_version=_POLICY_VERSION,
@@ -755,6 +757,7 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
         CredentialTransitionCommand,
         DesiredDeployment,
         EnrolCredentialCommand,
+        PlanPurpose,
         ProposePlanCommand,
         RegisterTargetCommand,
         RequestRolloutCommand,
@@ -815,6 +818,7 @@ def _enrolled_target(db: Any) -> tuple[Any, str, str]:
             operation="deploy",
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose=PlanPurpose.FOUNDATION_EXECUTION.value,
             requires_approval=False,
         ),
     )
@@ -1049,6 +1053,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
         ApprovalRefusedError,
         DesiredDeployment,
         DigestEncodingError,
+        PlanPurpose,
         ProposePlanCommand,
         SetDesiredStateCommand,
         propose_plan,
@@ -1078,6 +1083,7 @@ def canary_mutation_after_authorization_is_refused() -> str:
             operation="deploy",
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose=PlanPurpose.FOUNDATION_EXECUTION.value,
             requires_approval=True,
             approval_policy_code=_POLICY,
             approval_policy_version=_POLICY_VERSION,
@@ -1352,6 +1358,7 @@ CATALOGUE_TABLES: tuple[
             ("approval_revoked_at", 22, _TS, True, ""),
             ("approval_revocation_ref", 23, _V200, True, ""),
             ("approval_revocation_reason", 24, _V200, True, ""),
+            ("purpose", 25, _V40, False, ""),
         ),
     ),
     (

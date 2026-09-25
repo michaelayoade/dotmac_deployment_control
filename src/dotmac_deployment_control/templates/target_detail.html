@@ -202,11 +202,12 @@
   reader it would mislead.
 #}
 {% if plans %}
-  {{ ui.table_open(["#", "Status", "Standing", "Desired rev", "Plan digest", "Descriptor digest", "Operation", "Executable", "Execution binding", "Proposed execution plan", "Authorized operation", "Authorized execution plan", "Authorized images", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
+  {{ ui.table_open(["#", "Status", "Purpose", "Standing", "Desired rev", "Plan digest", "Descriptor digest", "Operation", "Executable", "Execution binding", "Proposed execution plan", "Authorized operation", "Authorized execution plan", "Authorized images", "Approval required", "Policy", "Decision reference", "Approved", "Superseded by"]) }}
   {% for plan in plans %}
   <tr>
     {{ ui.cell(plan.sequence) }}
     {{ ui.cell(plan.status) }}
+    {{ ui.cell(plan.purpose) }}
     {#
       An em dash for a plan that was never approved, so "no approval happened"
       and "an approval was withdrawn" are never the same cell. A blank would

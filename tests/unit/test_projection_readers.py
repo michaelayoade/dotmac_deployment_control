@@ -204,6 +204,7 @@ def _plan(db: Session, target_id, operation: str = "deploy"):  # type: ignore[no
             operation=operation,
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose="foundation_execution",
             requires_approval=True,
             approval_policy_code=_POLICY,
             approval_policy_version=_POLICY_VERSION,

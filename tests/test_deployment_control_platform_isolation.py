@@ -328,6 +328,25 @@ def _url_for(base_url: str, dbname: str, *, user: str | None = None) -> str:
 @pytest.fixture(scope="module")
 def migrated_scratch() -> Iterator[tuple[str, str, str]]:
     """`(admin_url, platform_api_url, app_user_url)` at the composed head."""
+    yield from _migrated_database()
+
+
+@pytest.fixture
+def isolated_migrated_scratch() -> Iterator[tuple[str, str, str]]:
+    """A private database at the composed head, for tests whose premise is
+    the absence of rows other tests in the module leave behind (downgrades)."""
+    previous = os.environ.get("MIGRATION_DATABASE_URL")
+    try:
+        yield from _migrated_database()
+    finally:
+        # The module-scoped database is still in use by later tests.
+        if previous is None:
+            os.environ.pop("MIGRATION_DATABASE_URL", None)
+        else:
+            os.environ["MIGRATION_DATABASE_URL"] = previous
+
+
+def _migrated_database() -> Iterator[tuple[str, str, str]]:
     superuser = _superuser_url()
     name = f"deploy_{uuid.uuid4().hex[:12]}"
     server = create_engine(superuser, isolation_level="AUTOCOMMIT")
@@ -445,6 +464,7 @@ def _insert_plan(  # type: ignore[no-untyped-def]
     sequence: int = 1,
     decision_status: str | None = None,
     revoked: bool = False,
+    legacy: bool = False,
 ) -> uuid.UUID:
     """A plan row, with the approval columns the standing projection reads.
 
@@ -454,27 +474,118 @@ def _insert_plan(  # type: ignore[no-untyped-def]
     the service wrote would only prove the service agrees with itself.
     """
     plan_id = uuid.uuid4()
+    # `target_id` is a digest-covered field on every real plan snapshot (see
+    # `plan_snapshot`'s `target_ref`); carrying it here too is what keeps two
+    # of these raw rows from freezing the same canonical bytes and colliding
+    # on `uq_plans_digest` -- a fixed literal snapshot made every plan in the
+    # fleet fixture digest-identical. `sequence` is carried for the same
+    # reason: two plans for the SAME target at different sequences would
+    # otherwise still freeze identical bytes and collide on that same
+    # constraint.
+    snapshot = {
+        "plan_purpose": "foundation_execution",
+        "target_id": str(target_id),
+        "sequence": sequence,
+    }
+    columns = (
+        " id, target_id, sequence, status, desired_revision,"
+        " plan_digest, requires_approval, record_version,"
+        " approval_decision_status, approval_revoked_at, approval_revocation_ref"
+    )
+    values = (
+        " :id, :tid, :seq, 'approved', 1, :digest, false, 1,"
+        " :decision, :revoked_at, :revocation_ref"
+    )
+    if not legacy:
+        columns += ", purpose, snapshot"
+        values += ", 'foundation_execution', CAST(:snapshot AS jsonb)"
     conn.execute(
-        text(
-            "INSERT INTO mod_deploy.deployment_plans ("
-            " id, target_id, sequence, status, desired_revision,"
-            " plan_digest, requires_approval, record_version,"
-            " approval_decision_status, approval_revoked_at,"
-            " approval_revocation_ref"
-            ") VALUES (:id, :tid, :seq, 'approved', 1, :digest, false, 1,"
-            " :decision, :revoked_at, :revocation_ref)"
-        ),
+        text(f"INSERT INTO mod_deploy.deployment_plans ({columns}) VALUES ({values})"),
         {
             "id": plan_id,
             "tid": target_id,
             "seq": sequence,
-            "digest": uuid.uuid4().hex,
+            "digest": (
+                uuid.uuid4().hex
+                if legacy
+                else control_service.plan_digest_of(snapshot).canonical
+            ),
             "decision": decision_status,
             "revoked_at": datetime(2026, 9, 4, 12, 0, tzinfo=UTC) if revoked else None,
             "revocation_ref": "apr-rev-pg" if revoked else None,
+            **({} if legacy else {"snapshot": json.dumps(snapshot)}),
         },
     )
     return plan_id
+
+
+def test_platform_writer_must_supply_purpose_and_matching_snapshot_marker(
+    migrated_scratch: tuple[str, str, str],
+) -> None:
+    admin_url, platform_url, _ = migrated_scratch
+    admin = create_engine(admin_url)
+    platform = create_engine(platform_url)
+    try:
+        with admin.begin() as conn:
+            target_id = _insert_target(conn)
+        base = (
+            "INSERT INTO mod_deploy.deployment_plans "
+            "(id, target_id, sequence, status, desired_revision, plan_digest, "
+            "requires_approval, record_version, snapshot"
+        )
+        values = (
+            " VALUES (:id, :target, 1, 'proposed', 1, :digest, true, 1, "
+            "CAST(:snapshot AS jsonb)"
+        )
+        params = {
+            "id": uuid.uuid4(),
+            "target": target_id,
+            "digest": uuid.uuid4().hex,
+            "snapshot": '{"plan_purpose":"foundation_execution"}',
+        }
+        with pytest.raises(DBAPIError, match="frozen purpose marker"):
+            with platform.begin() as conn:
+                conn.execute(text(base + ")" + values + ")"), params)
+        with pytest.raises(DBAPIError, match="frozen purpose marker"):
+            with platform.begin() as conn:
+                conn.execute(
+                    text(base + ", purpose)" + values + ", 'foundation_execution')"),
+                    {**params, "id": uuid.uuid4(), "snapshot": "{}"},
+                )
+        with pytest.raises(DBAPIError, match="frozen purpose marker"):
+            with platform.begin() as conn:
+                conn.execute(
+                    text(base + ", purpose)" + values + ", 'foundation_execution')"),
+                    {
+                        **params,
+                        "id": uuid.uuid4(),
+                        "snapshot": '{"plan_purpose":""}',
+                    },
+                )
+        valid_id = uuid.uuid4()
+        with platform.begin() as conn:
+            conn.execute(
+                text(base + ", purpose)" + values + ", 'foundation_execution')"),
+                {
+                    **params,
+                    "id": valid_id,
+                    "digest": control_service.plan_digest_of(
+                        {"plan_purpose": "foundation_execution"}
+                    ).canonical,
+                },
+            )
+        with pytest.raises(DBAPIError, match="purpose marker is frozen"):
+            with platform.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mod_deploy.deployment_plans SET snapshot = "
+                        "'{}'::jsonb WHERE id = :id"
+                    ),
+                    {"id": valid_id},
+                )
+    finally:
+        admin.dispose()
+        platform.dispose()
 
 
 def _insert_rollout(
@@ -556,7 +667,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0014_rehearsal_issuer_ledger",
+                revision="dc_0015_plan_purpose",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -670,7 +781,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 245 columns across twenty-two tables; `dc_0005` is 105.
+    The head extent is 246 columns across twenty-two tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -706,7 +817,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 245
+                    == 246
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -747,6 +858,34 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                     ).scalar_one()
                     is None
                 )
+            with admin.begin() as conn:
+                legacy_target_id = _insert_target(conn)
+                legacy_plan_id = _insert_plan(conn, legacy_target_id, legacy=True)
+            command.upgrade(cfg, "dc_0014_rehearsal_issuer_ledger")
+            legacy_authorization_id = f"legacy-issuer-{uuid.uuid4().hex}"
+            with admin.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_issuer_authorizations "
+                        "(id, authorization_id, single_use_reference, lease_id, "
+                        "plan_id, target_id, controller_fingerprint, "
+                        "harness_evidence_digest, authorization_envelope, "
+                        "not_before, issued_at, expires_at, state) VALUES "
+                        "(:id, :auth, :ref, :lease, :plan, :target, 'controller', "
+                        ":digest, '{}'::jsonb, :start, :start, :end, 'issued')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "auth": legacy_authorization_id,
+                        "ref": f"ref-{uuid.uuid4().hex}",
+                        "lease": f"lease-{uuid.uuid4().hex}",
+                        "plan": legacy_plan_id,
+                        "target": legacy_target_id,
+                        "digest": "sha256:" + "a" * 64,
+                        "start": datetime(2026, 9, 1, tzinfo=UTC),
+                        "end": datetime(2026, 10, 1, tzinfo=UTC),
+                    },
+                )
             command.upgrade(cfg, "heads")
             with admin.connect() as conn:
                 assert (
@@ -756,8 +895,54 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 245
+                    == 246
                 )
+                purpose, snapshot = conn.execute(
+                    text(
+                        "SELECT purpose, snapshot FROM mod_deploy.deployment_plans "
+                        "WHERE id = :id"
+                    ),
+                    {"id": legacy_plan_id},
+                ).one()
+                assert purpose == "foundation_execution"
+                assert snapshot is None, "migration must not rewrite old snapshots"
+                state, revocation_ref = conn.execute(
+                    text(
+                        "SELECT state, revocation_ref FROM "
+                        "mod_deploy.rehearsal_issuer_authorizations "
+                        "WHERE authorization_id = :id"
+                    ),
+                    {"id": legacy_authorization_id},
+                ).one()
+                assert state == "revoked"
+                assert revocation_ref == "migration:dc_0015_plan_purpose:legacy_issuer"
+            with pytest.raises(DBAPIError, match="purpose is frozen"):
+                with admin.begin() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.deployment_plans SET purpose = "
+                            "'rehearsal_issuer_operation' WHERE id = :id"
+                        ),
+                        {"id": legacy_plan_id},
+                    )
+            with pytest.raises(DBAPIError, match="ck_deployment_plans_purpose"):
+                with admin.begin() as conn:
+                    conn.execute(
+                        text(
+                            "INSERT INTO mod_deploy.deployment_plans "
+                            "(id, target_id, sequence, status, desired_revision, "
+                            "plan_digest, requires_approval, record_version, "
+                            "purpose, snapshot) "
+                            "VALUES (:id, :target, 2, 'approved', 1, :digest, "
+                            "false, 1, 'unknown', "
+                            '\'{"plan_purpose":"unknown"}\'::jsonb)'
+                        ),
+                        {
+                            "id": uuid.uuid4(),
+                            "target": legacy_target_id,
+                            "digest": uuid.uuid4().hex,
+                        },
+                    )
         finally:
             admin.dispose()
     finally:
@@ -778,14 +963,62 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
         server.dispose()
 
 
-def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
+def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
     migrated_scratch: tuple[str, str, str],
 ) -> None:
-    """A rollback cannot erase the durable single-use cut-off."""
+    """a14 must not reinterpret a newly approved Foundation plan as issuer-eligible."""
     from alembic import command
     from alembic.config import Config
 
     admin_url, _, _ = migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_id = _insert_plan(conn, target_id)
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="purpose-marked deployment plans"):
+            command.downgrade(cfg, "dc_0014_rehearsal_issuer_ledger")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT purpose FROM mod_deploy.deployment_plans "
+                        "WHERE id = :id"
+                    ),
+                    {"id": plan_id},
+                ).scalar_one()
+                == "foundation_execution"
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
+                == "dc_0015_plan_purpose"
+            )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    """A rollback cannot erase the durable single-use cut-off.
+
+    Runs on a private database: dc_0015's downgrade rightly refuses while any
+    purpose-marked plan exists, and plans other tests in this module leave in
+    the shared database would otherwise refuse first and hide dc_0012's own
+    refusal, which is what this test proves.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
     grant_id = f"downgrade-{uuid.uuid4().hex}"
     engine = create_engine(admin_url)
     try:
@@ -805,7 +1038,10 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
         cfg = Config(str(REPO_ROOT / "alembic.ini"))
         cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
         cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
-        with pytest.raises(RuntimeError, match="refuses to discard"):
+        with pytest.raises(
+            RuntimeError,
+            match="dc_0012_rehearsal_lifecycle refuses to discard rehearsal grant",
+        ):
             command.downgrade(cfg, "dc_0011_attestation_registry")
         with engine.connect() as conn:
             assert (
@@ -819,7 +1055,8 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                 == "spent"
             )
             # PostgreSQL runs the requested multi-revision downgrade in one
-            # transaction.  dc_0014's and dc_0013's empty-table downgrades
+            # transaction.  dc_0015's (no purpose-marked plans on this private
+            # database), dc_0014's and dc_0013's empty-table downgrades
             # execute first, then dc_0012 refuses to discard the spent grant;
             # that exception rolls the whole command back to the exact
             # pre-command head.
@@ -830,7 +1067,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0014_rehearsal_issuer_ledger"
+                == "dc_0015_plan_purpose"
             )
     finally:
         engine.dispose()
@@ -1467,6 +1704,7 @@ def observation_race(
                 operation="deploy",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
+                purpose="foundation_execution",
                 requires_approval=True,
                 approval_policy_code="deployment.production",
                 approval_policy_version=1,
@@ -2073,8 +2311,11 @@ class TestTheEvidenceTablesAreAppendOnlyAgainstEveryRole:
                     text(
                         "INSERT INTO mod_deploy.deployment_plans ("
                         " id, target_id, sequence, status, desired_revision,"
-                        " plan_digest, requires_approval, record_version"
-                        ") VALUES (:id, :tid, 1, 'approved', 1, :digest, false, 1)"
+                        " plan_digest, requires_approval, record_version,"
+                        " purpose, snapshot"
+                        ") VALUES (:id, :tid, 1, 'approved', 1, :digest, false, 1, "
+                        "'foundation_execution', "
+                        '\'{"plan_purpose":"foundation_execution"}\'::jsonb)'
                     ),
                     {"id": plan_id, "tid": target_id, "digest": uuid.uuid4().hex},
                 )
@@ -2374,9 +2615,11 @@ class TestTheConstraintsHoldWithoutTheService:
                         text(
                             "INSERT INTO mod_deploy.deployment_plans ("
                             " id, target_id, sequence, status, desired_revision,"
-                            " plan_digest, requires_approval, record_version"
+                            " plan_digest, requires_approval, record_version,"
+                            " purpose, snapshot"
                             ") VALUES (:id, :tid, 1, 'proposed', 1, :digest,"
-                            " true, 1)"
+                            " true, 1, 'foundation_execution', "
+                            '\'{"plan_purpose":"foundation_execution"}\'::jsonb)'
                         ),
                         {"id": uuid.uuid4(), "tid": target_id, "digest": digest},
                     )
@@ -2424,8 +2667,11 @@ class TestTheConstraintsHoldWithoutTheService:
                     text(
                         "INSERT INTO mod_deploy.deployment_plans ("
                         " id, target_id, sequence, status, desired_revision,"
-                        " plan_digest, requires_approval, record_version"
-                        ") VALUES (:id, :tid, 1, 'approved', 1, :digest, false, 1)"
+                        " plan_digest, requires_approval, record_version,"
+                        " purpose, snapshot"
+                        ") VALUES (:id, :tid, 1, 'approved', 1, :digest, false, 1, "
+                        "'foundation_execution', "
+                        '\'{"plan_purpose":"foundation_execution"}\'::jsonb)'
                     ),
                     {"id": plan_id, "tid": target_id, "digest": uuid.uuid4().hex},
                 )
@@ -5015,6 +5261,7 @@ def _seed_rehearsal_issuer_target_and_plan(
                 operation="deploy",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
+                purpose="rehearsal_issuer_operation",
                 requires_approval=True,
                 approval_policy_code="deployment.production",
                 approval_policy_version=1,
@@ -5397,9 +5644,12 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                 text(
                     "INSERT INTO mod_deploy.deployment_plans "
                     "(id, target_id, sequence, snapshot, plan_digest, "
-                    "desired_revision, status, requires_approval, record_version) "
-                    "VALUES (:id, :target_id, 1, '{}'::jsonb, :digest, 1, "
-                    "'proposed', false, 1) RETURNING id"
+                    "desired_revision, status, requires_approval, "
+                    "record_version, purpose) "
+                    "VALUES (:id, :target_id, 1, "
+                    '\'{"plan_purpose":"rehearsal_issuer_operation"}\'::jsonb, '
+                    ":digest, 1, 'proposed', false, 1, "
+                    "'rehearsal_issuer_operation') RETURNING id"
                 ),
                 {
                     "id": uuid.uuid4(),

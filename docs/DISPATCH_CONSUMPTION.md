@@ -36,6 +36,12 @@ scope is `deployment.consume_dispatch_challenge.v1`, its fingerprint is the
 bare 64-hex SHA-256 over the canonical dispatch/candidate/installed evidence
 coordinate, and `expires_at` is always `NULL`.
 
+The locked plan must also have frozen `foundation_execution` purpose. The
+purpose check runs at this consumption boundary even for a planted rollout and
+attempt, before their stored envelopes can become launch authority. A standing
+`rehearsal_issuer_operation` approval is usable only at the separate issuer
+authorization boundary.
+
 The service flushes but never commits. Its private staged result is not a launch
 grant. A CP adapter may launch only after the transaction owner observes commit;
 that transport adapter is not part of this distribution. The marker and the

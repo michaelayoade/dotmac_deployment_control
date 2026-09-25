@@ -415,6 +415,7 @@ class TestTheBrowserMayNotSupplyAPlanDigest:
                 operation="deploy",
                 descriptor_digest=_DESCRIPTOR,
                 execution_plan_digest=_EXECUTION_PLAN,
+                purpose="foundation_execution",
                 requires_approval=False,
             ),
         )
@@ -423,7 +424,11 @@ class TestTheBrowserMayNotSupplyAPlanDigest:
         assert (
             plan.plan_digest
             == plan_digest_of(
-                plan_snapshot(target, descriptor_digest=_DESCRIPTOR)
+                plan_snapshot(
+                    target,
+                    descriptor_digest=_DESCRIPTOR,
+                    purpose="foundation_execution",
+                )
             ).canonical
         )
         # And the value the browser could never have sent is stored EXACTLY as
@@ -657,6 +662,7 @@ def test_timestamps_render_as_explicit_utc_and_never_as_a_python_repr(
             operation="deploy",
             descriptor_digest=_DESCRIPTOR,
             execution_plan_digest=_EXECUTION_PLAN,
+            purpose="foundation_execution",
             requires_approval=False,
         ),
     )
@@ -745,6 +751,7 @@ def _plan(db: Session, target_id, operation: str = "deploy", **extra: object):  
         "command_id": str(uuid.uuid4()),
         "target_id": target_id,
         "operation": operation,
+        "purpose": "foundation_execution",
         "descriptor_digest": _DESCRIPTOR,
         "execution_plan_digest": _EXECUTION_PLAN,
         "requires_approval": True,

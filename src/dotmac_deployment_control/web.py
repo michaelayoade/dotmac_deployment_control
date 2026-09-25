@@ -491,6 +491,7 @@ async def propose_plan_submit(
             command_id=f"web.propose_plan:{target_id}:{expected}",
             target_id=target_id,
             operation=values.get("operation", "").strip(),
+            purpose=service.PlanPurpose.FOUNDATION_EXECUTION.value,
             # A browser owns neither canonical descriptor nor execution-plan
             # bytes. Both empty values are deliberate and are refused by the
             # service rather than filled from client input.

@@ -65,6 +65,7 @@ from dotmac_deployment_control.images import AuthorizedImage
 from dotmac_deployment_control.models import (
     DeploymentPlan,
     DeploymentTarget,
+    PlanPurpose,
     RehearsalIssuerAuthorizationRecord,
     RehearsalIssuerAuthorizationState,
     TargetStatus,
@@ -96,6 +97,7 @@ from dotmac_deployment_control.rehearsal_issuer_authorization import (
 from dotmac_deployment_control.service import (
     _audit_and_emit,
     _control_now,
+    _frozen_plan_purpose,
     _load_plan_with_target_for_update,
     _standing_plan_terms,
     _StandingPlanTerms,
@@ -148,6 +150,7 @@ class RehearsalIssuerIssuanceRefusalCode(StrEnum):
     SECURITY_NOT_INSTALLED = "rehearsal_issuer_issuance_security_not_installed"
     MALFORMED = "rehearsal_issuer_issuance_malformed"
     PLAN_UNRESOLVED = "rehearsal_issuer_issuance_plan_unresolved"
+    WRONG_PLAN_PURPOSE = "rehearsal_issuer_issuance_wrong_plan_purpose"
     APPROVAL_NOT_STANDING = "rehearsal_issuer_issuance_approval_not_standing"
     #: D6: the resolved target's `environment` is not `REHEARSAL_ONLY_ENVIRONMENT`.
     NOT_A_REHEARSAL_TARGET = "rehearsal_issuer_issuance_not_a_rehearsal_target"
@@ -320,6 +323,20 @@ def _fresh_harness_evidence(
     return parsed
 
 
+def _require_issuer_plan(plan: DeploymentPlan) -> None:
+    try:
+        purpose = _frozen_plan_purpose(plan)
+    except DeploymentControlError as exc:
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.WRONG_PLAN_PURPOSE, str(exc)
+        ) from exc
+    if purpose is not PlanPurpose.REHEARSAL_ISSUER_OPERATION:
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.WRONG_PLAN_PURPOSE,
+            f"plan {plan.id} is {purpose.value!r}, not a rehearsal-issuer operation",
+        )
+
+
 def issue_rehearsal_issuer_authorization_for_plan(
     db: Session,
     request: dict[str, Any],
@@ -383,6 +400,8 @@ def issue_rehearsal_issuer_authorization_for_plan(
             raise _refused(
                 RehearsalIssuerIssuanceRefusalCode.PLAN_UNRESOLVED, str(exc)
             ) from exc
+
+        _require_issuer_plan(plan)
 
         terms = _standing_plan_terms(session, plan)
         if isinstance(terms, facts.ApprovedPlanLookup):
@@ -560,7 +579,31 @@ def issue_rehearsal_issuer_authorization_for_plan(
         command_type=REHEARSAL_ISSUER_ISSUANCE_COMMAND_TYPE,
         handler=handler,
     )
-    return RehearsalIssuerAuthorizationV1.parse(outcome.result["envelope"])
+    result = RehearsalIssuerAuthorizationV1.parse(outcome.result["envelope"])
+    # An idempotency replay bypasses the handler above. Re-resolve durable
+    # standing so a pre-purpose a14 result cannot be returned as authority.
+    record = db.execute(
+        select(RehearsalIssuerAuthorizationRecord).where(
+            RehearsalIssuerAuthorizationRecord.authorization_id
+            == result.statement.authorization_id
+        )
+    ).scalar_one_or_none()
+    plan = db.get(DeploymentPlan, plan_id)
+    if (
+        record is None
+        or record.plan_id != plan_id
+        or record.state != RehearsalIssuerAuthorizationState.ISSUED.value
+        or canonical_json(result.as_mapping())
+        != canonical_json(record.authorization_envelope)
+        or plan is None
+    ):
+        raise _refused(
+            RehearsalIssuerIssuanceRefusalCode.WRONG_PLAN_PURPOSE,
+            "issuance replay no longer resolves to an issued authorization "
+            "for this plan",
+        )
+    _require_issuer_plan(plan)
+    return result
 
 
 # ── Revocation ───────────────────────────────────────────────────────────────
@@ -671,6 +714,7 @@ def stage_rehearsal_issuer_consumption(
         raise _refused(
             RehearsalIssuerIssuanceRefusalCode.PLAN_UNRESOLVED, str(exc)
         ) from exc
+    _require_issuer_plan(plan)
 
     row = db.execute(
         select(RehearsalIssuerAuthorizationRecord)
@@ -856,7 +900,12 @@ def rehearsal_issuer_standing_for(
         except ValueError:
             plan = None
         if plan is not None:
-            target = db.get(DeploymentTarget, plan.target_id)
+            try:
+                _require_issuer_plan(plan)
+            except RehearsalIssuerIssuanceRefusedError:
+                plan = None
+            else:
+                target = db.get(DeploymentTarget, plan.target_id)
 
     if plan is None or target is None:
         subject = _absent_subject(evidence)

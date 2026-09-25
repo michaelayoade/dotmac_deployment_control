@@ -5,6 +5,36 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## Unreleased — frozen Control plan purpose
+
+This change requires the next release coordinate `0.1.0a15`; version
+allocation and publication ledger updates belong to the release process.
+Stop every `0.1.0a14` process at migration time: until they stop, `a14` code
+against the migrated database still treats historical approved plans as
+issuer-eligible.
+
+- New public `ApprovedPlanRefusalCode` members: `wrong_plan_purpose` (an
+  approved rehearsal-issuer plan is not a Foundation execution plan) and
+  `plan_purpose_inconsistent` (the row's purpose column, frozen snapshot marker
+  and digest disagree, so it cannot be trusted to name its own purpose).
+  `PlanView.purpose` is display-only.
+
+- A plan now freezes a closed `foundation_execution` or
+  `rehearsal_issuer_operation` purpose. New snapshots include that purpose in
+  the Control plan digest. This intentionally changes the digest of newly
+  proposed ordinary Foundation plans; historical snapshots and digests are
+  retained as written and migration `dc_0015_plan_purpose` classifies only
+  those historical rows as `foundation_execution`.
+- A rehearsal-issuer plan can receive standing approval and issue the C1
+  authorization only for an active rehearsal target and approved `deploy`
+  operation. Foundation rollout, approved-plan lookup, authorization, dispatch,
+  and dispatch consumption refuse that purpose at their own boundaries.
+- The database constrains the closed purpose set and prevents changing a
+  persisted plan's purpose or snapshot marker. Migration revokes outstanding
+  pre-purpose rehearsal-issuer authorizations with a durable revocation ref;
+  issuer issuance replay, standing and consumption require issuer purpose.
+  Downgrade refuses while any post-migration purpose-marked plan exists.
+
 ## 0.1.0a14 (published 2026-09-23) — Control's real issuance boundary for the rehearsal-issuer contract
 
 DB-backed issuance, revocation, staged consumption and standing for C1's
