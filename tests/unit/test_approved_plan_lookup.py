@@ -62,6 +62,8 @@ from dotmac_deployment_control import (
     DesiredDeployment,
     ExecutionPlanDigestV1,
     ExpectedStateError,
+    PlanPurpose,
+    PlanRefusedError,
     PlanStatus,
     ProposePlanCommand,
     RegisterTargetCommand,
@@ -71,7 +73,9 @@ from dotmac_deployment_control import (
     TransitionRefusedError,
     approve_plan,
     find_approved_plan,
+    get_plan,
     module,
+    plans_for_target,
     propose_plan,
     register_target,
     request_rollout,
@@ -552,6 +556,85 @@ class TestEachRefusalIsItsOwnFinding:
         lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
         assert lookup.refusal is not None
         assert lookup.refusal.code is ApprovedPlanRefusalCode.DESCRIPTOR_BINDING_ABSENT
+
+    def test_a_snapshot_tampered_byte_leaves_the_marker_but_breaks_the_digest(
+        self, db: Session
+    ) -> None:
+        """A NEW-plan row: the purpose marker survives, another snapshot byte
+        does not — so the snapshot no longer hashes to this plan's own frozen
+        digest. `find_approved_plan` must return the typed row-integrity
+        refusal rather than let `PlanRefusedError` escape past its own
+        caller, which is the exact contract its docstring makes."""
+        plan = _approved(db)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        snapshot = dict(row.snapshot or {})
+        assert snapshot.get("plan_purpose") == PlanPurpose.FOUNDATION_EXECUTION.value
+        snapshot["release_ref"] = "dotmac_sub@9.9.9-tampered"
+        row.snapshot = snapshot
+        db.flush()
+
+        lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        assert not lookup
+        assert lookup.refusal is not None
+        assert lookup.refusal.code is ApprovedPlanRefusalCode.PLAN_PURPOSE_INCONSISTENT
+        assert lookup.refusal.plan_id == plan.id
+
+    def test_a_purpose_column_disagreeing_with_its_marker_is_a_typed_refusal(
+        self, db: Session
+    ) -> None:
+        """A NEW-plan row: the persisted `purpose` column and the frozen
+        snapshot marker disagree. Still a typed refusal, not a raise."""
+        plan = _approved(db)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        assert row.snapshot is not None
+        assert (
+            row.snapshot.get("plan_purpose") == PlanPurpose.FOUNDATION_EXECUTION.value
+        )
+        row.purpose = PlanPurpose.REHEARSAL_ISSUER_OPERATION.value
+        db.flush()
+
+        lookup = find_approved_plan(db, plan_digest=plan.plan_digest or "")
+        assert not lookup
+        assert lookup.refusal is not None
+        assert lookup.refusal.code is ApprovedPlanRefusalCode.PLAN_PURPOSE_INCONSISTENT
+        assert lookup.refusal.plan_id == plan.id
+
+    def test_get_plan_and_plans_for_target_do_not_raise_on_an_inconsistent_row(
+        self, db: Session
+    ) -> None:
+        """`_plan_view` projects the stored column for display; it must never
+        raise for a row-integrity problem it did not cause — `get_plan`,
+        `plans_for_target` and the refusal path above all build one."""
+        plan = _approved(db)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        row.purpose = PlanPurpose.REHEARSAL_ISSUER_OPERATION.value
+        db.flush()
+
+        view = get_plan(db, plan.id)
+        assert view is not None
+        assert view.purpose == PlanPurpose.REHEARSAL_ISSUER_OPERATION.value
+
+        views = plans_for_target(db, plan.target_id)
+        assert any(v.id == plan.id for v in views)
+
+    def test_request_rollout_still_refuses_an_inconsistent_purpose_row(
+        self, db: Session
+    ) -> None:
+        """Display never enforces — the authority path still does. This is
+        the guard the fix must not weaken: an authority check
+        (`_require_foundation_execution`, called from `request_rollout`)
+        still raises for a row whose purpose cannot be trusted."""
+        plan = _approved(db)
+        row = db.get(DeploymentPlan, plan.id)
+        assert row is not None
+        row.purpose = PlanPurpose.REHEARSAL_ISSUER_OPERATION.value
+        db.flush()
+
+        with pytest.raises(PlanRefusedError):
+            _rollout(db, plan)
 
     def test_a_different_expected_descriptor_is_its_own_refusal(self, db) -> None:
         plan = _approved(db)
