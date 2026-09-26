@@ -61,6 +61,7 @@ import dotmac_deployment_control.service as control_service
 from dotmac_deployment_control import (
     PRESTATE_DISCRIMINATOR,
     ApprovalEvidence,
+    ApprovalRefusedError,
     ApprovePlanCommand,
     AttemptOutcome,
     AuthorizationEnvelopeDigestV1,
@@ -98,6 +99,7 @@ from dotmac_deployment_control import (
     admit_and_consume_host_admission,
     approve_plan,
     build_database_catalog_snapshot,
+    cancel_plan,
     cancel_rollout,
     dispatch_attempt,
     enrol_credential,
@@ -4878,6 +4880,316 @@ def test_consumption_wins_the_lock_race_and_settle_still_records_its_own_outcome
     assert marker.expires_at is None
     assert marker.result["attempt_id"] == str(attempt_id)
     assert rollout.status == "succeeded"
+
+
+# ── cancel_plan joins request_rollout's target-then-plan lock order ─────────
+#
+# `cancel_plan` used to read its plan with the plain, unlocked `_load_plan`
+# and only afterwards check status and query for an existing rollout. A
+# concurrent `request_rollout` (which locks target-then-plan, same as
+# `revoke_plan_approval`) could commit a rollout in the gap between cancel's
+# check and its write, leaving a CANCELLED plan with a live rollout. Packet B
+# / debt D18. Both proofs below reuse `_HoldOneTargetLock`: it fires on
+# `deployment_targets ... FOR UPDATE`, the first lock BOTH `cancel_plan`
+# (after this fix) and `request_rollout` take -- which is also the
+# sensitivity proof. Against the OLD unlocked `_load_plan`, `cancel_plan`
+# never issues that query, so the gate would never fire, `gate.acquired.wait`
+# would time out, and the test would fail on that assertion rather than
+# quietly passing by running the two calls sequentially.
+
+
+@pytest.fixture
+def approved_plan_awaiting_rollout(
+    migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
+) -> Iterator[tuple[Engine, uuid.UUID]]:
+    """An ACTIVE target with an APPROVED plan and no rollout yet -- the exact
+    precondition `cancel_plan` and `request_rollout` both reach for."""
+    admin_url, _, _ = migrated_scratch
+    engine = create_engine(admin_url, future=True)
+    suffix = uuid.uuid4().hex[:10]
+    with Session(engine) as db:
+        target = register_target(
+            db,
+            RegisterTargetCommand(
+                command_id=f"cancel-race-seed-target-{suffix}",
+                target_ref=f"cancel-race-target-{suffix}",
+                subject_ref=f"cancel-race-subject-{suffix}",
+                product_code="dotmac_sub",
+                environment="production",
+            ),
+        )
+        key_id = f"cancel-race-key-{suffix}"
+        credential_id = enrol_credential(
+            db,
+            EnrolCredentialCommand(
+                command_id=f"cancel-race-seed-key-{suffix}",
+                target_id=target.id,
+                key_id=key_id,
+                algorithm="test-sha256",
+                public_key_b64=observation_public_key_b64(key_id),
+                enrollment_authority="platform_admin_policy",
+            ),
+        )
+        activate_credential(
+            db,
+            CredentialTransitionCommand(
+                command_id=f"cancel-race-activate-key-{suffix}",
+                credential_id=credential_id,
+            ),
+        )
+        set_desired_state(
+            db,
+            SetDesiredStateCommand(
+                command_id=f"cancel-race-seed-desired-{suffix}",
+                target_id=target.id,
+                desired=DesiredDeployment(
+                    release_ref="dotmac_sub@1", spec={"replicas": 2}, images=[]
+                ),
+            ),
+        )
+        plan = propose_plan(
+            db,
+            ProposePlanCommand(
+                command_id=f"cancel-race-seed-plan-{suffix}",
+                target_id=target.id,
+                operation="deploy",
+                descriptor_digest=_DESCRIPTOR,
+                execution_plan_digest=_EXECUTION_PLAN,
+                purpose="foundation_execution",
+                requires_approval=True,
+                approval_policy_code="deployment.production",
+                approval_policy_version=1,
+            ),
+        )
+        approve_plan(
+            db,
+            ApprovePlanCommand(
+                command_id=f"cancel-race-approve-plan-{suffix}",
+                plan_id=plan.id,
+                evidence=ApprovalEvidence(
+                    policy_code="deployment.production",
+                    policy_version=1,
+                    decision_ref=f"cancel-race-decision-{suffix}",
+                    content_digest=plan.plan_digest or "",
+                    decided_at=datetime.now(UTC),
+                    operation="deploy",
+                    execution_plan_digest=_EXECUTION_PLAN,
+                    decision_status="granted",
+                ),
+            ),
+        )
+        db.commit()
+        plan_id = plan.id
+    try:
+        yield engine, plan_id
+    finally:
+        engine.dispose()
+
+
+def test_cancel_plan_locks_the_target_and_request_rollout_blocks_then_refuses(
+    approved_plan_awaiting_rollout: tuple[Engine, uuid.UUID],
+) -> None:
+    """Cancel-first proof: `cancel_plan` holds the target lock; a concurrent
+    `request_rollout` for the same plan must genuinely block on it, and once
+    the cancel commits, `request_rollout` must refuse rather than succeed."""
+    engine, plan_id = approved_plan_awaiting_rollout
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def cancel_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["canceller"] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                cancel_plan(
+                    db,
+                    command_id=f"cancel-race-cancel-{uuid.uuid4()}",
+                    plan_id=plan_id,
+                    reason="withdrawn before rollout is requested",
+                )
+                db.commit()
+                outcomes["canceller"] = "cancelled"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def request_rollout_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["requester"] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                try:
+                    request_rollout(
+                        db,
+                        RequestRolloutCommand(
+                            command_id=f"cancel-race-rollout-{uuid.uuid4()}",
+                            rollout_ref=f"cancel-race-rollout-ref-{uuid.uuid4()}",
+                            plan_id=plan_id,
+                            authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                        ),
+                        signer=SIGNER,
+                    )
+                    db.commit()
+                    outcomes["requester"] = "rolled_out"
+                except ApprovalRefusedError as exc:
+                    db.rollback()
+                    outcomes["requester"] = ("refused", str(exc))
+        except BaseException as exc:
+            errors.append(exc)
+
+    canceller = threading.Thread(target=cancel_first)
+    requester = threading.Thread(target=request_rollout_second)
+    try:
+        canceller.start()
+        assert gate.acquired.wait(timeout=20), (
+            "canceller never took the target FOR UPDATE lock -- cancel_plan "
+            "regressed to the unlocked _load_plan"
+        )
+        requester.start()
+        deadline = time.monotonic() + 10
+        while "requester" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "requester" in backend_pids, "requester did not open a backend"
+        # THE PROOF: PostgreSQL itself reports the requester's backend as
+        # blocked on a lock while the canceller's transaction is still open
+        # -- not merely that the requester happened to run after the
+        # canceller. Against the pre-fix unlocked `_load_plan` this call
+        # would time out, since PostgreSQL would never report the requester
+        # waiting, and the test would fail here.
+        _wait_until_postgres_reports_lock(engine, backend_pids["requester"])
+        gate.release.set()
+        for worker in (canceller, requester):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "cancel-first rollout race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"cancel-first rollout race thread failed: {errors!r}"
+    assert outcomes["canceller"] == "cancelled"
+    assert isinstance(outcomes["requester"], tuple)
+    assert outcomes["requester"][0] == "refused"
+    assert "requires approval" in outcomes["requester"][1]
+    with sessions() as evidence:
+        plan = evidence.get(DeploymentPlan, plan_id)
+        assert plan is not None
+        assert plan.status == "cancelled"
+        rollout_count = evidence.execute(
+            select(func.count()).select_from(Rollout).where(Rollout.plan_id == plan_id)
+        ).scalar_one()
+        assert rollout_count == 0
+
+
+def test_request_rollout_locks_the_target_and_cancel_plan_blocks_then_refuses(
+    approved_plan_awaiting_rollout: tuple[Engine, uuid.UUID],
+) -> None:
+    """Rollout-first proof: `request_rollout` holds the target lock; a
+    concurrent `cancel_plan` for the same plan must genuinely block on it,
+    and once the rollout commits, `cancel_plan` must refuse with the
+    existing "already has a rollout" `TransitionRefusedError` -- it must not
+    commit a CANCELLED plan out from under a rollout requested moments
+    earlier."""
+    engine, plan_id = approved_plan_awaiting_rollout
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    rollout_ref = f"cancel-race-rollout-ref-{uuid.uuid4()}"
+
+    gate = _HoldOneTargetLock()
+    event.listen(engine, "after_cursor_execute", gate.after_cursor_execute)
+    backend_pids: dict[str, int] = {}
+    outcomes: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def request_rollout_first() -> None:
+        try:
+            with sessions() as db:
+                gate.holder_thread_id = threading.get_ident()
+                backend_pids["requester"] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                request_rollout(
+                    db,
+                    RequestRolloutCommand(
+                        command_id=f"cancel-race-rollout-{uuid.uuid4()}",
+                        rollout_ref=rollout_ref,
+                        plan_id=plan_id,
+                        authorization_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+                    ),
+                    signer=SIGNER,
+                )
+                db.commit()
+                outcomes["requester"] = "rolled_out"
+        except BaseException as exc:
+            errors.append(exc)
+
+    def cancel_second() -> None:
+        try:
+            with sessions() as db:
+                backend_pids["canceller"] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                try:
+                    cancel_plan(
+                        db,
+                        command_id=f"cancel-race-cancel-{uuid.uuid4()}",
+                        plan_id=plan_id,
+                        reason="operator gives up after rollout was requested",
+                    )
+                    db.commit()
+                    outcomes["canceller"] = "cancelled"
+                except TransitionRefusedError as exc:
+                    db.rollback()
+                    outcomes["canceller"] = ("refused", str(exc))
+        except BaseException as exc:
+            errors.append(exc)
+
+    requester = threading.Thread(target=request_rollout_first)
+    canceller = threading.Thread(target=cancel_second)
+    try:
+        requester.start()
+        assert gate.acquired.wait(
+            timeout=20
+        ), "requester never took the target FOR UPDATE lock"
+        canceller.start()
+        deadline = time.monotonic() + 10
+        while "canceller" not in backend_pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "canceller" in backend_pids, "canceller did not open a backend"
+        # THE PROOF, and the sensitivity check: PostgreSQL reports the
+        # canceller's backend genuinely blocked on the target lock the
+        # requester holds. Against the pre-fix unlocked `_load_plan`,
+        # `cancel_plan` never issues a `deployment_targets ... FOR UPDATE`
+        # query, so this call would time out and fail here, before either
+        # outcome below is even reached.
+        _wait_until_postgres_reports_lock(engine, backend_pids["canceller"])
+        gate.release.set()
+        for worker in (requester, canceller):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "rollout-first cancel race deadlocked"
+    finally:
+        gate.release.set()
+        event.remove(engine, "after_cursor_execute", gate.after_cursor_execute)
+
+    assert errors == [], f"rollout-first cancel race thread failed: {errors!r}"
+    assert outcomes["requester"] == "rolled_out"
+    assert isinstance(outcomes["canceller"], tuple)
+    assert outcomes["canceller"][0] == "refused"
+    assert "already has a rollout" in outcomes["canceller"][1]
+    with sessions() as evidence:
+        plan = evidence.get(DeploymentPlan, plan_id)
+        assert plan is not None
+        assert plan.status == "approved"
+        rollout_count = evidence.execute(
+            select(func.count()).select_from(Rollout).where(Rollout.plan_id == plan_id)
+        ).scalar_one()
+        assert rollout_count == 1
 
 
 def test_rehearsal_grant_state_constraint_refuses_null_revocation_reference(
