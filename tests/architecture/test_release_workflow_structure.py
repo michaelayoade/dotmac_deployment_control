@@ -611,3 +611,33 @@ def test_the_verify_workflow_never_writes_a_raw_git_tag() -> None:
         if "git tag" in line
     ]
     assert not offenders, offenders
+
+
+def test_the_readback_window_is_configurable_and_diagnosable() -> None:
+    """0.1.0a16's upload landed, but the index did not list it within the old
+    fixed five-minute read-back, so the release run reported failure for bytes
+    the independent verifier then proved. The window is now a repository knob
+    with a fifteen-minute default. Every miss reports its HTTP status, and an
+    authentication refusal stops at once instead of waiting out the window.
+    """
+    job = _jobs()["readback"]
+    assert "vars.RELEASE_READBACK_ATTEMPTS" in job
+    assert "vars.RELEASE_READBACK_INTERVAL_SECONDS" in job
+    attempts = re.search(r"RELEASE_READBACK_ATTEMPTS \|\| '(\d+)'", job)
+    interval = re.search(r"RELEASE_READBACK_INTERVAL_SECONDS \|\| '(\d+)'", job)
+    assert attempts and interval, "the read-back knobs lost their defaults"
+    assert (
+        int(attempts.group(1)) * int(interval.group(1)) >= 600
+    ), "the default read-back window fell below ten minutes"
+    assert "%{http_code}" in job, "a read-back miss no longer reports its status"
+    assert "401|403)" in job, "an authentication refusal is retried as lag again"
+    step = job.split("Read the published version back as the publisher", 1)[1]
+    script = step.split("- name:", 1)[0].split("run: |", 1)[1]
+    code = "\n".join(
+        line for line in script.splitlines() if not line.strip().startswith("#")
+    )
+    assert "|| true" not in code, "the read-back swallows a failure again"
+    assert "${{ inputs.version }}" not in code, (
+        "the version is interpolated into the read-back script again; pass it "
+        "through env"
+    )
