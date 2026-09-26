@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## Unreleased — cancel_plan decides "no rollout" under the target and plan locks
+## 0.1.0a16 (published 2026-09-26) — cancel_plan decides "no rollout" under the target and plan locks
 
 - `cancel_plan` now loads its plan through `_load_plan_with_target_for_update`
   — the target row FOR UPDATE, then the plan row FOR UPDATE, the same order
