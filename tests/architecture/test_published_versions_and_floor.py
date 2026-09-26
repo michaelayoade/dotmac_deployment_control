@@ -67,6 +67,7 @@ def test_every_published_version_is_recorded() -> None:
         "0.1.0a13",
         "0.1.0a14",
         "0.1.0a15",
+        "0.1.0a16",
     ], versions
 
 
@@ -130,7 +131,7 @@ def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
     """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
     floor that skipped it would let the next release collide with bytes that are
     permanently on the index."""
-    assert release_guard.published_floor() == "0.1.0a15"
+    assert release_guard.published_floor() == "0.1.0a16"
 
 
 def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
@@ -144,17 +145,17 @@ def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything.
 
-    a16 rather than a15, as of the change that recorded a15's coordinates. a15
+    a17 rather than a16, as of the change that recorded a16's coordinates. a16
     is now PUBLISHED, so the guard is required to refuse it; leaving the control
-    on a15 would assert that this repository may re-upload a name that already
+    on a16 would assert that this repository may re-upload a name that already
     exists — the exact hazard the floor is for.
 
     The two moves are one change because the floor is DERIVED from
-    `docs/published-versions.json`: recording a15 there raises the floor, and a
+    `docs/published-versions.json`: recording a16 there raises the floor, and a
     control left behind the floor is a control asserting the opposite of what
     the floor says.
     """
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a16") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a17") == []
 
 
 def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
@@ -292,6 +293,49 @@ def test_a15_records_independent_verification_and_bounded_adoption() -> None:
     assert "superseded_by" not in a15
 
 
+def test_a16_records_independent_verification_and_bounded_adoption() -> None:
+    """The recorder's coordinates require a human verification and adoption ruling."""
+    a16 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a16")
+    assert a16["status"] == "released"
+    assert a16["pinnable"] is True
+    assert a16["release_run"] == "36233791667"
+    assert a16["verify_run"] == "36234317683"
+    assert a16["peeled_commit"] == "712647025dc312403ad48edd5d58ea60c6f70d6f"
+    assert a16["tag_object"] == "884346bf9830842cfcf7b1b6be0f72db17a6a789"
+    verification = a16["release_run_note"]
+    for evidence in (
+        "build run 36233791667",
+        "gave up after 30 attempts",
+        "nothing was uploaded twice",
+        "INDEPENDENT verify run 36234317683",
+        "publisher read-back",
+        "exact filename",
+        "sha256",
+        "exactly one wheel and one sdist",
+        "clean dependency-complete read-only consumer",
+        "installed and imported",
+        "FIFTEEN installed-artifact behavioural canaries",
+        "tag_once.py",
+        "recorder then opened PR #71",
+    ):
+        assert evidence in verification, evidence
+    adoption = a16["adoption_note"]
+    for obligation in (
+        "COMPATIBILITY RULING, NOT A RUNTIME ADOPTION CLAIM",
+        "Control Plane pins 0.1.0a15",
+        "PIN a16",
+        "target and plan locks",
+        "two real-PostgreSQL race tests",
+        "No migration and no API change from a15",
+        "a15 remains immutable, verified and pinnable",
+        "does not activate an issuer",
+        "prove Lane 3",
+        "allocate a Foundation successor",
+    ):
+        assert obligation in adoption, obligation
+    assert "superseded_by" not in a16
+
+
 def test_a4_carries_the_superseding_disposition_in_four_named_terms() -> None:
     """MICHAEL'S RULING, 2026-08-30, recorded in the exact terms he gave.
 
@@ -383,7 +427,7 @@ def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNADOPTABLE" in problems[0], problems
-    assert any("not greater than 0.1.0a15" in p for p in problems), problems
+    assert any("not greater than 0.1.0a16" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -395,7 +439,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a15" in problems[0], problems
+    assert problems and "not greater than 0.1.0a16" in problems[0], problems
     assert not any("UNPINNABLE" in p for p in problems), (
         "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
         "unpinnable would be a different and wrong statement"
@@ -420,6 +464,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
         "0.1.0a13",
         "0.1.0a14",
         "0.1.0a15",
+        "0.1.0a16",
         "0.0.9a99",
         "0.1.0a0",
     ],
@@ -428,9 +473,9 @@ def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a16", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a17", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
-    """`0.1.0a16` is the one that matters: lexicographically it sorts BELOW
+    """`0.1.0a17` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse a double-digit alpha
     forever."""
     assert release_guard.refusals("dotmac-deployment-control", version) == []
@@ -742,7 +787,7 @@ def test_a5_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNSUITABLE FOR NEW ADOPTION" in problems[0], problems
-    assert any("not greater than 0.1.0a15" in p for p in problems), problems
+    assert any("not greater than 0.1.0a16" in p for p in problems), problems
 
 
 # ── a6: the first release whose declared floor is itself proven ─────────────
