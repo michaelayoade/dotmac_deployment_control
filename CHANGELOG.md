@@ -13,8 +13,7 @@ changes, each called out here.
   status or querying for an existing rollout. Previously the handler read the
   plan with a plain, unlocked `_load_plan`, so a concurrent `request_rollout`
   could commit a rollout between cancel's check and its write, leaving a
-  CANCELLED plan with a live rollout. Version allocation belongs to the
-  release process.
+  CANCELLED plan with a live rollout.
 
 ## 0.1.0a15 (published 2026-09-25) — one Foundation V3 execution consumption
 
