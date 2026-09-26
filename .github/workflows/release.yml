@@ -293,6 +293,15 @@ jobs:
       - name: Read the published version back as the publisher
         env:
           CURL_CREDENTIAL_SECRET: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          # The read-back window, overridable per repository. The default is
+          # fifteen minutes (60 x 15 s): 0.1.0a16's upload landed but the index
+          # did not list it within the former fixed five minutes, so the run
+          # reported a failed release for bytes the independent verifier then
+          # proved. A liveness budget, not a correctness one: verify-release.yml
+          # stays the only witness, and nothing here tags or records.
+          READBACK_ATTEMPTS: ${{ vars.RELEASE_READBACK_ATTEMPTS || '60' }}
+          READBACK_INTERVAL_SECONDS: ${{ vars.RELEASE_READBACK_INTERVAL_SECONDS || '15' }}
         run: |
           set -euo pipefail
           # Header auth, the same form the preflight already exercised against
@@ -300,15 +309,33 @@ jobs:
           # the helper replaced `-H "Authorization: token ${TOKEN}"` — none in
           # curl's arguments either. This loop is the reason that mattered
           # most: it can hold a credential-bearing curl in the process table
-          # for five minutes.
-          for i in $(seq 1 30); do
-            if bash scripts/curl_with_credential.sh token -sS "${INDEX_SIMPLE}/${DISTRIBUTION}/" \
-                 | grep -q -- "-${{ inputs.version }}[.-]"; then
-              echo "publisher read-back: ${{ inputs.version }} is on the index"; exit 0
+          # for the whole read-back window.
+          [[ "${READBACK_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::READBACK_ATTEMPTS must be a positive integer"; exit 1; }
+          [[ "${READBACK_INTERVAL_SECONDS}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::READBACK_INTERVAL_SECONDS must be a positive integer"; exit 1; }
+          page="$(mktemp)"
+          for i in $(seq 1 "${READBACK_ATTEMPTS}"); do
+            # Each attempt says WHY it missed. An authentication refusal is a
+            # credential problem, not index lag, and waiting fifteen minutes
+            # on it would only hide that.
+            # A transport failure is recorded as such and retried; it can
+            # never count as a read-back, which needs HTTP 200 AND the version.
+            if ! code="$(bash scripts/curl_with_credential.sh token -sS -o "${page}" \
+                           -w '%{http_code}' -H 'Cache-Control: no-cache' \
+                           "${INDEX_SIMPLE}/${DISTRIBUTION}/")"; then
+              code="transport-error"
             fi
-            echo "not yet on the index (attempt $i)..."; sleep 10
+            case "${code}" in
+              401|403)
+                echo "::error::the publisher's read-back was refused (HTTP ${code}); this is a credential or scope problem, not index lag"
+                exit 1 ;;
+            esac
+            if [ "${code}" = "200" ] && grep -q -- "-${VERSION}[.-]" "${page}"; then
+              echo "publisher read-back: ${VERSION} is on the index (attempt ${i}, HTTP ${code})"; exit 0
+            fi
+            echo "not yet on the index (attempt ${i}/${READBACK_ATTEMPTS}, HTTP ${code})..."
+            sleep "${READBACK_INTERVAL_SECONDS}"
           done
-          echo "::error::${{ inputs.version }} did not appear on the index in time"
+          echo "::error::${VERSION} did not appear on the index within ${READBACK_ATTEMPTS} x ${READBACK_INTERVAL_SECONDS}s. The upload may still have landed: dispatch verify-release.yml, the only witness, before concluding anything."
           exit 1
 
       # A published version with no tag and no ledger row is the state this
