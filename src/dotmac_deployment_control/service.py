@@ -2839,10 +2839,18 @@ def cancel_plan(
     reason: str | None = None,
     actor_ref: str | None = None,
 ) -> facts.PlanView:
-    """`draft | proposed | approved → cancelled`, before any rollout exists."""
+    """`draft | proposed | approved → cancelled`, before any rollout exists.
+
+    Locks the target then the plan (`_load_plan_with_target_for_update`),
+    the same order `request_rollout` and `revoke_plan_approval` take, before
+    checking status or whether a rollout exists. A concurrent
+    `request_rollout` for the same plan blocks on the same target row rather
+    than racing this check-then-cancel: "no rollout exists" is decided under
+    the lock, not read a moment before a rollout can commit underneath it.
+    """
 
     def handler(session: Session) -> Mapping[str, object]:
-        row = _load_plan(session, plan_id)
+        _target, row = _load_plan_with_target_for_update(session, plan_id)
         if row.status in {PlanStatus.SUPERSEDED.value, PlanStatus.CANCELLED.value}:
             raise TransitionRefusedError(
                 f"plan {row.id} is {row.status!r} and cannot be cancelled"
