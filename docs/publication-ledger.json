@@ -13,7 +13,7 @@
     "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 and 0.1.0a5 are",
     "published, verified, and refused for adoption; 0.1.0a6 through 0.1.0a12",
     "remain published and verified; 0.1.0a13, 0.1.0a14 and 0.1.0a15 are published",
-    "and independently verified, and 0.1.0a15 is the version to pin. All of them live in",
+    "and independently verified, and 0.1.0a15 is the version to pin until 0.1.0a16 is verified. All of them live in",
     "docs/published-versions.json,",
     "each superseding disposition APPENDED to its original record rather than",
     "replacing it.",
@@ -23,11 +23,21 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout.",
     "",
-    "EMPTY: 0.1.0a15, the declaration that sat here, was built by release run",
-    "36162943891, verified by verify run 36163228780 and tagged; the recorder",
-    "removed its row in the same act that recorded it in",
-    "docs/published-versions.json. The next declaration is derived as the",
-    "successor of the highest version recorded there."
+    "NOT EMPTY: 0.1.0a16 is the tree's current declaration, derived as the",
+    "successor of the highest version in docs/published-versions.json",
+    "(0.1.0a15). main's bytes stopped being a15's the moment PR #69 (cancel_plan",
+    "decides \"no rollout exists\" under the target and plan locks) landed after",
+    "a15 was tagged, so a bare 0.1.0a15 declaration would misname the tree's",
+    "current bytes as a15's own. It is not yet built, tagged, released or",
+    "verified; this row exists only so the declared-publication gate can account",
+    "for it, and it is removed, without ever having named a real release, the",
+    "moment 0.1.0a16 is verified and tagged or the tree bumps past it."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a16": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "Declared as the successor of the published floor 0.1.0a15 (see docs/published-versions.json), per this same file's own prior statement of the next number. Allocation of the name only: no build, tag, release run or verify run has occurred for 0.1.0a16. This row exists only so the declared-publication gate can account for the declaration; it is removed, without ever having named a real release on its own, the moment a release run tags and verifies it."
+    }
+  }
 }
