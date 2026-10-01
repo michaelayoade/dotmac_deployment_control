@@ -158,6 +158,9 @@ class RehearsalIssuerIssuanceRefusalCode(StrEnum):
     WRONG_AUTHORIZED_OPERATION = "rehearsal_issuer_issuance_wrong_authorized_operation"
     TARGET_MISMATCH = "rehearsal_issuer_issuance_target_mismatch"
     LEASE_ALREADY_AUTHORIZED = "rehearsal_issuer_issuance_lease_already_authorized"
+    CONTROLLER_FINGERPRINT_ALREADY_AUTHORIZED = (
+        "rehearsal_issuer_issuance_controller_fingerprint_already_authorized"
+    )
     EVIDENCE_WINDOW_EXCEEDED = "rehearsal_issuer_issuance_evidence_window_exceeded"
     NOT_RECORDED = "rehearsal_issuer_issuance_not_recorded"
     ENVELOPE_MISMATCH = "rehearsal_issuer_issuance_envelope_mismatch"
@@ -451,6 +454,23 @@ def issue_rehearsal_issuer_authorization_for_plan(
                 f"{existing.authorization_id}; a revoked lease is not "
                 "reusable, present a NEW lease id",
             )
+        # The target lock only serializes plans for this target. The ledger's
+        # unique constraint is the cross-target serialization point; this read
+        # gives ordinary retries a stable refusal before signing.
+        bound_controller = session.execute(
+            select(RehearsalIssuerAuthorizationRecord)
+            .where(
+                RehearsalIssuerAuthorizationRecord.controller_fingerprint
+                == evidence.controller_fingerprint
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+        if bound_controller is not None:
+            raise _refused(
+                RehearsalIssuerIssuanceRefusalCode.CONTROLLER_FINGERPRINT_ALREADY_AUTHORIZED,
+                "controller fingerprint was already bound to a lease; "
+                "terminal authorizations cannot release the binding",
+            )
 
         issued_at = effective_now
         expires_at = min(issued_at + security.authorization_ttl, evidence.valid_until)
@@ -551,10 +571,20 @@ def issue_rehearsal_issuer_authorization_for_plan(
                 session.add(record)
                 session.flush()
         except IntegrityError as exc:
+            constraint_name = getattr(
+                getattr(exc.orig, "diag", None), "constraint_name", None
+            )
+            if constraint_name == (
+                "uq_rehearsal_issuer_authorizations_controller_fingerprint"
+            ):
+                raise _refused(
+                    RehearsalIssuerIssuanceRefusalCode.CONTROLLER_FINGERPRINT_ALREADY_AUTHORIZED,
+                    "controller fingerprint was concurrently bound to another lease",
+                ) from exc
             raise _refused(
                 RehearsalIssuerIssuanceRefusalCode.LEASE_ALREADY_AUTHORIZED,
                 f"lease {evidence.lease_id} or authorization {authorization_id} "
-                f"collided with a concurrently issued row: {exc}",
+                "collided with a concurrently issued row",
             ) from exc
 
         _audit_and_emit(

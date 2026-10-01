@@ -556,7 +556,7 @@ def test_the_real_lineage_has_exactly_one_derivable_head() -> None:
     from dotmac_deployment_control.migrations import versions_dir
 
     head = canaries.derive_composed_lineage_head_from_versions_dir(versions_dir())
-    assert head == "dc_0015_plan_purpose"
+    assert head == "dc_0016_controller_key_nonreuse"
 
 
 def test_the_derived_head_moves_when_a_child_revision_is_planted(

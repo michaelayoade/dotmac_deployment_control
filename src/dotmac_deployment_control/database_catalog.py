@@ -11,6 +11,8 @@ appends the exact signed dispatch to the append-only attempt that it names.
 enrolments, an append-only fingerprint-closure ledger keyed on the fingerprint
 itself, and the one deliberately mutable current-root pointer table.
 ``dc_0012`` adds the durable rehearsal-grant lifecycle ledger.
+``dc_0016`` adds the permanent controller-fingerprint uniqueness constraint
+without changing the catalogue's table or column extent.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -100,7 +102,7 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0015_plan_purpose",
+    lineage_head="dc_0016_controller_key_nonreuse",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=tuple(

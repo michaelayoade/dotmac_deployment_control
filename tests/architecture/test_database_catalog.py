@@ -1,4 +1,4 @@
-"""The module publishes one exact post-dc_0013 structure declaration."""
+"""The module publishes one exact post-dc_0016 structure declaration."""
 
 from __future__ import annotations
 
@@ -32,14 +32,14 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0015_plan_purpose",
+            revision="dc_0016_controller_key_nonreuse",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0015_plan_purpose"
+    assert database_catalog.lineage_head == "dc_0016_controller_key_nonreuse"
 
 
 def test_catalogue_has_exact_twenty_two_table_246_column_extent() -> None:
@@ -83,8 +83,9 @@ def test_catalogue_has_exact_twenty_two_table_246_column_extent() -> None:
     ledger, a SIBLING of `rehearsal_grants` recording a different authority
     (operate the disposable rehearsal issuer for one lease, rather than the
     provoked-rollback replay coordinate `rehearsal_grants` already records).
-    `dc_0015` appends the frozen plan-purpose column. The exact post-revision
-    extent is therefore 22 tables and 246 columns.
+    `dc_0015` appends the frozen plan-purpose column. `dc_0016` adds a unique
+    constraint without adding columns. The exact post-revision extent is
+    therefore 22 tables and 246 columns.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
@@ -375,7 +376,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0015_plan_purpose",
+                revision="dc_0016_controller_key_nonreuse",
             ),
         )
 
