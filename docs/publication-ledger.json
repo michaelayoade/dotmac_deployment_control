@@ -30,11 +30,5 @@
     "The row is removed only when a release recorder writes immutable",
     "publication coordinates to docs/published-versions.json."
   ],
-  "unpublished": {
-    "0.1.0a17": {
-      "status": "declared-not-published",
-      "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "The successor of published 0.1.0a16 is declared for the Control-owned controller-fingerprint nonreuse change. CI validation builds are not publication evidence. No tag, release run, release verification run or publication is recorded for 0.1.0a17."
-    }
-  }
+  "unpublished": {}
 }
