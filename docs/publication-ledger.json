@@ -12,8 +12,8 @@
     "",
     "0.1.0a3 is published and permanently unpinnable; 0.1.0a4 and 0.1.0a5 are",
     "published, verified, and refused for adoption; 0.1.0a6 through 0.1.0a12",
-    "remain published and verified; 0.1.0a13, 0.1.0a14, 0.1.0a15 and 0.1.0a16 are",
-    "published and independently verified, and 0.1.0a16 is the version to pin. All of them live in",
+    "remain published and verified; 0.1.0a13 through 0.1.0a17 are",
+    "published and independently verified, and 0.1.0a17 is the version to pin. All of them live in",
     "docs/published-versions.json,",
     "each superseding disposition APPENDED to its original record rather than",
     "replacing it.",
@@ -23,18 +23,11 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout.",
     "",
-    "NOT EMPTY: 0.1.0a17 is the tree's current declaration, the successor of",
-    "published 0.1.0a16. This change adds permanent cross-lease controller-key",
-    "nonreuse and dc_0016; it has not been tagged, published or release-verified.",
-    "CI may build and test this source without publishing a release.",
-    "The row is removed only when a release recorder writes immutable",
-    "publication coordinates to docs/published-versions.json."
+    "EMPTY: the tree's 0.1.0a17 declaration is published and independently",
+    "verified. The recorder removed its row when it wrote the immutable",
+    "tag, artifact and run coordinates to docs/published-versions.json.",
+    "A future unpublished successor must receive its own declaration row.",
+    "Publication does not prove consumer adoption or live issuer readiness."
   ],
-  "unpublished": {
-    "0.1.0a17": {
-      "status": "declared-not-published",
-      "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "The successor of published 0.1.0a16 is declared for the Control-owned controller-fingerprint nonreuse change. CI validation builds are not publication evidence. No tag, release run, release verification run or publication is recorded for 0.1.0a17."
-    }
-  }
+  "unpublished": {}
 }

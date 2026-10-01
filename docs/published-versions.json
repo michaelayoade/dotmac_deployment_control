@@ -393,6 +393,26 @@
       "pinnable": true,
       "release_run_note": "Published by build run 36233791667 from the exact tip of protected main (712647025dc312403ad48edd5d58ea60c6f70d6f). That run's build, publish and upload steps succeeded, but its own publisher read-back ('the upload landed') gave up after 30 attempts without observing the version on the index, so the run concluded failure; nothing was uploaded twice. INDEPENDENT verify run 36234317683 returned VERIFIED: publisher read-back succeeded, both registry-served artifacts were fetched by exact filename and matched the release build by sha256, exactly one wheel and one sdist exist, a clean dependency-complete read-only consumer installed and imported the wheel, and all FIFTEEN installed-artifact behavioural canaries passed. Only after verification did tag_once.py write annotated tag object 884346bf9830842cfcf7b1b6be0f72db17a6a789; the recorder then opened PR #71 for this human disposition.",
       "adoption_note": "COMPATIBILITY RULING, NOT A RUNTIME ADOPTION CLAIM: no consumer composes a16; Control Plane pins 0.1.0a15. PIN a16 when a consumer needs cancel_plan to decide 'no rollout exists' under the target and plan locks (the same target-then-plan order as request_rollout and revoke_plan_approval), proven by two real-PostgreSQL race tests - a Gate-0 C2 prerequisite before a withdrawal outcome may treat a cancelled plan as terminal. No migration and no API change from a15. a15 remains immutable, verified and pinnable. Publication does not activate an issuer, prove Lane 3, allocate a Foundation successor, or close any C2 acceptance condition."
+    },
+    {
+      "version": "0.1.0a17",
+      "tag": "dotmac-deployment-control-v0.1.0a17",
+      "tag_object": "2b8458bc7c7c6bc38644b2bcb117d01bf317ef2c",
+      "peeled_commit": "574418944d35ddf3559d17e59e9184b5f545ebe4",
+      "release_run": "36876808565",
+      "verify_run": "36877181012",
+      "source_repository": "dotmac_deployment_control",
+      "index": "registry.dotmac.io/api/packages/dotmac/pypi",
+      "status": "released",
+      "sha256": {
+        "dotmac_deployment_control-0.1.0a17-py3-none-any.whl": "ecd3478a5398ce7c93d1c7195edf76ca4b4630f9c8474527e914d1561a3f39f9",
+        "dotmac_deployment_control-0.1.0a17.tar.gz": "52f2d1f07f6a8aea59fd59eb0c03c6f11973921b9dd5055d9aa84a8c1dd2196a"
+      },
+      "supersedes": "0.1.0a16",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published once by build run 36876808565 from the exact tip of protected main (574418944d35ddf3559d17e59e9184b5f545ebe4). Build, publish and publisher read-back succeeded. INDEPENDENT verify run 36877181012 returned VERIFIED on all seven properties: both registry-served artifacts were fetched by exact filename and matched the release build by sha256, exactly one wheel and one sdist exist, a clean dependency-complete read-only consumer installed and imported the wheel, and all FIFTEEN installed-artifact behavioural canaries passed. Only after verification did tag_once.py write annotated tag object 2b8458bc7c7c6bc38644b2bcb117d01bf317ef2c; the recorder then opened PR #74. No rebuild or repeat upload was used for verification or recording.",
+      "adoption_note": "RELEASE ELIGIBILITY, NOT A RUNTIME ADOPTION CLAIM: PIN a17 for Control-owned permanent controller-fingerprint nonreuse across leases, targets, plans and issued/revoked/spent ledger history. Migration dc_0016_controller_key_nonreuse adds the global unique constraint; historical duplicates make upgrade fail transactionally without rewriting history, and populated downgrade is refused. Consumers must adopt the exact verified wheel through their own protected lock, migration and conformance gates. a16 remains immutable release history, not a fallback for this cutover. Fix forward after the authority cutover; do not reactivate the retired writer or compatibility paths. Publication does not activate an issuer, prove Lane 3, allocate a Foundation successor, or close Gate-0 custody/readiness or D16."
     }
   ],
   "tags_remain_in_source_for": [
