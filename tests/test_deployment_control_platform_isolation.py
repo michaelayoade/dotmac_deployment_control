@@ -5956,14 +5956,20 @@ def test_controller_key_binding_survives_lease_state_and_crosses_targets(
     _installed_rehearsal_issuer_security: None,
     state: str,
 ) -> None:
-    engine = create_engine(migrated_scratch[0])
+    """Prove database nonreuse through the real online role, not cryptography.
+
+    Fixed signature fixtures isolate ledger behavior; they do not establish
+    signer custody or authenticated issuer readiness.
+    """
+    admin_engine = create_engine(migrated_scratch[0])
+    engine = create_engine(migrated_scratch[1])
     suffix = uuid.uuid4().hex
     fingerprint = f"fp-{suffix}"
     first_target, first_plan = _seed_rehearsal_issuer_target_and_plan(
-        engine, f"{suffix}-first"
+        admin_engine, f"{suffix}-first"
     )
     second_target, second_plan = _seed_rehearsal_issuer_target_and_plan(
-        engine, f"{suffix}-second"
+        admin_engine, f"{suffix}-second"
     )
     now = datetime.now(UTC)
     first_evidence = _fixture_harness_evidence(
@@ -5975,6 +5981,7 @@ def test_controller_key_binding_survives_lease_state_and_crosses_targets(
     )
     try:
         with Session(engine) as db:
+            assert db.scalar(text("SELECT current_user")) == "platform_api"
             first = issue_rehearsal_issuer_authorization_for_plan(
                 db,
                 {"command_id": f"issue-first-{suffix}", "plan_id": str(first_plan)},
@@ -5990,7 +5997,7 @@ def test_controller_key_binding_survives_lease_state_and_crosses_targets(
             assert replay.as_mapping() == first.as_mapping()
             db.commit()
         if state != "issued":
-            with engine.begin() as conn:
+            with admin_engine.begin() as conn:
                 if state == "revoked":
                     conn.execute(
                         text(
@@ -6061,17 +6068,20 @@ def test_controller_key_binding_survives_lease_state_and_crosses_targets(
             )
     finally:
         engine.dispose()
+        admin_engine.dispose()
 
 
 def test_cross_target_controller_key_race_serializes_on_postgres_unique_constraint(
     migrated_scratch: tuple[str, str, str],
     _installed_rehearsal_issuer_security: None,
 ) -> None:
-    engine = create_engine(migrated_scratch[0])
+    """Race online-role issuance; fixture signatures do not prove custody."""
+    admin_engine = create_engine(migrated_scratch[0])
+    engine = create_engine(migrated_scratch[1])
     suffix = uuid.uuid4().hex
     fingerprint = f"fp-race-{suffix}"
     targets = [
-        _seed_rehearsal_issuer_target_and_plan(engine, f"{suffix}-{name}")
+        _seed_rehearsal_issuer_target_and_plan(admin_engine, f"{suffix}-{name}")
         for name in ("first", "second")
     ]
     now = datetime.now(UTC)
@@ -6111,6 +6121,7 @@ def test_cross_target_controller_key_race_serializes_on_postgres_unique_constrai
         )
         with Session(engine) as db:
             try:
+                assert db.scalar(text("SELECT current_user")) == "platform_api"
                 pids[name] = db.execute(text("SELECT pg_backend_pid()")).scalar_one()
                 if name == "first":
                     first_thread_id = threading.get_ident()
@@ -6180,6 +6191,7 @@ def test_cross_target_controller_key_race_serializes_on_postgres_unique_constrai
                 thread.join(timeout=30)
         event.remove(engine, "after_cursor_execute", after_insert)
         engine.dispose()
+        admin_engine.dispose()
 
 
 @pytest.mark.parametrize(
