@@ -68,6 +68,7 @@ def test_every_published_version_is_recorded() -> None:
         "0.1.0a14",
         "0.1.0a15",
         "0.1.0a16",
+        "0.1.0a17",
     ], versions
 
 
@@ -131,7 +132,7 @@ def test_the_floor_is_derived_from_the_recorded_coordinates() -> None:
     """a3 bounds the floor even though it may never be pinned: it EXISTS, and a
     floor that skipped it would let the next release collide with bytes that are
     permanently on the index."""
-    assert release_guard.published_floor() == "0.1.0a16"
+    assert release_guard.published_floor() == "0.1.0a17"
 
 
 def test_the_unpinnable_version_is_refused_by_name_not_only_by_the_floor() -> None:
@@ -145,17 +146,17 @@ def test_the_next_version_would_be_admitted() -> None:
     """POSITIVE CONTROL. Without it every refusal below is equally consistent
     with a guard that refuses everything.
 
-    a17 rather than a16, as of the change that recorded a16's coordinates. a16
+    a18 rather than a17, as of the change that recorded a17's coordinates. a17
     is now PUBLISHED, so the guard is required to refuse it; leaving the control
-    on a16 would assert that this repository may re-upload a name that already
+    on a17 would assert that this repository may re-upload a name that already
     exists — the exact hazard the floor is for.
 
     The two moves are one change because the floor is DERIVED from
-    `docs/published-versions.json`: recording a16 there raises the floor, and a
+    `docs/published-versions.json`: recording a17 there raises the floor, and a
     control left behind the floor is a control asserting the opposite of what
     the floor says.
     """
-    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a17") == []
+    assert release_guard.refusals("dotmac-deployment-control", "0.1.0a18") == []
 
 
 def test_the_positive_control_tracks_the_floor_rather_than_a_literal() -> None:
@@ -336,6 +337,54 @@ def test_a16_records_independent_verification_and_bounded_adoption() -> None:
     assert "superseded_by" not in a16
 
 
+def test_a17_records_independent_verification_and_forward_only_adoption() -> None:
+    """The release record separates verified bytes from runtime adoption."""
+    a17 = next(r for r in _published()["releases"] if r["version"] == "0.1.0a17")
+    assert a17["status"] == "released"
+    assert a17["pinnable"] is True
+    assert a17["release_run"] == "36876808565"
+    assert a17["verify_run"] == "36877181012"
+    assert a17["peeled_commit"] == "574418944d35ddf3559d17e59e9184b5f545ebe4"
+    assert a17["tag_object"] == "2b8458bc7c7c6bc38644b2bcb117d01bf317ef2c"
+    assert a17["sha256"] == {
+        "dotmac_deployment_control-0.1.0a17-py3-none-any.whl": (
+            "ecd3478a5398ce7c93d1c7195edf76ca4b4630f9c8474527e914d1561a3f39f9"
+        ),
+        "dotmac_deployment_control-0.1.0a17.tar.gz": (
+            "52f2d1f07f6a8aea59fd59eb0c03c6f11973921b9dd5055d9aa84a8c1dd2196a"
+        ),
+    }
+    assert a17["declared_kernel_floor"] == ">=0.1.0a100"
+    for evidence in (
+        "build run 36876808565",
+        "INDEPENDENT verify run 36877181012",
+        "all seven properties",
+        "exact filename",
+        "sha256",
+        "clean dependency-complete read-only consumer",
+        "installed and imported",
+        "FIFTEEN installed-artifact behavioural canaries",
+        "tag_once.py",
+        "recorder then opened PR #74",
+        "No rebuild or repeat upload",
+    ):
+        assert evidence in a17["release_run_note"], evidence
+    for obligation in (
+        "RELEASE ELIGIBILITY, NOT A RUNTIME ADOPTION CLAIM",
+        "PIN a17",
+        "dc_0016_controller_key_nonreuse",
+        "global unique constraint",
+        "without rewriting history",
+        "populated downgrade is refused",
+        "a16 remains immutable release history, not a fallback",
+        "Fix forward",
+        "does not activate an issuer",
+        "prove Lane 3",
+        "allocate a Foundation successor",
+    ):
+        assert obligation in a17["adoption_note"], obligation
+
+
 def test_a4_carries_the_superseding_disposition_in_four_named_terms() -> None:
     """MICHAEL'S RULING, 2026-08-30, recorded in the exact terms he gave.
 
@@ -427,7 +476,7 @@ def test_a4_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNADOPTABLE" in problems[0], problems
-    assert any("not greater than 0.1.0a16" in p for p in problems), problems
+    assert any("not greater than 0.1.0a17" in p for p in problems), problems
 
 
 def test_attempting_the_inherited_version_is_refused() -> None:
@@ -439,7 +488,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
     make by accident.
     """
     problems = release_guard.refusals("dotmac-deployment-control", "0.1.0a2")
-    assert problems and "not greater than 0.1.0a16" in problems[0], problems
+    assert problems and "not greater than 0.1.0a17" in problems[0], problems
     assert not any("UNPINNABLE" in p for p in problems), (
         "a2 is pinnable and Vendor Control Plane depends on it; refusing it as "
         "unpinnable would be a different and wrong statement"
@@ -465,6 +514,7 @@ def test_attempting_the_inherited_version_is_refused() -> None:
         "0.1.0a14",
         "0.1.0a15",
         "0.1.0a16",
+        "0.1.0a17",
         "0.0.9a99",
         "0.1.0a0",
     ],
@@ -473,9 +523,9 @@ def test_nothing_at_or_below_the_floor_is_admitted(version: str) -> None:
     assert release_guard.refusals("dotmac-deployment-control", version)
 
 
-@pytest.mark.parametrize("version", ["0.1.0a17", "0.2.0a1", "1.0.0a1"])
+@pytest.mark.parametrize("version", ["0.1.0a18", "0.2.0a1", "1.0.0a1"])
 def test_anything_above_the_floor_is_admitted(version: str) -> None:
-    """`0.1.0a17` is the one that matters: lexicographically it sorts BELOW
+    """`0.1.0a18` is the one that matters: lexicographically it sorts BELOW
     `0.1.0a2`, so a string comparison here would refuse a double-digit alpha
     forever."""
     assert release_guard.refusals("dotmac-deployment-control", version) == []
@@ -787,7 +837,7 @@ def test_a5_is_refused_by_name_as_well_as_by_the_floor() -> None:
     assert len(problems) >= 2, problems
     assert "UNPINNABLE" in problems[0], problems
     assert "UNSUITABLE FOR NEW ADOPTION" in problems[0], problems
-    assert any("not greater than 0.1.0a16" in p for p in problems), problems
+    assert any("not greater than 0.1.0a17" in p for p in problems), problems
 
 
 # ── a6: the first release whose declared floor is itself proven ─────────────

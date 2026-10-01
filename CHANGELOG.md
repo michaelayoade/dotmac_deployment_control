@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a17 (declared, unpublished) — permanent controller-key nonreuse
+## 0.1.0a17 (published 2026-10-01) — permanent controller-key nonreuse
 
 - Rehearsal-issuer issuance refuses a controller fingerprint already bound to
   any lease, including a revoked or spent authorization on another target or
