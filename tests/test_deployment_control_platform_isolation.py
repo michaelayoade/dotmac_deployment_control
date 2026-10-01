@@ -704,7 +704,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0015_plan_purpose",
+                revision="dc_0016_controller_key_nonreuse",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -1001,13 +1001,13 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
 
 
 def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
-    migrated_scratch: tuple[str, str, str],
+    isolated_migrated_scratch: tuple[str, str, str],
 ) -> None:
     """a14 must not reinterpret a newly approved Foundation plan as issuer-eligible."""
     from alembic import command
     from alembic.config import Config
 
-    admin_url, _, _ = migrated_scratch
+    admin_url, _, _ = isolated_migrated_scratch
     engine = create_engine(admin_url)
     try:
         with engine.begin() as conn:
@@ -1036,7 +1036,131 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
+                == "dc_0016_controller_key_nonreuse"
+            )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0016_refuses_duplicate_history_without_rewriting_it(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+    cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+    command.downgrade(cfg, "dc_0015_plan_purpose")
+    engine = create_engine(admin_url)
+    fingerprint = f"historical-duplicate-{uuid.uuid4().hex}"
+    try:
+        with engine.begin() as conn:
+            target_ids = [_insert_target(conn), _insert_target(conn)]
+            plan_ids = [_insert_plan(conn, target_id) for target_id in target_ids]
+            for index, (target_id, plan_id) in enumerate(
+                zip(target_ids, plan_ids, strict=True)
+            ):
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.rehearsal_issuer_authorizations "
+                        "(id, authorization_id, single_use_reference, lease_id, "
+                        "plan_id, target_id, controller_fingerprint, "
+                        "harness_evidence_digest, authorization_envelope, "
+                        "not_before, issued_at, expires_at, state) "
+                        "VALUES (:id, :authorization_id, :reference, :lease_id, "
+                        ":plan_id, :target_id, :fingerprint, :digest, "
+                        "'{}'::jsonb, now(), now(), now() + interval '1 hour', "
+                        "'issued')"
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "authorization_id": f"legacy-auth-{index}-{fingerprint}",
+                        "reference": f"legacy-ref-{index}-{fingerprint}",
+                        "lease_id": f"legacy-lease-{index}-{fingerprint}",
+                        "plan_id": plan_id,
+                        "target_id": target_id,
+                        "fingerprint": fingerprint,
+                        "digest": "sha256:" + "0" * 64,
+                    },
+                )
+        with pytest.raises(IntegrityError, match="controller_fingerprint"):
+            command.upgrade(cfg, "dc_0016_controller_key_nonreuse")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM "
+                        "mod_deploy.rehearsal_issuer_authorizations "
+                        "WHERE controller_fingerprint = :fingerprint"
+                    ),
+                    {"fingerprint": fingerprint},
+                ).scalar_one()
+                == 2
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
                 == "dc_0015_plan_purpose"
+            )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0016_refuses_downgrade_with_controller_key_history(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_id = _insert_plan(conn, target_id)
+            conn.execute(
+                text(
+                    "INSERT INTO mod_deploy.rehearsal_issuer_authorizations "
+                    "(id, authorization_id, single_use_reference, lease_id, "
+                    "plan_id, target_id, controller_fingerprint, "
+                    "harness_evidence_digest, authorization_envelope, "
+                    "not_before, issued_at, expires_at, state) "
+                    "VALUES (:id, :authorization_id, :reference, :lease_id, "
+                    ":plan_id, :target_id, :fingerprint, :digest, "
+                    "'{}'::jsonb, now(), now(), now() + interval '1 hour', "
+                    "'issued')"
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "authorization_id": f"auth-{uuid.uuid4().hex}",
+                    "reference": f"ref-{uuid.uuid4().hex}",
+                    "lease_id": f"lease-{uuid.uuid4().hex}",
+                    "plan_id": plan_id,
+                    "target_id": target_id,
+                    "fingerprint": f"fp-{uuid.uuid4().hex}",
+                    "digest": "sha256:" + "0" * 64,
+                },
+            )
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="refuses to discard controller-key"):
+            command.downgrade(cfg, "dc_0015_plan_purpose")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
+                == "dc_0016_controller_key_nonreuse"
             )
     finally:
         engine.dispose()
@@ -1104,7 +1228,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0015_plan_purpose"
+                == "dc_0016_controller_key_nonreuse"
             )
     finally:
         engine.dispose()
@@ -5713,7 +5837,7 @@ def test_concurrent_issuance_for_one_lease_commits_exactly_one_row(
     now = datetime.now(UTC)
     evidence = _fixture_harness_evidence(
         lease_id=lease_id,
-        controller_fingerprint="fp-controller",
+        controller_fingerprint=f"fp-{suffix}",
         target_ref=target_ref,
         issued_at=now,
         valid_until=now + timedelta(minutes=10),
@@ -5826,6 +5950,238 @@ def test_concurrent_issuance_for_one_lease_commits_exactly_one_row(
         engine.dispose()
 
 
+@pytest.mark.parametrize("state", ("issued", "revoked", "spent"))
+def test_controller_key_binding_survives_lease_state_and_crosses_targets(
+    migrated_scratch: tuple[str, str, str],
+    _installed_rehearsal_issuer_security: None,
+    state: str,
+) -> None:
+    engine = create_engine(migrated_scratch[0])
+    suffix = uuid.uuid4().hex
+    fingerprint = f"fp-{suffix}"
+    first_target, first_plan = _seed_rehearsal_issuer_target_and_plan(
+        engine, f"{suffix}-first"
+    )
+    second_target, second_plan = _seed_rehearsal_issuer_target_and_plan(
+        engine, f"{suffix}-second"
+    )
+    now = datetime.now(UTC)
+    first_evidence = _fixture_harness_evidence(
+        lease_id=f"lease-first-{suffix}",
+        controller_fingerprint=fingerprint,
+        target_ref=first_target,
+        issued_at=now,
+        valid_until=now + timedelta(minutes=10),
+    )
+    try:
+        with Session(engine) as db:
+            first = issue_rehearsal_issuer_authorization_for_plan(
+                db,
+                {"command_id": f"issue-first-{suffix}", "plan_id": str(first_plan)},
+                harness_evidence_document=first_evidence,
+            )
+            db.commit()
+        with Session(engine) as db:
+            replay = issue_rehearsal_issuer_authorization_for_plan(
+                db,
+                {"command_id": f"issue-first-{suffix}", "plan_id": str(first_plan)},
+                harness_evidence_document=first_evidence,
+            )
+            assert replay.as_mapping() == first.as_mapping()
+            db.commit()
+        if state != "issued":
+            with engine.begin() as conn:
+                if state == "revoked":
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.rehearsal_issuer_authorizations "
+                            "SET state = 'revoked', revoked_at = now(), "
+                            "revocation_ref = 'test:terminal' "
+                            "WHERE authorization_id = :authorization_id"
+                        ),
+                        {"authorization_id": first.statement.authorization_id},
+                    )
+                else:
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.rehearsal_issuer_authorizations "
+                            "SET state = 'spent', spent_at = now() "
+                            "WHERE authorization_id = :authorization_id"
+                        ),
+                        {"authorization_id": first.statement.authorization_id},
+                    )
+        second_evidence = _fixture_harness_evidence(
+            lease_id=f"lease-second-{suffix}",
+            controller_fingerprint=fingerprint,
+            target_ref=second_target,
+            issued_at=now,
+            valid_until=now + timedelta(minutes=10),
+        )
+        with Session(engine) as db:
+            with pytest.raises(RehearsalIssuerIssuanceRefusedError) as refused:
+                issue_rehearsal_issuer_authorization_for_plan(
+                    db,
+                    {
+                        "command_id": f"issue-second-{suffix}",
+                        "plan_id": str(second_plan),
+                    },
+                    harness_evidence_document=second_evidence,
+                )
+            assert refused.value.code.value == (
+                "rehearsal_issuer_issuance_controller_fingerprint_already_authorized"
+            )
+            assert "unique" not in str(refused.value).lower()
+            db.rollback()
+        distinct_evidence = _fixture_harness_evidence(
+            lease_id=f"lease-distinct-{suffix}",
+            controller_fingerprint=f"fp-distinct-{suffix}",
+            target_ref=second_target,
+            issued_at=now,
+            valid_until=now + timedelta(minutes=10),
+        )
+        with Session(engine) as db:
+            distinct = issue_rehearsal_issuer_authorization_for_plan(
+                db,
+                {"command_id": f"issue-distinct-{suffix}", "plan_id": str(second_plan)},
+                harness_evidence_document=distinct_evidence,
+            )
+            db.commit()
+        assert distinct.statement.lease_id == f"lease-distinct-{suffix}"
+        with Session(engine) as db:
+            assert (
+                db.scalar(
+                    select(func.count())
+                    .select_from(RehearsalIssuerAuthorizationRecord)
+                    .where(
+                        RehearsalIssuerAuthorizationRecord.controller_fingerprint
+                        == fingerprint
+                    )
+                )
+                == 1
+            )
+    finally:
+        engine.dispose()
+
+
+def test_cross_target_controller_key_race_serializes_on_postgres_unique_constraint(
+    migrated_scratch: tuple[str, str, str],
+    _installed_rehearsal_issuer_security: None,
+) -> None:
+    engine = create_engine(migrated_scratch[0])
+    suffix = uuid.uuid4().hex
+    fingerprint = f"fp-race-{suffix}"
+    targets = [
+        _seed_rehearsal_issuer_target_and_plan(engine, f"{suffix}-{name}")
+        for name in ("first", "second")
+    ]
+    now = datetime.now(UTC)
+    inserted = threading.Event()
+    release = threading.Event()
+    waiter_ready = threading.Event()
+    first_thread_id: int | None = None
+    outcomes: dict[str, str] = {}
+    errors: list[BaseException] = []
+    pids: dict[str, int] = {}
+
+    def after_insert(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if threading.get_ident() != first_thread_id:
+            return
+        if "INSERT INTO mod_deploy.rehearsal_issuer_authorizations" not in statement:
+            return
+        inserted.set()
+        if not release.wait(timeout=30):
+            raise AssertionError("the inserted controller-key holder was not released")
+
+    def worker(name: str, index: int) -> None:
+        nonlocal first_thread_id
+        target_ref, plan_id = targets[index]
+        evidence = _fixture_harness_evidence(
+            lease_id=f"lease-{name}-{suffix}",
+            controller_fingerprint=fingerprint,
+            target_ref=target_ref,
+            issued_at=now,
+            valid_until=now + timedelta(minutes=10),
+        )
+        with Session(engine) as db:
+            try:
+                pids[name] = db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                if name == "first":
+                    first_thread_id = threading.get_ident()
+                else:
+                    waiter_ready.set()
+                issue_rehearsal_issuer_authorization_for_plan(
+                    db,
+                    {"command_id": f"issue-{name}-{suffix}", "plan_id": str(plan_id)},
+                    harness_evidence_document=evidence,
+                )
+                db.commit()
+                outcomes[name] = "issued"
+            except RehearsalIssuerIssuanceRefusedError as exc:
+                db.rollback()
+                outcomes[name] = f"refused:{exc.code.value}"
+            except BaseException as exc:
+                db.rollback()
+                errors.append(exc)
+
+    threads = [
+        threading.Thread(target=worker, args=("first", 0)),
+        threading.Thread(target=worker, args=("second", 1)),
+    ]
+    event.listen(engine, "after_cursor_execute", after_insert)
+    try:
+        threads[0].start()
+        assert inserted.wait(timeout=10), "first insert was not reached"
+        threads[1].start()
+        assert waiter_ready.wait(timeout=10), "second backend did not start"
+        _wait_until_postgres_reports_lock(engine, pids["second"])
+        with engine.connect() as conn:
+            blockers, blocked_query = conn.execute(
+                text(
+                    "SELECT pg_blocking_pids(pid), query FROM pg_stat_activity "
+                    "WHERE pid = :pid"
+                ),
+                {"pid": pids["second"]},
+            ).one()
+        assert pids["first"] in blockers, blockers
+        assert "rehearsal_issuer_authorizations" in blocked_query
+        assert "INSERT" in blocked_query.upper()
+        release.set()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert all(not thread.is_alive() for thread in threads)
+        assert errors == [], errors
+        assert sorted(outcomes.values()) == [
+            "issued",
+            "refused:rehearsal_issuer_issuance_controller_fingerprint_already_authorized",
+        ]
+        with Session(engine) as db:
+            assert (
+                db.scalar(
+                    select(func.count())
+                    .select_from(RehearsalIssuerAuthorizationRecord)
+                    .where(
+                        RehearsalIssuerAuthorizationRecord.controller_fingerprint
+                        == fingerprint
+                    )
+                )
+                == 1
+            )
+    finally:
+        release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=30)
+        event.remove(engine, "after_cursor_execute", after_insert)
+        engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("first", "second", "expected_state"),
     (
@@ -5851,7 +6207,7 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
     now = datetime.now(UTC)
     evidence = _fixture_harness_evidence(
         lease_id=lease_id,
-        controller_fingerprint="fp-controller",
+        controller_fingerprint=f"fp-{suffix}",
         target_ref=target_ref,
         issued_at=now,
         valid_until=now + timedelta(minutes=30),
@@ -5890,7 +6246,7 @@ def test_rehearsal_issuer_consumption_and_revocation_serialize_on_postgres(
     consumption_evidence_issued_at = datetime.now(UTC)
     consumption_evidence = _fixture_harness_evidence(
         lease_id=lease_id,
-        controller_fingerprint="fp-controller",
+        controller_fingerprint=f"fp-{suffix}",
         target_ref=target_ref,
         issued_at=consumption_evidence_issued_at,
         valid_until=consumption_evidence_issued_at + timedelta(minutes=30),
@@ -6075,6 +6431,7 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
             authorization_id: str,
             single_use_reference: str,
             lease_id: str,
+            controller_fingerprint: str,
         ) -> None:
             now = datetime.now(UTC)
             conn.execute(
@@ -6085,7 +6442,7 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     "harness_evidence_digest, authorization_envelope, "
                     "not_before, issued_at, expires_at, state) "
                     "VALUES (:id, :authorization_id, :single_use_reference, "
-                    ":lease_id, :plan_id, :target_id, 'fp', "
+                    ":lease_id, :plan_id, :target_id, :controller_fingerprint, "
                     "'sha256:" + "0" * 64 + "', '{}'::jsonb, "
                     ":not_before, :issued_at, :expires_at, 'issued')"
                 ),
@@ -6094,6 +6451,7 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     "authorization_id": authorization_id,
                     "single_use_reference": single_use_reference,
                     "lease_id": lease_id,
+                    "controller_fingerprint": controller_fingerprint,
                     "plan_id": plan_id,
                     "target_id": target_id,
                     "not_before": now,
@@ -6108,6 +6466,7 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                 authorization_id=f"auth-{suffix}",
                 single_use_reference=f"ref-{suffix}",
                 lease_id=f"lease-{suffix}",
+                controller_fingerprint=f"fp-{suffix}",
             )
 
         # Duplicate lease_id.
@@ -6120,6 +6479,7 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     authorization_id=f"auth-2-{suffix}",
                     single_use_reference=f"ref-2-{suffix}",
                     lease_id=f"lease-{suffix}",
+                    controller_fingerprint=f"fp-lease-duplicate-{suffix}",
                 )
 
         # Duplicate single_use_reference.
@@ -6133,6 +6493,21 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     authorization_id=f"auth-3-{suffix}",
                     single_use_reference=f"ref-{suffix}",
                     lease_id=f"lease-3-{suffix}",
+                    controller_fingerprint=f"fp-reference-duplicate-{suffix}",
+                )
+
+        # A different lease and reference cannot reuse the same controller key.
+        with pytest.raises(
+            IntegrityError,
+            match="uq_rehearsal_issuer_authorizations_controller_fingerprint",
+        ):
+            with engine.begin() as conn:
+                _insert(
+                    conn,
+                    authorization_id=f"auth-key-{suffix}",
+                    single_use_reference=f"ref-key-{suffix}",
+                    lease_id=f"lease-key-{suffix}",
+                    controller_fingerprint=f"fp-{suffix}",
                 )
 
         # The window CHECK rejects a violating row.
@@ -6199,6 +6574,7 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     authorization_id=f"auth-ws-{suffix}",
                     single_use_reference=f"ref-ws-{suffix}",
                     lease_id=f"lease-ws-{suffix}",
+                    controller_fingerprint=f"fp-ws-{suffix}",
                 )
                 conn.execute(
                     text(

@@ -5,6 +5,17 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a17 (declared, unpublished) — permanent controller-key nonreuse
+
+- Rehearsal-issuer issuance refuses a controller fingerprint already bound to
+  any lease, including a revoked or spent authorization on another target or
+  plan. Exact same-command replay remains idempotent; a new lease does not
+  release a previous controller-key binding.
+- `dc_0016_controller_key_nonreuse` adds a global unique constraint to the
+  append-only ledger. It serializes concurrent inserts across targets and
+  fails the migration on historical duplicate fingerprints without modifying
+  them. Downgrade refuses while the ledger has rows.
+
 ## 0.1.0a16 (published 2026-09-26) — cancel_plan decides "no rollout" under the target and plan locks
 
 - `cancel_plan` now loads its plan through `_load_plan_with_target_for_update`

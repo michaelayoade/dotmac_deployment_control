@@ -846,11 +846,13 @@ class RehearsalIssuerAuthorizationRecord(Base, TimestampMixin):
     find and filter the right row in one statement; a drifted lookup column
     can make a row hard to find, never make a bad envelope verify.
 
-    ## Strict per-lease uniqueness
+    ## Permanent per-lease and per-controller uniqueness
 
     `lease_id` carries its own UNIQUE constraint (D4): a revoked lease is not
     reusable, and a genuine retry presents a NEW lease id — this codebase's
     "recovery is a new attempt" doctrine, applied here.
+    `controller_fingerprint` is also unique across all leases, plans, targets,
+    and terminal states. The ledger never deletes a binding.
     """
 
     __tablename__ = _REHEARSAL_ISSUER_AUTHORIZATIONS
@@ -865,6 +867,10 @@ class RehearsalIssuerAuthorizationRecord(Base, TimestampMixin):
         ),
         UniqueConstraint(
             "lease_id", name="uq_rehearsal_issuer_authorizations_lease_id"
+        ),
+        UniqueConstraint(
+            "controller_fingerprint",
+            name="uq_rehearsal_issuer_authorizations_controller_fingerprint",
         ),
         CheckConstraint(
             "state IN ('issued', 'revoked', 'spent')",

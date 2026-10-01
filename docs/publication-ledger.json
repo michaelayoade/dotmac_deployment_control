@@ -23,11 +23,17 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout.",
     "",
-    "EMPTY: 0.1.0a16, the declaration that sat here, was built by release run",
-    "36233791667, verified by verify run 36234317683 and tagged; the recorder",
-    "removed its row in the same act that recorded it in",
-    "docs/published-versions.json. The next declaration is derived as the",
-    "successor of the highest version recorded there."
+    "NOT EMPTY: 0.1.0a17 is the tree's current declaration, the successor of",
+    "published 0.1.0a16. This change adds permanent cross-lease controller-key",
+    "nonreuse and dc_0016; it has not been built, tagged, published or verified.",
+    "The row is removed only when a release recorder writes immutable",
+    "publication coordinates to docs/published-versions.json."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a17": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "The successor of published 0.1.0a16 is declared for the Control-owned controller-fingerprint nonreuse change. No build, tag, release run, verify run or publication has occurred for 0.1.0a17."
+    }
+  }
 }
