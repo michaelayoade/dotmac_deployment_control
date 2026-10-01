@@ -25,7 +25,8 @@
     "",
     "NOT EMPTY: 0.1.0a17 is the tree's current declaration, the successor of",
     "published 0.1.0a16. This change adds permanent cross-lease controller-key",
-    "nonreuse and dc_0016; it has not been built, tagged, published or verified.",
+    "nonreuse and dc_0016; it has not been tagged, published or release-verified.",
+    "CI may build and test this source without publishing a release.",
     "The row is removed only when a release recorder writes immutable",
     "publication coordinates to docs/published-versions.json."
   ],
@@ -33,7 +34,7 @@
     "0.1.0a17": {
       "status": "declared-not-published",
       "declared_kernel_floor": ">=0.1.0a100",
-      "reason": "The successor of published 0.1.0a16 is declared for the Control-owned controller-fingerprint nonreuse change. No build, tag, release run, verify run or publication has occurred for 0.1.0a17."
+      "reason": "The successor of published 0.1.0a16 is declared for the Control-owned controller-fingerprint nonreuse change. CI validation builds are not publication evidence. No tag, release run, release verification run or publication is recorded for 0.1.0a17."
     }
   }
 }
