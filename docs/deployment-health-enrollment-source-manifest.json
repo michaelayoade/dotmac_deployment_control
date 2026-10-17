@@ -1,5 +1,6 @@
 {
   "base_commit": "ad95f4e1ef2bc454450ffc1f59a8d6f090b32431",
+  "knowledge_access": "Worker Knowledge MCP unavailable; coordinator supplied the scoped canonical contract ruling; no credential fallback.",
   "knowledge_scope": "project:dotmac_deployment_control",
   "qualification": "No production descriptor/runtime/custody/installation owner adapter qualified; no operational gate closure",
   "receiver_source_commit": "9a1600e9",
@@ -17,33 +18,50 @@
       "stage": "module-declaration-census-repair"
     },
     {
-      "stage": "postgres-canary-discovery-repair",
       "previous_manifest_sha256": "d0ef62379750d06bf93717d0d495f4a02e947561f14a073d4e87dc1c4a5d2cb1",
       "reason": "The new suite did not match the existing test_*_platform_isolation.py discovery glob. Rename preserves exact test bytes and adds a required-suite discovery assertion.",
-      "runtime_validation": "UNRUN for newly discovered enrollment suite; prior PostgreSQL success covered only older suites."
+      "runtime_validation": "UNRUN for newly discovered enrollment suite; prior PostgreSQL success covered only older suites.",
+      "stage": "postgres-canary-discovery-repair"
+    },
+    {
+      "base_commit": "1ee79229d8d6ede197ebb9d1aaa464af343eb3bc",
+      "changes": [
+        "Required command_id and optional actor_ref for all three commands; canonical Kernel request fingerprint, execute_once_platform and platform audit in caller-owned operation",
+        "Declare sixth subject deployment.health_enrollment.changed without outbox events",
+        "Preserve exact historical results; distinct command IDs on natural replay receive attributed reused_domain audit/receipt without renewal",
+        "Outer conflict_savepoint includes receipt/audit flush and original-bound postreceipt clock checks",
+        "Authored unit and migrated PostgreSQL replay, natural conflict, concurrency, rollback, late-receipt expiry/regression canaries; expanded audit source census"
+      ],
+      "previous_manifest_sha256": "c0c2ccf6f36687d481455616b8509dc6ac7f8798b9f1daaf45fdb132c74c7ff8",
+      "reason": "The three public enrollment commands must honor the declared Kernel at-most-once and platform audit contract.",
+      "review_status": "frozen for independent review; not approval",
+      "runtime_validation": "UNRUN: no runtime imports or tests executed; hosted lanes required",
+      "stage": "kernel-command-boundary-repair"
     }
   ],
   "runtime_validation": "not run: hosted lane required",
   "scope_denials": [],
   "source_files": {
-    "docs/deployment-health-enrollment-source.md": "133cee2ab684813787b5c53e8bf3976ff67eb9714bd880a205f979070ed66e9c",
-    "src/dotmac_deployment_control/__init__.py": "379bfac185b059b2f7fd7d840a5674d8c035a66c86d5e20894285dc60ef0a31a",
+    "docs/deployment-health-enrollment-source.md": "045b0aafd915fe19a7097601a0f71b603d32f3aa1577485c35f94cde72360e3f",
+    "src/dotmac_deployment_control/__init__.py": "ecc089e53f5bcba09ef0b60fb25db379eb4a6a9524a0ca7607f66a7e0cf3cb80",
     "src/dotmac_deployment_control/database_catalog.py": "25c7364a5db396913fe816e7fd5780b14487dd02944e262d73daf670e03d9171",
-    "src/dotmac_deployment_control/deployment_enrollment.py": "3ac6d4e40db697dca5a6841e90b9a3893428b913bfddcb16e9fdbc84aa1366e0",
-    "src/dotmac_deployment_control/manifest.py": "d8b129086cea66d81611d8e57e4fec0f074c2c33889f5e6e49e1c1a82d92853e",
+    "src/dotmac_deployment_control/deployment_enrollment.py": "4ecde7ef9cf3b6a8f2fd58a811a943b4dac723de5a249fc3584bf45b53d6a34d",
+    "src/dotmac_deployment_control/manifest.py": "c7727e2b04631549356f56ea94358b0c50febd398a70191feb87e3c1b32bac96",
     "src/dotmac_deployment_control/migrations/versions/dc_0017_deployment_enrollment.py": "d20d0a78cf05cc7faf3469784988d669d333bdaff1b9847ee965a3c7fd9bee21",
     "src/dotmac_deployment_control/models.py": "64d280108cc2d4b99c37ebaef35aa12e23c62ea26c9895317a8bf1da1bd47d27",
     "tests/architecture/test_database_catalog.py": "28fa8a49556cad9dd7db13313895e1f9d6c0c59b766d4829c574652caee8beb6",
-    "tests/architecture/test_deployment_control_module.py": "b4279f924e8e637d236f604b77cc16ea54f86fe056180869c3eed0d53b454d12",
+    "tests/architecture/test_deployment_control_module.py": "a341735ddc3173f35dd343f4d6c4ac66ab01749381a18990a9a48e82aebd91df",
     "tests/architecture/test_platform_isolation_canary_discovery.py": "0a0aa5b1f2009b1215d6b4db2ae9d9151cbbfb982ff845f67083ed244c80bf05",
     "tests/test_deployment_control_platform_isolation.py": "7ca8bd653b08e22bf899168144ada11b992b3a299e80b8cb6d0afcd720490348",
-    "tests/test_deployment_enrollment_platform_isolation.py": "188b5d2a89ca5ca5cef8f3ca22d39143f175cf2689a287dc4ab83cee7378d52b",
-    "tests/unit/test_deployment_enrollment.py": "8b35683b85ed349e7ddc3690255818582391f01ddd61ab616f091630db43f4d2"
+    "tests/test_deployment_enrollment_platform_isolation.py": "c5d39c7ffbc93043d9cc6a58d1803cf2aaa1a16bf40120b7147b775eb57da56d",
+    "tests/unit/test_deployment_enrollment.py": "ed9ec9db8296bd2298728e9690e82c7fedaa06a4eb16e5ec5f3ef07fe344a5fa"
   },
   "static_validation": {
     "ast_files": 12,
     "catalog_columns": 280,
     "catalog_tables": 27,
+    "command_boundary": "Kernel public fingerprint_of + execute_once_platform + write_platform_audit_event; no outbox/transaction completion",
+    "dto_class_ast_unchanged_from_command_repair_base": true,
     "dto_fields_match_pinned_PH": {
       "EnrollmentProjection": [
         "enrollment_ref",
@@ -80,9 +98,11 @@
     "git_diff_check": "pass",
     "manifest_model_catalog_table_census": "exact: stdlib AST, 27 tables",
     "manifest_platform_tables": 27,
+    "models_catalogue_migration_byte_identical_to_command_repair_base": true,
     "new_model_migration_catalog_columns": "exact",
     "ruff": "0.6.9 check pass",
     "service_constructs_sessions_engines_transactions_or_commits": false,
+    "source_authority_clock_lock_and_read_helpers_ast_unchanged": true,
     "toml_parse": "pass"
   },
   "status": "source-only-unpublished-runtime-unverified"

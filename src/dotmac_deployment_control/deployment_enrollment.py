@@ -21,12 +21,15 @@ import hashlib
 import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from threading import Lock
 from typing import Any, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
+from dotmac_kernel.audit import write_platform_audit_event
+from dotmac_kernel.fingerprints import fingerprint_of
+from dotmac_kernel.idempotency import IdempotencyConflict, execute_once_platform
 from dotmac_kernel.transactions import conflict_savepoint
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -367,23 +370,35 @@ def _sources() -> _Sources:
 
 @dataclass(frozen=True, slots=True)
 class EnrollDeploymentCommand:
+    command_id: str
     attempt_id: UUID
     runtime_evidence_ref: str
     credential_evidence_ref: str
+    actor_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class AssessHealthEligibilityCommand:
+    command_id: str
     enrollment_ref: str
     assessment_ref: str
     runtime_evidence_ref: str
     credential_evidence_ref: str
+    actor_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CloseEnrollmentCommand:
+    command_id: str
     enrollment_ref: str
     closure_ref: str
+    actor_ref: str | None = None
+
+
+AUDIT_ACTION_HEALTH_ENROLLMENT = "deployment.health_enrollment.changed"
+_SCOPE_ENROLL = "deployment.enroll_deployment.v1"
+_SCOPE_ASSESS = "deployment.assess_health_eligibility.v1"
+_SCOPE_CLOSE = "deployment.close_enrollment.v1"
 
 
 def _code(attempt_id: UUID, role: str) -> str:
@@ -757,9 +772,9 @@ def _append_assessment(
     return result
 
 
-def enroll_deployment(
+def _enroll_deployment(
     db: Session, command: EnrollDeploymentCommand
-) -> EnrollmentProjection:
+) -> tuple[EnrollmentProjection, datetime | None]:
     """Create a new epoch and close the old target epoch atomically; flush only."""
     _require(
         type(command) is EnrollDeploymentCommand, "typed reference command required"
@@ -780,7 +795,7 @@ def enroll_deployment(
             "attempt already enrolled with different original provenance",
         )
         # Historical replay never reopens a closed/superseded epoch.
-        return projection
+        return projection, None
     descriptor = _execution(db, sources, target, plan, rollout, attempt)
     runtime, custody, binding, start, end, checked_at = _evidence(
         sources,
@@ -900,10 +915,10 @@ def enroll_deployment(
             sources, sampled_at=checked_at, assessed_at=now, start=start, end=end
         )
         db.flush()
-        _checked_time(
+        checked_at = _checked_time(
             sources, sampled_at=checked_at, assessed_at=now, start=start, end=end
         )
-    return projection
+    return projection, checked_at
 
 
 def historical_get(db: Session, *, enrollment_ref: str) -> EnrollmentProjection:
@@ -991,9 +1006,9 @@ def _refresh_evidence(
     return runtime, custody, start, end, checked_at
 
 
-def assess_health_eligibility(
+def _assess_health_eligibility(
     db: Session, command: AssessHealthEligibilityCommand
-) -> HealthEligibilityAssessment:
+) -> tuple[HealthEligibilityAssessment, datetime | None]:
     """Explicit authenticated refresh; append, never rewrite baseline identity."""
     _require(
         type(command) is AssessHealthEligibilityCommand,
@@ -1014,7 +1029,7 @@ def assess_health_eligibility(
             and result.credential_evidence_ref == command.credential_evidence_ref,
             "assessment reference conflict",
         )
-        return result
+        return result, None
     sources = _sources()
     now = _instant(sources.clock.now())
     runtime, custody, start, end, checked_at = _refresh_evidence(
@@ -1047,14 +1062,14 @@ def assess_health_eligibility(
             end=result.valid_until,
         )
         db.flush()
-        _checked_time(
+        checked_at = _checked_time(
             sources,
             sampled_at=checked_at,
             assessed_at=result.assessed_at,
             start=result.valid_from,
             end=result.valid_until,
         )
-    return result
+    return result, checked_at
 
 
 def current_eligibility_get(
@@ -1109,7 +1124,7 @@ def current_eligibility_get(
     return result
 
 
-def close_enrollment(db: Session, command: CloseEnrollmentCommand) -> None:
+def _close_enrollment(db: Session, command: CloseEnrollmentCommand) -> datetime | None:
     """Append a permanent closure and remove only its current pointer; flush only."""
     _require(
         type(command) is CloseEnrollmentCommand, "typed reference command required"
@@ -1122,7 +1137,7 @@ def close_enrollment(db: Session, command: CloseEnrollmentCommand) -> None:
         _require(
             existing.closure_ref == command.closure_ref, "closure reference conflict"
         )
-        return
+        return None
     now = _instant(_sources().clock.now())
     db.add(
         DeploymentEnrollmentClosure(
@@ -1136,9 +1151,197 @@ def close_enrollment(db: Session, command: CloseEnrollmentCommand) -> None:
     if pointer is not None and pointer.enrollment_id == row.id:
         db.delete(pointer)
     db.flush()
+    return now
+
+
+_HealthCommand = (
+    EnrollDeploymentCommand | AssessHealthEligibilityCommand | CloseEnrollmentCommand
+)
+
+
+def _audit_command(
+    db: Session,
+    command: _HealthCommand,
+    *,
+    operation: str,
+    enrollment_ref: str,
+    reused_domain: bool,
+) -> None:
+    # Same platform attribution as service.py, without its coupled outbox write.
+    actor_admin_id: UUID | None = None
+    details: dict[str, object] = {
+        "command_id": command.command_id,
+        "operation": operation,
+        "disposition": "reused_domain" if reused_domain else "applied",
+    }
+    if command.actor_ref:
+        try:
+            actor_admin_id = UUID(command.actor_ref)
+        except ValueError:
+            details["actor_ref"] = command.actor_ref
+    write_platform_audit_event(
+        db,
+        actor_admin_id=actor_admin_id,
+        action=AUDIT_ACTION_HEALTH_ENROLLMENT,
+        entity_type="deployment_health_enrollment",
+        entity_id=enrollment_ref,
+        details=details,
+    )
+
+
+def _command_result(
+    document: dict[str, object] | None,
+    checked_at: datetime | None,
+    *,
+    assessed_at: datetime | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> dict[str, object]:
+    return {
+        "document": document,
+        "checked_at": None if checked_at is None else checked_at.isoformat(),
+        "assessed_at": None if assessed_at is None else assessed_at.isoformat(),
+        "valid_from": None if start is None else start.isoformat(),
+        "valid_until": None if end is None else end.isoformat(),
+    }
+
+
+def _execute_health_command(
+    db: Session,
+    command: _HealthCommand,
+    *,
+    scope: str,
+    operation: Callable[[Session], dict[str, object]],
+) -> dict[str, object]:
+    _text(command.command_id)
+    if command.actor_ref is not None:
+        _text(command.actor_ref)
+    # The outer savepoint includes the Kernel receipt flush and final clock
+    # check; late refusal cannot leave audit/receipt behind when caller commits.
+    with conflict_savepoint(db):
+        try:
+            outcome = execute_once_platform(
+                db,
+                scope=scope,
+                key=command.command_id,
+                fingerprint=fingerprint_of(asdict(command)),
+                expires_at=None,
+                operation_name=scope,
+                operation=operation,
+            )
+        except IdempotencyConflict as exc:
+            raise DeploymentEnrollmentRefusedError(
+                "command identity already has a different request fingerprint"
+            ) from exc
+        result = dict(outcome.result)
+        if not outcome.replayed and result["checked_at"] is not None:
+            sources = _sources()
+            sampled = datetime.fromisoformat(cast(str, result["checked_at"]))
+            if result["valid_until"] is None:
+                _require(
+                    _instant(sources.clock.now()) >= sampled, "owner clock regressed"
+                )
+            else:
+                _checked_time(
+                    sources,
+                    sampled_at=sampled,
+                    assessed_at=datetime.fromisoformat(
+                        cast(str, result["assessed_at"])
+                    ),
+                    start=datetime.fromisoformat(cast(str, result["valid_from"])),
+                    end=datetime.fromisoformat(cast(str, result["valid_until"])),
+                )
+        return result
+
+
+def enroll_deployment(
+    db: Session, command: EnrollDeploymentCommand
+) -> EnrollmentProjection:
+    """At-most-once audited command; replay retains the original projection."""
+    _require(
+        type(command) is EnrollDeploymentCommand, "typed reference command required"
+    )
+    command = replace(command)
+
+    def operation(session: Session) -> dict[str, object]:
+        projection, checked_at = _enroll_deployment(session, command)
+        _audit_command(
+            session,
+            command,
+            operation="enroll",
+            enrollment_ref=projection.enrollment_ref,
+            reused_domain=checked_at is None,
+        )
+        return _command_result(
+            projection.document(),
+            checked_at,
+            assessed_at=checked_at,
+            start=projection.eligible_from,
+            end=projection.eligible_until,
+        )
+
+    result = _execute_health_command(
+        db, command, scope=_SCOPE_ENROLL, operation=operation
+    )
+    return _projection(cast(dict[str, object], result["document"]))
+
+
+def assess_health_eligibility(
+    db: Session, command: AssessHealthEligibilityCommand
+) -> HealthEligibilityAssessment:
+    """At-most-once audited explicit assessment; retry never renews validity."""
+    _require(
+        type(command) is AssessHealthEligibilityCommand,
+        "typed reference command required",
+    )
+    command = replace(command)
+
+    def operation(session: Session) -> dict[str, object]:
+        assessment, checked_at = _assess_health_eligibility(session, command)
+        _audit_command(
+            session,
+            command,
+            operation="assess",
+            enrollment_ref=assessment.enrollment_ref,
+            reused_domain=checked_at is None,
+        )
+        return _command_result(
+            assessment.document(),
+            checked_at,
+            assessed_at=assessment.assessed_at,
+            start=assessment.valid_from,
+            end=assessment.valid_until,
+        )
+
+    result = _execute_health_command(
+        db, command, scope=_SCOPE_ASSESS, operation=operation
+    )
+    return _assessment(cast(dict[str, object], result["document"]))
+
+
+def close_enrollment(db: Session, command: CloseEnrollmentCommand) -> None:
+    """At-most-once audited closure in the caller's transaction."""
+    _require(
+        type(command) is CloseEnrollmentCommand, "typed reference command required"
+    )
+    command = replace(command)
+
+    def operation(session: Session) -> dict[str, object]:
+        closed_at = _close_enrollment(session, command)
+        _audit_command(
+            session,
+            command,
+            operation="close",
+            enrollment_ref=command.enrollment_ref,
+            reused_domain=closed_at is None,
+        )
+        return _command_result(None, closed_at)
+
+    _execute_health_command(db, command, scope=_SCOPE_CLOSE, operation=operation)
 
 
 __all__ = [
+    "AUDIT_ACTION_HEALTH_ENROLLMENT",
     "AssessHealthEligibilityCommand",
     "AuthenticatedRuntimeEvidence",
     "AuthenticatedStartupAssignment",

@@ -146,6 +146,7 @@ from dotmac_deployment_control.database_catalog_snapshot import (
     build_database_catalog_snapshot,
 )
 from dotmac_deployment_control.deployment_enrollment import (
+    AUDIT_ACTION_HEALTH_ENROLLMENT,
     AssessHealthEligibilityCommand,
     AuthenticatedRuntimeEvidence,
     AuthenticatedStartupAssignment,
@@ -567,6 +568,7 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "AUDIT_ACTION_HEALTH_ENROLLMENT",
     "AssessHealthEligibilityCommand",
     "AuthenticatedRuntimeEvidence",
     "AuthenticatedStartupAssignment",

@@ -40,7 +40,21 @@ from tests.test_deployment_control_platform_isolation import (
     REPO_ROOT,
     _migrated_database,
 )
-from tests.unit.test_deployment_enrollment import _seed_enrollment, _successor
+from tests.test_deployment_control_platform_isolation import (
+    _module_audit_actions as _module_audit_actions,
+)
+from tests.unit.test_deployment_enrollment import (
+    _assert_caller_rollback,
+    _assert_command_boundary,
+    _assert_late_closure_receipt_regression,
+    _assert_late_receipt_refusal,
+    _assert_natural_reference_conflicts,
+    _boundary_counts,
+    _seed_enrollment,
+    _successor,
+)
+
+pytestmark = pytest.mark.usefixtures("_module_audit_actions")
 
 
 @pytest.fixture
@@ -182,7 +196,9 @@ def test_real_roles_admit_child_fk_but_cannot_rewrite_immutable_parent(
             enrollment.close_enrollment(
                 db,
                 enrollment.CloseEnrollmentCommand(
-                    successor.enrollment_ref, f"role-close-{role_index}"
+                    "close:" + str(f"role-close-{role_index}"),
+                    successor.enrollment_ref,
+                    f"role-close-{role_index}",
                 ),
             )
             db.commit()
@@ -210,7 +226,9 @@ def test_permanent_role_code_installation_and_attempt_constraints(postgres_enrol
     enrollment.close_enrollment(
         ctx.db,
         enrollment.CloseEnrollmentCommand(
-            projection.enrollment_ref, "close-before-uniqueness"
+            "close:" + "close-before-uniqueness",
+            projection.enrollment_ref,
+            "close-before-uniqueness",
         ),
     )
     second_attempt = uuid4()
@@ -280,7 +298,7 @@ def _wait_for_blocked(engine, backend_pid):
     pytest.fail("second transaction never demonstrably blocked on the target lock")
 
 
-@pytest.mark.parametrize("action", ["replay", "close"])
+@pytest.mark.parametrize("action", ["replay", "new-command", "conflict", "close"])
 def test_concurrent_replay_and_closure_wait_for_exact_target_lock(
     postgres_enrollment, action
 ):
@@ -299,13 +317,20 @@ def test_concurrent_replay_and_closure_wait_for_exact_target_lock(
             with Session(ctx.engine) as db:
                 result["pid"] = db.execute(text("SELECT pg_backend_pid()")).scalar_one()
                 started.set()
-                if action == "replay":
-                    result["value"] = enrollment.enroll_deployment(db, ctx.command)
+                if action != "close":
+                    command = ctx.command
+                    if action == "new-command":
+                        command = replace(command, command_id="concurrent-new-command")
+                    elif action == "conflict":
+                        command = replace(command, actor_ref="other-actor")
+                    result["value"] = enrollment.enroll_deployment(db, command)
                 else:
                     enrollment.close_enrollment(
                         db,
                         enrollment.CloseEnrollmentCommand(
-                            original.enrollment_ref, "concurrent-close"
+                            "close:" + "concurrent-close",
+                            original.enrollment_ref,
+                            "concurrent-close",
                         ),
                     )
                 db.commit()
@@ -323,7 +348,13 @@ def test_concurrent_replay_and_closure_wait_for_exact_target_lock(
         ctx.db.rollback()
         thread.join(5)
     assert not thread.is_alive()
-    assert "error" not in result
+    if action == "conflict":
+        assert isinstance(
+            result.get("error"), enrollment.DeploymentEnrollmentRefusedError
+        )
+        assert "fingerprint" in str(result["error"])
+    else:
+        assert "error" not in result
     with Session(ctx.engine) as fresh:
         assert (
             fresh.execute(
@@ -331,8 +362,19 @@ def test_concurrent_replay_and_closure_wait_for_exact_target_lock(
             ).scalar_one()
             == 1
         )
-        if action == "replay":
-            assert result["value"] == original
+        assert _boundary_counts(fresh) == (
+            (1, 1) if action in {"replay", "conflict"} else (2, 2)
+        )
+        if action in {"replay", "new-command", "conflict"}:
+            if action != "conflict":
+                assert result["value"] == original
+            assert (
+                fresh.execute(
+                    select(func.count()).select_from(DeploymentHealthAssessment)
+                ).scalar_one()
+                == 1
+            )
+            assert fresh.get(DeploymentCurrentEnrollment, ctx.tid) is not None
         else:
             assert (
                 fresh.execute(
@@ -496,6 +538,7 @@ def test_late_flush_refusal_cannot_commit_new_eligibility_or_pointer_changes(
                 return enrollment.assess_health_eligibility(
                     ctx.db,
                     enrollment.AssessHealthEligibilityCommand(
+                        "assess:" + str(assessment_ref),
                         original.enrollment_ref,
                         assessment_ref,
                         "runtime-1",
@@ -525,6 +568,9 @@ def test_late_flush_refusal_cannot_commit_new_eligibility_or_pointer_changes(
         def count(model):
             return fresh.execute(select(func.count()).select_from(model)).scalar_one()
 
+        baseline = 0 if operation == "initial" else 1
+        accepted = 1 if position == "before-end" else 0
+        assert _boundary_counts(fresh) == (baseline + accepted, baseline + accepted)
         pointer = fresh.get(DeploymentCurrentEnrollment, ctx.tid)
         if position != "before-end":
             baseline = 0 if operation == "initial" else 1
@@ -565,3 +611,66 @@ def test_late_flush_refusal_cannot_commit_new_eligibility_or_pointer_changes(
                 )
             ).scalar_one()
             assert pointer.enrollment_id == current.id
+
+
+def test_command_receipt_audit_replay_and_conflict_on_postgresql(postgres_enrollment):
+    _assert_command_boundary(postgres_enrollment)
+    with Session(postgres_enrollment.engine) as fresh:
+        assert _boundary_counts(fresh) == (6, 6)
+
+
+def test_caller_rollback_removes_all_command_effects_on_postgresql(postgres_enrollment):
+    _assert_caller_rollback(postgres_enrollment)
+    with Session(postgres_enrollment.engine) as fresh:
+        assert _boundary_counts(fresh) == (0, 0)
+        assert (
+            fresh.execute(
+                select(func.count()).select_from(DeploymentEnrollment)
+            ).scalar_one()
+            == 0
+        )
+
+
+def test_postreceipt_expiry_rolls_back_command_but_keeps_caller_work_on_postgresql(
+    postgres_enrollment,
+):
+    _assert_late_receipt_refusal(postgres_enrollment)
+    with Session(postgres_enrollment.engine) as fresh:
+        assert _boundary_counts(fresh) == (0, 0)
+        assert (
+            fresh.execute(
+                select(func.count()).select_from(DeploymentEnrollment)
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            fresh.execute(
+                select(func.count())
+                .select_from(DeploymentTarget)
+                .where(DeploymentTarget.subject_ref == "unrelated")
+            ).scalar_one()
+            == 1
+        )
+
+
+def test_new_command_domain_conflicts_preserve_receipts_on_postgresql(
+    postgres_enrollment,
+):
+    _assert_natural_reference_conflicts(postgres_enrollment)
+    with Session(postgres_enrollment.engine) as fresh:
+        assert _boundary_counts(fresh) == (3, 3)
+
+
+def test_late_closure_receipt_regression_is_atomic_on_postgresql(postgres_enrollment):
+    _assert_late_closure_receipt_regression(postgres_enrollment)
+    with Session(postgres_enrollment.engine) as fresh:
+        assert _boundary_counts(fresh) == (1, 1)
+        assert (
+            fresh.get(DeploymentCurrentEnrollment, postgres_enrollment.tid) is not None
+        )
+        assert (
+            fresh.execute(
+                select(func.count()).select_from(DeploymentEnrollmentClosure)
+            ).scalar_one()
+            == 0
+        )

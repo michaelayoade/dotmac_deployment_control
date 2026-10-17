@@ -667,14 +667,16 @@ class TestThePublishedFactsMatchWhatIsEmitted:
 
 
 class TestTheAuditActionsAreDeclaredAndConsumed:
-    def test_the_manifest_declares_exactly_the_five_the_module_writes(self) -> None:
+    def test_the_manifest_declares_exactly_the_six_the_module_writes(self) -> None:
         """`rehearsal_issuer_issuance.py` is a SIBLING service module to
         `service.py` (a different authority; see that module's own
         docstring), so its audit action is consumed there rather than in
-        `service.py` -- both files are scanned below, not `service.py` alone.
+        `service.py`. Enrollment has its own command owner; all three files
+        are scanned below.
         """
         from dotmac_deployment_control import (
             AUDIT_ACTION_CREDENTIAL,
+            AUDIT_ACTION_HEALTH_ENROLLMENT,
             AUDIT_ACTION_OBSERVATION,
             AUDIT_ACTION_REHEARSAL_ISSUER,
             AUDIT_ACTION_ROLLOUT,
@@ -684,14 +686,18 @@ class TestTheAuditActionsAreDeclaredAndConsumed:
         assert set(module.audit_actions) == {
             AUDIT_ACTION_TARGET,
             AUDIT_ACTION_CREDENTIAL,
+            AUDIT_ACTION_HEALTH_ENROLLMENT,
             AUDIT_ACTION_ROLLOUT,
             AUDIT_ACTION_OBSERVATION,
             AUDIT_ACTION_REHEARSAL_ISSUER,
         }
-        combined_source = (SRC / "service.py").read_text() + (
-            SRC / "rehearsal_issuer_issuance.py"
-        ).read_text()
+        combined_source = (
+            (SRC / "service.py").read_text()
+            + (SRC / "rehearsal_issuer_issuance.py").read_text()
+            + (SRC / "deployment_enrollment.py").read_text()
+        )
         for name in (
+            "AUDIT_ACTION_HEALTH_ENROLLMENT",
             "AUDIT_ACTION_TARGET",
             "AUDIT_ACTION_CREDENTIAL",
             "AUDIT_ACTION_ROLLOUT",

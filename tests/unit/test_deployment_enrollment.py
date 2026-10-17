@@ -11,12 +11,21 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from dotmac_kernel.audit_actions import (
+    AuditActionRegistry,
+    AuditActionsNotInstalledError,
+    active_audit_actions,
+    install_audit_actions,
+)
+from dotmac_kernel.idempotency_models import PlatformIdempotencyRecord
 from dotmac_kernel.models import Base
+from dotmac_kernel.models_platform import PlatformAdmin, PlatformAuditEvent
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import dotmac_deployment_control.deployment_enrollment as enrollment
+from dotmac_deployment_control import module
 from dotmac_deployment_control.authorization import issue_authorization_envelope
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
@@ -130,7 +139,21 @@ class _Owners:
 
 
 @pytest.fixture
-def admitted(monkeypatch):
+def _module_audit_actions():
+    try:
+        previous = active_audit_actions()
+    except AuditActionsNotInstalledError:
+        previous = None
+    install_audit_actions(AuditActionRegistry.from_manifests([module]))
+    try:
+        yield
+    finally:
+        if previous is not None:
+            install_audit_actions(previous)
+
+
+@pytest.fixture
+def admitted(monkeypatch, _module_audit_actions):
     engine = create_engine("sqlite:///:memory:")
 
     @event.listens_for(engine, "connect")
@@ -146,7 +169,17 @@ def admitted(monkeypatch):
 
     Base.metadata.create_all(
         engine,
-        tables=[t for t in Base.metadata.tables.values() if t.schema == "mod_deploy"],
+        tables=[
+            t
+            for t in Base.metadata.tables.values()
+            if t.schema == "mod_deploy"
+            or t.name
+            in {
+                "platform_idempotency_records",
+                "platform_audit_events",
+                "platform_admins",
+            }
+        ],
     )
     with Session(engine) as db:
         yield _seed_enrollment(db, monkeypatch)
@@ -275,7 +308,9 @@ def _seed_enrollment(db, monkeypatch):
         tid=tid,
         pid=pid,
         rid=rid,
-        command=enrollment.EnrollDeploymentCommand(aid, "runtime-1", "custody-1"),
+        command=enrollment.EnrollDeploymentCommand(
+            "enroll:" + str(aid), aid, "runtime-1", "custody-1"
+        ),
     )
 
 
@@ -386,7 +421,11 @@ def test_renewal_retains_original_identity_and_appends_current_evidence(admitted
     current = enrollment.assess_health_eligibility(
         ctx.db,
         enrollment.AssessHealthEligibilityCommand(
-            original.enrollment_ref, "assessment-2", "runtime-2", "custody-2"
+            "assess:" + "assessment-2",
+            original.enrollment_ref,
+            "assessment-2",
+            "runtime-2",
+            "custody-2",
         ),
     )
     assert current.valid_until == _NOW + timedelta(minutes=15)
@@ -442,7 +481,10 @@ def test_closure_replay_keeps_historical_identity_and_never_reopens(admitted):
     ctx = admitted
     original = enrollment.enroll_deployment(ctx.db, ctx.command)
     enrollment.close_enrollment(
-        ctx.db, enrollment.CloseEnrollmentCommand(original.enrollment_ref, "close-1")
+        ctx.db,
+        enrollment.CloseEnrollmentCommand(
+            "close:" + "close-1", original.enrollment_ref, "close-1"
+        ),
     )
     assert enrollment.enroll_deployment(ctx.db, ctx.command) == original
     assert ctx.db.get(DeploymentCurrentEnrollment, ctx.tid) is None
@@ -662,7 +704,10 @@ def _successor(ctx):
     )
     ctx.db.flush()
     return enrollment.EnrollDeploymentCommand(
-        attempt_id, "runtime-successor", "custody-successor"
+        "enroll:" + str(attempt_id),
+        attempt_id,
+        "runtime-successor",
+        "custody-successor",
     )
 
 
@@ -757,6 +802,7 @@ def test_owner_io_clock_advance_checks_original_bounds(
             return enrollment.assess_health_eligibility(
                 ctx.db,
                 enrollment.AssessHealthEligibilityCommand(
+                    "assess:" + "io-clock-assessment",
                     projection.enrollment_ref,
                     "io-clock-assessment",
                     "runtime-1",
@@ -800,7 +846,11 @@ def test_current_assessment_rejects_clock_rollback_behind_assessed_at(admitted):
     assessment = enrollment.assess_health_eligibility(
         ctx.db,
         enrollment.AssessHealthEligibilityCommand(
-            projection.enrollment_ref, "assessed-at-plus-two", "runtime-1", "custody-1"
+            "assess:" + "assessed-at-plus-two",
+            projection.enrollment_ref,
+            "assessed-at-plus-two",
+            "runtime-1",
+            "custody-1",
         ),
     )
     ctx.db.commit()
@@ -819,6 +869,7 @@ def test_current_assessment_rejects_clock_rollback_behind_assessed_at(admitted):
         enrollment.assess_health_eligibility(
             ctx.db,
             enrollment.AssessHealthEligibilityCommand(
+                "assess:" + "regressed-assessment",
                 projection.enrollment_ref,
                 "regressed-assessment",
                 "runtime-1",
@@ -854,10 +905,362 @@ def test_owner_io_clock_regression_is_refused(admitted, monkeypatch, operation):
             enrollment.assess_health_eligibility(
                 ctx.db,
                 enrollment.AssessHealthEligibilityCommand(
-                    projection.enrollment_ref, "io-regression", "runtime-1", "custody-1"
+                    "assess:" + "io-regression",
+                    projection.enrollment_ref,
+                    "io-regression",
+                    "runtime-1",
+                    "custody-1",
                 ),
             )
         else:
             enrollment.current_eligibility_get(
                 ctx.db, enrollment_ref=projection.enrollment_ref
             )
+
+
+def _boundary_counts(db):
+    receipts = db.execute(
+        select(func.count())
+        .select_from(PlatformIdempotencyRecord)
+        .where(
+            PlatformIdempotencyRecord.scope.in_(
+                [
+                    enrollment._SCOPE_ENROLL,
+                    enrollment._SCOPE_ASSESS,
+                    enrollment._SCOPE_CLOSE,
+                ]
+            )
+        )
+    ).scalar_one()
+    audits = db.execute(
+        select(func.count())
+        .select_from(PlatformAuditEvent)
+        .where(PlatformAuditEvent.action == enrollment.AUDIT_ACTION_HEALTH_ENROLLMENT)
+    ).scalar_one()
+    return receipts, audits
+
+
+def _assert_command_boundary(ctx):
+    """Same source canary runs with SQLite and real migrated PostgreSQL."""
+    ctx.command = replace(ctx.command, actor_ref="test:enrollment-operator")
+    projection = enrollment.enroll_deployment(ctx.db, ctx.command)
+    assess = enrollment.AssessHealthEligibilityCommand(
+        "boundary-assess",
+        projection.enrollment_ref,
+        "boundary-assessment",
+        "runtime-1",
+        "custody-1",
+        actor_ref="test:assessor",
+    )
+    assessment = enrollment.assess_health_eligibility(ctx.db, assess)
+    close = enrollment.CloseEnrollmentCommand(
+        "boundary-close",
+        projection.enrollment_ref,
+        "boundary-closure",
+        actor_ref="test:closer",
+    )
+    enrollment.close_enrollment(ctx.db, close)
+    assert _boundary_counts(ctx.db) == (3, 3)
+    audits = ctx.db.execute(select(PlatformAuditEvent)).scalars().all()
+    by_operation = {row.details["operation"]: row for row in audits}
+    for operation, command in [
+        ("enroll", ctx.command),
+        ("assess", assess),
+        ("close", close),
+    ]:
+        row = by_operation[operation]
+        assert row.actor_admin_id is None
+        assert row.entity_id == projection.enrollment_ref
+        assert row.details == {
+            "command_id": command.command_id,
+            "operation": operation,
+            "actor_ref": command.actor_ref,
+            "disposition": "applied",
+        }
+    ctx.owners.revoked.add("outage")
+    ctx.owners.now_value += timedelta(days=1)
+    assert enrollment.enroll_deployment(ctx.db, ctx.command) == projection
+    assert enrollment.assess_health_eligibility(ctx.db, assess) == assessment
+    enrollment.close_enrollment(ctx.db, close)
+    assert _boundary_counts(ctx.db) == (3, 3)
+    ctx.owners.revoked.remove("outage")
+    # A fresh command ID gets its own receipt/audit but cannot renew or reopen.
+    assert (
+        enrollment.enroll_deployment(
+            ctx.db, replace(ctx.command, command_id="reuse-enroll")
+        )
+        == projection
+    )
+    assert (
+        enrollment.assess_health_eligibility(
+            ctx.db, replace(assess, command_id="reuse-assess")
+        )
+        == assessment
+    )
+    enrollment.close_enrollment(ctx.db, replace(close, command_id="reuse-close"))
+    assert _boundary_counts(ctx.db) == (6, 6)
+    assert ctx.db.get(DeploymentCurrentEnrollment, ctx.tid) is None
+    assert (
+        ctx.db.execute(
+            select(func.count()).select_from(DeploymentHealthAssessment)
+        ).scalar_one()
+        == 2
+    )
+    assert (
+        len(
+            ctx.db.execute(
+                select(PlatformAuditEvent).where(
+                    PlatformAuditEvent.details["disposition"].as_string()
+                    == "reused_domain"
+                )
+            )
+            .scalars()
+            .all()
+        )
+        == 3
+    )
+    for invoke in [
+        lambda: enrollment.enroll_deployment(
+            ctx.db, replace(ctx.command, runtime_evidence_ref="other")
+        ),
+        lambda: enrollment.assess_health_eligibility(
+            ctx.db, replace(assess, assessment_ref="other")
+        ),
+        lambda: enrollment.close_enrollment(
+            ctx.db, replace(close, closure_ref="other")
+        ),
+    ]:
+        with pytest.raises(
+            enrollment.DeploymentEnrollmentRefusedError, match="fingerprint"
+        ):
+            invoke()
+    assert _boundary_counts(ctx.db) == (6, 6)
+    ctx.db.commit()
+
+
+def test_commands_are_audited_at_most_once_and_preserve_natural_replay(admitted):
+    _assert_command_boundary(admitted)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("command_id", ""), ("command_id", 123), ("actor_ref", 123), ("actor_ref", " ")],
+)
+def test_command_identity_and_actor_require_strict_nonblank_references(
+    admitted, field, value
+):
+    with pytest.raises(enrollment.DeploymentEnrollmentRefusedError):
+        enrollment.enroll_deployment(
+            admitted.db, replace(admitted.command, **{field: value})
+        )
+    assert _boundary_counts(admitted.db) == (0, 0)
+
+
+def test_uuid_actor_uses_existing_platform_admin_attribution(admitted):
+    actor = uuid4()
+    admitted.db.add(
+        PlatformAdmin(
+            id=actor, email="test-health@example.test", password_hash="test-only"
+        )
+    )
+    enrollment.enroll_deployment(
+        admitted.db, replace(admitted.command, actor_ref=str(actor))
+    )
+    audit = admitted.db.execute(select(PlatformAuditEvent)).scalar_one()
+    assert audit.actor_admin_id == actor
+    assert "actor_ref" not in audit.details
+
+
+def _assert_caller_rollback(ctx):
+    original = enrollment.enroll_deployment(ctx.db, ctx.command)
+    enrollment.assess_health_eligibility(
+        ctx.db,
+        enrollment.AssessHealthEligibilityCommand(
+            "rollback-assess",
+            original.enrollment_ref,
+            "rollback-assessment",
+            "runtime-1",
+            "custody-1",
+        ),
+    )
+    enrollment.close_enrollment(
+        ctx.db,
+        enrollment.CloseEnrollmentCommand(
+            "rollback-close",
+            original.enrollment_ref,
+            "rollback-closure",
+        ),
+    )
+    assert _boundary_counts(ctx.db) == (3, 3)
+    ctx.db.rollback()
+    assert _boundary_counts(ctx.db) == (0, 0)
+    for model in [
+        DeploymentEnrollment,
+        DeploymentHealthAssessment,
+        DeploymentEnrollmentClosure,
+        DeploymentCurrentEnrollment,
+    ]:
+        assert ctx.db.execute(select(func.count()).select_from(model)).scalar_one() == 0
+    assert ctx.db.get(DeploymentTarget, ctx.tid) is not None
+
+
+def test_caller_rollback_removes_domain_audit_and_receipts(admitted):
+    _assert_caller_rollback(admitted)
+
+
+def _assert_late_receipt_refusal(ctx):
+    sentinel_id = uuid4()
+    ctx.db.add(
+        DeploymentTarget(
+            id=sentinel_id,
+            target_ref=f"sentinel-{sentinel_id}",
+            subject_ref="unrelated",
+            product_code="test",
+            environment="test",
+        )
+    )
+    pending = False
+    fired = False
+
+    def before(session, _context, _instances):
+        nonlocal pending
+        pending = any(
+            isinstance(row, PlatformIdempotencyRecord)
+            and row.scope == enrollment._SCOPE_ENROLL
+            for row in session.new
+        )
+
+    def after(_session, _context):
+        nonlocal pending, fired
+        if pending:
+            ctx.owners.now_value = ctx.owners.custody["custody-1"].valid_until
+            fired = True
+            pending = False
+
+    event.listen(ctx.db, "before_flush", before)
+    event.listen(ctx.db, "after_flush_postexec", after)
+    try:
+        with pytest.raises(
+            enrollment.DeploymentEnrollmentRefusedError, match="expired"
+        ):
+            enrollment.enroll_deployment(ctx.db, ctx.command)
+        assert fired, "expiry must happen after the Kernel receipt was flushed"
+        ctx.db.commit()
+    finally:
+        event.remove(ctx.db, "before_flush", before)
+        event.remove(ctx.db, "after_flush_postexec", after)
+    assert _boundary_counts(ctx.db) == (0, 0)
+    assert ctx.db.get(DeploymentTarget, sentinel_id) is not None
+    for model in [
+        DeploymentEnrollment,
+        DeploymentEnrollmentComponent,
+        DeploymentHealthAssessment,
+        DeploymentCurrentEnrollment,
+    ]:
+        assert ctx.db.execute(select(func.count()).select_from(model)).scalar_one() == 0
+
+
+def test_late_kernel_receipt_flush_refusal_preserves_only_unrelated_work(admitted):
+    _assert_late_receipt_refusal(admitted)
+
+
+def _assert_natural_reference_conflicts(ctx):
+    original = enrollment.enroll_deployment(ctx.db, ctx.command)
+    assessment = enrollment.AssessHealthEligibilityCommand(
+        "natural-assess",
+        original.enrollment_ref,
+        "natural-assessment",
+        "runtime-1",
+        "custody-1",
+    )
+    enrollment.assess_health_eligibility(ctx.db, assessment)
+    closure = enrollment.CloseEnrollmentCommand(
+        "natural-close", original.enrollment_ref, "natural-closure"
+    )
+    enrollment.close_enrollment(ctx.db, closure)
+    for invoke in [
+        lambda: enrollment.enroll_deployment(
+            ctx.db,
+            replace(ctx.command, command_id="bad-enroll", runtime_evidence_ref="other"),
+        ),
+        lambda: enrollment.assess_health_eligibility(
+            ctx.db,
+            replace(assessment, command_id="bad-assess", runtime_evidence_ref="other"),
+        ),
+        lambda: enrollment.close_enrollment(
+            ctx.db, replace(closure, command_id="bad-close", closure_ref="other")
+        ),
+    ]:
+        with pytest.raises(
+            enrollment.DeploymentEnrollmentRefusedError,
+            match="provenance|reference conflict",
+        ):
+            invoke()
+    assert _boundary_counts(ctx.db) == (3, 3)
+    assert (
+        enrollment.historical_get(ctx.db, enrollment_ref=original.enrollment_ref)
+        == original
+    )
+    assert (
+        ctx.db.execute(
+            select(func.count()).select_from(DeploymentHealthAssessment)
+        ).scalar_one()
+        == 2
+    )
+    ctx.db.commit()
+
+
+def test_new_command_id_cannot_bypass_domain_reference_conflicts(admitted):
+    _assert_natural_reference_conflicts(admitted)
+
+
+def _assert_late_closure_receipt_regression(ctx):
+    original = enrollment.enroll_deployment(ctx.db, ctx.command)
+    ctx.db.commit()
+    pending = False
+    fired = False
+
+    def before(session, _context, _instances):
+        nonlocal pending
+        pending = any(
+            isinstance(row, PlatformIdempotencyRecord)
+            and row.scope == enrollment._SCOPE_CLOSE
+            for row in session.new
+        )
+
+    def after(_session, _context):
+        nonlocal pending, fired
+        if pending:
+            ctx.owners.now_value = _NOW - timedelta(seconds=1)
+            fired = True
+            pending = False
+
+    event.listen(ctx.db, "before_flush", before)
+    event.listen(ctx.db, "after_flush_postexec", after)
+    try:
+        with pytest.raises(
+            enrollment.DeploymentEnrollmentRefusedError, match="regressed"
+        ):
+            enrollment.close_enrollment(
+                ctx.db,
+                enrollment.CloseEnrollmentCommand(
+                    "late-close", original.enrollment_ref, "late-closure"
+                ),
+            )
+        assert fired
+        ctx.db.commit()
+    finally:
+        event.remove(ctx.db, "before_flush", before)
+        event.remove(ctx.db, "after_flush_postexec", after)
+    assert _boundary_counts(ctx.db) == (1, 1)
+    assert ctx.db.get(DeploymentCurrentEnrollment, ctx.tid) is not None
+    assert (
+        ctx.db.execute(
+            select(func.count()).select_from(DeploymentEnrollmentClosure)
+        ).scalar_one()
+        == 0
+    )
+
+
+def test_late_closure_receipt_regression_preserves_current_epoch(admitted):
+    _assert_late_closure_receipt_regression(admitted)

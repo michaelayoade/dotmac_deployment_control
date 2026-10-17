@@ -44,7 +44,8 @@ those existing-owner adapters independently.
 
 The public operations are `install_sources`, `enroll_deployment`,
 `assess_health_eligibility`, `close_enrollment`, `historical_get`, and
-`current_eligibility_get`. Commands carry exact references, never caller roles,
+`current_eligibility_get`. The three mutation commands require `command_id` as their first field and accept
+optional `actor_ref` last. Commands carry exact references, never caller roles,
 producer proof DTOs, verified flags, verifiers, clocks or selected sources.
 `PublicCommittedConsumptionReader` only delegates to the existing public
 Control reader inside a required assembly-owned separate committed read scope;
@@ -80,10 +81,24 @@ now < valid_until`, and appended assessments cannot precede the latest durable
 assessment time (equal instants retain explicit sequence order). Expired deployment tokens or later execution-approval withdrawal do not
 couple to unchanged health eligibility and confer no further execution right.
 
+Each mutation delegates canonical request fingerprinting and at-most-once
+execution to the public Kernel `fingerprint_of` and `execute_once_platform`.
+Accepted commands write the declared sixth subject audit action
+`deployment.health_enrollment.changed` through the public platform audit writer
+in that same operation, with existing platform-admin/opaque actor attribution.
+No outbox event is added. The Kernel receipt stores the original result; an exact
+command replay does not consult sources, renew eligibility, reopen an epoch or
+append another audit. A changed request or actor under the same command ID
+conflicts. A new command ID that reuses an existing natural domain reference
+receives its own receipt and audit with `reused_domain` disposition, retaining
+the original domain bytes and validity. Domain uniqueness is unchanged.
+
 All mutations flush only; transaction completion belongs to the caller. New
 enrollment and assessment mutations, pointer changes, successor closures and
 all their flushes/final time checks execute inside the existing Kernel
-`conflict_savepoint`. Every add and payload change begins inside that context,
+`conflict_savepoint`. An outer savepoint includes audit and Kernel receipt
+flushing followed by a check against the original owner interval (no renewed
+bounds); late refusal removes domain changes, audit and receipt together. Every add and payload change begins inside that context,
 so its mandatory preflush cannot flush new eligibility outside the savepoint.
 A late expiry/refusal rolls back only this operation while retaining unrelated
 caller work; catching a refusal and committing cannot persist refused epochs
@@ -117,3 +132,18 @@ Session to prove no refused enrollment, assessment, component, closure or
 pointer change persisted. Initial/successor/assessment cases cover before-end
 admission and exact/after-end refusal. Test doubles are explicitly test-only and do not
 qualify production source adapters.
+
+
+## Command boundary repair at `1ee79229`
+
+The authored unit and migrated PostgreSQL canaries additionally cover audit
+attribution and command receipts for enrollment, assessment and closure; exact
+replay during source outage/after expiry; new-command natural-reference reuse
+without renewal; payload/actor conflicts; concurrent identical/new/conflicting
+command IDs waiting on the existing target lock; caller rollback; and expiry
+triggered specifically by Kernel receipt flushing while unrelated caller work
+survives a caught refusal and commit. These new canaries remain runtime-unrun.
+The original five audit subjects retain their source callers. The audit
+architecture census now includes the separate enrollment command owner.
+No model, migration, catalogue, DTO identity or production adapter was changed
+by this repair.
