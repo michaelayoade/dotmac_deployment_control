@@ -37,73 +37,81 @@
       "review_status": "frozen for independent review; not approval",
       "runtime_validation": "UNRUN: no runtime imports or tests executed; hosted lanes required",
       "stage": "kernel-command-boundary-repair"
+    },
+    {
+      "base_commit": "8564360d8210c28d6afaa07cdf97c484bdd192af",
+      "changes": [
+        "Delegate enrollment query construction to existing service owner without guard exemptions",
+        "Delegate exact existing fingerprint/component-code encodings to digests.py",
+        "Rename native startup assignment fact with explicit unchanged PH wire/durable document adapters",
+        "Extend independent installed catalogue literal and head to27tables/280columns/dc0017",
+        "Unpublished migration uses existing literal grant/revoke convention with unchanged privileges",
+        "Flush fixture parents before children; author frozen historical projection/digest and table-omission canaries"
+      ],
+      "previous_manifest_sha256": "e4d1d668ad6c32ed4c982d07c34bde1b6c952aea50eb2313a8e009bbe4d8a997",
+      "reason": "Hosted unit architecture/artifact checks and installed-wheel census exposed owner/canary drift; all new PostgreSQL setups failed on unflushed FK parents.",
+      "review_status": "frozen for independent review; not approval",
+      "runtime_validation": "UNRUN for repair; fresh hosted unit/PostgreSQL/installed-wheel required",
+      "stage": "hosted-ci-source-repair"
+    },
+    {
+      "base_commit": "8564360d8210c28d6afaa07cdf97c484bdd192af",
+      "changes": [
+        "Remove only fingerprint helper prefix and two incorrect prefixed historical expectations; preserve all other reviewed source bytes"
+      ],
+      "previous_manifest_sha256": "a3574125cfcb0aece5de34668aedb9ada9e7d3a9a22acb5219aaa96b67ad131e",
+      "reason": "Independent review found the central fingerprint helper incorrectly added sha256:; exact base8564360 emitted bare hexadecimal.",
+      "review_status": "v2 frozen for independent delta review; not approval",
+      "reviewed_v1_patch_sha256": "fbd3806183a0764e9dec0d3848db8badc83a881e95382d50e14c1de7fa80bc2d",
+      "runtime_validation": "UNRUN; static only",
+      "stage": "hosted-ci-source-repair-bare-fingerprint-correction"
     }
   ],
   "runtime_validation": "not run: hosted lane required",
   "scope_denials": [],
   "source_files": {
-    "docs/deployment-health-enrollment-source.md": "045b0aafd915fe19a7097601a0f71b603d32f3aa1577485c35f94cde72360e3f",
+    "docs/deployment-health-enrollment-source.md": "065b3f7275f4b4c1838942cf8c1f3e22be29197bc12fb8ce58fa8a96e6ee0b40",
+    "scripts/artifact_canaries.py": "780ddf8c3af97e44100b58b1fd5e179ca5be15939ab436a1c47cfec28d3dde96",
     "src/dotmac_deployment_control/__init__.py": "ecc089e53f5bcba09ef0b60fb25db379eb4a6a9524a0ca7607f66a7e0cf3cb80",
     "src/dotmac_deployment_control/database_catalog.py": "25c7364a5db396913fe816e7fd5780b14487dd02944e262d73daf670e03d9171",
-    "src/dotmac_deployment_control/deployment_enrollment.py": "4ecde7ef9cf3b6a8f2fd58a811a943b4dac723de5a249fc3584bf45b53d6a34d",
+    "src/dotmac_deployment_control/deployment_enrollment.py": "0e7d9445e21be3c395a5f9d5f45ef9b5f5a3a10e15f5fa44ea2d112602bb6bdb",
+    "src/dotmac_deployment_control/digests.py": "38af28d0b07ca675ff627ec78ad294b49f5047d841882e7ed09c59f5ded05627",
     "src/dotmac_deployment_control/manifest.py": "c7727e2b04631549356f56ea94358b0c50febd398a70191feb87e3c1b32bac96",
-    "src/dotmac_deployment_control/migrations/versions/dc_0017_deployment_enrollment.py": "d20d0a78cf05cc7faf3469784988d669d333bdaff1b9847ee965a3c7fd9bee21",
+    "src/dotmac_deployment_control/migrations/versions/dc_0017_deployment_enrollment.py": "7dc7f388b88fb5cfdc9bc6ce12b471977450349e9c6bffc6d4f5760bf7524ac8",
     "src/dotmac_deployment_control/models.py": "64d280108cc2d4b99c37ebaef35aa12e23c62ea26c9895317a8bf1da1bd47d27",
+    "src/dotmac_deployment_control/service.py": "1dfc8e67e0445e09815746ee33c0c83342ed39009acb0a0df037f8be9113e74a",
+    "tests/architecture/test_artifact_canaries.py": "b5d56120f8a1820e1956660f2066b607521dfb12e970bb7f8cda02c8d8209735",
     "tests/architecture/test_database_catalog.py": "28fa8a49556cad9dd7db13313895e1f9d6c0c59b766d4829c574652caee8beb6",
     "tests/architecture/test_deployment_control_module.py": "a341735ddc3173f35dd343f4d6c4ac66ab01749381a18990a9a48e82aebd91df",
     "tests/architecture/test_platform_isolation_canary_discovery.py": "0a0aa5b1f2009b1215d6b4db2ae9d9151cbbfb982ff845f67083ed244c80bf05",
     "tests/test_deployment_control_platform_isolation.py": "7ca8bd653b08e22bf899168144ada11b992b3a299e80b8cb6d0afcd720490348",
     "tests/test_deployment_enrollment_platform_isolation.py": "c5d39c7ffbc93043d9cc6a58d1803cf2aaa1a16bf40120b7147b775eb57da56d",
-    "tests/unit/test_deployment_enrollment.py": "ed9ec9db8296bd2298728e9690e82c7fedaa06a4eb16e5ec5f3ef07fe344a5fa"
+    "tests/unit/test_deployment_enrollment.py": "8317f3b755847520620b72d4b8159842edf595da896d5ebbd662a7194f497d16"
   },
   "static_validation": {
-    "ast_files": 12,
+    "PH_wire_document_fields_unchanged": "Explicit native startup assignment rename maps to historical credential_ref; authored frozen-byte parity canary runtime UNRUN",
+    "all27literal_migration_access_declarations": "pass; unchanged source guard patterns",
+    "artifact_canary_literal_extent": {
+      "columns": 280,
+      "lineage_head": "dc_0017_deployment_enrollment",
+      "tables": 27
+    },
+    "ast_files": 16,
     "catalog_columns": 280,
     "catalog_tables": 27,
     "command_boundary": "Kernel public fingerprint_of + execute_once_platform + write_platform_audit_event; no outbox/transaction completion",
-    "dto_class_ast_unchanged_from_command_repair_base": true,
-    "dto_fields_match_pinned_PH": {
-      "EnrollmentProjection": [
-        "enrollment_ref",
-        "installation_ref",
-        "configuration_ref",
-        "candidate_ref",
-        "source_ref",
-        "account_ref",
-        "transport_ref",
-        "credential_ref",
-        "component_codes",
-        "runtime_evidence_ref",
-        "runtime_authority_ref",
-        "credential_evidence_ref",
-        "credential_authority_ref",
-        "eligible_from",
-        "eligible_until",
-        "standing"
-      ],
-      "HealthEligibilityAssessment": [
-        "assessment_ref",
-        "enrollment_ref",
-        "identity_fingerprint",
-        "assessed_at",
-        "valid_from",
-        "valid_until",
-        "standing",
-        "runtime_evidence_ref",
-        "runtime_authority_ref",
-        "credential_evidence_ref",
-        "credential_authority_ref"
-      ]
-    },
+    "enrollment_query_construction_outside_service": false,
+    "existing_service_and_digest_functions_AST_unchanged": true,
     "git_diff_check": "pass",
+    "health_assessment_DTO_fields_unchanged": true,
     "manifest_model_catalog_table_census": "exact: stdlib AST, 27 tables",
     "manifest_platform_tables": 27,
-    "models_catalogue_migration_byte_identical_to_command_repair_base": true,
     "new_model_migration_catalog_columns": "exact",
-    "ruff": "0.6.9 check pass",
+    "released_migration_bytes_unchanged": 16,
+    "ruff": "0.6.9 check and format-check PASS",
     "service_constructs_sessions_engines_transactions_or_commits": false,
-    "source_authority_clock_lock_and_read_helpers_ast_unchanged": true,
-    "toml_parse": "pass"
+    "toml_parse": "pass",
+    "unpublished_dc0017_change": "Grant/revoke literal helper declarations only; trigger, RI UPDATE(id), downgrade and table graph unchanged"
   },
   "status": "source-only-unpublished-runtime-unverified"
 }

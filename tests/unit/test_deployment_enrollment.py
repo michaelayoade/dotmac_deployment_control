@@ -5,10 +5,11 @@ These tests do not qualify production descriptor/runtime/custody adapters.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from dotmac_kernel.audit_actions import (
@@ -257,6 +258,7 @@ def _seed_enrollment(db, monkeypatch):
             environment="test",
         )
     )
+    db.flush()
     db.add(
         DeploymentPlan(
             id=pid,
@@ -272,6 +274,7 @@ def _seed_enrollment(db, monkeypatch):
             approval_decision_ref="decision-1",
         )
     )
+    db.flush()
     db.add(
         Rollout(
             id=rid,
@@ -282,6 +285,7 @@ def _seed_enrollment(db, monkeypatch):
             authorization_envelope=auth.as_mapping(),
         )
     )
+    db.flush()
     db.add(
         RolloutAttempt(
             id=aid,
@@ -290,7 +294,9 @@ def _seed_enrollment(db, monkeypatch):
             dispatch_envelope=dispatch.as_mapping(),
         )
     )
+    db.flush()
     db.add(RolloutAttemptSettlement(id=uuid4(), attempt_id=aid, outcome="succeeded"))
+    db.flush()
     host = TargetHostAssociation(
         id=uuid4(),
         target_id=tid,
@@ -299,6 +305,7 @@ def _seed_enrollment(db, monkeypatch):
         authority="host-owner",
     )
     db.add(host)
+    db.flush()
     db.add(TargetCurrentHost(target_id=tid, association_id=host.id))
     db.commit()
     return SimpleNamespace(
@@ -319,7 +326,7 @@ def test_expired_execution_token_fresh_health_and_flush_only(admitted):
     before = ctx.db.get_transaction()
     projection = enrollment.enroll_deployment(ctx.db, ctx.command)
     assert len(projection.component_codes[0]) == 101
-    assert projection.credential_ref == "generation-opaque-7"
+    assert projection.startup_credential_assignment_ref == "generation-opaque-7"
     assert projection.eligible_until == _NOW + timedelta(minutes=6)
     assert ctx.db.in_transaction() and before is None
     assessment = enrollment.current_eligibility_get(
@@ -641,7 +648,9 @@ def test_changed_credential_generation_requires_new_epoch(admitted):
     projection = enrollment.enroll_deployment(admitted.db, admitted.command)
     owners = admitted.owners
     owners.binding = replace(
-        owners.binding, credential_ref="generation-opaque-8", credential_version="8"
+        owners.binding,
+        startup_credential_assignment_ref="generation-opaque-8",
+        credential_version="8",
     )
     owners.custody["custody-1"] = replace(
         owners.custody["custody-1"], installation=owners.binding
@@ -676,6 +685,7 @@ def _successor(ctx):
             dispatch_envelope=dispatch.as_mapping(),
         )
     )
+    ctx.db.flush()
     ctx.db.add(
         RolloutAttemptSettlement(id=uuid4(), attempt_id=attempt_id, outcome="succeeded")
     )
@@ -1264,3 +1274,85 @@ def _assert_late_closure_receipt_regression(ctx):
 
 def test_late_closure_receipt_regression_preserves_current_epoch(admitted):
     _assert_late_closure_receipt_regression(admitted)
+
+
+def test_native_startup_fact_rename_preserves_historical_ph_wire_and_fingerprints():
+    projection = enrollment.EnrollmentProjection(
+        "enrollment-fixed",
+        "installation-fixed",
+        "configuration-fixed",
+        "candidate-fixed",
+        "source-fixed",
+        "account-fixed",
+        "transport-fixed",
+        "generation-opaque-7",
+        ("component-fixed",),
+        "runtime-fixed",
+        "runtime-authority-fixed",
+        "custody-fixed",
+        "custody-authority-fixed",
+        _NOW,
+        _NOW + timedelta(minutes=6),
+        "eligible",
+    )
+    historical_wire = (
+        '{"account_ref":"account-fixed","candidate_ref":"candidate-fixed","component'
+        '_codes":["component-fixed"],"configuration_ref":"configuration-fixed","cred'
+        'ential_authority_ref":"custody-authority-fixed","credential_evidence_ref":"'
+        'custody-fixed","credential_ref":"generation-opaque-7","eligible_from":"2027'
+        '-06-01T00:00:00+00:00","eligible_until":"2027-06-01T00:06:00+00:00","enroll'
+        'ment_ref":"enrollment-fixed","installation_ref":"installation-fixed","runti'
+        'me_authority_ref":"runtime-authority-fixed","runtime_evidence_ref":"runtime'
+        '-fixed","source_ref":"source-fixed","standing":"eligible","transport_ref":"'
+        'transport-fixed"}'
+    )
+    assert projection.startup_credential_assignment_ref == "generation-opaque-7"
+    assert (
+        json.dumps(projection.document(), sort_keys=True, separators=(",", ":"))
+        == historical_wire
+    )
+    assert (
+        projection.fingerprint
+        == "c9131bee77a111b7844ea31a916234e780b337aae20b16a7a40be364847d7467"
+    )
+    assert (
+        projection.identity_fingerprint
+        == "9c815c2f8e5124d1b03e15fc909ea2758c72551a92098d1a08d511c02c912493"
+    )
+    assert enrollment._projection(json.loads(historical_wire)) == projection
+    binding = enrollment.InstallationSourceBinding(
+        "installation-fixed",
+        "configuration-fixed",
+        "source-fixed",
+        "account-fixed",
+        "transport-fixed",
+        "generation-opaque-7",
+        "credential-original",
+        "7",
+    )
+    assert binding.document() == {
+        "installation_ref": "installation-fixed",
+        "configuration_ref": "configuration-fixed",
+        "source_ref": "source-fixed",
+        "account_ref": "account-fixed",
+        "transport_ref": "transport-fixed",
+        "credential_ref": "generation-opaque-7",
+        "original_credential_ref": "credential-original",
+        "credential_version": "7",
+    }
+    assert (
+        enrollment._code(UUID(int=1), "web") == "dc1:00000000000000000000000000000001:"
+        "b8f8826044e9339ce01195bb0c8ca55e4f0c1126ab9f6c5c13d5e87cbe95bf35"
+    )
+    assert (
+        replace(
+            projection, startup_credential_assignment_ref="generation-opaque-8"
+        ).identity_fingerprint
+        != projection.identity_fingerprint
+    )
+    assert (
+        replace(
+            projection, eligible_until=_NOW + timedelta(minutes=9)
+        ).identity_fingerprint
+        == projection.identity_fingerprint
+    )

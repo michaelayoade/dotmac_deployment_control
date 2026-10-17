@@ -1328,6 +1328,65 @@ CATALOGUE_TABLES: tuple[
         ),
     ),
     (
+        "deployment_current_enrollments",
+        (
+            ("target_id", 1, _UUID, False, ""),
+            ("enrollment_id", 2, _UUID, False, ""),
+            ("created_at", 3, _TS, False, "now()"),
+            ("updated_at", 4, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "deployment_enrollment_closures",
+        (
+            ("enrollment_id", 1, _UUID, False, ""),
+            ("target_id", 2, _UUID, False, ""),
+            ("closed_at", 3, _TS, False, ""),
+            ("closure_ref", 4, _V200, False, ""),
+            ("successor_id", 5, _UUID, True, ""),
+            ("created_at", 6, _TS, False, "now()"),
+            ("updated_at", 7, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "deployment_enrollment_components",
+        (
+            ("component_code", 1, _V120, False, ""),
+            ("enrollment_id", 2, _UUID, False, ""),
+            ("role", 3, _V200, False, ""),
+            ("created_at", 4, _TS, False, "now()"),
+            ("updated_at", 5, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "deployment_enrollments",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("enrollment_ref", 2, _V200, False, ""),
+            ("attempt_id", 3, _UUID, False, ""),
+            ("target_id", 4, _UUID, False, ""),
+            ("installation_ref", 5, _V200, False, ""),
+            ("identity_fingerprint", 6, _V128, False, ""),
+            ("projection", 7, _JSONB, False, ""),
+            ("binding", 8, _JSONB, False, ""),
+            ("created_at", 9, _TS, False, "now()"),
+            ("updated_at", 10, _TS, False, "now()"),
+        ),
+    ),
+    (
+        "deployment_health_assessments",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("assessment_ref", 2, _V200, False, ""),
+            ("enrollment_id", 3, _UUID, False, ""),
+            ("sequence", 4, _INT, False, ""),
+            ("assessed_at", 5, _TS, False, ""),
+            ("document", 6, _JSONB, False, ""),
+            ("created_at", 7, _TS, False, "now()"),
+            ("updated_at", 8, _TS, False, "now()"),
+        ),
+    ),
+    (
         "deployment_plans",
         (
             ("id", 1, _UUID, False, ""),

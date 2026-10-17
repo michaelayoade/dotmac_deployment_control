@@ -17,8 +17,6 @@ consumes another execution token. Source outages and revoked standing refuse.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass, replace
@@ -31,7 +29,6 @@ from dotmac_kernel.audit import write_platform_audit_event
 from dotmac_kernel.fingerprints import fingerprint_of
 from dotmac_kernel.idempotency import IdempotencyConflict, execute_once_platform
 from dotmac_kernel.transactions import conflict_savepoint
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control.authorization import AuthorizationEnvelopeV2
@@ -41,6 +38,8 @@ from dotmac_deployment_control.digests import (
     DispatchEnvelopeDigestV1,
     ExecutionPlanDigestV1,
     PlanDigestV1,
+    compute_health_component_code,
+    compute_health_enrollment_fingerprint,
 )
 from dotmac_deployment_control.dispatch_envelope import DispatchEnvelopeV1
 from dotmac_deployment_control.foundation_consumption import (
@@ -63,6 +62,14 @@ from dotmac_deployment_control.models import (
     RolloutAttemptSettlement,
 )
 from dotmac_deployment_control.ports import DeploymentControlError
+from dotmac_deployment_control.service import (
+    _health_assessment_for_ref,
+    _health_enrollment_find_row,
+    _health_enrollment_for_attempt,
+    _health_enrollment_history,
+    _health_enrollment_latest_assessment,
+    _health_enrollment_lock_rows,
+)
 
 
 class DeploymentEnrollmentRefusedError(DeploymentControlError):
@@ -89,12 +96,6 @@ def _instant(value: datetime) -> datetime:
     return value
 
 
-def _hash(document: dict[str, object]) -> str:
-    return hashlib.sha256(
-        json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
 @dataclass(frozen=True, slots=True)
 class EnrollmentProjection:
     """Structural PH contract. Original evidence references never change."""
@@ -106,7 +107,7 @@ class EnrollmentProjection:
     source_ref: str
     account_ref: str
     transport_ref: str
-    credential_ref: str
+    startup_credential_assignment_ref: str
     component_codes: tuple[str, ...]
     runtime_evidence_ref: str
     runtime_authority_ref: str
@@ -118,6 +119,7 @@ class EnrollmentProjection:
 
     def document(self) -> dict[str, object]:
         result = asdict(self)
+        result["credential_ref"] = result.pop("startup_credential_assignment_ref")
         result["component_codes"] = sorted(self.component_codes)
         result["eligible_from"] = self.eligible_from.isoformat()
         result["eligible_until"] = self.eligible_until.isoformat()
@@ -132,11 +134,11 @@ class EnrollmentProjection:
 
     @property
     def identity_fingerprint(self) -> str:
-        return _hash(self.identity_document())
+        return compute_health_enrollment_fingerprint(self.identity_document())
 
     @property
     def fingerprint(self) -> str:
-        return _hash(self.document())
+        return compute_health_enrollment_fingerprint(self.document())
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,8 +182,8 @@ class QualifiedDescriptor:
 class InstallationSourceBinding:
     """Existing installation/transport owner result; never Foundation DTO data.
 
-    credential_ref is the owner's immutable generation reference, retained
-    verbatim. original_credential_ref and credential_version are separate and
+    startup_credential_assignment_ref retains the owner's immutable generation
+    reference verbatim. original_credential_ref and credential_version are separate and
     never concatenated into a replacement identity.
     """
 
@@ -190,9 +192,15 @@ class InstallationSourceBinding:
     source_ref: str
     account_ref: str
     transport_ref: str
-    credential_ref: str
+    startup_credential_assignment_ref: str
     original_credential_ref: str
     credential_version: str
+
+    def document(self) -> dict[str, object]:
+        """Historical binding bytes retain the PH wire name for this startup fact."""
+        result = asdict(self)
+        result["credential_ref"] = result.pop("startup_credential_assignment_ref")
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,20 +410,14 @@ _SCOPE_CLOSE = "deployment.close_enrollment.v1"
 
 
 def _code(attempt_id: UUID, role: str) -> str:
-    return (
-        f"dc1:{attempt_id.hex}:"
-        + hashlib.sha256(b"dc-health-role:v1\0" + role.encode()).hexdigest()
-    )
+    return compute_health_component_code(attempt_id=attempt_id, role=role)
 
 
 _Model = TypeVar("_Model")
 
 
 def _one(db: Session, model: type[_Model], **coordinates: object) -> _Model:
-    query = (
-        select(model).filter_by(**coordinates).execution_options(populate_existing=True)
-    )
-    row = db.execute(query).scalar_one_or_none()
+    row = _health_enrollment_find_row(db, model, **coordinates)
     _require(row is not None, "Control coordinate unresolved")
     return cast(_Model, row)
 
@@ -426,24 +428,9 @@ def _locked_execution(
     # Locate immutable issuance without locking it, then take established order.
     attempt = _one(db, RolloutAttempt, id=attempt_id)
     locator = _one(db, Rollout, id=attempt.rollout_id)
-    target = db.execute(
-        select(DeploymentTarget)
-        .where(DeploymentTarget.id == locator.target_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one()
-    plan = db.execute(
-        select(DeploymentPlan)
-        .where(DeploymentPlan.id == locator.plan_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one()
-    rollout = db.execute(
-        select(Rollout)
-        .where(Rollout.id == locator.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one()
+    target, plan, rollout = _health_enrollment_lock_rows(
+        db, target_id=locator.target_id, plan_id=locator.plan_id, rollout_id=locator.id
+    )
     attempt = _one(db, RolloutAttempt, id=attempt_id)
     _require(
         attempt.rollout_id == rollout.id
@@ -655,7 +642,7 @@ def _evidence(
         and custody.installation == binding,
         "independent owner installation/configuration joins differ",
     )
-    for value in asdict(binding).values():
+    for value in binding.document().values():
         _text(value)
     _text(runtime.host_incarnation)
     _text(runtime.authority_ref)
@@ -709,6 +696,7 @@ def _evidence(
 
 def _projection(document: dict[str, object]) -> EnrollmentProjection:
     data: dict[str, Any] = dict(document)
+    data["startup_credential_assignment_ref"] = data.pop("credential_ref")
     data["component_codes"] = tuple(data["component_codes"])
     for key in ("eligible_from", "eligible_until"):
         data[key] = datetime.fromisoformat(data[key])
@@ -747,13 +735,7 @@ def _append_assessment(
         custody.evidence_ref,
         custody.authority_ref,
     )
-    latest = db.execute(
-        select(DeploymentHealthAssessment)
-        .where(DeploymentHealthAssessment.enrollment_id == enrollment.id)
-        .order_by(DeploymentHealthAssessment.sequence.desc())
-        .limit(1)
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
+    latest = _health_enrollment_latest_assessment(db, enrollment.id)
     _require(
         latest is None or _assessment(latest.document).assessed_at <= now,
         "assessment time cannot regress behind durable history",
@@ -782,11 +764,7 @@ def _enroll_deployment(
     sources = _sources()
     target, plan, rollout, attempt = _locked_execution(db, command.attempt_id)
     now = _instant(sources.clock.now())
-    old = db.execute(
-        select(DeploymentEnrollment).where(
-            DeploymentEnrollment.attempt_id == attempt.id
-        )
-    ).scalar_one_or_none()
+    old = _health_enrollment_for_attempt(db, attempt.id)
     if old is not None:
         projection = _projection(old.projection)
         _require(
@@ -817,7 +795,7 @@ def _enroll_deployment(
         binding.source_ref,
         binding.account_ref,
         binding.transport_ref,
-        binding.credential_ref,
+        binding.startup_credential_assignment_ref,
         tuple(sorted(_code(attempt.id, role) for role in descriptor.roles)),
         runtime.evidence_ref,
         runtime.authority_ref,
@@ -837,7 +815,7 @@ def _enroll_deployment(
             identity_fingerprint=projection.identity_fingerprint,
             projection=projection.document(),
             binding={
-                "installation": asdict(binding),
+                "installation": binding.document(),
                 "descriptor_digest": descriptor.descriptor_digest,
                 "host_id": runtime.host_id,
                 "host_incarnation": runtime.host_incarnation,
@@ -854,15 +832,7 @@ def _enroll_deployment(
             },
         )
         pointer = db.get(DeploymentCurrentEnrollment, target.id, populate_existing=True)
-        history = (
-            db.execute(
-                select(DeploymentEnrollment).where(
-                    DeploymentEnrollment.target_id == target.id
-                )
-            )
-            .scalars()
-            .all()
-        )
+        history = _health_enrollment_history(db, target.id)
         for prior in history:
             prior_attempt = _one(db, RolloutAttempt, id=prior.attempt_id)
             prior_rollout = _one(db, Rollout, id=prior_attempt.rollout_id)
@@ -958,7 +928,7 @@ def _unchanged(
         for c in sorted(runtime.components, key=lambda c: c.role)
     ]
     _require(
-        row.binding["installation"] == asdict(binding)
+        row.binding["installation"] == binding.document()
         and row.binding["host_id"] == runtime.host_id
         and row.binding["host_incarnation"] == runtime.host_incarnation
         and row.binding["components"] == components,
@@ -1016,11 +986,7 @@ def _assess_health_eligibility(
     )
     row = _one(db, DeploymentEnrollment, enrollment_ref=command.enrollment_ref)
     _locked_execution(db, row.attempt_id)
-    existing = db.execute(
-        select(DeploymentHealthAssessment).where(
-            DeploymentHealthAssessment.assessment_ref == command.assessment_ref
-        )
-    ).scalar_one_or_none()
+    existing = _health_assessment_for_ref(db, command.assessment_ref)
     if existing is not None:
         result = _assessment(existing.document)
         _require(
@@ -1080,15 +1046,7 @@ def current_eligibility_get(
     row = _one(db, DeploymentEnrollment, enrollment_ref=enrollment_ref)
     _locked_execution(db, row.attempt_id)
     now = _instant(sources.clock.now())
-    latest = db.execute(
-        select(DeploymentHealthAssessment)
-        .where(DeploymentHealthAssessment.enrollment_id == row.id)
-        .order_by(
-            DeploymentHealthAssessment.sequence.desc(),
-        )
-        .limit(1)
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
+    latest = _health_enrollment_latest_assessment(db, row.id)
     _require(latest is not None, "health assessment unresolved")
     assert latest is not None
     result = _assessment(latest.document)

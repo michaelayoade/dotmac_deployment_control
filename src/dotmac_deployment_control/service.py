@@ -56,7 +56,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 from dotmac_kernel.audit import write_platform_audit_event
@@ -132,6 +132,8 @@ from dotmac_deployment_control.models import (
     TERMINAL_ROLLOUT_STATUSES,
     AttemptOutcome,
     CredentialStatus,
+    DeploymentEnrollment,
+    DeploymentHealthAssessment,
     DeploymentPlan,
     DeploymentTarget,
     EligibilityAtReceipt,
@@ -5103,3 +5105,89 @@ __all__ = [
     "spec_digest_of",
     "suspend_target",
 ]
+
+
+# Enrollment delegates query construction here; its own module retains all
+# authenticated source joins, standing decisions and caller-owned mutations.
+_HealthEnrollmentRow = TypeVar("_HealthEnrollmentRow")
+
+
+def _health_enrollment_find_row(
+    db: Session, model: type[_HealthEnrollmentRow], **coordinates: object
+) -> _HealthEnrollmentRow | None:
+    """Internal enrollment read in the existing service query owner."""
+    query = (
+        select(model).filter_by(**coordinates).execution_options(populate_existing=True)
+    )
+    return db.execute(query).scalar_one_or_none()
+
+
+def _health_enrollment_lock_rows(
+    db: Session, *, target_id: UUID, plan_id: UUID, rollout_id: UUID
+) -> tuple[DeploymentTarget, DeploymentPlan, Rollout]:
+    """Retain target -> plan -> rollout lock order; issuance is never locked."""
+    target = db.execute(
+        select(DeploymentTarget)
+        .where(DeploymentTarget.id == target_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    plan = db.execute(
+        select(DeploymentPlan)
+        .where(DeploymentPlan.id == plan_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    rollout = db.execute(
+        select(Rollout)
+        .where(Rollout.id == rollout_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one()
+    return target, plan, rollout
+
+
+def _health_enrollment_latest_assessment(
+    db: Session, enrollment_id: UUID
+) -> DeploymentHealthAssessment | None:
+    return db.execute(
+        select(DeploymentHealthAssessment)
+        .where(DeploymentHealthAssessment.enrollment_id == enrollment_id)
+        .order_by(DeploymentHealthAssessment.sequence.desc())
+        .limit(1)
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+
+
+def _health_enrollment_for_attempt(
+    db: Session, attempt_id: UUID
+) -> DeploymentEnrollment | None:
+    return db.execute(
+        select(DeploymentEnrollment).where(
+            DeploymentEnrollment.attempt_id == attempt_id
+        )
+    ).scalar_one_or_none()
+
+
+def _health_enrollment_history(
+    db: Session, target_id: UUID
+) -> list[DeploymentEnrollment]:
+    return list(
+        db.execute(
+            select(DeploymentEnrollment).where(
+                DeploymentEnrollment.target_id == target_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _health_assessment_for_ref(
+    db: Session, assessment_ref: str
+) -> DeploymentHealthAssessment | None:
+    return db.execute(
+        select(DeploymentHealthAssessment).where(
+            DeploymentHealthAssessment.assessment_ref == assessment_ref
+        )
+    ).scalar_one_or_none()

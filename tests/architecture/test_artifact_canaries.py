@@ -556,7 +556,7 @@ def test_the_real_lineage_has_exactly_one_derivable_head() -> None:
     from dotmac_deployment_control.migrations import versions_dir
 
     head = canaries.derive_composed_lineage_head_from_versions_dir(versions_dir())
-    assert head == "dc_0016_controller_key_nonreuse"
+    assert head == "dc_0017_deployment_enrollment"
 
 
 def test_the_derived_head_moves_when_a_child_revision_is_planted(
@@ -688,11 +688,11 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Twenty-two tables and 246 columns, held as the LITERAL's own shape. A future
+    """Twenty-seven tables and 280 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
-    assert canaries.CATALOGUE_TABLE_COUNT == 22
-    assert canaries.CATALOGUE_COLUMN_COUNT == 246
+    assert canaries.CATALOGUE_TABLE_COUNT == 27
+    assert canaries.CATALOGUE_COLUMN_COUNT == 280
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):
@@ -1016,3 +1016,29 @@ def test_the_rendering_canary_refuses_macros_that_are_simply_absent(
     with pytest.raises(canaries.CanaryFailure) as raised:
         canaries.prove_states_render_distinctly(macros, module)
     assert "package data older" in str(raised.value), raised.value
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "deployment_enrollments",
+        "deployment_enrollment_components",
+        "deployment_health_assessments",
+        "deployment_enrollment_closures",
+        "deployment_current_enrollments",
+    ],
+)
+def test_the_artifact_catalogue_refuses_each_missing_enrollment_table(
+    table: str,
+) -> None:
+    from dotmac_deployment_control import module
+
+    document = _published_catalogue_document()
+    document["tables"] = [row for row in document["tables"] if row["name"] != table]
+    differences = canaries.catalogue_differences(
+        document,
+        module.version,
+        expected_lineage_head=canaries.composed_lineage_head(),
+    )
+    assert differences
+    assert any(table in difference for difference in differences)

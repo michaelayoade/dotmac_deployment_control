@@ -147,3 +147,35 @@ The original five audit subjects retain their source callers. The audit
 architecture census now includes the separate enrollment command owner.
 No model, migration, catalogue, DTO identity or production adapter was changed
 by this repair.
+
+## Hosted source repair at `8564360d`
+
+The new native Control DTO field `startup_credential_assignment_ref` names the
+existing owner's immutable startup credential-generation assignment fact. It
+is not a credential transport selector. Explicit document adapters preserve
+PH's existing `credential_ref` wire field, durable installation-binding JSON,
+projection/identity fingerprint encodings and permanent component codes.
+Historical fixed-byte parity canaries are authored for those contracts.
+`digests.py` remains the sole package digest encoding owner.
+
+Enrollment qualification and mutations remain in `deployment_enrollment.py`;
+its reads now delegate query construction to the existing `service.py` owner.
+The original predicates, populate-existing options, latest-assessment sequence
+ordering and target → plan → rollout lock order are retained. No query-owner
+or transport guard exemption was added. Idempotency, audit and original-bound
+clock checks retain their existing boundary.
+
+The standalone installed-artifact canary now independently enumerates all 27
+tables and 280 columns through `dc_0017`, including omission refusal cases for
+each new enrollment table. Unpublished migration access declarations use the
+lineage's literal `_grant`/`_revoke` convention without changing SQL privileges;
+immutable triggers and narrow parent `UPDATE(id)` remain. Fixture parents flush
+before their FK children in the same caller-owned transaction, including the
+successor attempt before settlement. No constraints are disabled or deferred.
+
+The hosted predecessor failed before new PostgreSQL enrollment behavior could
+run because the seed plan's parent target was unflushed. Installed-wheel
+failure was the same stale 22-table canary expectation seen in unit CI. These
+repairs have static validation only; fresh exact-head hosted unit, migrated
+PostgreSQL and installed-wheel evidence is still required. No release/version,
+pin, deployment, trust installation or producer qualification is implied.

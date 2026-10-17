@@ -64,6 +64,14 @@ def _fk(column: str, parent: str, name: str = "id") -> sa.ForeignKeyConstraint:
     )
 
 
+def _grant(privileges: str, table: str, role: str) -> None:
+    op.execute(f"GRANT {privileges} ON {_SCHEMA}.{table} TO {role}")
+
+
+def _revoke(table: str) -> None:
+    op.execute(f"REVOKE ALL PRIVILEGES ON {_SCHEMA}.{table} FROM app_user")
+
+
 def upgrade() -> None:
     op.create_table(
         "deployment_enrollments",
@@ -169,17 +177,32 @@ def upgrade() -> None:
             f"ON {_SCHEMA}.{table} FOR EACH STATEMENT EXECUTE FUNCTION "
             "mod_deploy.refuse_evidence_rewrite()"
         )
-        for role in ("platform_api", "app_admin"):
-            op.execute(f"GRANT SELECT, INSERT ON {_SCHEMA}.{table} TO {role}")
-        op.execute(f"REVOKE ALL PRIVILEGES ON {_SCHEMA}.{table} FROM app_user")
+    # Literal access declarations follow the lineage-wide architecture contract.
+    _grant("SELECT, INSERT", "deployment_enrollments", "platform_api")
+    _grant("SELECT, INSERT", "deployment_enrollments", "app_admin")
+    _revoke("deployment_enrollments")
+    _grant("SELECT, INSERT", "deployment_enrollment_components", "platform_api")
+    _grant("SELECT, INSERT", "deployment_enrollment_components", "app_admin")
+    _revoke("deployment_enrollment_components")
+    _grant("SELECT, INSERT", "deployment_health_assessments", "platform_api")
+    _grant("SELECT, INSERT", "deployment_health_assessments", "app_admin")
+    _revoke("deployment_health_assessments")
+    _grant("SELECT, INSERT", "deployment_enrollment_closures", "platform_api")
+    _grant("SELECT, INSERT", "deployment_enrollment_closures", "app_admin")
+    _revoke("deployment_enrollment_closures")
     # A child FK check can issue SELECT FOR KEY SHARE as its table owner.
     # Narrow privilege enables RI while the unconditional trigger forbids edits.
     for role in ("platform_api", "app_admin"):
         op.execute(f"GRANT UPDATE (id) ON mod_deploy.deployment_enrollments TO {role}")
-        op.execute(
-            f"GRANT SELECT, INSERT, UPDATE, DELETE ON {_SCHEMA}.{_POINTER} TO {role}"
-        )
-    op.execute(f"REVOKE ALL PRIVILEGES ON {_SCHEMA}.{_POINTER} FROM app_user")
+    _grant(
+        "SELECT, INSERT, UPDATE, DELETE",
+        "deployment_current_enrollments",
+        "platform_api",
+    )
+    _grant(
+        "SELECT, INSERT, UPDATE, DELETE", "deployment_current_enrollments", "app_admin"
+    )
+    _revoke("deployment_current_enrollments")
 
 
 def downgrade() -> None:
