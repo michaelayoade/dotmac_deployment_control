@@ -65,16 +65,32 @@
       "reviewed_v1_patch_sha256": "fbd3806183a0764e9dec0d3848db8badc83a881e95382d50e14c1de7fa80bc2d",
       "runtime_validation": "UNRUN; static only",
       "stage": "hosted-ci-source-repair-bare-fingerprint-correction"
+    },
+    {
+      "base_commit": "70c8dbbf2f205afddbb0249b0d1858839be85a46",
+      "changes": [
+        "Accept object at private _text validator annotation only; original isinstance/strip/length runtime body unchanged",
+        "Flush the new TargetHostAssociation before staging closure/current-pointer changes; original host refusal assertions unchanged"
+      ],
+      "predecessor_hosted_evidence": {
+        "mypy": "one argument-type error at _text(value)",
+        "postgres": "499 passed, 1 fixture FK ordering failure"
+      },
+      "previous_manifest_sha256": "4e453193611fca368bcd132f2de8a5dfa2e6a9f1e66004fd61c611d4eb1963af",
+      "reason": "Hosted mypy rejects object values from binding.document at the str-annotated runtime validator; one PostgreSQL malformed-host fixture points an FK at an unflushed association.",
+      "review_status": "frozen for independent review; not approval",
+      "runtime_validation": "UNRUN for this repair; fresh exact-head hosted checks required",
+      "stage": "hosted-validator-annotation-and-host-fixture-order-repair"
     }
   ],
-  "runtime_validation": "not run: hosted lane required",
+  "runtime_validation": "Repair runtime UNRUN; predecessor hosted PostgreSQL 499 passed/1 fixture failure and mypy one argument error; fresh hosted checks required.",
   "scope_denials": [],
   "source_files": {
     "docs/deployment-health-enrollment-source.md": "065b3f7275f4b4c1838942cf8c1f3e22be29197bc12fb8ce58fa8a96e6ee0b40",
     "scripts/artifact_canaries.py": "780ddf8c3af97e44100b58b1fd5e179ca5be15939ab436a1c47cfec28d3dde96",
     "src/dotmac_deployment_control/__init__.py": "ecc089e53f5bcba09ef0b60fb25db379eb4a6a9524a0ca7607f66a7e0cf3cb80",
     "src/dotmac_deployment_control/database_catalog.py": "25c7364a5db396913fe816e7fd5780b14487dd02944e262d73daf670e03d9171",
-    "src/dotmac_deployment_control/deployment_enrollment.py": "0e7d9445e21be3c395a5f9d5f45ef9b5f5a3a10e15f5fa44ea2d112602bb6bdb",
+    "src/dotmac_deployment_control/deployment_enrollment.py": "7d978f7464faa4bfde2199567250ce9c872e66dfdfdc2b15c9b773d7452f1cb0",
     "src/dotmac_deployment_control/digests.py": "38af28d0b07ca675ff627ec78ad294b49f5047d841882e7ed09c59f5ded05627",
     "src/dotmac_deployment_control/manifest.py": "c7727e2b04631549356f56ea94358b0c50febd398a70191feb87e3c1b32bac96",
     "src/dotmac_deployment_control/migrations/versions/dc_0017_deployment_enrollment.py": "7dc7f388b88fb5cfdc9bc6ce12b471977450349e9c6bffc6d4f5760bf7524ac8",
@@ -85,7 +101,7 @@
     "tests/architecture/test_deployment_control_module.py": "a341735ddc3173f35dd343f4d6c4ac66ab01749381a18990a9a48e82aebd91df",
     "tests/architecture/test_platform_isolation_canary_discovery.py": "0a0aa5b1f2009b1215d6b4db2ae9d9151cbbfb982ff845f67083ed244c80bf05",
     "tests/test_deployment_control_platform_isolation.py": "7ca8bd653b08e22bf899168144ada11b992b3a299e80b8cb6d0afcd720490348",
-    "tests/test_deployment_enrollment_platform_isolation.py": "c5d39c7ffbc93043d9cc6a58d1803cf2aaa1a16bf40120b7147b775eb57da56d",
+    "tests/test_deployment_enrollment_platform_isolation.py": "f1f927e4048d7504df0f55d6bdbf5cc760ad0c8d0dad6655d09fe05a256bc5f2",
     "tests/unit/test_deployment_enrollment.py": "8317f3b755847520620b72d4b8159842edf595da896d5ebbd662a7194f497d16"
   },
   "static_validation": {
@@ -102,6 +118,8 @@
     "command_boundary": "Kernel public fingerprint_of + execute_once_platform + write_platform_audit_event; no outbox/transaction completion",
     "enrollment_query_construction_outside_service": false,
     "existing_service_and_digest_functions_AST_unchanged": true,
+    "final_ci_annotation_only_runtime_AST_preserved": true,
+    "final_ci_host_fixture_only_parent_flush_added": true,
     "git_diff_check": "pass",
     "health_assessment_DTO_fields_unchanged": true,
     "manifest_model_catalog_table_census": "exact: stdlib AST, 27 tables",

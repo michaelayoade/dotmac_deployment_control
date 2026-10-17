@@ -431,6 +431,7 @@ def test_current_host_uses_owner_history_and_fleet_grammar_guard(
             authority="test-host-owner",
         )
     )
+    ctx.db.flush()
     if drift == "malformed-coherent-host":
         ctx.db.add(
             TargetHostAssociationClosure(

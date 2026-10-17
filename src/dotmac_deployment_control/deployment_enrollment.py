@@ -81,7 +81,7 @@ def _require(condition: bool, reason: str) -> None:
         raise DeploymentEnrollmentRefusedError(reason)
 
 
-def _text(value: str) -> None:
+def _text(value: object) -> None:
     _require(
         isinstance(value, str) and bool(value.strip()) and len(value) <= 200,
         "bounded nonempty owner reference required",
