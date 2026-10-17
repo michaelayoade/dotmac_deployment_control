@@ -266,6 +266,11 @@ _DESCRIPTOR = "sha256:" + "3c" * 32
 
 SCHEMA = "mod_deploy"
 TABLES = (
+    "deployment_enrollments",
+    "deployment_enrollment_components",
+    "deployment_health_assessments",
+    "deployment_enrollment_closures",
+    "deployment_current_enrollments",
     "deployment_targets",
     "target_credentials",
     "deployment_plans",
@@ -290,6 +295,10 @@ TABLES = (
     "target_current_admission_policies",
 )
 EVIDENCE_TABLES = (
+    "deployment_enrollments",
+    "deployment_enrollment_components",
+    "deployment_health_assessments",
+    "deployment_enrollment_closures",
     "rollout_attempts",
     "rollout_attempt_settlements",
     "observation_attempts",
@@ -303,6 +312,7 @@ EVIDENCE_TABLES = (
     "target_admission_policy_closures",
 )
 MUTABLE_TABLES = (
+    "deployment_current_enrollments",
     "deployment_targets",
     "target_credentials",
     "deployment_plans",
@@ -704,7 +714,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0016_controller_key_nonreuse",
+                revision="dc_0017_deployment_enrollment",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -854,7 +864,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 246
+                    == 280
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -932,7 +942,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 246
+                    == 280
                 )
                 purpose, snapshot = conn.execute(
                     text(
@@ -1036,7 +1046,7 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deployment_enrollment"
             )
     finally:
         engine.dispose()
@@ -1160,7 +1170,7 @@ def test_dc_0016_refuses_downgrade_with_controller_key_history(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deployment_enrollment"
             )
     finally:
         engine.dispose()
@@ -1228,7 +1238,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deployment_enrollment"
             )
     finally:
         engine.dispose()

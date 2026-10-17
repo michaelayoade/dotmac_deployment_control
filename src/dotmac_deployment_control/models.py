@@ -83,6 +83,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     LargeBinary,
     String,
@@ -1457,7 +1458,131 @@ class ObservationAttempt(Base, TimestampMixin):
     )
 
 
+class DeploymentEnrollment(Base, TimestampMixin):
+    """Immutable identity and original authenticated provenance for one epoch."""
+
+    __tablename__ = "deployment_enrollments"
+    __table_args__ = (
+        UniqueConstraint("enrollment_ref", name="uq_health_enrollment_ref"),
+        UniqueConstraint("attempt_id", name="uq_health_enrollment_attempt"),
+        UniqueConstraint("installation_ref", name="uq_health_enrollment_installation"),
+        UniqueConstraint("target_id", "id", name="uq_health_enrollment_target_id"),
+        schema_table_args(SCHEMA),
+    )
+    id: Mapped[UUID] = uuid_pk()
+    enrollment_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    attempt_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_ATTEMPTS}.id", ondelete="RESTRICT"), nullable=False
+    )
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"), nullable=False
+    )
+    installation_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    identity_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    projection: Mapped[dict[str, Any]] = mapped_column(_JSON_DOC, nullable=False)
+    binding: Mapped[dict[str, Any]] = mapped_column(_JSON_DOC, nullable=False)
+
+
+class DeploymentEnrollmentComponent(Base, TimestampMixin):
+    """Permanent unique role/code mapping; closure never frees a code."""
+
+    __tablename__ = "deployment_enrollment_components"
+    __table_args__ = (
+        UniqueConstraint("enrollment_id", "role", name="uq_health_enrollment_role"),
+        schema_table_args(SCHEMA),
+    )
+    component_code: Mapped[str] = mapped_column(String(120), primary_key=True)
+    enrollment_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.deployment_enrollments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class DeploymentHealthAssessment(Base, TimestampMixin):
+    """An appended explicit refresh; reads cannot extend this interval."""
+
+    __tablename__ = "deployment_health_assessments"
+    __table_args__ = (
+        UniqueConstraint("assessment_ref", name="uq_health_assessment_ref"),
+        UniqueConstraint(
+            "enrollment_id", "sequence", name="uq_health_assessment_sequence"
+        ),
+        CheckConstraint("sequence >= 1", name="ck_health_assessment_sequence"),
+        schema_table_args(SCHEMA),
+    )
+    id: Mapped[UUID] = uuid_pk()
+    assessment_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    enrollment_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.deployment_enrollments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    assessed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    document: Mapped[dict[str, Any]] = mapped_column(_JSON_DOC, nullable=False)
+
+
+class DeploymentEnrollmentClosure(Base, TimestampMixin):
+    __tablename__ = "deployment_enrollment_closures"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target_id", "enrollment_id"],
+            [
+                f"{SCHEMA}.deployment_enrollments.target_id",
+                f"{SCHEMA}.deployment_enrollments.id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["target_id", "successor_id"],
+            [
+                f"{SCHEMA}.deployment_enrollments.target_id",
+                f"{SCHEMA}.deployment_enrollments.id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        schema_table_args(SCHEMA),
+    )
+    enrollment_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.deployment_enrollments.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    target_id: Mapped[UUID] = mapped_column(nullable=False)
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closure_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    successor_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(f"{SCHEMA}.deployment_enrollments.id", ondelete="RESTRICT")
+    )
+
+
+class DeploymentCurrentEnrollment(Base, TimestampMixin):
+    __tablename__ = "deployment_current_enrollments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["target_id", "enrollment_id"],
+            [
+                f"{SCHEMA}.deployment_enrollments.target_id",
+                f"{SCHEMA}.deployment_enrollments.id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("enrollment_id", name="uq_health_current_enrollment"),
+        schema_table_args(SCHEMA),
+    )
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"), primary_key=True
+    )
+    enrollment_id: Mapped[UUID] = mapped_column(nullable=False)
+
+
 __all__ = [
+    "DeploymentEnrollment",
+    "DeploymentEnrollmentComponent",
+    "DeploymentHealthAssessment",
+    "DeploymentEnrollmentClosure",
+    "DeploymentCurrentEnrollment",
     "SCHEMA",
     "TERMINAL_ROLLOUT_STATUSES",
     "AttemptOutcome",

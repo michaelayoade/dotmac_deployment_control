@@ -32,17 +32,17 @@ def _snapshot() -> ModuleDatabaseCatalogSnapshot:
                 kind=DatabaseCatalogOwnerKind.MODULE,
                 code="deployment_control",
             ),
-            revision="dc_0016_controller_key_nonreuse",
+            revision="dc_0017_deployment_enrollment",
         ),
     )
 
 
 def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert module.database_catalog is database_catalog
-    assert database_catalog.lineage_head == "dc_0016_controller_key_nonreuse"
+    assert database_catalog.lineage_head == "dc_0017_deployment_enrollment"
 
 
-def test_catalogue_has_exact_twenty_two_table_246_column_extent() -> None:
+def test_catalogue_has_exact_twenty_seven_table_280_column_extent() -> None:
     """Thirteen tables and 178 columns after `dc_0012`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
@@ -90,6 +90,11 @@ def test_catalogue_has_exact_twenty_two_table_246_column_extent() -> None:
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
     assert counts == {
+        "deployment_enrollments": 10,
+        "deployment_enrollment_components": 5,
+        "deployment_health_assessments": 8,
+        "deployment_enrollment_closures": 7,
+        "deployment_current_enrollments": 4,
         "attestation_current_roots": 5,
         "attestation_enrolments": 13,
         "attestation_fingerprint_closures": 8,
@@ -113,7 +118,7 @@ def test_catalogue_has_exact_twenty_two_table_246_column_extent() -> None:
         "target_host_association_closures": 6,
         "target_host_associations": 7,
     }
-    assert sum(counts.values()) == 246
+    assert sum(counts.values()) == 280
 
 
 def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
@@ -376,7 +381,7 @@ def test_release_snapshot_refuses_distribution_module_version_drift() -> None:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code="deployment_control",
                 ),
-                revision="dc_0016_controller_key_nonreuse",
+                revision="dc_0017_deployment_enrollment",
             ),
         )
 
@@ -392,5 +397,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 246
+    assert sum(len(table.columns) for table in restored.tables) == 280
     assert {table.plane.value for table in restored.tables} == {"platform"}
