@@ -102,12 +102,133 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0016_controller_key_nonreuse",
+    lineage_head="dc_0017_deployment_enrollment",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=tuple(
         sorted(
             (
+                _table(
+                    "deployment_enrollments",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("enrollment_ref", 2, _VARCHAR_200, nullable=False),
+                        _column("attempt_id", 3, _UUID, nullable=False),
+                        _column("target_id", 4, _UUID, nullable=False),
+                        _column("installation_ref", 5, _VARCHAR_200, nullable=False),
+                        _column(
+                            "identity_fingerprint", 6, _VARCHAR_128, nullable=False
+                        ),
+                        _column("projection", 7, _JSONB, nullable=False),
+                        _column("binding", 8, _JSONB, nullable=False),
+                        _column(
+                            "created_at",
+                            9,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            10,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_enrollment_components",
+                    (
+                        _column("component_code", 1, _VARCHAR_120, nullable=False),
+                        _column("enrollment_id", 2, _UUID, nullable=False),
+                        _column("role", 3, _VARCHAR_200, nullable=False),
+                        _column(
+                            "created_at",
+                            4,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            5,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_health_assessments",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("assessment_ref", 2, _VARCHAR_200, nullable=False),
+                        _column("enrollment_id", 3, _UUID, nullable=False),
+                        _column("sequence", 4, _INTEGER, nullable=False),
+                        _column("assessed_at", 5, _TIMESTAMPTZ, nullable=False),
+                        _column("document", 6, _JSONB, nullable=False),
+                        _column(
+                            "created_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            8,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_enrollment_closures",
+                    (
+                        _column("enrollment_id", 1, _UUID, nullable=False),
+                        _column("target_id", 2, _UUID, nullable=False),
+                        _column("closed_at", 3, _TIMESTAMPTZ, nullable=False),
+                        _column("closure_ref", 4, _VARCHAR_200, nullable=False),
+                        _column("successor_id", 5, _UUID, nullable=True),
+                        _column(
+                            "created_at",
+                            6,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_current_enrollments",
+                    (
+                        _column("target_id", 1, _UUID, nullable=False),
+                        _column("enrollment_id", 2, _UUID, nullable=False),
+                        _column(
+                            "created_at",
+                            3,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            4,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
                 # dc_0013 entries are kept in canonical table-name order below.
                 _table(
                     "attestation_root_descriptors",

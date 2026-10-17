@@ -87,6 +87,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar
+from uuid import UUID
 
 from dotmac_deployment_control.ports import DigestEncodingError
 
@@ -116,6 +117,17 @@ def canonical_json(payload: Mapping[str, Any]) -> bytes:
     return json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode(
         "utf-8"
     )
+
+
+def compute_health_enrollment_fingerprint(document: Mapping[str, object]) -> str:
+    """Preserve the PH projection/identity canonical JSON SHA256 encoding."""
+    return hashlib.sha256(canonical_json(document)).hexdigest()
+
+
+def compute_health_component_code(*, attempt_id: UUID, role: str) -> str:
+    """Permanent code over the original domain-separated role bytes."""
+    digest = hashlib.sha256(b"dc-health-role:v1\0" + role.encode()).hexdigest()
+    return f"dc1:{attempt_id.hex}:{digest}"
 
 
 def compute_host_admission_consumption_fingerprint(
@@ -849,6 +861,8 @@ __all__ = [
     "RehearsalHarnessEvidenceDigestV1",
     "SpecDigestV1",
     "canonical_json",
+    "compute_health_enrollment_fingerprint",
+    "compute_health_component_code",
     "compute_host_admission_context_digest",
     "compute_host_admission_presentation_digest",
 ]
