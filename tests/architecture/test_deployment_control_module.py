@@ -262,6 +262,50 @@ class TestTheReportedVersionIsDerivedAndTheContractIsPinned:
         assert module.contract_version == 2
 
 
+def _assert_platform_table_census(
+    declared: tuple[str, ...], mapped: set[str], catalogue: tuple[str, ...]
+) -> None:
+    assert len(declared) == len(set(declared)), "duplicate platform table declaration"
+    assert len(catalogue) == len(set(catalogue)), "duplicate catalogue table"
+    assert (
+        set(declared) == mapped == set(catalogue)
+    ), "platform declarations, mapped models and database catalogue must agree exactly"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "deployment_enrollments",
+        "deployment_enrollment_components",
+        "deployment_health_assessments",
+        "deployment_enrollment_closures",
+        "deployment_current_enrollments",
+    ],
+)
+@pytest.mark.parametrize("population", ["declared", "mapped", "catalogue"])
+def test_platform_table_census_refuses_each_enrollment_table_omission(
+    missing: str,
+    population: str,
+) -> None:
+    names = (
+        "deployment_enrollments",
+        "deployment_enrollment_components",
+        "deployment_health_assessments",
+        "deployment_enrollment_closures",
+        "deployment_current_enrollments",
+    )
+    _assert_platform_table_census(names, set(names), names)
+    declared, mapped, catalogue = names, set(names), names
+    if population == "declared":
+        declared = tuple(name for name in names if name != missing)
+    elif population == "mapped":
+        mapped.remove(missing)
+    else:
+        catalogue = tuple(name for name in names if name != missing)
+    with pytest.raises(AssertionError):
+        _assert_platform_table_census(declared, mapped, catalogue)
+
+
 class TestThePlaneIsDeclaredNotDiscovered:
     def test_the_tenant_plane_is_empty(self) -> None:
         """A module that decides what a FLEET should run cannot live inside one
@@ -276,6 +320,11 @@ class TestThePlaneIsDeclaredNotDiscovered:
             AttestationFingerprintClosure,
             AttestationRootDescriptor,
             AttestationSubjectLock,
+            DeploymentCurrentEnrollment,
+            DeploymentEnrollment,
+            DeploymentEnrollmentClosure,
+            DeploymentEnrollmentComponent,
+            DeploymentHealthAssessment,
             DeploymentPlan,
             DeploymentTarget,
             ObservationAttempt,
@@ -318,8 +367,17 @@ class TestThePlaneIsDeclaredNotDiscovered:
             TargetAdmissionPolicy,
             TargetAdmissionPolicyClosure,
             TargetCurrentAdmissionPolicy,
+            DeploymentEnrollment,
+            DeploymentEnrollmentComponent,
+            DeploymentHealthAssessment,
+            DeploymentEnrollmentClosure,
+            DeploymentCurrentEnrollment,
         )
-        assert {m.__tablename__ for m in models} == set(module.platform_tables)
+        _assert_platform_table_census(
+            module.platform_tables,
+            {model.__tablename__ for model in models},
+            tuple(table.name for table in module.database_catalog.tables),
+        )
         assert all(m.__table__.schema == SCHEMA for m in models)
 
     def test_no_model_carries_a_tenant_column(self) -> None:

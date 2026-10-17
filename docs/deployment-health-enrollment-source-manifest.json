@@ -3,6 +3,20 @@
   "knowledge_scope": "project:dotmac_deployment_control",
   "qualification": "No production descriptor/runtime/custody/installation owner adapter qualified; no operational gate closure",
   "receiver_source_commit": "9a1600e9",
+  "review_history": [
+    {
+      "base_commit": "910aab06eb33030d009af88f73f914e56cf206a1",
+      "changes": [
+        "Declare existing five enrollment tables in module.platform_tables",
+        "Extend mapped-model/catalogue census and author omission sensitivities"
+      ],
+      "previous_manifest_sha256": "1df93005ddb0b6843f8a475e6ad8695af433a223f0fe7bd29c5130a65d6723ad",
+      "reason": "Hosted platform collection and installed-wheel canaries both refused the five missing enrollment platform table declarations.",
+      "review_status": "prepared for independent review; not approval",
+      "runtime_validation": "not run for this repair; hosted CI required",
+      "stage": "module-declaration-census-repair"
+    }
+  ],
   "runtime_validation": "not run: hosted lane required",
   "scope_denials": [],
   "source_files": {
@@ -10,15 +24,17 @@
     "src/dotmac_deployment_control/__init__.py": "379bfac185b059b2f7fd7d840a5674d8c035a66c86d5e20894285dc60ef0a31a",
     "src/dotmac_deployment_control/database_catalog.py": "25c7364a5db396913fe816e7fd5780b14487dd02944e262d73daf670e03d9171",
     "src/dotmac_deployment_control/deployment_enrollment.py": "3ac6d4e40db697dca5a6841e90b9a3893428b913bfddcb16e9fdbc84aa1366e0",
+    "src/dotmac_deployment_control/manifest.py": "d8b129086cea66d81611d8e57e4fec0f074c2c33889f5e6e49e1c1a82d92853e",
     "src/dotmac_deployment_control/migrations/versions/dc_0017_deployment_enrollment.py": "d20d0a78cf05cc7faf3469784988d669d333bdaff1b9847ee965a3c7fd9bee21",
     "src/dotmac_deployment_control/models.py": "64d280108cc2d4b99c37ebaef35aa12e23c62ea26c9895317a8bf1da1bd47d27",
     "tests/architecture/test_database_catalog.py": "28fa8a49556cad9dd7db13313895e1f9d6c0c59b766d4829c574652caee8beb6",
+    "tests/architecture/test_deployment_control_module.py": "b4279f924e8e637d236f604b77cc16ea54f86fe056180869c3eed0d53b454d12",
     "tests/test_deployment_control_platform_isolation.py": "7ca8bd653b08e22bf899168144ada11b992b3a299e80b8cb6d0afcd720490348",
     "tests/test_deployment_enrollment_postgres.py": "188b5d2a89ca5ca5cef8f3ca22d39143f175cf2689a287dc4ab83cee7378d52b",
     "tests/unit/test_deployment_enrollment.py": "8b35683b85ed349e7ddc3690255818582391f01ddd61ab616f091630db43f4d2"
   },
   "static_validation": {
-    "ast_files": 9,
+    "ast_files": 11,
     "catalog_columns": 280,
     "catalog_tables": 27,
     "dto_fields_match_pinned_PH": {
@@ -55,6 +71,8 @@
       ]
     },
     "git_diff_check": "pass",
+    "manifest_model_catalog_table_census": "exact: stdlib AST, 27 tables",
+    "manifest_platform_tables": 27,
     "new_model_migration_catalog_columns": "exact",
     "ruff": "0.6.9 check pass",
     "service_constructs_sessions_engines_transactions_or_commits": false,
