@@ -15,6 +15,12 @@
       "review_status": "prepared for independent review; not approval",
       "runtime_validation": "not run for this repair; hosted CI required",
       "stage": "module-declaration-census-repair"
+    },
+    {
+      "stage": "postgres-canary-discovery-repair",
+      "previous_manifest_sha256": "d0ef62379750d06bf93717d0d495f4a02e947561f14a073d4e87dc1c4a5d2cb1",
+      "reason": "The new suite did not match the existing test_*_platform_isolation.py discovery glob. Rename preserves exact test bytes and adds a required-suite discovery assertion.",
+      "runtime_validation": "UNRUN for newly discovered enrollment suite; prior PostgreSQL success covered only older suites."
     }
   ],
   "runtime_validation": "not run: hosted lane required",
@@ -29,12 +35,13 @@
     "src/dotmac_deployment_control/models.py": "64d280108cc2d4b99c37ebaef35aa12e23c62ea26c9895317a8bf1da1bd47d27",
     "tests/architecture/test_database_catalog.py": "28fa8a49556cad9dd7db13313895e1f9d6c0c59b766d4829c574652caee8beb6",
     "tests/architecture/test_deployment_control_module.py": "b4279f924e8e637d236f604b77cc16ea54f86fe056180869c3eed0d53b454d12",
+    "tests/architecture/test_platform_isolation_canary_discovery.py": "0a0aa5b1f2009b1215d6b4db2ae9d9151cbbfb982ff845f67083ed244c80bf05",
     "tests/test_deployment_control_platform_isolation.py": "7ca8bd653b08e22bf899168144ada11b992b3a299e80b8cb6d0afcd720490348",
-    "tests/test_deployment_enrollment_postgres.py": "188b5d2a89ca5ca5cef8f3ca22d39143f175cf2689a287dc4ab83cee7378d52b",
+    "tests/test_deployment_enrollment_platform_isolation.py": "188b5d2a89ca5ca5cef8f3ca22d39143f175cf2689a287dc4ab83cee7378d52b",
     "tests/unit/test_deployment_enrollment.py": "8b35683b85ed349e7ddc3690255818582391f01ddd61ab616f091630db43f4d2"
   },
   "static_validation": {
-    "ast_files": 11,
+    "ast_files": 12,
     "catalog_columns": 280,
     "catalog_tables": 27,
     "dto_fields_match_pinned_PH": {

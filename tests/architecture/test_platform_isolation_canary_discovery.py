@@ -51,6 +51,11 @@ def test_the_real_tests_directory_contains_both_known_canaries() -> None:
     assert "test_attestation_trust_registry_platform_isolation.py" in names
 
 
+def test_enrollment_commit_and_freshness_canaries_are_discovered() -> None:
+    names = {path.name for path in runner.discover_platform_isolation_tests()}
+    assert "test_deployment_enrollment_platform_isolation.py" in names
+
+
 def test_a_planted_file_is_discovered(tmp_path: Path) -> None:
     """THE sensitivity proof: a brand-new file matching the pattern, planted
     after the runner was written, must still be found. Without this plant,
