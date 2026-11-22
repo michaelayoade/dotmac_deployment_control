@@ -199,6 +199,47 @@ def b64u_decode(text: str) -> bytes:
     return raw
 
 
+# ── Keys that must never be trusted ─────────────────────────────────────────
+
+#: The vector file publishes two Ed25519 PRIVATE seeds (so anyone can reproduce
+#: its signatures). Their public keys therefore authenticate nobody: enrolment
+#: refuses them here, and CP and the agent refuse them as a pinned response key.
+DENIED_PUBLIC_KEYS_B64U: Final = frozenset(
+    {
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+        "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+    }
+)
+
+
+def _key_bytes(text: str) -> bytes | None:
+    for decode in (b64u_decode, lambda t: base64.b64decode(t, validate=True)):
+        try:
+            return decode(text)
+        except (TargetApiError, ValueError):
+            continue
+    try:
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except ValueError:
+        return None
+
+
+_DENIED_RAW: Final = frozenset(b64u_decode(k) for k in DENIED_PUBLIC_KEYS_B64U)
+
+
+def is_denied_public_key(text: str) -> bool:
+    """True for a published test key, in unpadded base64url or standard base64."""
+    raw = _key_bytes(text) if isinstance(text, str) else None
+    return raw in _DENIED_RAW
+
+
+def check_public_key_admissible(text: str) -> None:
+    if is_denied_public_key(text):
+        raise TargetApiError(
+            "this public key belongs to a published test seed", "denied_public_key"
+        )
+
+
 # ── Time and nonce ──────────────────────────────────────────────────────────
 
 
@@ -298,6 +339,30 @@ def parse_json_body(body: bytes) -> Any:
 
 
 # ── Paths ───────────────────────────────────────────────────────────────────
+
+
+def check_target_binding(target_ref: str, product_code: str, environment: str) -> str:
+    """A descriptor-backed target's ref IS `<product_code>/<environment>/<host>`.
+
+    Without this the path segments the API routes on and signs, and the
+    `product_code`/`environment` the secret_ref and the OpenBao namespace are
+    derived from, could name different things. Returns the host alias. The
+    environment segment is the OpenBao namespace name `<env>`: the same string.
+    """
+    product, env, host = _check_target_ref(target_ref)
+    if (product, env) != (product_code, environment):
+        raise TargetApiError(
+            f"target ref {target_ref!r} is not {product_code}/{environment}/<host>",
+            "target_ref_mismatch",
+        )
+    return host
+
+
+def openbao_namespace(environment: str) -> str:
+    """The OpenBao namespace for an environment: the environment name itself."""
+    if not _SEGMENT.fullmatch(environment):
+        raise TargetApiError("an environment is a lowercase segment")
+    return environment
 
 
 def _check_target_ref(target_ref: str) -> tuple[str, str, str]:
@@ -740,6 +805,7 @@ __all__ = [
     "BASE_PATH",
     "BINDINGS_ENV_NAMES",
     "CONTRACT_NAME",
+    "DENIED_PUBLIC_KEYS_B64U",
     "DEPLOY_ENV_NAMES",
     "ENDPOINTS",
     "H_CREDENTIAL",
@@ -772,13 +838,17 @@ __all__ = [
     "canonical_json",
     "check_materials_shape",
     "check_nonce",
+    "check_public_key_admissible",
     "check_request",
     "check_route",
     "check_skew",
+    "check_target_binding",
     "classify_unsigned_response",
     "expected_app_image",
     "format_stamp",
+    "is_denied_public_key",
     "nonce_ledger_key",
+    "openbao_namespace",
     "parse_json_body",
     "parse_stamp",
     "parse_target_path",

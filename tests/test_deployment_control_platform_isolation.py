@@ -6821,7 +6821,7 @@ def _seed_two_legacy_targets(engine: Engine, ceiling: int):  # type: ignore[no-u
     from tests.unit.test_deploy_unit_state import FakeSource, _bound_target, _set
 
     source = FakeSource(legacy=True)
-    refs = [f"erp/prod/race-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+    refs = [f"dotmac-erp-v2/production/race-{uuid.uuid4().hex[:8]}" for _ in range(2)]
     with Session(engine) as db:
         _set(db, "legacy_env_file_allowed_targets", refs)
         _set(db, "legacy_env_file_ceiling", ceiling)

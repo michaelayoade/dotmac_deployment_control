@@ -35,6 +35,24 @@
     "response_purpose": "cp-target-response.v1"
   },
   "contract": "dotmac.target_api/1",
+  "denied_public_keys": {
+    "accepted_example": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0",
+    "keys": [
+      {
+        "public_b64u": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+        "seed_of": "request"
+      },
+      {
+        "public_b64u": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+        "seed_of": "response"
+      }
+    ],
+    "reason": "this file publishes the matching private seeds; these public keys authenticate nobody",
+    "refused_at": [
+      "enrolment",
+      "response-key pinning"
+    ]
+  },
   "encoding": {
     "base64url": {
       "ok": [
@@ -3108,6 +3126,59 @@
       "input": "2026-12-31T23:59:59+01:00"
     }
   ],
+  "target_binding": {
+    "ok": [
+      {
+        "environment": "production",
+        "host": "host-a",
+        "openbao_namespace": "production",
+        "product_code": "dotmac-erp-v2",
+        "secret_ref_prefix": "bao://production/dotmac-erp-v2/kv/",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "environment": "staging",
+        "host": "host-1",
+        "openbao_namespace": "staging",
+        "product_code": "dotmac-integrator-companion",
+        "secret_ref_prefix": "bao://staging/dotmac-integrator-companion/kv/",
+        "target_ref": "dotmac-integrator-companion/staging/host-1"
+      }
+    ],
+    "refused": [
+      {
+        "code": "target_ref_mismatch",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "target_ref": "erp/prod/host-a"
+      },
+      {
+        "code": "target_ref_mismatch",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "target_ref": "dotmac-erp-v2/staging/host-a"
+      },
+      {
+        "code": "target_ref_mismatch",
+        "environment": "production",
+        "product_code": "dotmac-sub",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "contract_violation",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "target_ref": "dotmac-erp-v2/production"
+      },
+      {
+        "code": "contract_violation",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "target_ref": "dotmac-erp-v2/production/Host-A"
+      }
+    ],
+    "rule": "a descriptor-backed target's ref is <product_code>/<environment>/<host>; the environment segment IS the OpenBao namespace name"
+  },
   "value_vectors": [
     {
       "accept": true,

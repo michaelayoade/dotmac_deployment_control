@@ -38,6 +38,9 @@ _installed_module_audit_actions = bs._installed_module_audit_actions
 _app = bs._app
 _principal = bs._principal
 
+_E = "dotmac-erp-v2/production/"
+_C = "dotmac-integrator-companion/production/"
+
 
 def _web(db: Session, source: object | None = None):  # type: ignore[no-untyped-def]
     app = _app(db, principal=_principal())
@@ -273,7 +276,7 @@ def _two_plans(db: Session):  # type: ignore[no-untyped-def]
     integ = _bound_target(
         db,
         source,
-        ref="integrator/prod/host-a",
+        ref=_C + "host-a",
         product="dotmac-integrator-companion",
         path=_CPATH,
     )

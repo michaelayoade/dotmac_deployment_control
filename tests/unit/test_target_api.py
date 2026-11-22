@@ -7,6 +7,7 @@ router and the deploy agent vendors the file byte-for-byte.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -638,3 +639,56 @@ def test_noncanonical_base64url_is_refused() -> None:
     assert api.b64u_decode("AA") == b"\x00"
     with pytest.raises(api.TargetApiError, match="trailing bits"):
         api.b64u_decode("AB")
+
+
+# ── R3-L6: the target ref is tied to product, environment and host ──────────
+
+
+def test_target_binding_vectors() -> None:
+    binding = _VECTORS["target_binding"]
+    for case in binding["ok"]:
+        host = api.check_target_binding(
+            case["target_ref"], case["product_code"], case["environment"]
+        )
+        assert host == case["host"]
+        assert api.openbao_namespace(case["environment"]) == case["openbao_namespace"]
+        # The secret_ref a binding derives lives in that same namespace.
+        ref = derive_secret_ref(
+            case["environment"], case["product_code"], "app", "DB_PASSWORD"
+        )
+        assert ref.startswith(case["secret_ref_prefix"])
+    for case in binding["refused"]:
+        with pytest.raises(api.TargetApiError):
+            api.check_target_binding(
+                case["target_ref"], case["product_code"], case["environment"]
+            )
+    with pytest.raises(api.TargetApiError):
+        api.openbao_namespace("Production")
+
+
+# ── R3-L7: published test keys are never trusted ────────────────────────────
+
+
+def test_denied_public_key_vectors_and_the_reference_derivation() -> None:
+    denied = _VECTORS["denied_public_keys"]
+    assert {k["public_b64u"] for k in denied["keys"]} == set(
+        api.DENIED_PUBLIC_KEYS_B64U
+    )
+    # They really are the public halves of the published seeds.
+    assert api.b64u_encode(
+        ed.public_key(api.b64u_decode(_KEY["request"]["seed_b64u"]))
+    ) in (api.DENIED_PUBLIC_KEYS_B64U)
+    assert api.b64u_encode(
+        ed.public_key(api.b64u_decode(_KEY["response"]["seed_b64u"]))
+    ) in (api.DENIED_PUBLIC_KEYS_B64U)
+    for key in denied["keys"]:
+        assert api.is_denied_public_key(key["public_b64u"])
+        with pytest.raises(api.TargetApiError) as info:
+            api.check_public_key_admissible(key["public_b64u"])
+        assert info.value.code == "denied_public_key"
+        # The standard-base64 spelling of the same bytes is refused too.
+        standard = base64.b64encode(api.b64u_decode(key["public_b64u"])).decode()
+        assert api.is_denied_public_key(standard)
+    assert not api.is_denied_public_key(denied["accepted_example"])
+    api.check_public_key_admissible(denied["accepted_example"])
+    assert denied["refused_at"] == ["enrolment", "response-key pinning"]

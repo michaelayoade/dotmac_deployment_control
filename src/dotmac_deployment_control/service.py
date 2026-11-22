@@ -225,6 +225,11 @@ from dotmac_deployment_control.release_descriptor import (
     pin_params,
     verify_release_descriptor,
 )
+from dotmac_deployment_control.target_api import (
+    TargetApiError,
+    check_target_binding,
+    is_denied_public_key,
+)
 
 #: The audit actions this module declares and writes. Four, split by SUBJECT
 #: rather than by verb: a target's own standing, a credential's standing, a plan
@@ -2058,6 +2063,13 @@ def set_desired_state(
                 "the verified release descriptor and never takes it from a caller"
             )
         if command.descriptor_path is not None:
+            try:
+                check_target_binding(row.target_ref, row.product_code, row.environment)
+            except TargetApiError as exc:
+                raise PlanRefusedError(
+                    f"a descriptor-backed target's ref must be "
+                    f"<product_code>/<environment>/<host>: {exc}"
+                ) from None
             settings = _effective_settings(session)
             verified = verify_release_descriptor(
                 release_source,
@@ -2247,6 +2259,12 @@ def _enrol_purpose_bound_credential(
     would let anyone who can call the enrollment endpoint impersonate a
     deployment.
     """
+
+    if is_denied_public_key(command.public_key_b64):
+        raise TransitionRefusedError(
+            "this public key belongs to a published test seed (the target-API "
+            "vector file); it authenticates nobody and cannot be enrolled"
+        )
 
     def handler(session: Session) -> Mapping[str, object]:
         target = _load_target_for_update(session, command.target_id)

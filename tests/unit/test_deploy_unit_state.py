@@ -79,7 +79,10 @@ from dotmac_deployment_control.service import (
 
 _ERP = "dotmac-erp-v2"
 _COMPANION = "dotmac-integrator-companion"
-_REF = "erp/prod/host-a"
+#: Target refs are `<product_code>/<environment>/<host>` (the target-API grammar).
+_E = "dotmac-erp-v2/production/"
+_C = "dotmac-integrator-companion/production/"
+_REF = _E + "host-a"
 _SHA = "sha256:" + "a" * 64
 _SHA2 = "sha256:" + "b" * 64
 _D1 = "sha256:" + "1" * 64
@@ -392,7 +395,7 @@ def test_legacy_enable_refusals(db: Session) -> None:
     source = FakeSource(legacy=True)
     # Not on the allowed-targets list: the descriptor itself is refused.
     with pytest.raises(DeployUnitError, match="default-deny"):
-        _bound_target(db, source, ref="erp/prod/denied")
+        _bound_target(db, source, ref=_E + "denied")
     erp = _legacy_target(db, source)
     with pytest.raises(LegacyPolicyRefusedError, match="attended"):
         _enable(db, erp.id, source, approval=_UNATTENDED)
@@ -409,17 +412,25 @@ def test_legacy_enable_refusals(db: Session) -> None:
     assert get_legacy_policy(db, erp.id) is None
     # The ceiling starts at 0.
     other = FakeSource(legacy=True)
-    _set(db, "legacy_env_file_allowed_targets", [_REF, "erp/prod/host-b"])
-    second = _bound_target(db, other, ref="erp/prod/host-b")
+    _set(db, "legacy_env_file_allowed_targets", [_REF, _E + "host-b"])
+    second = _bound_target(db, other, ref=_E + "host-b")
     _enable(db, erp.id, source)
     with pytest.raises(LegacyPolicyRefusedError, match="ceiling"):
         _enable(db, second.id, other)
     # A companion path is refused whatever the allowlist says.
     companion = FakeSource(text=_descriptor_text(product=_COMPANION))
     companion.texts[_CPATH] = companion.texts.pop(_PATH)
-    _set(db, "legacy_env_file_allowed_targets", [_REF, "integrator/prod/host-a"])
+    _set(
+        db,
+        "legacy_env_file_allowed_targets",
+        [_REF, _C + "host-a"],
+    )
     ctarget = _bound_target(
-        db, companion, ref="integrator/prod/host-a", product=_COMPANION, path=_CPATH
+        db,
+        companion,
+        ref=_C + "host-a",
+        product=_COMPANION,
+        path=_CPATH,
     )
     with pytest.raises(LegacyPolicyRefusedError):
         _enable(db, ctarget.id, companion)
@@ -540,7 +551,7 @@ def test_a_descriptor_backed_plan_needs_inputs_and_others_refuse_them(
         _propose(db, erp.id, source, None)
     with pytest.raises(PlanRefusedError, match="loopback port"):
         _propose(db, erp.id, source, DeployPlanInputs(900, None))
-    plain = _plain_target(db, "erp/prod/plain")
+    plain = _plain_target(db, _E + "plain")
     with pytest.raises(ReleaseDescriptorUnavailableError):
         _propose(db, plain.id, source, _INPUTS)
     assert "deploy_binding" not in _propose(db, plain.id, source, None).snapshot
@@ -599,11 +610,11 @@ def test_an_active_binding_on_a_legacy_name_is_refused_until_retired(
     db: Session,
 ) -> None:
     source = FakeSource(legacy=True, active=("DB_PASSWORD",))
-    _set(db, "legacy_env_file_allowed_targets", [_REF, "erp/prod/tmp"])
+    _set(db, "legacy_env_file_allowed_targets", [_REF, _E + "tmp"])
     _set(db, "legacy_env_file_ceiling", 1)
     # An ACTIVE binding on a legacy name collides at parse already (L2).
     with pytest.raises(DeployUnitError, match="collide"):
-        _bound_target(db, source, ref="erp/prod/tmp")
+        _bound_target(db, source, ref=_E + "tmp")
     # Pre-staged first, policy enabled; then the descriptor activates the name.
     pre = FakeSource(legacy=True)
     erp = _bound_target(db, pre)
@@ -715,7 +726,7 @@ def test_product_mismatch_is_refused(db: Session) -> None:
     assert info.value.code == "descriptor_product_mismatch"
     other = FakeSource(text=_descriptor_text().replace(_ERP, "other-app"))
     with pytest.raises(ReleaseDescriptorRefusedError) as info:
-        _bound_target(db, other, ref="erp/prod/x")
+        _bound_target(db, other, ref=_E + "x")
     assert info.value.code == "descriptor_product_mismatch"
 
 
@@ -723,10 +734,18 @@ def test_the_companion_path_rule_holds_through_the_release_source(db: Session) -
     text = _descriptor_text(product=_COMPANION, legacy=True)
     source = FakeSource(text=text)
     source.texts[_CPATH] = source.texts.pop(_PATH)
-    _set(db, "legacy_env_file_allowed_targets", ["integrator/prod/host-a"])
+    _set(
+        db,
+        "legacy_env_file_allowed_targets",
+        [_C + "host-a"],
+    )
     with pytest.raises(DeployUnitError, match="companion"):
         _bound_target(
-            db, source, ref="integrator/prod/host-a", product=_COMPANION, path=_CPATH
+            db,
+            source,
+            ref=_C + "host-a",
+            product=_COMPANION,
+            path=_CPATH,
         )
 
 
@@ -840,7 +859,7 @@ def test_product_toml_evidence_binds_the_plan_and_is_checked(db: Session) -> Non
         bad.toml_path_override = path
         bad.drop_toml = absent
         with pytest.raises(ReleaseDescriptorRefusedError) as info:
-            _bound_target(db, bad, ref=f"erp/prod/bad-{index}")
+            _bound_target(db, bad, ref=f"{_E}bad-{index}")
         assert info.value.code == "descriptor_evidence_mismatch"
 
 
@@ -851,7 +870,11 @@ def test_a_companion_with_no_product_toml_yet_can_be_set_but_never_planned(
     source.texts[_CPATH] = source.texts.pop(_PATH)
     source.drop_toml = True
     target = _bound_target(
-        db, source, ref="integrator/prod/host-a", product=_COMPANION, path=_CPATH
+        db,
+        source,
+        ref=_C + "host-a",
+        product=_COMPANION,
+        path=_CPATH,
     )
     with pytest.raises(ReleaseDescriptorRefusedError) as info:
         _propose(db, target.id, source)
@@ -866,7 +889,11 @@ def _set_fixture(db: Session, *, required: bool = False):  # type: ignore[no-unt
     source.texts[_CPATH] = _descriptor_text(product=_COMPANION)
     erp = _bound_target(db, source)
     integ = _bound_target(
-        db, source, ref="integrator/prod/host-a", product=_COMPANION, path=_CPATH
+        db,
+        source,
+        ref=_C + "host-a",
+        product=_COMPANION,
+        path=_CPATH,
     )
     return source, erp, integ, _propose(db, erp.id, source)
 
@@ -938,7 +965,7 @@ def test_set_membership_refusals(db: Session) -> None:
     # A plan for an unrelated product is not the descriptor's companion.
     other_src = FakeSource(text=_descriptor_text())
     other_src.texts[_PATH] = _descriptor_text()
-    stranger = _bound_target(db, other_src, ref="erp/prod/stranger")
+    stranger = _bound_target(db, other_src, ref=_E + "stranger")
     stranger_plan = _propose(db, stranger.id, other_src)
     with pytest.raises(PlanRefusedError, match="not a companion"):
         create_deployment_set(
@@ -951,7 +978,7 @@ def test_set_membership_refusals(db: Session) -> None:
             release_source=source,
         )
     # An unbound plan cannot be a member.
-    plain = _plain_target(db, "erp/prod/plain")
+    plain = _plain_target(db, _E + "plain")
     unbound = _propose(db, plain.id, source, None)
     with pytest.raises(PlanRefusedError, match="no deploy binding"):
         create_deployment_set(
@@ -1085,7 +1112,7 @@ def test_preview_shows_no_digest_for_a_descriptor_backed_target(db: Session) -> 
     assert shown is not None
     assert shown.binding_derived_at_propose is True
     assert shown.plan_digest == ""
-    plain = _plain_target(db, "erp/prod/plain")
+    plain = _plain_target(db, _E + "plain")
     unbound = preview_plan_proposal(db, plain.id)
     assert unbound is not None
     assert unbound.binding_derived_at_propose is False
@@ -1129,7 +1156,11 @@ def test_the_companion_must_run_on_the_declared_host(db: Session) -> None:
     source.texts[_CPATH] = _descriptor_text(product=_COMPANION)
     erp = _bound_target(db, source)
     elsewhere = _bound_target(
-        db, source, ref="integrator/prod/other-host", product=_COMPANION, path=_CPATH
+        db,
+        source,
+        ref=_C + "other-host",
+        product=_COMPANION,
+        path=_CPATH,
     )
     primary = _propose(db, erp.id, source)
     companion_plan = _propose(db, elsewhere.id, source)
@@ -1153,3 +1184,42 @@ def test_active_binding_roles_are_derived_and_bound_into_the_plan(db: Session) -
     binding = _binding_of(_propose(db, erp.id, source))
     assert binding["roles"] == [{"role": "app", "single_use": False}]
     assert binding["primary_service"] == "dotmac-erp-v2"
+
+
+def test_a_descriptor_backed_target_ref_is_tied_to_product_and_environment(
+    db: Session,
+) -> None:
+    """R3-L6: the ref the API routes on names the same product and environment."""
+    source = FakeSource()
+    for ref in (
+        "erp/prod/host-a",
+        "dotmac-erp-v2/staging/host-a",
+        "dotmac-erp-v2/production",
+    ):
+        target = _register(db, ref)
+        with pytest.raises(PlanRefusedError, match=r"<product_code>/<environment>"):
+            _desired(db, target.id, source)
+        assert "deploy_unit" not in get_target(db, target.id).desired_spec
+    # A plain (non-descriptor) target is unaffected.
+    assert _plain_target(db, "legacy-style-ref")
+
+
+def test_a_published_test_key_cannot_be_enrolled(db: Session) -> None:
+    """R3-L7: the vector file's public keys authenticate nobody."""
+    from dotmac_deployment_control import EnrolCredentialCommand, enrol_credential
+    from dotmac_deployment_control.target_api import DENIED_PUBLIC_KEYS_B64U
+
+    target = _register(db)
+    for index, key in enumerate(sorted(DENIED_PUBLIC_KEYS_B64U)):
+        with pytest.raises(Exception, match="published test seed"):
+            enrol_credential(
+                db,
+                EnrolCredentialCommand(
+                    command_id=_cmd(),
+                    target_id=target.id,
+                    key_id=f"vector-key-{index}",
+                    algorithm="ed25519",
+                    public_key_b64=key,
+                    enrollment_authority="platform_admin_policy",
+                ),
+            )

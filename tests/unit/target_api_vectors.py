@@ -696,6 +696,77 @@ def _render_vectors() -> list[dict[str, Any]]:
     ]
 
 
+def _binding_vectors() -> dict[str, Any]:
+    ok = [
+        ("dotmac-erp-v2/production/host-a", "dotmac-erp-v2", "production"),
+        (
+            "dotmac-integrator-companion/staging/host-1",
+            "dotmac-integrator-companion",
+            "staging",
+        ),
+    ]
+    refused = [
+        ("erp/prod/host-a", "dotmac-erp-v2", "production"),
+        ("dotmac-erp-v2/staging/host-a", "dotmac-erp-v2", "production"),
+        ("dotmac-erp-v2/production/host-a", "dotmac-sub", "production"),
+        ("dotmac-erp-v2/production", "dotmac-erp-v2", "production"),
+        ("dotmac-erp-v2/production/Host-A", "dotmac-erp-v2", "production"),
+    ]
+    out_ok = [
+        {
+            "target_ref": ref,
+            "product_code": product,
+            "environment": env,
+            "host": api.check_target_binding(ref, product, env),
+            "openbao_namespace": api.openbao_namespace(env),
+            "secret_ref_prefix": f"bao://{env}/{product}/kv/",
+        }
+        for ref, product, env in ok
+    ]
+    out_refused = []
+    for ref, product, env in refused:
+        try:
+            api.check_target_binding(ref, product, env)
+        except api.TargetApiError as exc:
+            out_refused.append(
+                {
+                    "target_ref": ref,
+                    "product_code": product,
+                    "environment": env,
+                    "code": exc.code,
+                }
+            )
+        else:  # pragma: no cover
+            raise AssertionError(ref)
+    return {
+        "rule": (
+            "a descriptor-backed target's ref is <product_code>/<environment>/<host>; "
+            "the environment segment IS the OpenBao namespace name"
+        ),
+        "ok": out_ok,
+        "refused": out_refused,
+    }
+
+
+def _denied_key_vectors() -> dict[str, Any]:
+    keys = {
+        "request": api.b64u_encode(ed.public_key(_REQUEST_SEED)),
+        "response": api.b64u_encode(ed.public_key(_RESPONSE_SEED)),
+    }
+    assert set(keys.values()) == set(api.DENIED_PUBLIC_KEYS_B64U)
+    return {
+        "reason": (
+            "this file publishes the matching private seeds; these public keys "
+            "authenticate nobody"
+        ),
+        "refused_at": ["enrolment", "response-key pinning"],
+        "keys": [
+            {"public_b64u": key, "seed_of": name} for name, key in sorted(keys.items())
+        ],
+        "accepted_example": api.b64u_encode(ed.public_key(bytes(range(64, 96)))),
+    }
+
+
 def _secret_vectors() -> dict[str, Any]:
     ok = [
         ("production", "dotmac-erp-v2", "app", "DB_PASSWORD"),
@@ -830,6 +901,8 @@ def build_vectors() -> dict[str, Any]:
             {"value_parts": parts, **_value_outcome(parts)} for parts, _ in _VALUES
         ],
         "secret_name_vectors": _secret_name_vectors(),
+        "target_binding": _binding_vectors(),
+        "denied_public_keys": _denied_key_vectors(),
         "secret_ref_vectors": _secret_vectors(),
         "stamp_vectors": [
             {
