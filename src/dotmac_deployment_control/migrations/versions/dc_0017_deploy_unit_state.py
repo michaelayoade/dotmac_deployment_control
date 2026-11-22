@@ -70,6 +70,23 @@ def _timestamps() -> tuple[sa.Column, sa.Column]:
     )
 
 
+def _bao_trigger_function() -> str:
+    return f"""
+CREATE FUNCTION {_SCHEMA}.refuse_bao_environment_change()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.bao_environment IS NOT NULL
+       AND NEW.bao_environment IS DISTINCT FROM OLD.bao_environment THEN
+        RAISE EXCEPTION
+            'deployment_targets.bao_environment is fixed once set (target %)',
+            OLD.target_ref;
+    END IF;
+    RETURN NEW;
+END;
+$$
+"""
+
+
 def upgrade() -> None:
     # The OpenBao namespace-env (`prod`, `staging`), fixed at registration: a
     # nullable ADD COLUMN, so every existing target is untouched.
@@ -77,6 +94,18 @@ def upgrade() -> None:
         "deployment_targets",
         sa.Column("bao_environment", sa.String(length=40), nullable=True),
         schema=_SCHEMA,
+    )
+    # "Fixed at registration" is enforced here, not only in Python: the table
+    # grant lets platform_api UPDATE the row, and a column-level REVOKE cannot
+    # override a table grant. NULL -> value is allowed once (targets registered
+    # before the column existed); value -> anything else is refused.
+    op.execute(_bao_trigger_function())
+    op.execute(
+        f"""
+CREATE TRIGGER deployment_targets_bao_environment_guard
+BEFORE UPDATE OF bao_environment ON {_SCHEMA}.deployment_targets
+FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.refuse_bao_environment_change()
+"""
     )
     op.create_table(
         "deploy_settings",
@@ -193,6 +222,16 @@ def downgrade() -> None:
         op.execute(f"LOCK TABLE {_SCHEMA}.{table} IN ACCESS EXCLUSIVE MODE")
     bind = op.get_bind()
     if bind.execute(
+        sa.text(
+            "SELECT EXISTS (SELECT 1 FROM mod_deploy.deployment_targets "
+            "WHERE bao_environment IS NOT NULL)"
+        )
+    ).scalar_one():
+        raise RuntimeError(
+            "dc_0017_deploy_unit_state refuses to discard targets' fixed "
+            "OpenBao namespace-env (bao_environment)"
+        )
+    if bind.execute(
         sa.text("SELECT EXISTS (SELECT 1 FROM mod_deploy.legacy_env_policy_versions)")
     ).scalar_one():
         raise RuntimeError(
@@ -216,4 +255,9 @@ def downgrade() -> None:
     )
     op.drop_table("legacy_env_policy_versions", schema=_SCHEMA)
     op.drop_table("deploy_settings", schema=_SCHEMA)
+    op.execute(
+        "DROP TRIGGER deployment_targets_bao_environment_guard "
+        f"ON {_SCHEMA}.deployment_targets"
+    )
+    op.execute(f"DROP FUNCTION {_SCHEMA}.refuse_bao_environment_change()")
     op.drop_column("deployment_targets", "bao_environment", schema=_SCHEMA)

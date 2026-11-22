@@ -472,6 +472,7 @@ from dotmac_deployment_control.service import (
     ReviseLegacyPolicyCommand,
     RevokePlanApprovalCommand,
     RolloutTransitionCommand,
+    SetBaoEnvironmentCommand,
     SetDeploySettingCommand,
     SetDesiredStateCommand,
     SettleAttemptCommand,
@@ -522,6 +523,7 @@ from dotmac_deployment_control.service import (
     revoke_plan_approval,
     revoked_grant_ids_for_target,
     rollouts_for_target,
+    set_bao_environment,
     set_deploy_setting,
     set_desired_state,
     settle_attempt,
@@ -564,6 +566,8 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "SetBaoEnvironmentCommand",
+    "set_bao_environment",
     "ApproveDeploymentSetCommand",
     "approve_deployment_set",
     "ReleaseDescriptorEvidence",

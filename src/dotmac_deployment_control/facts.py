@@ -77,6 +77,9 @@ REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1: Final[str] = (
     "deployment.rehearsal_issuer_authorization.changed.v1"
 )
 
+#: A target's OpenBao namespace-env was set, once, from NULL (a target
+#: registered before it existed).
+TARGET_BAO_ENVIRONMENT_SET_V1: Final[str] = "deployment.target.bao_environment_set.v1"
 #: A deploy-unit setting (pull allowlist, legacy product allowlist, ceiling)
 #: changed under an attended approval.
 DEPLOY_SETTING_CHANGED_V1: Final[str] = "deployment.deploy_setting.changed.v1"
@@ -116,6 +119,7 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         DRIFT_DETECTED_V1,
         REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1,
         DEPLOY_SETTING_CHANGED_V1,
+        TARGET_BAO_ENVIRONMENT_SET_V1,
         LEGACY_POLICY_CHANGED_V1,
         DEPLOYMENT_SET_CREATED_V1,
         DEPLOYMENT_SET_APPROVED_V1,
@@ -833,6 +837,7 @@ __all__ = [
     "ROLLOUT_REQUESTED_V1",
     "ROLLOUT_SUCCEEDED_V1",
     "ROLLOUT_TIMED_OUT_V1",
+    "TARGET_BAO_ENVIRONMENT_SET_V1",
     "TARGET_DECOMMISSIONED_V1",
     "TARGET_DESIRED_STATE_SET_V1",
     "TARGET_REGISTERED_V1",

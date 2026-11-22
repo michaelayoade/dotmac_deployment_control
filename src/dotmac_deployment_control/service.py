@@ -228,7 +228,7 @@ from dotmac_deployment_control.release_descriptor import (
 )
 from dotmac_deployment_control.target_api import (
     TargetApiError,
-    check_secrets_value,
+    check_explicit_secrets_environment,
     check_target_binding,
     default_secrets_environment,
     is_denied_public_key,
@@ -713,6 +713,22 @@ class RegisterTargetCommand:
     #: `staging` -> `staging`); any other environment must state it. A target
     #: with none cannot be descriptor-backed.
     secrets_environment: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SetBaoEnvironmentCommand:
+    """Set a target's OpenBao namespace-env ONCE, only while it is still NULL.
+
+    For targets registered before the column existed. It is fixed afterwards (a
+    database trigger refuses any later change), so this is attended: a flag plus
+    a register reference, like the other deploy settings.
+    """
+
+    command_id: str
+    target_id: UUID
+    bao_environment: str
+    approval: AttendedApproval
+    actor_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1981,14 +1997,16 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
         ).scalar_one_or_none()
         if existing is not None:
             return {"id": str(existing.id)}
+        if command.secrets_environment is not None:
+            try:
+                check_explicit_secrets_environment(
+                    command.environment, command.secrets_environment
+                )
+            except TargetApiError as exc:
+                raise TransitionRefusedError(str(exc)) from None
         chosen = command.secrets_environment or default_secrets_environment(
             command.environment
         )
-        if chosen is not None:
-            try:
-                check_secrets_value(chosen, "the namespace env")
-            except TargetApiError as exc:
-                raise TransitionRefusedError(str(exc)) from None
         row = DeploymentTarget(
             target_ref=command.target_ref,
             subject_ref=command.subject_ref,
@@ -2025,6 +2043,54 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
     )
     target = _load_target(db, UUID(str(outcome.result["id"])))
     return _target_view(target, approval_standing=_approval_standing_for(db, target.id))
+
+
+def set_bao_environment(
+    db: Session, command: SetBaoEnvironmentCommand
+) -> facts.TargetView:
+    """The one-time attended writer of `bao_environment` (only while NULL)."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        command.approval.require("setting a target's OpenBao namespace-env")
+        row = _load_target_for_update(session, command.target_id)
+        if row.bao_environment is not None:
+            raise TransitionRefusedError(
+                f"target {row.target_ref} already has namespace-env "
+                f"{row.bao_environment!r}; it is fixed once set"
+            )
+        try:
+            check_explicit_secrets_environment(row.environment, command.bao_environment)
+        except TargetApiError as exc:
+            raise TransitionRefusedError(str(exc)) from None
+        row.bao_environment = command.bao_environment
+        row.record_version += 1
+        session.flush()
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.TARGET_BAO_ENVIRONMENT_SET_V1,
+            entity_type=_ENTITY_TARGET,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "target_ref": row.target_ref,
+                "bao_environment": row.bao_environment,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": str(row.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_SET_BAO_ENVIRONMENT,
+        handler=handler,
+    )
+    return _target_view(
+        _load_target(db, command.target_id),
+        approval_standing=_approval_standing_for(db, command.target_id),
+    )
 
 
 def set_desired_state(
@@ -5225,6 +5291,7 @@ def observation_attempts(
 # without a deploy binding is untouched.
 
 SCOPE_SET_DEPLOY_SETTING = "deployment.set_deploy_setting"
+SCOPE_SET_BAO_ENVIRONMENT = "deployment.set_bao_environment"
 SCOPE_LEGACY_POLICY = "deployment.legacy_policy"
 SCOPE_CREATE_DEPLOYMENT_SET = "deployment.create_deployment_set"
 SCOPE_APPROVE_DEPLOYMENT_SET = "deployment.approve_deployment_set"
@@ -6161,6 +6228,7 @@ __all__ = [
     "SCOPE_REVOKE_CREDENTIAL",
     "SCOPE_REVOKE_PLAN_APPROVAL",
     "SCOPE_SETTLE",
+    "SCOPE_SET_BAO_ENVIRONMENT",
     "SCOPE_SET_DEPLOY_SETTING",
     "SCOPE_SET_DESIRED",
     "SCOPE_SUSPEND_TARGET",
@@ -6180,6 +6248,7 @@ __all__ = [
     "ReviseLegacyPolicyCommand",
     "RevokePlanApprovalCommand",
     "RolloutTransitionCommand",
+    "SetBaoEnvironmentCommand",
     "SetDeploySettingCommand",
     "SetDesiredStateCommand",
     "SettleAttemptCommand",
@@ -6227,6 +6296,7 @@ __all__ = [
     "revoke_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
+    "set_bao_environment",
     "set_deploy_setting",
     "set_desired_state",
     "settle_attempt",

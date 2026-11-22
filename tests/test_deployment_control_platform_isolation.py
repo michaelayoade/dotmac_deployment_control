@@ -6929,3 +6929,92 @@ def test_a_concurrent_retirement_and_ceiling_raise_do_not_lose_an_update(
         assert final == 2
     finally:
         engine.dispose()
+
+
+def test_dc_0017_fixes_the_namespace_env_once_set(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    """R5-2: a trigger, not just Python: NULL -> value once, then fixed."""
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.deployment_targets "
+                    "SET bao_environment = 'prod' WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
+        for value in ("'staging'", "NULL"):
+            with pytest.raises(DBAPIError, match="fixed once set"):
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.deployment_targets "
+                            f"SET bao_environment = {value} WHERE id = :id"
+                        ),
+                        {"id": target_id},
+                    )
+        # Unrelated updates, and re-writing the same value, are untouched.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.deployment_targets "
+                    "SET bao_environment = 'prod', record_version = record_version + 1 "
+                    "WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT bao_environment FROM mod_deploy.deployment_targets "
+                        "WHERE id = :id"
+                    ),
+                    {"id": target_id},
+                ).scalar_one()
+                == "prod"
+            )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0017_refuses_downgrade_while_a_namespace_env_is_set(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.deployment_targets "
+                    "SET bao_environment = 'prod' WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="OpenBao namespace-env"):
+            command.downgrade(cfg, "dc_0016_controller_key_nonreuse")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
+                == "dc_0017_deploy_unit_state"
+            )
+    finally:
+        engine.dispose()

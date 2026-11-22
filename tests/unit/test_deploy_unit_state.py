@@ -1327,3 +1327,92 @@ def test_the_namespace_env_is_fixed_at_registration(db: Session) -> None:
         _register(db, _E.replace("production", "prod") + "host-9", env="prod").id,
         FakeSource(),
     )
+
+
+def test_an_explicit_namespace_env_may_not_contradict_a_known_default(
+    db: Session,
+) -> None:
+    """R5-3: explicit values are for environments the table does not list."""
+    from dotmac_deployment_control.ports import TransitionRefusedError
+
+    for env, wrong in (
+        ("staging", "prod"),
+        ("production", "staging"),
+        ("prod", "staging"),
+    ):
+        with pytest.raises(TransitionRefusedError, match="contradicts"):
+            register_target(
+                db,
+                RegisterTargetCommand(
+                    command_id=_cmd(),
+                    target_ref=f"dotmac-erp-v2/{env}/host-x",
+                    subject_ref="acme-operator",
+                    product_code=_ERP,
+                    environment=env,
+                    secrets_environment=wrong,
+                ),
+            )
+    # Equal to the default is fine, and an unlisted environment takes its own.
+    for env, same in (("staging", "staging"), ("production", "prod")):
+        view = register_target(
+            db,
+            RegisterTargetCommand(
+                command_id=_cmd(),
+                target_ref=f"dotmac-erp-v2/{env}/host-y",
+                subject_ref="acme-operator",
+                product_code=_ERP,
+                environment=env,
+                secrets_environment=same,
+            ),
+        )
+        assert db.get(DeploymentTarget, view.id).bao_environment == same
+
+
+def _a17_target(db: Session, ref: str, env: str):  # type: ignore[no-untyped-def]
+    """A target registered before `bao_environment` existed: the column is NULL."""
+    view = _register(db, ref, env=env)
+    row = db.get(DeploymentTarget, view.id)
+    row.bao_environment = None
+    db.flush()
+    return view
+
+
+def test_the_namespace_env_is_set_once_while_null(db: Session) -> None:
+    """R5-2: the one-time attended writer for targets registered under a17."""
+    from dotmac_deployment_control import SetBaoEnvironmentCommand, set_bao_environment
+    from dotmac_deployment_control.ports import TransitionRefusedError
+
+    def command(target_id, value, approval=_ATTENDED):  # type: ignore[no-untyped-def]
+        return SetBaoEnvironmentCommand(
+            command_id=_cmd(),
+            target_id=target_id,
+            bao_environment=value,
+            approval=approval,
+        )
+
+    old = _a17_target(db, _E + "host-old", "production")
+    # Not descriptor-backed until it has one.
+    with pytest.raises(PlanRefusedError, match="namespace-env"):
+        _desired(db, old.id, FakeSource())
+    with pytest.raises(LegacyPolicyRefusedError, match="attended"):
+        set_bao_environment(db, command(old.id, "prod", _UNATTENDED))
+    with pytest.raises(TransitionRefusedError, match="contradicts"):
+        set_bao_environment(db, command(old.id, "staging"))
+    with pytest.raises(TransitionRefusedError, match="lowercase segment"):
+        set_bao_environment(db, command(old.id, "Prod"))
+    assert db.get(DeploymentTarget, old.id).bao_environment is None
+    set_bao_environment(db, command(old.id, "prod"))
+    assert db.get(DeploymentTarget, old.id).bao_environment == "prod"
+    # Fixed once set: a second writer is refused, even with the same value.
+    for value in ("prod", "staging"):
+        with pytest.raises(TransitionRefusedError, match="fixed once set"):
+            set_bao_environment(db, command(old.id, value))
+    assert _desired(db, old.id, FakeSource())
+    # A target registered with a value cannot be re-pointed either.
+    fresh = _register(db, _E + "host-new")
+    with pytest.raises(TransitionRefusedError, match="fixed once set"):
+        set_bao_environment(db, command(fresh.id, "prod"))
+    # An unlisted environment states its own, once.
+    pilot = _a17_target(db, "dotmac-erp-v2/pilot/host-1", "pilot")
+    set_bao_environment(db, command(pilot.id, "pilot"))
+    assert db.get(DeploymentTarget, pilot.id).bao_environment == "pilot"
