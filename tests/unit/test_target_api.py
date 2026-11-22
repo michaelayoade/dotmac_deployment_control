@@ -417,7 +417,33 @@ def test_secret_named_material_vectors() -> None:
     assert by[("DB_PASSWORD", "string")] is False
     assert by[("DB_PASSWORD", "path")] is True
     assert by[("SECRETS_DIR_APP", "path")] is True
-    assert by[("PUBLIC_HOST", "string")] is True
+    assert (
+        by[("PUBLIC_HOST", "string")] is True
+    )  # R3-L5: the wider rule. `*_KEY`, PASS, PWD, DSN, SALT and COOKIE names are
+    # file-only too; false positives (BYPASS_CACHE) fail closed.
+    for name in (
+        "DB_PASS",
+        "DB_PWD",
+        "SIGNING_KEY",
+        "JWT_KEY",
+        "KEY",
+        "DATABASE_DSN",
+        "PASSWORD_SALT",
+        "SESSION_COOKIE",
+        "BYPASS_CACHE",
+    ):
+        assert by[(name, "string")] is False, name
+    assert by[("DATABASE_DSN", "path")] is True
+    # Names that merely CONTAIN the letters stay ordinary.
+    for name in ("MONKEY_X", "KEYBOARD_LAYOUT", "KEY_ID"):
+        assert by[(name, "string")] is (name != "KEY_ID"), name
+    # The existing descriptors' materials are all still accepted.
+    for name, kind in (
+        ("PLATFORM_ROOT_DOMAIN", "hostname"),
+        ("TRUSTED_HOSTS", "string"),
+        ("SEED_ON_STARTUP", "bool"),
+    ):
+        assert by[(name, kind)] is True, name
 
 
 def test_secret_ref_vectors_and_derivation() -> None:

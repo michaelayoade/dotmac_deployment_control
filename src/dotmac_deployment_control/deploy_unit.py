@@ -132,7 +132,8 @@ _SECRET_SHAPES: Final = (
 #: param), never carry a value. Enforced here, at descriptor parse (so product
 #: CI refuses it) and again, as a vector-pinned duplicate, by the agent.
 SECRET_NAMED_MATERIAL: Final = re.compile(
-    r"PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_KEY|API_KEY|CREDENTIAL"
+    r"PASS|PWD|SECRET|TOKEN|CREDENTIAL|DSN|SALT|COOKIE|PRIVATE_KEY|API_KEY"
+    r"|(?:^|_)KEY(?:$|_)"
 )
 _HIGH_ENTROPY_RUN = re.compile(r"[A-Za-z0-9+_=-]{32,}")
 

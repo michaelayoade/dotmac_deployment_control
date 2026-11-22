@@ -2953,9 +2953,89 @@
       "type": "path"
     },
     {
+      "accept": false,
+      "material": "DB_PASS",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "DB_PWD",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "SIGNING_KEY",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "JWT_KEY",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "KEY",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "KEY_ID",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "DATABASE_DSN",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "DATABASE_DSN",
+      "type": "path"
+    },
+    {
+      "accept": false,
+      "material": "PASSWORD_SALT",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "SESSION_COOKIE",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "BYPASS_CACHE",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "MONKEY_X",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "KEYBOARD_LAYOUT",
+      "type": "string"
+    },
+    {
       "accept": true,
       "material": "PUBLIC_HOST",
       "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "PLATFORM_ROOT_DOMAIN",
+      "type": "hostname"
+    },
+    {
+      "accept": true,
+      "material": "TRUSTED_HOSTS",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "SEED_ON_STARTUP",
+      "type": "bool"
     },
     {
       "accept": true,
