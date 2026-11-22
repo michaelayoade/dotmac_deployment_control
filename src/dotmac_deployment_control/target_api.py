@@ -718,7 +718,9 @@ def audit_router_source(source: str) -> list[str]:
         ):
             if not any(any(kw.arg == kwarg for kw in c.keywords) for c in calls):
                 problems.append(why)
-    attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)} | {
+        n.id for n in ast.walk(tree) if isinstance(n, ast.Name)
+    }
     for needed, why in (
         (
             "request_credential_id",
