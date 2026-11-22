@@ -1071,3 +1071,56 @@ def test_preview_shows_no_digest_for_a_descriptor_backed_target(db: Session) -> 
     assert unbound is not None
     assert unbound.binding_derived_at_propose is False
     assert unbound.plan_digest.startswith("sha256:")
+
+
+def test_a_pull_image_refuses_a_loopback_port(db: Session) -> None:
+    """R2-L3: a pulled image has no loopback registry, so a port is an error."""
+    source = FakeSource(pull=True)
+    erp = _register(db)
+    _set(db, "public_pull_repositories", [_REPO])
+    _desired(db, erp.id, source, repo=_REPO)
+    with pytest.raises(PlanRefusedError, match="no loopback registry"):
+        _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
+    assert _propose(db, erp.id, source, DeployPlanInputs(900))
+
+
+def test_set_members_must_match_their_frozen_descriptor_and_host(
+    db: Session,
+) -> None:
+    """R2-L4: a set is validated against each plan's frozen descriptor digest."""
+    source, _erp, integ, primary = _set_fixture(db)
+    companion_plan = _propose(db, integ.id, source)
+    # The primary descriptor changes after the plans were frozen (new release).
+    source.set_text(source.text + "\n# changed\n")
+    with pytest.raises(ReleaseDescriptorRefusedError) as info:
+        create_deployment_set(
+            db,
+            CreateDeploymentSetCommand(
+                command_id=_cmd(),
+                primary_plan_id=primary.id,
+                companion_plan_id=companion_plan.id,
+            ),
+            release_source=source,
+        )
+    assert info.value.code == "descriptor_digest_mismatch"
+
+
+def test_the_companion_must_run_on_the_declared_host(db: Session) -> None:
+    source = FakeSource(companion=True)
+    source.texts[_CPATH] = _descriptor_text(product=_COMPANION)
+    erp = _bound_target(db, source)
+    elsewhere = _bound_target(
+        db, source, ref="integrator/prod/other-host", product=_COMPANION, path=_CPATH
+    )
+    primary = _propose(db, erp.id, source)
+    companion_plan = _propose(db, elsewhere.id, source)
+    with pytest.raises(PlanRefusedError, match="not on 'host-a'"):
+        create_deployment_set(
+            db,
+            CreateDeploymentSetCommand(
+                command_id=_cmd(),
+                primary_plan_id=primary.id,
+                companion_plan_id=companion_plan.id,
+            ),
+            release_source=source,
+        )

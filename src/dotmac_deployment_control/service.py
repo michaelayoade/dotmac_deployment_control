@@ -5724,6 +5724,10 @@ def _derive_deploy_binding(
             raise PlanRefusedError("a transferred image needs the loopback port")
         planned = loopback_repository(evidence.image_repository, inputs.loopback_port)
     else:
+        if inputs.loopback_port is not None:
+            raise PlanRefusedError(
+                "a pulled image has no loopback registry; a port was supplied"
+            )
         planned = evidence.image_repository
     for name, spec in unit.params.items():
         if spec.type == "image_repository" and values.get(name) != planned:
@@ -5781,6 +5785,19 @@ def _derive_deploy_binding(
     )
 
 
+def _require_frozen_descriptor(plan: DeploymentPlan, digest: str, role: str) -> None:
+    """A set member must still be the plan its CURRENT descriptor would give."""
+    frozen = ((plan.snapshot or {}).get("deploy_binding") or {}).get(
+        "deploy_unit_digest"
+    )
+    if frozen != digest:
+        raise ReleaseDescriptorRefusedError(
+            ReleaseDescriptorRefusedError.DIGEST_MISMATCH,
+            f"the {role} plan was frozen from a different descriptor than the "
+            "one the release now attests",
+        )
+
+
 def create_deployment_set(
     db: Session,
     command: CreateDeploymentSetCommand,
@@ -5822,6 +5839,7 @@ def create_deployment_set(
             verified = _verified_stored_descriptor(
                 session, ptarget, settings, release_source
             )
+            _require_frozen_descriptor(primary, verified.digest, "primary")
             declared = verified.unit.companions
             if companion is None:
                 if any(c.required_at_switch for c in declared):
@@ -5839,6 +5857,20 @@ def create_deployment_set(
                         "primary descriptor declares"
                     )
                 required = matches[0].required_at_switch
+                cverified = _verified_stored_descriptor(
+                    session, ctarget, settings, release_source
+                )
+                _require_frozen_descriptor(companion, cverified.digest, "companion")
+                expected_host = (
+                    ptarget.target_ref.rsplit("/", 1)[-1]
+                    if matches[0].host == "same"
+                    else matches[0].host
+                )
+                if ctarget.target_ref.rsplit("/", 1)[-1] != expected_host:
+                    raise PlanRefusedError(
+                        f"the companion runs on host {matches[0].host!r} per the "
+                        f"primary descriptor; this target is not on {expected_host!r}"
+                    )
         elif companion is not None:
             raise PlanRefusedError(
                 "a companion is only valid for a descriptor-backed primary"
