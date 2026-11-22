@@ -16,14 +16,14 @@
 
 {% call ui.panel("Current values") %}
   {{ ui.field("Pull allowlist (public_pull_repositories)", settings.public_pull_repositories | join(", ") or "empty") }}
-  {{ ui.field("Legacy env-file products (legacy_env_file_allowed_products)", settings.legacy_env_file_allowed_products | join(", ") or "none") }}
+  {{ ui.field("Legacy env-file targets (legacy_env_file_allowed_targets)", settings.legacy_env_file_allowed_targets | join(", ") or "none") }}
   {{ ui.field("Legacy env-file ceiling (legacy_env_file_ceiling)", settings.legacy_env_file_ceiling) }}
 {% endcall %}
 
 {% call ui.panel("Change a setting (attended, with a register line)") %}
 {% for setting_name, hint in [
      ("public_pull_repositories", "repositories, comma or line separated"),
-     ("legacy_env_file_allowed_products", "product codes, comma or line separated"),
+     ("legacy_env_file_allowed_targets", "target refs, comma or line separated"),
      ("legacy_env_file_ceiling", "a whole number, raise only")] %}
 <form method="post" action="{{ surface_url('set_deploy_setting') }}"
       style="display:flex; flex-wrap:wrap; gap:var(--dmui-space-sm); align-items:flex-end; margin-bottom:var(--dmui-space-md);">

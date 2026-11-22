@@ -85,6 +85,8 @@ DEPLOY_SETTING_CHANGED_V1: Final[str] = "deployment.deploy_setting.changed.v1"
 LEGACY_POLICY_CHANGED_V1: Final[str] = "deployment.legacy_policy.changed.v1"
 #: A deployment set (primary plan plus optional companion) was recorded.
 DEPLOYMENT_SET_CREATED_V1: Final[str] = "deployment.set.created.v1"
+#: One approval decision was bound to a deployment set's digest.
+DEPLOYMENT_SET_APPROVED_V1: Final[str] = "deployment.set.approved.v1"
 
 #: Every type this module can emit. A consumer building a subscription set reads
 #: this rather than a hand-kept list that drifts, and the module's own test
@@ -116,6 +118,7 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         DEPLOY_SETTING_CHANGED_V1,
         LEGACY_POLICY_CHANGED_V1,
         DEPLOYMENT_SET_CREATED_V1,
+        DEPLOYMENT_SET_APPROVED_V1,
     }
 )
 
@@ -770,7 +773,7 @@ class DeploySettingsView:
     """The effective deploy-unit settings (stored value, or the default)."""
 
     public_pull_repositories: tuple[str, ...]
-    legacy_env_file_allowed_products: tuple[str, ...]
+    legacy_env_file_allowed_targets: tuple[str, ...]
     legacy_env_file_ceiling: int
 
 
@@ -808,6 +811,7 @@ __all__ = [
     "CREDENTIAL_ENROLLED_V1",
     "CREDENTIAL_RETIRED_V1",
     "CREDENTIAL_REVOKED_V1",
+    "DEPLOYMENT_SET_APPROVED_V1",
     "DEPLOYMENT_SET_CREATED_V1",
     "DEPLOY_SETTING_CHANGED_V1",
     "DRIFT_DETECTED_V1",

@@ -66,6 +66,8 @@ class PullAllowlist:
 def _split_port(repository: str) -> tuple[int | None, str]:
     host = repository.split("/", 1)[0]
     name, _, port = host.partition(":")
+    if port and not (port.isascii() and port.isdigit()):
+        raise ImagePolicyRefusedError("a registry port must be a number")
     return (int(port) if port else None), name
 
 

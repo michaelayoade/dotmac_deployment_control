@@ -456,6 +456,7 @@ from dotmac_deployment_control.service import (
     AUDIT_ACTION_OBSERVATION,
     AUDIT_ACTION_ROLLOUT,
     AUDIT_ACTION_TARGET,
+    ApproveDeploymentSetCommand,
     ApprovePlanCommand,
     CreateDeploymentSetCommand,
     CredentialTransitionCommand,
@@ -476,6 +477,7 @@ from dotmac_deployment_control.service import (
     SettleAttemptCommand,
     TargetTransitionCommand,
     activate_credential,
+    approve_deployment_set,
     approve_plan,
     cancel_plan,
     cancel_rollout,
@@ -562,6 +564,8 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "ApproveDeploymentSetCommand",
+    "approve_deployment_set",
     "ReleaseDescriptorEvidence",
     "ReleaseDescriptorRefusedError",
     "ReleaseDescriptorSource",

@@ -73,3 +73,31 @@ def test_no_command_or_form_accepts_descriptor_text() -> None:
     assert not {f for f in web._PARAMS_FIELDS if _TEXT_NAMES.search(f)}
     web_source = (SRC / "web.py").read_text()
     assert not re.search(r'form\[["\'](descriptor_text|deploy_unit)', web_source)
+
+
+def test_no_command_accepts_a_caller_built_plan_binding() -> None:
+    """Control DERIVES the binding; a command carries only TTL and port."""
+    from dotmac_deployment_control.service import ProposePlanCommand
+
+    fields = ProposePlanCommand.__dataclass_fields__
+    assert "deploy_binding" not in fields
+    assert "deploy_inputs" in fields
+    source = (SRC / "service.py").read_text()
+    tree = ast.parse(source)
+    assert not any(
+        isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id in {"deploy_binding", "binding"}
+        and "DeployPlanBinding" in ast.unparse(node.annotation)
+        and _in_command_class(tree, node)
+        for node in ast.walk(tree)
+    )
+
+
+def _in_command_class(tree: ast.AST, target: ast.AST) -> bool:
+    return any(
+        isinstance(cls, ast.ClassDef)
+        and cls.name.endswith("Command")
+        and target in ast.walk(cls)
+        for cls in ast.walk(tree)
+    )

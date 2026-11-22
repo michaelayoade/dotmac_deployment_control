@@ -290,6 +290,8 @@ TABLES = (
     "target_current_admission_policies",
 )
 EVIDENCE_TABLES = (
+    "legacy_env_policy_versions",
+    "deployment_sets",
     "rollout_attempts",
     "rollout_attempt_settlements",
     "observation_attempts",
@@ -303,6 +305,7 @@ EVIDENCE_TABLES = (
     "target_admission_policy_closures",
 )
 MUTABLE_TABLES = (
+    "deploy_settings",
     "deployment_targets",
     "target_credentials",
     "deployment_plans",
@@ -818,7 +821,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 246 columns across twenty-five tables; `dc_0005` is 105.
+    The head extent is 273 columns across twenty-five tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -6611,5 +6614,132 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     )
         finally:
             app_user_engine.dispose()
+    finally:
+        engine.dispose()
+
+
+def _insert_policy_version(conn, target_id: uuid.UUID) -> None:  # type: ignore[no-untyped-def]
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.legacy_env_policy_versions "
+            "(id, target_id, policy_version, state, product_code, names, "
+            "file_sha256, expires_at, enabled_by_ref, register_ref) VALUES "
+            "(:id, :target, 1, 'enabled', 'dotmac-erp-v2', '[\"A_SECRET\"]'::jsonb, "
+            ":sha, now() + interval '30 days', 'operator', 'register-1')"
+        ),
+        {"id": uuid.uuid4(), "target": target_id, "sha": "sha256:" + "a" * 64},
+    )
+
+
+def _insert_set(conn, primary: uuid.UUID, companion: uuid.UUID | None) -> None:  # type: ignore[no-untyped-def]
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.deployment_sets "
+            "(id, primary_plan_id, companion_plan_id, order_policy, "
+            "required_at_switch, set_digest) VALUES "
+            "(:id, :primary, :companion, 'after_primary_ready', false, :digest)"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "primary": primary,
+            "companion": companion,
+            "digest": "sha256:" + uuid.uuid4().hex * 2,
+        },
+    )
+
+
+def test_dc_0017_evidence_tables_refuse_update_delete_and_truncate(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    """Real-PG proof that the two new evidence tables are append-only."""
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_a = _insert_plan(conn, target_id, sequence=1)
+            plan_b = _insert_plan(conn, target_id, sequence=2)
+            _insert_policy_version(conn, target_id)
+            _insert_set(conn, plan_a, plan_b)
+        for statement in (
+            "UPDATE mod_deploy.legacy_env_policy_versions SET state = 'retired'",
+            "DELETE FROM mod_deploy.legacy_env_policy_versions",
+            "TRUNCATE mod_deploy.legacy_env_policy_versions",
+            "UPDATE mod_deploy.deployment_sets SET required_at_switch = true",
+            "DELETE FROM mod_deploy.deployment_sets",
+            "TRUNCATE mod_deploy.deployment_sets",
+        ):
+            with pytest.raises(DBAPIError), engine.begin() as conn:
+                conn.execute(text(statement))
+        with engine.connect() as conn:
+            for table in ("legacy_env_policy_versions", "deployment_sets"):
+                assert (
+                    conn.execute(
+                        text(f"SELECT count(*) FROM mod_deploy.{table}")
+                    ).scalar_one()
+                    == 1
+                )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0017_restricts_setting_names_and_set_shape(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with pytest.raises(IntegrityError, match="ck_deploy_settings_name"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.deploy_settings (setting_name, "
+                        "value, setting_version, approver_ref, register_ref) "
+                        "VALUES ('anything_else', '[]'::jsonb, 1, 'a', 'r')"
+                    )
+                )
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_id = _insert_plan(conn, target_id)
+        with pytest.raises(IntegrityError, match="ck_deployment_sets_distinct_plans"):
+            with engine.begin() as conn:
+                _insert_set(conn, plan_id, plan_id)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("table", ["legacy_env_policy_versions", "deployment_sets"])
+def test_dc_0017_refuses_downgrade_with_evidence_rows(
+    isolated_migrated_scratch: tuple[str, str, str], table: str
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_a = _insert_plan(conn, target_id, sequence=1)
+            plan_b = _insert_plan(conn, target_id, sequence=2)
+            if table == "deployment_sets":
+                _insert_set(conn, plan_a, plan_b)
+            else:
+                _insert_policy_version(conn, target_id)
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="refuses to discard"):
+            command.downgrade(cfg, "dc_0016_controller_key_nonreuse")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
+                == "dc_0017_deploy_unit_state"
+            )
     finally:
         engine.dispose()

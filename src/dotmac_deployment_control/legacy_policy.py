@@ -1,8 +1,8 @@
 """M11 bridge: the invariants Control enforces on EVERY `[legacy_env_file]` policy.
 
 Scope is fleet-wide and existing apps only (each target enabled as its own act).
-New builds never use it: the bridge is DEFAULT-DENY (only products on
-`legacy_env_file_allowed_products`) and every companion descriptor
+New builds never use it: the bridge is DEFAULT-DENY (only targets on
+`legacy_env_file_allowed_targets`) and every companion descriptor
 are refused. This module implements the Control column of the design's
 invariants:
 
@@ -38,7 +38,6 @@ from typing import Final
 
 from dotmac_deployment_control.deploy_unit import (
     APP_IMAGE_MATERIAL,
-    LEGACY_ENV_FILE_ALLOWED_DEFAULT,
     DeployUnitError,
 )
 from dotmac_deployment_control.digests import is_canonical_digest
@@ -179,6 +178,38 @@ def refuse_activation_of_legacy_names(
         )
 
 
+def check_policy_against_descriptor(
+    policy_names: Collection[str],
+    *,
+    descriptor_legacy_names: Collection[str] | None,
+    param_materials: Collection[str],
+    active_binding_names: Collection[str],
+) -> None:
+    """L2 against the VERIFIED descriptor, never against caller-supplied lists.
+
+    The policy's names must be declared by the descriptor's `[legacy_env_file]`
+    (a subset: names only shrink) and must not also be supplied by a typed
+    param, an active binding or `APP_IMAGE`. Otherwise params.env and the
+    legacy file would both supply one name, and env-file order would decide.
+    """
+    if descriptor_legacy_names is None:
+        raise LegacyPolicyRefusedError(
+            "the descriptor declares no [legacy_env_file] for this policy"
+        )
+    stray = sorted(set(policy_names) - set(descriptor_legacy_names))
+    if stray:
+        raise LegacyPolicyRefusedError(
+            f"policy names are not declared by the descriptor: {', '.join(stray)}"
+        )
+    taken = set(param_materials) | set(active_binding_names) | {APP_IMAGE_MATERIAL}
+    clash = sorted(set(policy_names) & taken)
+    if clash:
+        raise LegacyPolicyRefusedError(
+            "policy names collide with a param material, an active binding or "
+            f"{APP_IMAGE_MATERIAL}: {', '.join(clash)}"
+        )
+
+
 def _check_sha(sha256: str) -> None:
     if not is_canonical_digest(sha256):
         raise LegacyPolicyRefusedError("the legacy file sha must be sha256:<64 hex>")
@@ -213,16 +244,16 @@ def enable_policy(
     enabled_by_ref: str,
     exit_prestaged: bool,
     companion: bool = False,
-    allowed_products: frozenset[str] = LEGACY_ENV_FILE_ALLOWED_DEFAULT,
+    allowed_targets: frozenset[str] = frozenset(),
 ) -> LegacyFleetState:
     """Enable the bridge for one existing target (its own policy act)."""
     if companion:
         raise LegacyPolicyRefusedError(
             "a companion descriptor can never use the legacy env-file bridge"
         )
-    if product not in allowed_products:
+    if target_ref not in allowed_targets:
         raise LegacyPolicyRefusedError(
-            f"product {product!r} is not on legacy_env_file_allowed_products"
+            f"target {target_ref!r} is not on legacy_env_file_allowed_targets"
         )
     existing = fleet.policies.get(target_ref)
     if existing is not None and existing.state == ENABLED:

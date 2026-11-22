@@ -28,7 +28,7 @@ structurally and carries no value.
 `[legacy_env_file]` policy decisions (sha, expiry, ceiling) live in
 :mod:`dotmac_deployment_control.legacy_policy`. This module only parses the
 descriptor's `names` and `path_param`, and refuses the table unless the product
-is on `legacy_env_file_allowed_products` (default-deny) and the descriptor is
+is on `legacy_env_file_allowed_targets` (default-deny) and the descriptor is
 not under `deploy/companion/`.
 """
 
@@ -73,12 +73,12 @@ DEFAULT_IMAGE_SOURCE: Final = "transfer"
 #: a legacy name equal to it, would let a value override the planned image.
 APP_IMAGE_MATERIAL: Final = "APP_IMAGE"
 
-#: DEFAULT-DENY. `[legacy_env_file]` is accepted only for a product on the
-#: Control setting `legacy_env_file_allowed_products`; its default holds ERP v2's
-#: product code (the name in dotmac_erp_v2's product.toml) and nothing else.
-#: Adding a product is a visible, attended setting change. A descriptor under
-#: `deploy/companion/` is ALWAYS refused, whatever the setting says.
-LEGACY_ENV_FILE_ALLOWED_DEFAULT: Final = frozenset({"dotmac-erp-v2"})
+#: DEFAULT-DENY, keyed by TARGET. `[legacy_env_file]` is accepted only for a
+#: target on the Control setting `legacy_env_file_allowed_targets` (empty by
+#: default). A product code would be the wrong key: it would admit every target
+#: and every descriptor of that product. Adding a target is a visible, attended
+#: setting change. A descriptor under `deploy/companion/` is ALWAYS refused,
+#: whatever the setting says.
 COMPANION_DESCRIPTOR_PREFIX: Final = "deploy/companion/"
 DEFAULT_DESCRIPTOR_PATH: Final = "deploy/deploy-unit.toml"
 
@@ -781,13 +781,13 @@ def parse_deploy_unit(
     text: str,
     *,
     descriptor_path: str = DEFAULT_DESCRIPTOR_PATH,
-    legacy_allowed: frozenset[str] = LEGACY_ENV_FILE_ALLOWED_DEFAULT,
+    legacy_allowed: bool = False,
 ) -> DeployUnit:
     """Parse and structurally validate a `deploy-unit.toml`.
 
     `descriptor_path` is where the descriptor lives in its repository; a path
     under `deploy/companion/` always refuses `[legacy_env_file]`. `legacy_allowed`
-    is the Control setting `legacy_env_file_allowed_products` (default-deny).
+    is True only for a target on the setting `legacy_env_file_allowed_targets`.
     Refusals are `DeployUnitError`.
     """
     try:
@@ -909,7 +909,7 @@ def _parse_legacy(
     *,
     product: str,
     companion: bool,
-    legacy_allowed: frozenset[str],
+    legacy_allowed: bool,
     params: Mapping[str, ParamSpec],
     bindings: Sequence[BindingSpec],
 ) -> LegacyEnvFileSpec | None:
@@ -919,10 +919,10 @@ def _parse_legacy(
         raise DeployUnitError(
             "[legacy_env_file] is always refused for a deploy/companion/ descriptor"
         )
-    if product not in legacy_allowed:
+    if not legacy_allowed:
         raise DeployUnitError(
-            "[legacy_env_file] is refused: this product is not on "
-            "legacy_env_file_allowed_products (default-deny)"
+            "[legacy_env_file] is refused: this target is not on "
+            "legacy_env_file_allowed_targets (default-deny)"
         )
     if not isinstance(table, dict):
         raise DeployUnitError("legacy_env_file must be a table")

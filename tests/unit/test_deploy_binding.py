@@ -96,7 +96,7 @@ def test_plan_without_binding_is_byte_identical_to_before() -> None:
     )
 
 
-def test_plan_binds_params_env_digest_into_the_plan_digest() -> None:
+def test_snapshot_digest_is_sensitive_to_a_binding_params_digest() -> None:
     base = _digest(_binding())
     assert base != _digest(None)
     assert _digest(_binding()) == base
@@ -131,7 +131,7 @@ def test_every_bound_field_moves_the_plan_digest() -> None:
     assert len({_digest(_binding(legacy=item)) for item in legacy}) == len(legacy)
 
 
-def test_lease_ttl_is_capped_by_the_plan() -> None:
+def test_binding_builder_caps_the_lease_ttl() -> None:
     assert _binding(lease_ttl_seconds=3600).lease_ttl_seconds == 3600
     for bad in (0, -1, 3601, True, "900"):
         with pytest.raises(DeployBindingRefusedError, match="TTL"):

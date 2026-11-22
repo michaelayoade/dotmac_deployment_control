@@ -91,3 +91,12 @@ def test_image_repository_same_digest() -> None:
         )
     with pytest.raises(ImagePolicyRefusedError):
         loopback_repository(_REPO, 70000)
+
+
+def test_a_non_numeric_registry_port_is_a_typed_refusal() -> None:
+    """Not a ValueError leaking out as a 500: a typed, closed refusal."""
+    for bad in ("registry.example.test:abc/team/app", "127.0.0.1:x/team/app"):
+        with pytest.raises(ImagePolicyRefusedError):
+            PullAllowlist.of([bad])
+        with pytest.raises(ImagePolicyRefusedError):
+            _check(planned_repository=bad)

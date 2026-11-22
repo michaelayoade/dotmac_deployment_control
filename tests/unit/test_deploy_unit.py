@@ -243,8 +243,12 @@ def test_canonical_render_is_sorted_lf_terminated_and_includes_app_image() -> No
     assert again == render
 
 
-def test_plan_binds_params_env_digest() -> None:
-    """Any change to a value, or to the planned image, moves the digest."""
+def test_params_env_digest_is_sensitive_to_values_and_image() -> None:
+    """Any change to a value, or to the planned image, moves the digest.
+
+    That the PLAN binds this digest, and that Control derives it, is proved in
+    `test_deploy_unit_state.py::test_plan_binds_params_env_digest`.
+    """
     unit = _unit()
     base = {"public_host": "erp.example.test", "workers": 2}
     image = "127.0.0.1:5000/team/app@sha256:" + "c" * 64
@@ -361,7 +365,7 @@ gates = ["migrate", "heads", "live", "ready"]
 
 
 def test_the_full_descriptor_shape_parses() -> None:
-    unit = parse_deploy_unit(_ERP_SHAPED)
+    unit = parse_deploy_unit(_ERP_SHAPED, legacy_allowed=True)
     assert [b.state for b in unit.bindings] == ["pre_staged", "pre_staged", "active"]
     assert unit.active_binding_names() == ("MIGRATION_DATABASE_URL",)
     assert [j.name for j in unit.jobs] == ["import"]
@@ -374,7 +378,7 @@ def test_the_full_descriptor_shape_parses() -> None:
 
 
 def test_defaults_fill_an_absent_value_and_choices_and_patterns_bind() -> None:
-    unit = parse_deploy_unit(_ERP_SHAPED)
+    unit = parse_deploy_unit(_ERP_SHAPED, legacy_allowed=True)
     rendered = validate_params(
         unit, {"trusted_hosts": "erp.example.test"}, environment="production"
     )
@@ -424,7 +428,7 @@ def test_defaults_fill_an_absent_value_and_choices_and_patterns_bind() -> None:
 def test_descriptor_shape_refusals(mutation: tuple[str, str]) -> None:
     assert mutation[0] in _ERP_SHAPED, mutation[0]
     with pytest.raises(DeployUnitError):
-        parse_deploy_unit(_ERP_SHAPED.replace(*mutation))
+        parse_deploy_unit(_ERP_SHAPED.replace(*mutation), legacy_allowed=True)
 
 
 def test_a_companion_descriptor_names_the_product_toml_beside_it() -> None:
@@ -438,7 +442,9 @@ def test_a_companion_descriptor_names_the_product_toml_beside_it() -> None:
 
 
 def test_pre_staged_bindings_may_reuse_legacy_names_but_active_ones_may_not() -> None:
-    assert parse_deploy_unit(_ERP_SHAPED).legacy_env_file is not None
+    assert (
+        parse_deploy_unit(_ERP_SHAPED, legacy_allowed=True).legacy_env_file is not None
+    )
     active = _ERP_SHAPED.replace('state = "pre_staged"\nkind = "key"', 'kind = "key"')
     with pytest.raises(DeployUnitError, match="collide"):
-        parse_deploy_unit(active)
+        parse_deploy_unit(active, legacy_allowed=True)

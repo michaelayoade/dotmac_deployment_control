@@ -47,6 +47,20 @@ class DeployBindingRefusedError(DeployUnitError):
 
 
 @dataclass(frozen=True, slots=True)
+class DeployPlanInputs:
+    """The only inputs a caller supplies for a descriptor-backed plan.
+
+    Everything else in the binding (params digest, images, active bindings,
+    companion order, legacy part) is DERIVED by Control from the re-verified
+    descriptor and its own stored state. The TTL is bounded by Control; the
+    loopback port is needed only for a transferred image.
+    """
+
+    lease_ttl_seconds: int
+    loopback_port: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedImage:
     service: str
     source: str

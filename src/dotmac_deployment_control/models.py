@@ -1412,6 +1412,11 @@ class DeploySetting(Base, TimestampMixin):
         CheckConstraint(
             "setting_version >= 1", name="ck_deploy_settings_version_positive"
         ),
+        CheckConstraint(
+            "setting_name IN ('public_pull_repositories', "
+            "'legacy_env_file_allowed_targets', 'legacy_env_file_ceiling')",
+            name="ck_deploy_settings_name",
+        ),
         schema_table_args(SCHEMA),
     )
 

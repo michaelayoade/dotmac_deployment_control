@@ -68,7 +68,7 @@ from dotmac_kernel.transactions import conflict_savepoint
 # This module never imports `dotmac_kernel.db` or constructs an engine. Every
 # operation receives a caller-owned Session; target-row serialization now owns
 # the observation race, so no kernel transaction helper is needed here either.
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, func, literal, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -91,15 +91,27 @@ from dotmac_deployment_control.counterparty import (
     EXECUTOR_OPERATIONS,
     require_executable_operation,
 )
-from dotmac_deployment_control.deploy_binding import DeploymentSet, DeployPlanBinding
+from dotmac_deployment_control.deploy_binding import (
+    DeploymentSet,
+    DeployPlanBinding,
+    DeployPlanInputs,
+    PlannedImage,
+    build_deploy_binding,
+)
 from dotmac_deployment_control.deploy_settings import (
     SETTING_LEGACY_CEILING,
     DeploySettings,
     normalise_setting_value,
     settings_from_rows,
 )
+from dotmac_deployment_control.deploy_unit import (
+    canonical_render,
+    is_companion_descriptor_path,
+    params_env_digest,
+)
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
+    DeploymentSetDigestV1,
     DescriptorDigestV1,
     DispatchEnvelopeDigestV1,
     ExecutionPlanDigestV1,
@@ -129,7 +141,7 @@ from dotmac_deployment_control.host_admission import (
     HOST_ADMISSION_PRESENTATION_PURPOSE,
     admission_consumption_fingerprint,
 )
-from dotmac_deployment_control.image_policy import check_planned_image
+from dotmac_deployment_control.image_policy import loopback_repository
 from dotmac_deployment_control.images import (
     AuthorizedImage,
     authorized_image_set,
@@ -141,8 +153,10 @@ from dotmac_deployment_control.legacy_policy import (
     LegacyEnvPolicy,
     LegacyFleetState,
     LegacyPlanBinding,
+    LegacyPolicyRefusedError,
     LegacyRetirementEvidence,
     bind_to_plan,
+    check_policy_against_descriptor,
     enable_policy,
     extend_expiry,
     raise_ceiling,
@@ -205,6 +219,7 @@ from dotmac_deployment_control.recovery_grant import (
     recovery_standing,
 )
 from dotmac_deployment_control.release_descriptor import (
+    VerifiedDescriptor,
     image_pin,
     pin_params,
     verify_release_descriptor,
@@ -700,6 +715,8 @@ class SetDesiredStateCommand:
     #: `ReleaseDescriptorSource` resolves. `params` are the typed values.
     descriptor_path: str | None = None
     params: Mapping[str, Any] | None = None
+    #: Checked UNDER the target lock, so a stale form cannot silently overwrite.
+    expected_desired_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,11 +838,12 @@ class ProposePlanCommand:
     approval_policy_version: int | None = None
     expected_desired_revision: int | None = None
     actor_ref: str | None = None
-    #: OPTIONAL deploy-unit binding (params digest, pinned images, lease TTL,
-    #: legacy policy, companion order). Frozen INSIDE the plan snapshot, so the
-    #: approval over the plan digest covers it. None leaves the snapshot, and so
-    #: every existing digest, exactly as before.
-    deploy_binding: DeployPlanBinding | None = None
+    #: The only caller inputs for a descriptor-backed plan (lease TTL, loopback
+    #: port). Control DERIVES the whole `DeployPlanBinding` from the re-verified
+    #: descriptor and its own stored state and freezes it INSIDE the plan
+    #: snapshot, so the approval covers it. Mandatory for a descriptor-backed
+    #: target; refused for any other.
+    deploy_inputs: DeployPlanInputs | None = None
 
     def __post_init__(self) -> None:
         """Refuse an unusable OPERATION at construction.
@@ -2014,8 +2032,25 @@ def set_desired_state(
                 f"target {row.target_ref} is decommissioned; a desired state for "
                 "a retired deployment would be an intent nothing can converge on"
             )
+        if (
+            command.expected_desired_revision is not None
+            and command.expected_desired_revision != row.desired_revision
+        ):
+            raise TransitionRefusedError(
+                f"target {row.target_ref} is at desired revision "
+                f"{row.desired_revision}, not the {command.expected_desired_revision} "
+                "this request was made from"
+            )
         spec = dict(command.desired.spec)
         images_in = command.desired.images
+        if (row.desired_spec or {}).get("deploy_unit") is not None and (
+            command.descriptor_path is None
+        ):
+            raise PlanRefusedError(
+                f"target {row.target_ref} is descriptor-backed; a desired state "
+                "without a descriptor would bypass its params, image and legacy "
+                "controls"
+            )
         if "deploy_unit" in spec:
             raise PlanRefusedError(
                 "`deploy_unit` in the spec is reserved: Control derives it from "
@@ -2028,7 +2063,7 @@ def set_desired_state(
                 release_ref=command.desired.release_ref,
                 product_code=row.product_code,
                 descriptor_path=command.descriptor_path,
-                legacy_allowed=settings.legacy_allowed_products,
+                legacy_allowed=row.target_ref in settings.legacy_allowed_targets,
             )
             rendered = pin_params(
                 verified,
@@ -2526,16 +2561,14 @@ def propose_plan(
         ).scalar()
         sequence = int(highest or 0) + 1
 
-        _reresolve_release_descriptor(
-            session, target, command.deploy_binding, release_source
+        derived = _derive_deploy_binding(
+            session, target, command.deploy_inputs, release_source
         )
-        if command.deploy_binding is not None:
-            _recheck_deploy_binding(session, target, command.deploy_binding)
         snapshot = plan_snapshot(
             target,
             descriptor_digest=command.descriptor_digest,
             purpose=command.purpose,
-            deploy_binding=command.deploy_binding,
+            deploy_binding=derived,
         )
         row = DeploymentPlan(
             target_id=target.id,
@@ -5139,6 +5172,7 @@ def observation_attempts(
 SCOPE_SET_DEPLOY_SETTING = "deployment.set_deploy_setting"
 SCOPE_LEGACY_POLICY = "deployment.legacy_policy"
 SCOPE_CREATE_DEPLOYMENT_SET = "deployment.create_deployment_set"
+SCOPE_APPROVE_DEPLOYMENT_SET = "deployment.approve_deployment_set"
 _ENTITY_DEPLOY_SETTING = "deploy_setting"
 _ENTITY_LEGACY_POLICY = "legacy_env_policy"
 _ENTITY_DEPLOYMENT_SET = "deployment_set"
@@ -5164,14 +5198,13 @@ class EnableLegacyPolicyCommand:
     target_id: UUID
     names: tuple[str, ...]
     sha256: str
+    #: Operator-declared secret-class names (the one list a caller supplies).
+    #: Param materials, active bindings and the companion rule are DERIVED from
+    #: the verified descriptor, never taken from the caller.
     secret_names: tuple[str, ...]
-    param_materials: tuple[str, ...]
-    binding_names: tuple[str, ...]
     cutover_at: datetime
     exit_prestaged: bool
     approval: AttendedApproval
-    #: True when the target's descriptor lives under `deploy/companion/`.
-    companion: bool = False
     actor_ref: str | None = None
 
 
@@ -5208,8 +5241,31 @@ class CreateDeploymentSetCommand:
     command_id: str
     primary_plan_id: UUID
     companion_plan_id: UUID | None = None
-    required_at_switch: bool = False
     actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApproveDeploymentSetCommand:
+    """Bind an approval decision to a set's digest (one approval over the set)."""
+
+    command_id: str
+    set_id: UUID
+    evidence: ApprovalEvidence
+    actor_ref: str | None = None
+
+
+def _lock_deploy_settings(session: Session) -> None:
+    """Serialise every setting change and legacy transition (L4 ceiling).
+
+    The ceiling lives in a row that may not exist yet, so a row lock cannot be
+    taken; a transaction-scoped advisory lock serialises the read-modify-write
+    of the ratchet across targets. SQLite (the logic suites) has one writer.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('mod_deploy.deploy_settings'))")
+        )
 
 
 def _stored_settings(session: Session) -> dict[str, DeploySetting]:
@@ -5230,9 +5286,7 @@ def get_deploy_settings(db: Session) -> facts.DeploySettingsView:
     effective = _effective_settings(db)
     return facts.DeploySettingsView(
         public_pull_repositories=tuple(sorted(effective.pull_allowlist.repositories)),
-        legacy_env_file_allowed_products=tuple(
-            sorted(effective.legacy_allowed_products)
-        ),
+        legacy_env_file_allowed_targets=tuple(sorted(effective.legacy_allowed_targets)),
         legacy_env_file_ceiling=effective.legacy_ceiling,
     )
 
@@ -5267,6 +5321,7 @@ def set_deploy_setting(
     """Change a deploy setting under an attended approval, once per command id."""
 
     def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
         command.approval.require(f"changing {command.name}")
         value = normalise_setting_value(command.name, command.value)
         current = _effective_settings(session)
@@ -5412,14 +5467,24 @@ def _legacy_transition(
     ),
     *,
     change: str,
+    release_source: ReleaseDescriptorSource | None = None,
 ) -> facts.LegacyPolicyView:
     def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
         target = _load_target_for_update(session, command.target_id)
         settings = _effective_settings(session)
         fleet = _fleet_state(session, settings)
         now = _control_now()
         if isinstance(command, EnableLegacyPolicyCommand):
             command.approval.require("enabling a legacy env-file policy")
+            verified = _verified_stored_descriptor(
+                session, target, settings, release_source
+            )
+            legacy = verified.unit.legacy_env_file
+            if legacy is None:
+                raise LegacyPolicyRefusedError(
+                    "the descriptor declares no [legacy_env_file] for this target"
+                )
             after = enable_policy(
                 fleet,
                 target_ref=target.target_ref,
@@ -5427,14 +5492,26 @@ def _legacy_transition(
                 names=command.names,
                 sha256=command.sha256,
                 secret_names=command.secret_names,
-                param_materials=command.param_materials,
-                binding_names=command.binding_names,
+                param_materials=[
+                    p.material for p in verified.unit.params.values() if p.material
+                ],
+                binding_names=verified.unit.active_binding_names(),
                 cutover_at=command.cutover_at,
                 now=now,
                 enabled_by_ref=command.approval.approver_ref,
                 exit_prestaged=command.exit_prestaged,
-                companion=command.companion,
-                allowed_products=settings.legacy_allowed_products,
+                companion=is_companion_descriptor_path(
+                    str(target.desired_spec["deploy_unit"]["descriptor_path"])
+                ),
+                allowed_targets=settings.legacy_allowed_targets,
+            )
+            check_policy_against_descriptor(
+                after.policies[target.target_ref].names,
+                descriptor_legacy_names=legacy.names,
+                param_materials=[
+                    p.material for p in verified.unit.params.values() if p.material
+                ],
+                active_binding_names=verified.unit.active_binding_names(),
             )
         elif isinstance(command, ReviseLegacyPolicyCommand):
             after = revise_policy(
@@ -5481,10 +5558,36 @@ def _legacy_transition(
     return view
 
 
+def _verified_stored_descriptor(
+    session: Session,
+    target: DeploymentTarget,
+    settings: DeploySettings,
+    source: ReleaseDescriptorSource | None,
+) -> VerifiedDescriptor:
+    """Re-resolve the descriptor a descriptor-backed target was set from."""
+    stored = (target.desired_spec or {}).get("deploy_unit")
+    if stored is None:
+        raise ReleaseDescriptorUnavailableError(
+            "the target has no descriptor-backed desired state"
+        )
+    return verify_release_descriptor(
+        source,
+        release_ref=str(target.desired_release_ref or ""),
+        product_code=target.product_code,
+        descriptor_path=str(stored["descriptor_path"]),
+        legacy_allowed=target.target_ref in settings.legacy_allowed_targets,
+    )
+
+
 def enable_legacy_policy(
-    db: Session, command: EnableLegacyPolicyCommand
+    db: Session,
+    command: EnableLegacyPolicyCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
 ) -> facts.LegacyPolicyView:
-    return _legacy_transition(db, command, change="enabled")
+    return _legacy_transition(
+        db, command, change="enabled", release_source=release_source
+    )
 
 
 def revise_legacy_policy(
@@ -5537,40 +5640,39 @@ def _pin_release_images(supplied: Any, pin: Mapping[str, str], *, where: str) ->
     return supplied
 
 
-def _reresolve_release_descriptor(
+def _derive_deploy_binding(
     session: Session,
     target: DeploymentTarget,
-    binding: DeployPlanBinding | None,
+    inputs: DeployPlanInputs | None,
     source: ReleaseDescriptorSource | None,
-) -> None:
-    """Resolve the descriptor AGAIN at proposal; refuse if anything moved.
+) -> DeployPlanBinding | None:
+    """Re-verify the descriptor and DERIVE the whole plan binding from it.
 
-    Desired state is set at one time and proposed at another. The evidence is
-    re-read, the digest recomputed and compared with the stored one, the image
-    pin and the params re-checked, and a supplied binding must agree with what
-    was just verified (never with what the caller says).
+    Desired state is set at one time and proposed at another, so the evidence is
+    resolved AGAIN here and everything frozen into the plan comes from Control's
+    own recomputation, never from a caller-built object: the params digest is
+    the digest of the canonical render of the stored, validated params plus the
+    planned image; images, active bindings and companion order come from the
+    descriptor; the legacy part comes from the stored policy with L1/L2/L5 and
+    the activation refusal always run. The caller supplies only the lease TTL
+    (bounded here) and the loopback port.
     """
     code = ReleaseDescriptorRefusedError
     stored = (target.desired_spec or {}).get("deploy_unit")
     if stored is None:
-        if binding is not None:
+        if inputs is not None:
             raise ReleaseDescriptorUnavailableError(
-                "a deploy binding needs a descriptor-backed desired state"
+                "deploy inputs need a descriptor-backed desired state"
             )
-        return
-    settings = _effective_settings(session)
-    verified = verify_release_descriptor(
-        source,
-        release_ref=str(target.desired_release_ref or ""),
-        product_code=target.product_code,
-        descriptor_path=str(stored["descriptor_path"]),
-        legacy_allowed=settings.legacy_allowed_products,
-    )
-    if verified.digest != stored["descriptor_digest"]:
-        raise code(
-            code.DIGEST_MISMATCH,
-            "the release descriptor differs from the one desired state was set from",
+        return None
+    if inputs is None:
+        raise PlanRefusedError(
+            "a descriptor-backed target is planned with deploy inputs (lease TTL "
+            "and loopback port); a plan without a binding would freeze no params "
+            "digest, TTL, image source or legacy part"
         )
+    settings = _effective_settings(session)
+    verified = _verified_stored_descriptor(session, target, settings, source)
     if verified.product_toml_sha256 is None:
         raise code(
             code.PRODUCT_TOML_ABSENT,
@@ -5581,84 +5683,107 @@ def _reresolve_release_descriptor(
             code.DIGEST_MISMATCH,
             "the released product.toml differs from the one desired state was set from",
         )
+    if verified.digest != stored["descriptor_digest"]:
+        raise code(
+            code.DIGEST_MISMATCH,
+            "the release descriptor differs from the one desired state was set from",
+        )
+    if verified.evidence.source_revision != stored.get("source_revision"):
+        raise code(
+            code.EVIDENCE_MISMATCH,
+            "the release's source revision differs from the one desired state used",
+        )
     pin = image_pin(verified)
-    pinned = list(target.desired_images or [])
     if not any(
         item.get("repository") == pin["repository"]
         and item.get("digest") == pin["digest"]
-        for item in pinned
+        for item in list(target.desired_images or [])
     ):
         raise code(code.IMAGE_MISMATCH, "the pinned image is not the release's image")
+    values = dict(stored["params"])
     pin_params(
         verified,
-        stored["params"],
+        values,
         environment=target.environment,
         allowlist=settings.pull_allowlist,
     )
-    if binding is None:
-        return
-    if binding.deploy_unit_digest != verified.digest:
-        raise code(code.DIGEST_MISMATCH, "the binding's descriptor digest differs")
-    if binding.product_toml_sha256 != verified.product_toml_sha256:
-        raise code(code.DIGEST_MISMATCH, "the binding's product.toml sha differs")
-    if binding.active_binding_names != verified.unit.active_binding_names():
-        raise code(
-            code.EVIDENCE_MISMATCH,
-            "the binding's active bindings differ from the descriptor's",
-        )
-    for image in binding.images:
-        if image.source != verified.unit.image_source:
+    unit, evidence = verified.unit, verified.evidence
+    if unit.image_source == "transfer":
+        if inputs.loopback_port is None:
+            raise PlanRefusedError("a transferred image needs the loopback port")
+        planned = loopback_repository(evidence.image_repository, inputs.loopback_port)
+    else:
+        planned = evidence.image_repository
+    for name, spec in unit.params.items():
+        if spec.type == "image_repository" and values.get(name) != planned:
             raise code(
-                code.EVIDENCE_MISMATCH,
-                "a bound image's source differs from the descriptor's [image] source",
+                code.IMAGE_MISMATCH,
+                f"{name} is not the planned image repository for this release",
             )
-        if (image.release_repository, image.release_digest) != (
-            pin["repository"],
-            pin["digest"],
-        ):
-            raise code(code.IMAGE_MISMATCH, "a bound image is not the release's image")
-
-
-def _recheck_deploy_binding(
-    session: Session, target: DeploymentTarget, binding: DeployPlanBinding
-) -> None:
-    """Re-run the image and legacy rules against the STORED state at proposal.
-
-    A binding object built earlier, or elsewhere, is never trusted: the pull
-    allowlist and the legacy policy are read here, in the proposing transaction.
-    """
-    settings = _effective_settings(session)
-    for image in binding.images:
-        check_planned_image(
-            source=image.source,
-            release_repository=image.release_repository,
-            release_digest=image.release_digest,
-            planned_repository=image.planned_repository,
-            planned_digest=image.planned_digest,
-            allowlist=settings.pull_allowlist,
-        )
+    render = canonical_render(
+        unit,
+        values,
+        app_image=f"{planned}@{evidence.image_digest}",
+        environment=target.environment,
+    )
+    active = unit.active_binding_names()
+    materials = [p.material for p in unit.params.values() if p.material]
     fleet = _fleet_state(session, settings)
     policy = fleet.policies.get(target.target_ref)
-    if policy is not None and policy.state == "enabled":
-        # An active binding may not take a name the legacy file still supplies.
-        refuse_activation_of_legacy_names(binding.active_binding_names, policy.names)
-    if binding.legacy is not None:
-        current = bind_to_plan(
-            _fleet_state(session, settings),
-            target_ref=target.target_ref,
-            now=_control_now(),
-        )
-        if current != binding.legacy:
-            raise PlanRefusedError(
-                "the bound legacy env-file policy is not the target's current "
-                "policy version, sha and names"
+    enabled = policy is not None and policy.state == "enabled"
+    legacy: LegacyPlanBinding | None = None
+    if enabled or unit.legacy_env_file is not None:
+        if policy is None or not enabled:
+            raise LegacyPolicyRefusedError(
+                "the descriptor declares [legacy_env_file] but the target has no "
+                "enabled legacy policy"
             )
+        check_policy_against_descriptor(
+            policy.names,
+            descriptor_legacy_names=(
+                None if unit.legacy_env_file is None else unit.legacy_env_file.names
+            ),
+            param_materials=materials,
+            active_binding_names=active,
+        )
+        refuse_activation_of_legacy_names(active, policy.names)
+        legacy = bind_to_plan(fleet, target_ref=target.target_ref, now=_control_now())
+    return build_deploy_binding(
+        deploy_unit_digest=verified.digest,
+        product_toml_sha256=verified.product_toml_sha256,
+        params_env_digest=params_env_digest(render),
+        images=[
+            PlannedImage(
+                service=unit.product,
+                source=unit.image_source,
+                release_repository=evidence.image_repository,
+                release_digest=evidence.image_digest,
+                planned_repository=planned,
+                planned_digest=evidence.image_digest,
+            )
+        ],
+        lease_ttl_seconds=inputs.lease_ttl_seconds,
+        allowlist=settings.pull_allowlist,
+        legacy=legacy,
+        companion_order="after_primary_ready" if unit.companions else None,
+        active_binding_names=active,
+    )
 
 
 def create_deployment_set(
-    db: Session, command: CreateDeploymentSetCommand
+    db: Session,
+    command: CreateDeploymentSetCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
 ) -> facts.DeploymentSetView:
-    """Record a primary plan and its optional companion under one `set_digest`."""
+    """Record a primary plan and its companion under one `set_digest`.
+
+    Membership is validated against the PRIMARY's verified descriptor: the
+    companion plan's product must be one of its `[[companions]]`, in the same
+    environment, both plans bound and live, and `required_at_switch` is the
+    descriptor's, never the caller's. A set confers no approval by itself; see
+    `approve_deployment_set`.
+    """
 
     def handler(session: Session) -> Mapping[str, object]:
         primary = _load_plan(session, command.primary_plan_id)
@@ -5667,12 +5792,52 @@ def create_deployment_set(
             if command.companion_plan_id is None
             else _load_plan(session, command.companion_plan_id)
         )
+        live = {PlanStatus.PROPOSED.value, PlanStatus.APPROVED.value}
+        for plan in (primary, companion):
+            if plan is None:
+                continue
+            if plan.status not in live:
+                raise PlanRefusedError(f"plan {plan.id} is {plan.status!r}, not live")
+            if "deploy_binding" not in (plan.snapshot or {}):
+                raise PlanRefusedError(
+                    f"plan {plan.id} carries no deploy binding; only bound plans "
+                    "can be members of a set"
+                )
+        ptarget = _load_target(session, primary.target_id)
+        required = False
+        stored = (ptarget.desired_spec or {}).get("deploy_unit")
+        if stored is not None:
+            settings = _effective_settings(session)
+            verified = _verified_stored_descriptor(
+                session, ptarget, settings, release_source
+            )
+            declared = verified.unit.companions
+            if companion is None:
+                if any(c.required_at_switch for c in declared):
+                    raise PlanRefusedError(
+                        "the primary descriptor requires its companion at switch"
+                    )
+            else:
+                ctarget = _load_target(session, companion.target_id)
+                if ctarget.environment != ptarget.environment:
+                    raise PlanRefusedError("a set stays within one environment")
+                matches = [c for c in declared if c.product == ctarget.product_code]
+                if len(matches) != 1:
+                    raise PlanRefusedError(
+                        "the companion plan's product is not a companion the "
+                        "primary descriptor declares"
+                    )
+                required = matches[0].required_at_switch
+        elif companion is not None:
+            raise PlanRefusedError(
+                "a companion is only valid for a descriptor-backed primary"
+            )
         unit = DeploymentSet(
             primary_plan_digest=str(primary.plan_digest),
             companion_plan_digest=(
                 None if companion is None else str(companion.plan_digest)
             ),
-            required_at_switch=command.required_at_switch,
+            required_at_switch=required,
         )
         digest = unit.set_digest()
         existing = session.execute(
@@ -5715,6 +5880,56 @@ def create_deployment_set(
     return _deployment_set_view(
         _load_deployment_set(db, UUID(str(outcome.result["id"])))
     )
+
+
+def approve_deployment_set(
+    db: Session, command: ApproveDeploymentSetCommand
+) -> facts.DeploymentSetView:
+    """Accept ONE approval decision over a set, bound to its digest.
+
+    The decision's `content_digest` must equal the set digest Control derived,
+    compared as typed values. The fact carries the decision reference and the
+    digest; per-plan approvals still gate each rollout.
+    """
+
+    def handler(session: Session) -> Mapping[str, object]:
+        row = _load_deployment_set(session, command.set_id)
+        try:
+            supplied = DeploymentSetDigestV1.parse(command.evidence.content_digest)
+        except DigestEncodingError as exc:
+            raise ApprovalRefusedError(
+                f"the approval digest is not a set digest: {exc}"
+            ) from None
+        if supplied != DeploymentSetDigestV1.parse(row.set_digest):
+            raise ApprovalRefusedError(
+                "the approval was decided over a different set digest"
+            )
+        if not command.evidence.decision_ref.strip():
+            raise ApprovalRefusedError("the approval names no decision")
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.DEPLOYMENT_SET_APPROVED_V1,
+            entity_type=_ENTITY_DEPLOYMENT_SET,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "set_digest": row.set_digest,
+                "decision_ref": command.evidence.decision_ref,
+                "policy_code": command.evidence.policy_code,
+                "policy_version": command.evidence.policy_version,
+                "approver_refs": list(command.evidence.approver_refs),
+            },
+        )
+        return {"id": str(row.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_APPROVE_DEPLOYMENT_SET,
+        handler=handler,
+    )
+    return _deployment_set_view(_load_deployment_set(db, command.set_id))
 
 
 def _load_deployment_set(session: Session, set_id: UUID) -> DeploymentSetRow:
@@ -5765,6 +5980,9 @@ __all__ = [
     "SCOPE_CANCEL_PLAN",
     "SCOPE_CANCEL_ROLLOUT",
     "SCOPE_CREATE_DEPLOYMENT_SET",
+    "SCOPE_APPROVE_DEPLOYMENT_SET",
+    "ApproveDeploymentSetCommand",
+    "approve_deployment_set",
     "SCOPE_DECOMMISSION_TARGET",
     "SCOPE_DISPATCH",
     "SCOPE_ENROL_CREDENTIAL",

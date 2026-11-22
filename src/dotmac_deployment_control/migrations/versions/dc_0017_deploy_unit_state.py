@@ -4,7 +4,7 @@ Additive and expand-only: three new tables, nothing existing is altered.
 
 * `deploy_settings` is the one deliberately mutable table: a small named
   setting, each change recorded with its attended approver and register line
-  (`public_pull_repositories`, `legacy_env_file_allowed_products`,
+  (`public_pull_repositories`, `legacy_env_file_allowed_targets`,
   `legacy_env_file_ceiling`). The empty or zero default is the ABSENCE of a row.
 * `legacy_env_policy_versions` is append-only evidence: one row per policy
   version of a target, so a changed sha or a retirement is a new visible row and
@@ -80,6 +80,11 @@ def upgrade() -> None:
         *_timestamps(),
         sa.CheckConstraint(
             "setting_version >= 1", name="ck_deploy_settings_version_positive"
+        ),
+        sa.CheckConstraint(
+            "setting_name IN ('public_pull_repositories', "
+            "'legacy_env_file_allowed_targets', 'legacy_env_file_ceiling')",
+            name="ck_deploy_settings_name",
         ),
         schema=_SCHEMA,
     )

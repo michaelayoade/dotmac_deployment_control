@@ -173,9 +173,7 @@ _PROPOSE_FIELDS: Final[frozenset[str]] = frozenset(
 
 #: The deployment-set and deploy-setting forms. Plan IDS, never plan digests: the
 #: set digest is derived by Control from the two plans it names.
-_SET_FIELDS: Final[frozenset[str]] = frozenset(
-    {"primary_plan_id", "companion_plan_id", "required_at_switch"}
-)
+_SET_FIELDS: Final[frozenset[str]] = frozenset({"primary_plan_id", "companion_plan_id"})
 _SETTING_FIELDS: Final[frozenset[str]] = frozenset(
     {"name", "value", "attended", "register_ref"}
 )
@@ -573,6 +571,21 @@ def arrivals(
     )
 
 
+def release_descriptor_source(request: Request) -> ReleaseDescriptorSource | None:
+    """The assembly's source, read from `app.state`; None when not configured.
+
+    The assembly that composes this surface sets
+    `app.state.deployment_control_release_source`. Absent, the form refuses
+    rather than accepting descriptor text from a browser.
+    """
+    return getattr(request.app.state, "deployment_control_release_source", None)
+
+
+ReleaseSource = Annotated[
+    ReleaseDescriptorSource | None, Depends(release_descriptor_source)
+]
+
+
 # ── Deployment sets and deploy settings ─────────────────────────────────────
 
 
@@ -609,7 +622,7 @@ def deployment_sets(request: Request, db: PlatformSession) -> HTMLResponse:
 
 @router.post("/deployment-sets", response_model=None, name="create_deployment_set")
 async def create_deployment_set_submit(
-    request: Request, db: PlatformSession
+    request: Request, db: PlatformSession, source: ReleaseSource
 ) -> HTMLResponse | RedirectResponse:
     """Record a set from two plan ids; the set digest is derived, never sent."""
     values = await _read_form(request, _SET_FIELDS)
@@ -628,9 +641,9 @@ async def create_deployment_set_submit(
                 command_id=f"web.create_set:{primary}:{companion}",
                 primary_plan_id=primary,
                 companion_plan_id=companion,
-                required_at_switch=_checked(values, "required_at_switch"),
                 actor_ref=actor,
             ),
+            release_source=source,
         )
     except (DeploymentControlError, DeployUnitError) as exc:
         return _render(
@@ -717,21 +730,6 @@ async def set_deploy_setting_submit(
 # ── The typed params form ───────────────────────────────────────────────────
 
 
-def release_descriptor_source(request: Request) -> ReleaseDescriptorSource | None:
-    """The assembly's source, read from `app.state`; None when not configured.
-
-    The assembly that composes this surface sets
-    `app.state.deployment_control_release_source`. Absent, the form refuses
-    rather than accepting descriptor text from a browser.
-    """
-    return getattr(request.app.state, "deployment_control_release_source", None)
-
-
-ReleaseSource = Annotated[
-    ReleaseDescriptorSource | None, Depends(release_descriptor_source)
-]
-
-
 def _field_view(spec: ParamSpec, current: str | None) -> dict[str, Any]:
     """One form field, from a ParamSpec. Image digests are Control's, not typed."""
     return {
@@ -774,7 +772,8 @@ def _params_context(
                 release_ref=release,
                 product_code=target.product_code,
                 descriptor_path=descriptor_path,
-                legacy_allowed=frozenset(settings.legacy_env_file_allowed_products),
+                legacy_allowed=target.target_ref
+                in settings.legacy_env_file_allowed_targets,
             )
             stored = dict(
                 (target.desired_spec.get("deploy_unit") or {}).get("params", {})
@@ -854,11 +853,6 @@ async def set_deploy_params_submit(
         if key.startswith(_PARAM_PREFIX) and raw.strip() != ""
     }
     try:
-        if expected != target.desired_revision:
-            raise DeploymentControlError(
-                f"the target is at desired revision {target.desired_revision}, "
-                f"not the {expected} this form was rendered from"
-            )
         service.set_desired_state(
             db,
             service.SetDesiredStateCommand(
@@ -876,6 +870,7 @@ async def set_deploy_params_submit(
                 ),
                 descriptor_path=path,
                 params=typed,
+                expected_desired_revision=expected,
                 actor_ref=actor,
             ),
             release_source=source,

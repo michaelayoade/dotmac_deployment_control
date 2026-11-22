@@ -21,6 +21,7 @@ dropped; no table, column or input holds descriptor text.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,7 @@ from dotmac_deployment_control.ports import (
 )
 
 _E = ReleaseDescriptorRefusedError
+_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +66,7 @@ def verify_release_descriptor(
     release_ref: str,
     product_code: str,
     descriptor_path: str,
-    legacy_allowed: frozenset[str],
+    legacy_allowed: bool,
 ) -> VerifiedDescriptor:
     if source is None:
         raise ReleaseDescriptorUnavailableError(
@@ -84,6 +86,8 @@ def verify_release_descriptor(
         )
     if evidence.product_code != product_code:
         raise _E(_E.PRODUCT_MISMATCH, "the evidence is for another product")
+    if not _REVISION.fullmatch(evidence.source_revision or ""):
+        raise _E(_E.EVIDENCE_MISMATCH, "source_revision is not a 40-hex revision")
     if not isinstance(evidence.deploy_unit_bytes, bytes) or not is_canonical_digest(
         evidence.attested_digest
     ):

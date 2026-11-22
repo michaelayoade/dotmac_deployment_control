@@ -141,8 +141,11 @@ module = ModuleManifest(
     #:
     #: `contract_version` is unchanged. It is inferred as the kernel's current
     #: manifest contract (2), which `web_surfaces` already requires, and the
-    #: declared surface a composing assembly is checked against — tables,
-    #: prerequisites, audit actions — did not move.
+    #: declared surface a composing assembly is checked against is the module's
+    #: prerequisites and audit actions, which did not move. `platform_tables`
+    #: grew (dc_0017, as dc_0008, dc_0011 and dc_0013 did before it) without
+    #: moving `contract_version`; the database catalogue, not the version, pins
+    #: the table extent.
     web_surfaces=(DEPLOYMENT_CONTROL_SURFACE,),
     audit_actions=(
         "deployment.target.changed",
