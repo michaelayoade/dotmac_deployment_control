@@ -1414,7 +1414,7 @@ CATALOGUE_TABLES: tuple[
             ("last_execution_attempt_no", 21, _INT, True, ""),
             ("last_execution_state_digest", 22, _V128, True, ""),
             # dc_0017: the OpenBao namespace-env, fixed at registration.
-            ("secrets_environment", 23, _V40, True, ""),
+            ("bao_environment", 23, _V40, True, ""),
         ),
     ),
     (

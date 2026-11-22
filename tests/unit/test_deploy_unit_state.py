@@ -1290,10 +1290,10 @@ def test_the_namespace_env_is_fixed_at_registration(db: Session) -> None:
         ("staging", "staging"),
     ):
         view = _register(db, f"dotmac-erp-v2/{env}/host-1", env=env)
-        assert db.get(DeploymentTarget, view.id).secrets_environment == expected
+        assert db.get(DeploymentTarget, view.id).bao_environment == expected
     # An environment the table does not know has none until it is stated.
     odd = _register(db, "dotmac-erp-v2/pilot/host-1", env="pilot")
-    assert db.get(DeploymentTarget, odd.id).secrets_environment is None
+    assert db.get(DeploymentTarget, odd.id).bao_environment is None
     with pytest.raises(PlanRefusedError, match="namespace-env"):
         _desired(db, odd.id, FakeSource())
     stated = register_target(
@@ -1307,7 +1307,7 @@ def test_the_namespace_env_is_fixed_at_registration(db: Session) -> None:
             secrets_environment="pilot",
         ),
     )
-    assert db.get(DeploymentTarget, stated.id).secrets_environment == "pilot"
+    assert db.get(DeploymentTarget, stated.id).bao_environment == "pilot"
     assert _desired(db, stated.id, FakeSource())
     with pytest.raises(TransitionRefusedError, match="lowercase segment"):
         register_target(

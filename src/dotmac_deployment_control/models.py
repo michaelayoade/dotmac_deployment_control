@@ -627,7 +627,7 @@ class DeploymentTarget(Base, TimestampMixin):
     #: The OpenBao namespace-env of the approved `<env>/<product>` layout
     #: (`prod`, `staging`), FIXED at registration. It is a fact about the target,
     #: never a dispatch field; the product segment comes from the descriptor.
-    secrets_environment: Mapped[str | None] = mapped_column(String(40))
+    bao_environment: Mapped[str | None] = mapped_column(String(40))
 
     record_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 

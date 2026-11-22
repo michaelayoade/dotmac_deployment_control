@@ -97,7 +97,7 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   OpenBao names follow the approved `<env>/<product>` layout, not Control's raw
   identities: `secrets_namespace` is a REQUIRED descriptor field (the `<product>`
   segment), and the namespace-env (`prod`, `staging`) is fixed on the target at
-  registration (`deployment_targets.secrets_environment`, accepting either CP
+  registration (`deployment_targets.bao_environment`, accepting either CP
   spelling of production) and never sent in a dispatch. The AppRole name is
   `<secrets_namespace>-<ns_env>-<role>` (`erp-prod-app`). Propose refuses a job
   material nothing in the plan supplies; the legacy exit-pre-staged claim is

@@ -88,7 +88,7 @@ def test_catalogue_has_exact_twenty_five_table_274_column_extent() -> None:
     therefore 22 tables and 246 columns. `dc_0017` adds three tables and 27
     columns (`deploy_settings` 7, `deployment_sets` 8,
     `legacy_env_policy_versions` 12) and one nullable column on
-    `deployment_targets` (`secrets_environment`), so the head extent is 25
+    `deployment_targets` (`bao_environment`), so the head extent is 25
     tables and 274 columns.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}

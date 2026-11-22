@@ -1994,7 +1994,7 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
             subject_ref=command.subject_ref,
             product_code=command.product_code,
             environment=command.environment,
-            secrets_environment=chosen,
+            bao_environment=chosen,
             status=TargetStatus.REGISTERED.value,
             desired_revision=0,
             record_version=1,
@@ -2089,7 +2089,7 @@ def set_desired_state(
                 legacy_allowed=row.target_ref in settings.legacy_allowed_targets,
             )
             try:
-                if row.secrets_environment is None:
+                if row.bao_environment is None:
                     raise TargetApiError(
                         "the target has no OpenBao namespace-env; state it at "
                         "registration (secrets_environment)",
@@ -2100,7 +2100,7 @@ def set_desired_state(
                     row.product_code,
                     row.environment,
                     secrets_namespace=verified.unit.secrets_namespace,
-                    secrets_environment=row.secrets_environment,
+                    secrets_environment=row.bao_environment,
                 )
             except TargetApiError as exc:
                 raise PlanRefusedError(
@@ -5540,6 +5540,15 @@ def _legacy_transition(
                 raise LegacyPolicyRefusedError(
                     "the descriptor declares no [legacy_env_file] for this target"
                 )
+            # Declared by the descriptor first, then the exit, then the rest.
+            check_policy_against_descriptor(
+                command.names,
+                descriptor_legacy_names=legacy.names,
+                param_materials=[
+                    p.material for p in verified.unit.params.values() if p.material
+                ],
+                active_binding_names=verified.unit.active_binding_names(),
+            )
             after = enable_policy(
                 fleet,
                 target_ref=target.target_ref,
