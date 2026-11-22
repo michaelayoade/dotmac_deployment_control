@@ -248,9 +248,16 @@ def _check_inputs(case: dict[str, Any], **overrides: Any) -> dict[str, Any]:
         "body_utf8": case["body_utf8"],
         "store_now": case["issued_at"],
         "credential_target_ref": case["target_ref"],
+        "looked_up_credential_id": case["credential_id"],
     }
     base.update(overrides)
     return base
+
+
+def _headers_of(inputs: dict[str, Any]) -> Any:
+    """`headers_pairs` (a list of [name, value], repeats allowed) wins if present."""
+    pairs = inputs.get("headers_pairs")
+    return [tuple(p) for p in pairs] if pairs is not None else inputs["headers"]
 
 
 def _run_check(inputs: dict[str, Any]) -> api.RequestCoordinates:
@@ -258,10 +265,11 @@ def _run_check(inputs: dict[str, Any]) -> api.RequestCoordinates:
         method=inputs["method"],
         raw_path=inputs["raw_path"],
         query_string=inputs["query_string"],
-        headers=inputs["headers"],
+        headers=_headers_of(inputs),
         body=inputs["body_utf8"].encode(),
         store_now=inputs["store_now"],
         credential_target_ref=inputs["credential_target_ref"],
+        looked_up_credential_id=inputs["looked_up_credential_id"],
     )
 
 
@@ -339,8 +347,56 @@ def _request_check_vectors() -> dict[str, Any]:
     spelled = _check_inputs(get)
     spelled["headers"][api.H_SIGNATURE] = _noncanonical(get["signature_b64u"])
     refuse("a non-canonical signature spelling", spelled)
+    lookup = _check_inputs(get, looked_up_credential_id="cred-9999")
+    refuse("the credential looked up is not the one the request names", lookup)
+    for header, other_value in (
+        (api.H_CREDENTIAL, "cred-9999"),
+        (api.H_TARGET, other),
+        (api.H_NONCE, _nonce(99)),
+    ):
+        repeated = _check_inputs(get)
+        pairs = [[k, v] for k, v in repeated["headers"].items()]
+        pairs.append([header.lower(), other_value])
+        repeated["headers_pairs"] = pairs
+        refuse(f"a repeated {header} header", repeated)
     encoded = f"{api.BASE_PATH}/targets/dotmac-erp-v2%2Fproduction%2Fhost-a/materials"
     refuse("a percent-encoded path", _check_inputs(get, raw_path=encoded))
+    return {
+        "ok": ok,
+        "refused": refused,
+        "credential_id": _credential_id_vectors(get),
+    }
+
+
+def _credential_id_vectors(case: dict[str, Any]) -> dict[str, Any]:
+    """`request_credential_id`: the ONLY way CP looks the credential up."""
+    headers = dict(case["headers"])
+    ok = [
+        {"headers": headers, "credential_id": api.request_credential_id(headers)},
+        {
+            "headers": {k.lower(): v for k, v in headers.items()},
+            "credential_id": api.request_credential_id(headers),
+        },
+    ]
+    no_credential = {k: v for k, v in headers.items() if k != api.H_CREDENTIAL}
+    repeated = [[k, v] for k, v in headers.items()]
+    repeated.append([api.H_CREDENTIAL.lower(), "cred-9999"])
+    empty = {**headers, api.H_CREDENTIAL: ""}
+    refused = []
+    for name, value in (
+        ("absent", no_credential),
+        ("repeated (any case)", repeated),
+        ("empty", empty),
+    ):
+        try:
+            api.request_credential_id(
+                [tuple(p) for p in value] if isinstance(value, list) else value
+            )
+        except api.TargetApiError as exc:
+            key = "headers_pairs" if isinstance(value, list) else "headers"
+            refused.append({"name": name, key: value, "code": exc.code})
+        else:  # pragma: no cover
+            raise AssertionError(name)
     return {"ok": ok, "refused": refused}
 
 

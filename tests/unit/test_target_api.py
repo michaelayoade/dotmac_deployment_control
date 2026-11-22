@@ -523,10 +523,15 @@ def _check(inputs: dict) -> api.RequestCoordinates:  # type: ignore[type-arg]
         method=inputs["method"],
         raw_path=inputs["raw_path"],
         query_string=inputs["query_string"],
-        headers=inputs["headers"],
+        headers=(
+            [tuple(p) for p in inputs["headers_pairs"]]
+            if "headers_pairs" in inputs
+            else inputs["headers"]
+        ),
         body=inputs["body_utf8"].encode(),
         store_now=inputs["store_now"],
         credential_target_ref=inputs["credential_target_ref"],
+        looked_up_credential_id=inputs["looked_up_credential_id"],
     )
 
 
@@ -563,8 +568,36 @@ def test_check_request_vectors_reproduce() -> None:
     }
     assert len([n for n in refusals if n.startswith("missing header")]) == 5
     assert refusals["outside the skew"] == "skew"
+    # C-1: the credential looked up must be the one the request names, and a
+    # repeated header (any case) is refused rather than first- or last-wins.
+    assert refusals["the credential looked up is not the one the request names"] == (
+        "credential_lookup_mismatch"
+    )
+    repeated = {n: c for n, c in refusals.items() if n.startswith("a repeated")}
+    assert len(repeated) == 3
+    assert set(repeated.values()) == {"duplicate_header"}
     assert refusals["a 63-byte signature"] == "bad_signature_encoding"
     assert refusals["a non-canonical signature spelling"] == "bad_signature_encoding"
+
+
+def test_request_credential_id_vectors() -> None:
+    """C-1: the one way CP looks the credential up."""
+    vectors = _VECTORS["request_check"]["credential_id"]
+    for case in vectors["ok"]:
+        assert api.request_credential_id(case["headers"]) == case["credential_id"]
+    for case in vectors["refused"]:
+        headers = (
+            [tuple(p) for p in case["headers_pairs"]]
+            if "headers_pairs" in case
+            else case["headers"]
+        )
+        with pytest.raises(api.TargetApiError) as info:
+            api.request_credential_id(headers)
+        assert info.value.code == case["code"]
+    codes = {c["name"]: c["code"] for c in vectors["refused"]}
+    assert codes["absent"] == "missing_header"
+    assert codes["empty"] == "missing_header"
+    assert codes["repeated (any case)"] == "duplicate_header"
 
 
 def test_a_valid_signature_cannot_be_replayed_against_another_target() -> None:
@@ -582,7 +615,8 @@ def test_audit_router_source_requires_check_request_and_no_local_builder() -> No
         "def route(req):\n"
         "    return check_request(method=req.m, raw_path=req.p, query_string='',\n"
         "        headers=req.h, body=req.b, store_now=now(),\n"
-        "        credential_target_ref=cred.target)\n"
+        "        credential_target_ref=cred.target,\n"
+        "        looked_up_credential_id=request_credential_id(req.h))\n"
         "def verify(found):\n"
         "    key.verify(found.signed_message)\n"
         "    ledger.insert(found.nonce_ledger_key)\n"
@@ -590,11 +624,20 @@ def test_audit_router_source_requires_check_request_and_no_local_builder() -> No
     assert api.audit_router_source(good) == []
     empty = api.audit_router_source("def route(req):\n    return 1\n")
     assert empty[0] == "the router never calls check_request"
-    assert len(empty) == 3  # nor verifies signed_message, nor inserts the ledger key
+    # nor looks the credential up, verifies signed_message, or inserts the key
+    assert len(empty) == 4
     no_target = good.replace("credential_target_ref=cred.target", "x=1")
     assert api.audit_router_source(no_target) == [
         "check_request is never given the credential's target"
     ]
+    no_lookup = good.replace("looked_up_credential_id=", "y=")
+    assert "never given the looked-up credential id" in " ".join(
+        api.audit_router_source(no_lookup)
+    )
+    assert any(
+        "request_credential_id" in p
+        for p in api.audit_router_source(good.replace("request_credential_id", "id_of"))
+    )
     local = good + '\nMSG = "dotmac.target_request.v1" + "\\n"\n'
     assert any("local message purpose" in p for p in api.audit_router_source(local))
     for dropped in ("signed_message", "nonce_ledger_key"):

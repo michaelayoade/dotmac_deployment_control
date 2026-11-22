@@ -66,7 +66,7 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   `dotmac.deploy_target_materials/1` and the env names). Package data
   `contract/target_api_v1.json` holds the shared vectors; Control's functions
   reproduce every one. The agent vendors the file byte-for-byte and pins its
-  digest: target_api_v1.json sha256 d5f6722994daaeea438e8c7f2e81ac94ca8f078af1704c05139a4d77c8a00fed. A change is a `_v2` file and a new
+  digest: target_api_v1.json sha256 548ca5ee593a571b9fc4f826db9e4f05cc6c14288e3e3df2be1681a2c0b61f07. A change is a `_v2` file and a new
   release.
 - Contract hardening (architect r3): `check_request` is the one server-side
   coordinate check (header target == path target == the credential's target, the

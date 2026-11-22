@@ -41,7 +41,7 @@ import ast
 import base64
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
@@ -471,6 +471,36 @@ def check_route(method: str, route: str) -> None:
 # ── The one request check ───────────────────────────────────────────────────
 
 _REQUEST_HEADERS: Final = (H_CREDENTIAL, H_TARGET, H_ISSUED_AT, H_NONCE, H_SIGNATURE)
+
+HeaderInput = Mapping[str, str] | Sequence[tuple[str, str]]
+
+
+def _single_header(headers: HeaderInput, name: str) -> str:
+    """The ONE value of a header: absent or repeated (any case) is refused.
+
+    A framework lookup returns the first of a repeated header and a dict keeps
+    the last; refusing repetition removes the difference.
+    """
+    items = headers.items() if isinstance(headers, Mapping) else headers
+    values = [v for k, v in items if str(k).lower() == name.lower()]
+    if not values or not isinstance(values[0], str) or not values[0]:
+        raise TargetApiError(f"header {name} is missing", "missing_header")
+    if len(values) > 1:
+        raise TargetApiError(f"header {name} is repeated", "duplicate_header")
+    return values[0]
+
+
+def request_credential_id(headers: HeaderInput) -> str:
+    """The credential id to look the credential up by. Use THIS, nothing else.
+
+    Refuses an absent or duplicated header. `check_request` requires the id it
+    finds to equal the one the server looked the credential up with
+    (`looked_up_credential_id`), so the key that verifies the signature and the
+    id the audit trail and nonce ledger record cannot differ.
+    """
+    return _check_credential_id(_single_header(headers, H_CREDENTIAL))
+
+
 SIGNATURE_BYTES: Final = 64
 
 
@@ -496,10 +526,11 @@ def check_request(
     method: str,
     raw_path: str,
     query_string: str,
-    headers: Mapping[str, str],
+    headers: HeaderInput,
     body: bytes,
     store_now: str,
     credential_target_ref: str,
+    looked_up_credential_id: str,
 ) -> RequestCoordinates:
     """EVERY server-side coordinate check, in one place, before any signature.
 
@@ -525,13 +556,9 @@ def check_request(
         )
     if query_string:
         raise TargetApiError("a target-API request has no query string", "query_string")
-    lowered = {str(k).lower(): v for k, v in headers.items()}
-    found: dict[str, str] = {}
-    for name in _REQUEST_HEADERS:
-        value = lowered.get(name.lower())
-        if not isinstance(value, str) or not value:
-            raise TargetApiError(f"header {name} is missing", "missing_header")
-        found[name] = value
+    found: dict[str, str] = {
+        name: _single_header(headers, name) for name in _REQUEST_HEADERS
+    }
     if found[H_TARGET] != target_ref:
         raise TargetApiError(
             "the header target ref differs from the path's",
@@ -543,6 +570,11 @@ def check_request(
             "target_mismatch_credential",
         )
     credential_id = _check_credential_id(found[H_CREDENTIAL])
+    if credential_id != looked_up_credential_id:
+        raise TargetApiError(
+            "the credential looked up is not the one the request names",
+            "credential_lookup_mismatch",
+        )
     try:
         nonce = check_nonce(found[H_NONCE])
     except TargetApiError:
@@ -616,12 +648,25 @@ def audit_router_source(source: str) -> list[str]:
     ]
     if not calls:
         problems.append("the router never calls check_request")
-    elif not any(
-        any(kw.arg == "credential_target_ref" for kw in call.keywords) for call in calls
-    ):
-        problems.append("check_request is never given the credential's target")
+    else:
+        for kwarg, why in (
+            (
+                "credential_target_ref",
+                "check_request is never given the credential's target",
+            ),
+            (
+                "looked_up_credential_id",
+                "check_request is never given the looked-up credential id",
+            ),
+        ):
+            if not any(any(kw.arg == kwarg for kw in c.keywords) for c in calls):
+                problems.append(why)
     attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     for needed, why in (
+        (
+            "request_credential_id",
+            "the credential is not looked up by request_credential_id",
+        ),
         ("signed_message", "the signature is never verified over signed_message"),
         ("nonce_ledger_key", "nonce_ledger_key is never inserted"),
     ):
@@ -888,6 +933,7 @@ __all__ = [
     "SIGNATURE_BYTES",
     "STATEMENT_KEYS",
     "VECTORS_RESOURCE",
+    "HeaderInput",
     "RequestCoordinates",
     "TargetApiError",
     "TargetBinding",
@@ -918,6 +964,7 @@ __all__ = [
     "plan_roles",
     "plan_snapshot_digest",
     "primary_image",
+    "request_credential_id",
     "request_headers",
     "request_message",
     "response_message",
