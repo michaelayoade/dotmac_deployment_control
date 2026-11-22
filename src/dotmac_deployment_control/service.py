@@ -91,6 +91,7 @@ from dotmac_deployment_control.counterparty import (
     EXECUTOR_OPERATIONS,
     require_executable_operation,
 )
+from dotmac_deployment_control.deploy_binding import DeployPlanBinding
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
@@ -783,6 +784,11 @@ class ProposePlanCommand:
     approval_policy_version: int | None = None
     expected_desired_revision: int | None = None
     actor_ref: str | None = None
+    #: OPTIONAL deploy-unit binding (params digest, pinned images, lease TTL,
+    #: legacy policy, companion order). Frozen INSIDE the plan snapshot, so the
+    #: approval over the plan digest covers it. None leaves the snapshot, and so
+    #: every existing digest, exactly as before.
+    deploy_binding: DeployPlanBinding | None = None
 
     def __post_init__(self) -> None:
         """Refuse an unusable OPERATION at construction.
@@ -944,6 +950,7 @@ def plan_snapshot(
     *,
     descriptor_digest: str | None = None,
     purpose: str,
+    deploy_binding: DeployPlanBinding | None = None,
 ) -> dict[str, Any]:
     """The canonical frozen snapshot of a target's desired state.
 
@@ -982,7 +989,7 @@ def plan_snapshot(
     "this plan declared nothing" are one state rather than two. Two encodings
     of one absence would be two digests for one plan.
     """
-    return {
+    snapshot: dict[str, Any] = {
         "plan_purpose": _require_plan_purpose(purpose).value,
         "target_ref": target.target_ref,
         "product_code": target.product_code,
@@ -1003,6 +1010,11 @@ def plan_snapshot(
         # None because they have not received Foundation's descriptor yet.
         "descriptor_digest": descriptor_digest,
     }
+    # ABSENT, not null, when no binding is supplied: a plan that never used the
+    # deploy-unit contract keeps the exact snapshot (and digest) it always had.
+    if deploy_binding is not None:
+        snapshot["deploy_binding"] = deploy_binding.payload()
+    return snapshot
 
 
 def plan_digest_of(snapshot: Mapping[str, Any]) -> PlanDigestV1:
@@ -2437,6 +2449,7 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
             target,
             descriptor_digest=command.descriptor_digest,
             purpose=command.purpose,
+            deploy_binding=command.deploy_binding,
         )
         row = DeploymentPlan(
             target_id=target.id,
@@ -5034,7 +5047,6 @@ __all__ = [
     "AUDIT_ACTION_ROLLOUT",
     "AUDIT_ACTION_TARGET",
     "SCOPE_ACTIVATE_CREDENTIAL",
-    "SCOPE_RETIRE_CREDENTIAL",
     "SCOPE_APPROVE_PLAN",
     "SCOPE_CANCEL_PLAN",
     "SCOPE_CANCEL_ROLLOUT",
@@ -5046,6 +5058,7 @@ __all__ = [
     "SCOPE_PROPOSE_PLAN",
     "SCOPE_REGISTER_TARGET",
     "SCOPE_REQUEST_ROLLOUT",
+    "SCOPE_RETIRE_CREDENTIAL",
     "SCOPE_REVOKE_CREDENTIAL",
     "SCOPE_REVOKE_PLAN_APPROVAL",
     "SCOPE_SETTLE",
@@ -5092,8 +5105,8 @@ __all__ = [
     "request_rollout",
     "require_approved_plan",
     "require_manual_repair",
-    "revoke_credential",
     "retire_credential",
+    "revoke_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
     "set_desired_state",

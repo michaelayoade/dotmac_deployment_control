@@ -5,6 +5,36 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a18 (declared, unpublished) — build-once generic deploy contract
+
+Additive and off by default: nothing here is reached unless a caller opts in,
+and a plan proposed without a deploy binding keeps its exact snapshot and digest.
+
+- `deploy_unit`: parser and validator for `deploy/deploy-unit.toml`, schema
+  `dotmac.deploy_unit/1` (typed params with a value grammar that refuses what
+  Foundation's env-file parser would alter and anything secret-shaped,
+  `secret_ref` pointers, `[[bindings]]`, `[[companions]]`, `[image]`,
+  `[legacy_env_file]`) and the canonical `params.env` render and digest.
+- `image_policy`: `source = "transfer"` by default (an absent `[image]` means
+  transfer); `pull` only for a repository on the `public_pull_repositories`
+  allowlist, which is empty by default; a transferred image must be planned on
+  the `127.0.0.1` loopback repository with the same path and the same digest.
+- `legacy_policy`: the M11 `[legacy_env_file]` invariants L1-L5 and L8 as pure
+  transitions (sha fixed at enable, secret names only, names only shrink,
+  enabled-target ceiling starting at 0, one expiry, attended extension, full
+  retirement that decrements the ceiling) and the `legacy_never` refusal.
+- `deploy_binding`: `ProposePlanCommand.deploy_binding` freezes
+  `params_env_digest`, the pinned image references and digests, `image.source`,
+  the loopback repository, the legacy policy version/sha/names, the companion
+  order and the lease TTL (1..3600 seconds) INSIDE the plan snapshot, so the
+  approval covers them. `DeploymentSet` carries one `set_digest` and releases the
+  companion only after the primary is healthy.
+- `reconcile`: the rule that issues a reconcile marker for a lease that expired
+  unreleased only on a verified read-only observation that matches the last
+  committed or the planned release.
+- NOT in this change: persistence tables (`dc_0017`), commands and the typed
+  form and set page; see the pull request for why.
+
 ## 0.1.0a17 (published 2026-10-01) — permanent controller-key nonreuse
 
 - Rehearsal-issuer issuance refuses a controller fingerprint already bound to

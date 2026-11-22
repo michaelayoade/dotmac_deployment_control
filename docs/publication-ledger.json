@@ -23,11 +23,19 @@
     "test_the_ledger_and_the_published_record_never_claim_the_same_version states",
     "that over the two FILES so it holds even in a tagless checkout.",
     "",
-    "EMPTY: the tree's 0.1.0a17 declaration is published and independently",
-    "verified. The recorder removed its row when it wrote the immutable",
-    "tag, artifact and run coordinates to docs/published-versions.json.",
-    "A future unpublished successor must receive its own declaration row.",
-    "Publication does not prove consumer adoption or live issuer readiness."
+    "NOT EMPTY: 0.1.0a18 is the tree's current declaration, the successor of",
+    "published 0.1.0a17. This change adds the deploy-unit descriptor, typed",
+    "params, image delivery rules, the M11 legacy-env policy invariants and the",
+    "reconcile-marker rule; it has not been tagged, published or release-verified.",
+    "CI may build and test this source without publishing a release.",
+    "The row is removed only when a release recorder writes immutable",
+    "publication coordinates to docs/published-versions.json."
   ],
-  "unpublished": {}
+  "unpublished": {
+    "0.1.0a18": {
+      "status": "declared-not-published",
+      "declared_kernel_floor": ">=0.1.0a100",
+      "reason": "The successor of published 0.1.0a17 is declared for the build-once generic deploy contract (Control a18). CI validation builds are not publication evidence. No tag, release run, release verification run or publication is recorded for 0.1.0a18."
+    }
+  }
 }
