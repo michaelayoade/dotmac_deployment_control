@@ -66,7 +66,7 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   `dotmac.deploy_target_materials/1` and the env names). Package data
   `contract/target_api_v1.json` holds the shared vectors; Control's functions
   reproduce every one. The agent vendors the file byte-for-byte and pins its
-  digest: target_api_v1.json sha256 ff0a25b8284f7c22c9e5d930274ae4001ef3510529f75c74144544baa4158970. A change is a `_v2` file and a new
+  digest: target_api_v1.json sha256 d5f6722994daaeea438e8c7f2e81ac94ca8f078af1704c05139a4d77c8a00fed. A change is a `_v2` file and a new
   release.
 - Contract hardening (architect r3): `check_request` is the one server-side
   coordinate check (header target == path target == the credential's target, the
@@ -84,8 +84,16 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
 - A material whose name says it is a secret (`PASS`, `PWD`, `SECRET`,
   `TOKEN`, `CREDENTIAL`, `DSN`, `SALT`, `COOKIE`, `PRIVATE_KEY`, `API_KEY`,
   `*_KEY`) may only be a `path` param; refused at
-  descriptor parse. `secret_ref` is DERIVED (`bao://<env>/<product>/kv/<role>/
-  <lower(name)>`), never stored. The legacy part of the plan binding carries
+  descriptor parse. `secret_ref` is DERIVED (`bao://<ns_env>/<secrets_namespace>/kv/<role>/
+  <lower(name)>`, e.g. `bao://prod/erp/kv/app/db_password`), never stored. The
+  OpenBao names follow the approved `<env>/<product>` layout, not Control's raw
+  identities: `secrets_namespace` is a REQUIRED descriptor field (the `<product>`
+  segment), and the namespace-env (`prod`, `staging`) is fixed on the target at
+  registration (`deployment_targets.secrets_environment`, accepting either CP
+  spelling of production) and never sent in a dispatch. The AppRole name is
+  `<secrets_namespace>-<ns_env>-<role>` (`erp-prod-app`). Propose refuses a job
+  material nothing in the plan supplies; the legacy exit-pre-staged claim is
+  derived from the descriptor, not an operator flag. The legacy part of the plan binding carries
   `expires_at`.
 
 ## 0.1.0a17 (published 2026-10-01) — permanent controller-key nonreuse

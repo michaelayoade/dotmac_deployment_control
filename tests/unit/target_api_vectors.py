@@ -599,6 +599,7 @@ def _descriptor(params: list[dict[str, Any]]) -> str:
     out = (
         'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
         'spec = "deploy/product.toml"\n'
+        'secrets_namespace = "erp"\n'
     )
     for param in params:
         out += f'[params.{param["name"]}]\ntype = "{param["type"]}"\n'
@@ -697,52 +698,94 @@ def _render_vectors() -> list[dict[str, Any]]:
 
 
 def _binding_vectors() -> dict[str, Any]:
+    ref = "dotmac-erp-v2/production/host-a"
     ok = [
-        ("dotmac-erp-v2/production/host-a", "dotmac-erp-v2", "production"),
+        (ref, "dotmac-erp-v2", "production", "erp", "prod"),
         (
             "dotmac-integrator-companion/staging/host-1",
             "dotmac-integrator-companion",
             "staging",
+            "erp-integrator",
+            "staging",
         ),
     ]
     refused = [
-        ("erp/prod/host-a", "dotmac-erp-v2", "production"),
-        ("dotmac-erp-v2/staging/host-a", "dotmac-erp-v2", "production"),
-        ("dotmac-erp-v2/production/host-a", "dotmac-sub", "production"),
-        ("dotmac-erp-v2/production", "dotmac-erp-v2", "production"),
-        ("dotmac-erp-v2/production/Host-A", "dotmac-erp-v2", "production"),
+        ("erp/prod/host-a", "dotmac-erp-v2", "production", "erp", "prod"),
+        (
+            ref.replace("production", "staging"),
+            "dotmac-erp-v2",
+            "production",
+            "erp",
+            "prod",
+        ),
+        (ref, "dotmac-sub", "production", "erp", "prod"),
+        ("dotmac-erp-v2/production", "dotmac-erp-v2", "production", "erp", "prod"),
+        (ref.replace("host-a", "Host-A"), "dotmac-erp-v2", "production", "erp", "prod"),
+        (ref, "dotmac-erp-v2", "production", "Erp", "prod"),
+        (ref, "dotmac-erp-v2", "production", "erp/x", "prod"),
+        (ref, "dotmac-erp-v2", "production", "erp", "Prod"),
+        (ref, "dotmac-erp-v2", "production", "erp", ""),
     ]
-    out_ok = [
-        {
-            "target_ref": ref,
-            "product_code": product,
-            "environment": env,
-            "host": api.check_target_binding(ref, product, env),
-            "openbao_namespace": api.openbao_namespace(env),
-            "secret_ref_prefix": f"bao://{env}/{product}/kv/",
-        }
-        for ref, product, env in ok
-    ]
+    out_ok = []
+    for target_ref, product, env, namespace, ns_env in ok:
+        found = api.check_target_binding(
+            target_ref,
+            product,
+            env,
+            secrets_namespace=namespace,
+            secrets_environment=ns_env,
+        )
+        out_ok.append(
+            {
+                "target_ref": target_ref,
+                "product_code": product,
+                "environment": env,
+                "secrets_namespace": namespace,
+                "secrets_environment": ns_env,
+                "host": found.host,
+                "openbao_namespace": found.namespace,
+                "approle_app": api.approle_name(namespace, ns_env, "app"),
+                "secret_ref_prefix": f"bao://{ns_env}/{namespace}/kv/",
+            }
+        )
     out_refused = []
-    for ref, product, env in refused:
+    for target_ref, product, env, namespace, ns_env in refused:
         try:
-            api.check_target_binding(ref, product, env)
+            api.check_target_binding(
+                target_ref,
+                product,
+                env,
+                secrets_namespace=namespace,
+                secrets_environment=ns_env,
+            )
         except api.TargetApiError as exc:
             out_refused.append(
                 {
-                    "target_ref": ref,
+                    "target_ref": target_ref,
                     "product_code": product,
                     "environment": env,
+                    "secrets_namespace": namespace,
+                    "secrets_environment": ns_env,
                     "code": exc.code,
                 }
             )
         else:  # pragma: no cover
-            raise AssertionError(ref)
+            raise AssertionError(target_ref)
     return {
         "rule": (
-            "a descriptor-backed target's ref is <product_code>/<environment>/<host>; "
-            "the environment segment IS the OpenBao namespace name"
+            "the target ref is <product_code>/<environment>/<host> (Control's "
+            "identities, signed and routed on). OpenBao names follow the approved "
+            "<env>/<product> layout: the namespace is <secrets_environment>/"
+            "<secrets_namespace> (prod/erp), the AppRole is <secrets_namespace>-"
+            "<secrets_environment>-<role> (erp-prod-app), and the secret_ref is "
+            "bao://<secrets_environment>/<secrets_namespace>/kv/<role>/<lower(name)>. "
+            "secrets_namespace is a descriptor field; secrets_environment is fixed "
+            "on the target at registration and never sent in a dispatch."
         ),
+        "environment_defaults": {
+            env: api.default_secrets_environment(env)
+            for env in ("production", "prod", "staging", "pilot")
+        },
         "ok": out_ok,
         "refused": out_refused,
     }
@@ -769,36 +812,43 @@ def _denied_key_vectors() -> dict[str, Any]:
 
 def _secret_vectors() -> dict[str, Any]:
     ok = [
-        ("production", "dotmac-erp-v2", "app", "DB_PASSWORD"),
-        ("staging", "dotmac-integrator-companion", "migrate", "MIGRATION_DATABASE_URL"),
+        ("prod", "erp", "app", "DB_PASSWORD"),
+        ("staging", "erp-integrator", "migrate", "MIGRATION_DATABASE_URL"),
     ]
     refused = [
-        ("Production", "dotmac-erp-v2", "app", "DB_PASSWORD"),
-        ("production", "dotmac erp", "app", "DB_PASSWORD"),
-        ("production", "dotmac-erp-v2", "App", "DB_PASSWORD"),
-        ("production", "dotmac-erp-v2", "app", "db_password"),
-        ("production", "dotmac-erp-v2", "app/x", "DB_PASSWORD"),
+        ("Prod", "erp", "app", "DB_PASSWORD"),
+        ("prod", "erp app", "app", "DB_PASSWORD"),
+        ("prod", "erp", "App", "DB_PASSWORD"),
+        ("prod", "erp", "app", "db_password"),
+        ("prod", "erp", "app/x", "DB_PASSWORD"),
     ]
     out_ok = [
         {
-            "environment": e,
-            "product": p,
+            "secrets_environment": e,
+            "secrets_namespace": n,
             "role": r,
-            "name": n,
-            "secret_ref": derive_secret_ref(e, p, r, n),
+            "name": name,
+            "secret_ref": derive_secret_ref(e, n, r, name),
+            "approle": api.approle_name(n, e, r),
         }
-        for e, p, r, n in ok
+        for e, n, r, name in ok
     ]
     out_refused = []
-    for e, p, r, n in refused:
+    for e, n, r, name in refused:
         try:
-            derive_secret_ref(e, p, r, n)
+            derive_secret_ref(e, n, r, name)
         except DeployUnitError:
             out_refused.append(
-                {"environment": e, "product": p, "role": r, "name": n, "refused": True}
+                {
+                    "secrets_environment": e,
+                    "secrets_namespace": n,
+                    "role": r,
+                    "name": name,
+                    "refused": True,
+                }
             )
         else:  # pragma: no cover
-            raise AssertionError((e, p, r, n))
+            raise AssertionError((e, n, r, name))
     return {"ok": out_ok, "refused": out_refused}
 
 

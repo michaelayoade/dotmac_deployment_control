@@ -23,6 +23,7 @@ _D2 = "sha256:" + "2" * 64
 _MIN = (
     'schema = "dotmac.deploy_unit/1"\nproduct = "erp_v2"\n'
     'spec = "deploy/product.toml"\n'
+    'secrets_namespace = "erp"\n'
 )
 
 

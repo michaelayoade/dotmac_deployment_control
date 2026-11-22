@@ -592,6 +592,8 @@ database_catalog = ModuleDatabaseCatalogContributionV1(
                             _VARCHAR_128,
                             nullable=True,
                         ),
+                        # dc_0017: the OpenBao namespace-env, fixed at registration.
+                        _column("secrets_environment", 23, _VARCHAR_40, nullable=True),
                     ),
                 ),
                 _table(

@@ -405,6 +405,7 @@ def test_secret_named_material_vectors() -> None:
         text = (
             'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
             'spec = "deploy/product.toml"\n'
+            'secrets_namespace = "erp"\n'
             f'[params.p]\ntype = "{case["type"]}"\nmaterial = "{case["material"]}"\n'
         )
         if case["accept"]:
@@ -448,39 +449,52 @@ def test_secret_named_material_vectors() -> None:
 
 
 def test_secret_ref_vectors_and_derivation() -> None:
+    """V-1: refs follow the approved `<env>/<product>` layout (`prod/erp`)."""
     vectors = _VECTORS["secret_ref_vectors"]
     for case in vectors["ok"]:
         ref = derive_secret_ref(
-            case["environment"], case["product"], case["role"], case["name"]
+            case["secrets_environment"],
+            case["secrets_namespace"],
+            case["role"],
+            case["name"],
         )
         assert ref == case["secret_ref"]
         assert ref.endswith("/" + case["name"].lower())
-    assert vectors["ok"][0]["secret_ref"] == (
-        "bao://production/dotmac-erp-v2/kv/app/db_password"
-    )
+        assert case["approle"] == api.approle_name(
+            case["secrets_namespace"], case["secrets_environment"], case["role"]
+        )
+    assert vectors["ok"][0]["secret_ref"] == "bao://prod/erp/kv/app/db_password"
+    assert vectors["ok"][0]["approle"] == "erp-prod-app"
+    assert vectors["ok"][1]["approle"] == "erp-integrator-staging-migrate"
     for case in vectors["refused"]:
         with pytest.raises(DeployUnitError):
             derive_secret_ref(
-                case["environment"], case["product"], case["role"], case["name"]
+                case["secrets_environment"],
+                case["secrets_namespace"],
+                case["role"],
+                case["name"],
             )
+    # The raw Control identities are NOT the OpenBao names.
+    for case in vectors["ok"]:
+        assert "dotmac-erp-v2" not in case["secret_ref"]
+        assert "production" not in case["secret_ref"]
 
 
 def test_a_unit_derives_its_active_binding_refs_and_never_stores_them() -> None:
     text = (
         'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
         'spec = "deploy/product.toml"\n'
+        'secrets_namespace = "erp"\n'
         '[[bindings]]\nname = "DB_PASSWORD"\nkind = "key"\nroles = ["app", "migrate"]\n'
         'writer = "ceremony"\nrotation = "copy_only"\n'
         '[[bindings]]\nname = "JWT_SECRET"\nstate = "pre_staged"\nkind = "key"\n'
         'roles = ["app"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
     )
     unit = parse_deploy_unit(text)
-    assert unit.secret_refs("production") == {
-        ("app", "DB_PASSWORD"): "bao://production/dotmac-erp-v2/kv/app/db_password",
-        (
-            "migrate",
-            "DB_PASSWORD",
-        ): "bao://production/dotmac-erp-v2/kv/migrate/db_password",
+    assert unit.secrets_namespace == "erp"
+    assert unit.secret_refs("prod") == {
+        ("app", "DB_PASSWORD"): "bao://prod/erp/kv/app/db_password",
+        ("migrate", "DB_PASSWORD"): "bao://prod/erp/kv/migrate/db_password",
     }
     assert "secret_ref" not in text
 
@@ -489,6 +503,7 @@ def test_the_render_function_agrees_with_the_vector_file_directly() -> None:
     unit = parse_deploy_unit(
         'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
         'spec = "deploy/product.toml"\n'
+        'secrets_namespace = "erp"\n'
         '[params.workers]\ntype = "int"\nmaterial = "WORKERS"\n'
     )
     image = "127.0.0.1:5000/team/app@sha256:" + "1" * 64
@@ -654,23 +669,54 @@ def test_noncanonical_base64url_is_refused() -> None:
 def test_target_binding_vectors() -> None:
     binding = _VECTORS["target_binding"]
     for case in binding["ok"]:
-        host = api.check_target_binding(
-            case["target_ref"], case["product_code"], case["environment"]
+        found = api.check_target_binding(
+            case["target_ref"],
+            case["product_code"],
+            case["environment"],
+            secrets_namespace=case["secrets_namespace"],
+            secrets_environment=case["secrets_environment"],
         )
-        assert host == case["host"]
-        assert api.openbao_namespace(case["environment"]) == case["openbao_namespace"]
+        assert found.host == case["host"]
+        assert found.namespace == case["openbao_namespace"]
+        assert (
+            api.openbao_namespace(
+                case["secrets_namespace"], case["secrets_environment"]
+            )
+            == case["openbao_namespace"]
+        )
         # The secret_ref a binding derives lives in that same namespace.
         ref = derive_secret_ref(
-            case["environment"], case["product_code"], "app", "DB_PASSWORD"
+            case["secrets_environment"],
+            case["secrets_namespace"],
+            "app",
+            "DB_PASSWORD",
         )
         assert ref.startswith(case["secret_ref_prefix"])
+    assert binding["ok"][0]["openbao_namespace"] == "prod/erp"
+    assert binding["ok"][0]["approle_app"] == "erp-prod-app"
     for case in binding["refused"]:
-        with pytest.raises(api.TargetApiError):
+        with pytest.raises(api.TargetApiError) as info:
             api.check_target_binding(
-                case["target_ref"], case["product_code"], case["environment"]
+                case["target_ref"],
+                case["product_code"],
+                case["environment"],
+                secrets_namespace=case["secrets_namespace"],
+                secrets_environment=case["secrets_environment"],
             )
+        assert info.value.code == case["code"]
+    # Either CP spelling of production maps to the same namespace-env; nothing
+    # is assumed for an environment the table does not know.
+    defaults = binding["environment_defaults"]
+    assert defaults == {
+        "production": "prod",
+        "prod": "prod",
+        "staging": "staging",
+        "pilot": None,
+    }
+    for env, expected in defaults.items():
+        assert api.default_secrets_environment(env) == expected
     with pytest.raises(api.TargetApiError):
-        api.openbao_namespace("Production")
+        api.openbao_namespace("erp", "Prod")
 
 
 # ── R3-L7: published test keys are never trusted ────────────────────────────

@@ -84,6 +84,7 @@ _COMPANION = "dotmac-integrator-companion"
 _E = "dotmac-erp-v2/production/"
 _C = "dotmac-integrator-companion/production/"
 _REF = _E + "host-a"
+_NAMESPACES = {_ERP: "erp", _COMPANION: "erp-integrator"}
 _SHA = "sha256:" + "a" * 64
 _SHA2 = "sha256:" + "b" * 64
 _D1 = "sha256:" + "1" * 64
@@ -167,6 +168,7 @@ def _descriptor_text(
     out = (
         'schema = "dotmac.deploy_unit/1"\n'
         f'product = "{product}"\nspec = "{spec}"\n'
+        f'secrets_namespace = "{_NAMESPACES[product]}"\n'
         f'[image]\nsource = "{"pull" if pull else "transfer"}"\n'
         '[params.image_repository]\ntype = "image_repository"\n'
         'required_in = ["production"]\n'
@@ -1275,3 +1277,53 @@ def test_the_legacy_exit_must_be_pre_staged_in_the_descriptor(db: Session) -> No
     staged = FakeSource(legacy=True)
     other = _bound_target(db, staged, ref=_E + "host-s")
     assert _enable(db, other.id, staged).state == "enabled"
+
+
+def test_the_namespace_env_is_fixed_at_registration(db: Session) -> None:
+    """V-1: the OpenBao namespace-env is a fact about the TARGET, from either CP
+    environment spelling, fixed at registration and never assumed."""
+    from dotmac_deployment_control.ports import TransitionRefusedError
+
+    for env, expected in (
+        ("production", "prod"),
+        ("prod", "prod"),
+        ("staging", "staging"),
+    ):
+        view = _register(db, f"dotmac-erp-v2/{env}/host-1", env=env)
+        assert db.get(DeploymentTarget, view.id).secrets_environment == expected
+    # An environment the table does not know has none until it is stated.
+    odd = _register(db, "dotmac-erp-v2/pilot/host-1", env="pilot")
+    assert db.get(DeploymentTarget, odd.id).secrets_environment is None
+    with pytest.raises(PlanRefusedError, match="namespace-env"):
+        _desired(db, odd.id, FakeSource())
+    stated = register_target(
+        db,
+        RegisterTargetCommand(
+            command_id=_cmd(),
+            target_ref="dotmac-erp-v2/pilot/host-2",
+            subject_ref="acme-operator",
+            product_code=_ERP,
+            environment="pilot",
+            secrets_environment="pilot",
+        ),
+    )
+    assert db.get(DeploymentTarget, stated.id).secrets_environment == "pilot"
+    assert _desired(db, stated.id, FakeSource())
+    with pytest.raises(TransitionRefusedError, match="lowercase segment"):
+        register_target(
+            db,
+            RegisterTargetCommand(
+                command_id=_cmd(),
+                target_ref="dotmac-erp-v2/pilot/host-3",
+                subject_ref="acme-operator",
+                product_code=_ERP,
+                environment="pilot",
+                secrets_environment="Bad Env",
+            ),
+        )
+    # A target registered under the `prod` spelling is descriptor-backed too.
+    assert _desired(
+        db,
+        _register(db, _E.replace("production", "prod") + "host-9", env="prod").id,
+        FakeSource(),
+    )

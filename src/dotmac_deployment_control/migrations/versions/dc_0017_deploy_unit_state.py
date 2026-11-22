@@ -1,6 +1,7 @@
 """Deploy-unit state: settings, legacy env-file policy versions, deployment sets.
 
-Additive and expand-only: three new tables, nothing existing is altered.
+Additive and expand-only: three new tables and one nullable column
+(`deployment_targets.secrets_environment`); nothing existing is altered.
 
 * `deploy_settings` is the one deliberately mutable table: a small named
   setting, each change recorded with its attended approver and register line
@@ -70,6 +71,13 @@ def _timestamps() -> tuple[sa.Column, sa.Column]:
 
 
 def upgrade() -> None:
+    # The OpenBao namespace-env (`prod`, `staging`), fixed at registration: a
+    # nullable ADD COLUMN, so every existing target is untouched.
+    op.add_column(
+        "deployment_targets",
+        sa.Column("secrets_environment", sa.String(length=40), nullable=True),
+        schema=_SCHEMA,
+    )
     op.create_table(
         "deploy_settings",
         sa.Column("setting_name", sa.String(length=200), primary_key=True),
@@ -208,3 +216,4 @@ def downgrade() -> None:
     )
     op.drop_table("legacy_env_policy_versions", schema=_SCHEMA)
     op.drop_table("deploy_settings", schema=_SCHEMA)
+    op.drop_column("deployment_targets", "secrets_environment", schema=_SCHEMA)

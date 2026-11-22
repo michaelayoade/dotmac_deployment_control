@@ -42,7 +42,7 @@ def test_manifest_binds_the_source_owned_database_catalogue() -> None:
     assert database_catalog.lineage_head == "dc_0017_deploy_unit_state"
 
 
-def test_catalogue_has_exact_twenty_five_table_273_column_extent() -> None:
+def test_catalogue_has_exact_twenty_five_table_274_column_extent() -> None:
     """Thirteen tables and 178 columns after `dc_0012`.
 
     `dc_0008` adds the eighth table, `recovery_grants`, with 18 columns, and
@@ -87,8 +87,9 @@ def test_catalogue_has_exact_twenty_five_table_273_column_extent() -> None:
     constraint without adding columns. The exact post-revision extent is
     therefore 22 tables and 246 columns. `dc_0017` adds three tables and 27
     columns (`deploy_settings` 7, `deployment_sets` 8,
-    `legacy_env_policy_versions` 12), so the head extent is 25 tables and 273
-    columns.
+    `legacy_env_policy_versions` 12) and one nullable column on
+    `deployment_targets` (`secrets_environment`), so the head extent is 25
+    tables and 274 columns.
     """
     counts = {table.name: len(table.columns) for table in database_catalog.tables}
 
@@ -101,7 +102,7 @@ def test_catalogue_has_exact_twenty_five_table_273_column_extent() -> None:
         "deploy_settings": 7,
         "deployment_plans": 25,
         "deployment_sets": 8,
-        "deployment_targets": 22,
+        "deployment_targets": 23,
         "legacy_env_policy_versions": 12,
         "observation_attempts": 15,
         "observation_receipts": 15,
@@ -119,7 +120,7 @@ def test_catalogue_has_exact_twenty_five_table_273_column_extent() -> None:
         "target_host_association_closures": 6,
         "target_host_associations": 7,
     }
-    assert sum(counts.values()) == 273
+    assert sum(counts.values()) == 274
 
 
 def test_rehearsal_grants_publishes_the_migration_column_shape() -> None:
@@ -398,5 +399,5 @@ def test_release_snapshot_is_canonical_and_round_trips_with_its_digest() -> None
 
     assert restored == snapshot
     assert restored.to_json_bytes() == payload
-    assert sum(len(table.columns) for table in restored.tables) == 273
+    assert sum(len(table.columns) for table in restored.tables) == 274
     assert {table.plane.value for table in restored.tables} == {"platform"}

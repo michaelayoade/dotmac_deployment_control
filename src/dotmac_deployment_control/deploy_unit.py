@@ -253,6 +253,10 @@ class LegacyEnvFileSpec:
 class DeployUnit:
     product: str
     spec: str
+    #: The `<product>` segment of the OpenBao layout `<env>/<product>`
+    #: (`erp`, `erp-integrator`, ...). Owned by the product repo and checked by
+    #: its CI against the authored OpenBao config; it is NOT the product code.
+    secrets_namespace: str
     #: Computed by Control over the descriptor bytes; never self-declared.
     digest: str
     params: Mapping[str, ParamSpec]
@@ -282,11 +286,16 @@ class DeployUnit:
                 found[role] = binding.single_use
         return tuple(sorted(found.items()))
 
-    def secret_refs(self, environment: str) -> dict[tuple[str, str], str]:
-        """`(role, binding name) -> secret_ref` for every ACTIVE binding."""
+    def secret_refs(self, secrets_environment: str) -> dict[tuple[str, str], str]:
+        """`(role, binding name) -> secret_ref` for every ACTIVE binding.
+
+        `secrets_environment` is the target's namespace-env (`prod`), fixed at
+        registration; the product segment is this descriptor's own
+        `secrets_namespace`.
+        """
         return {
             (role, binding.name): derive_secret_ref(
-                environment, self.product, role, binding.name
+                secrets_environment, self.secrets_namespace, role, binding.name
             )
             for binding in self.bindings
             if binding.state == BINDING_ACTIVE
@@ -312,13 +321,18 @@ class SecretRef:
 # ── secret_ref ──────────────────────────────────────────────────────────────
 
 
-def derive_secret_ref(environment: str, product: str, role: str, name: str) -> str:
+def derive_secret_ref(
+    secrets_environment: str, secrets_namespace: str, role: str, name: str
+) -> str:
     """The secret_ref of a binding: DERIVED, never stored or entered.
 
-    `bao://<env>/<product>/kv/<role>/<lower(name)>`; the binding name is the
-    uppercase file name (K1), its path segment is lowercase.
+    `bao://<ns_env>/<secrets_namespace>/kv/<role>/<lower(name)>`, following the
+    approved `<env>/<product>` OpenBao layout (`prod/erp`): the namespace env
+    (`prod`) is the target's, the product segment (`erp`) is the descriptor's
+    `secrets_namespace`. The binding name is the uppercase file name (K1); its
+    path segment is lowercase.
     """
-    ref = SecretRef(environment, product, role, name.lower())
+    ref = SecretRef(secrets_environment, secrets_namespace, role, name.lower())
     for label, segment in (
         ("env", ref.environment),
         ("product", ref.product),
@@ -577,6 +591,7 @@ _TOP_KEYS = frozenset(
         "schema",
         "product",
         "spec",
+        "secrets_namespace",
         "params",
         "bindings",
         "companions",
@@ -863,6 +878,12 @@ def parse_deploy_unit(
     product = document.get("product")
     if not isinstance(product, str) or not _PRODUCT.fullmatch(product):
         raise DeployUnitError("the descriptor product is not well formed")
+    namespace = document.get("secrets_namespace")
+    if not isinstance(namespace, str) or not _SEGMENT.fullmatch(namespace):
+        raise DeployUnitError(
+            "secrets_namespace is required: the lowercase <product> segment of "
+            "the OpenBao layout <env>/<product> (for example erp)"
+        )
     spec = document.get("spec")
     sibling = "/".join([*_normal_parts(descriptor_path)[:-1], "product.toml"])
     if spec != sibling:
@@ -965,6 +986,7 @@ def parse_deploy_unit(
     return DeployUnit(
         product=product,
         spec=str(spec),
+        secrets_namespace=namespace,
         digest=DeployUnitDigestV1.over_bytes(text.encode()).canonical,
         params=params,
         bindings=bindings,

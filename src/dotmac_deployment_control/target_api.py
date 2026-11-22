@@ -341,13 +341,63 @@ def parse_json_body(body: bytes) -> Any:
 # ── Paths ───────────────────────────────────────────────────────────────────
 
 
-def check_target_binding(target_ref: str, product_code: str, environment: str) -> str:
-    """A descriptor-backed target's ref IS `<product_code>/<environment>/<host>`.
+#: The environment names Control targets are registered with, mapped to the
+#: OpenBao namespace-env of the approved `<env>/<product>` layout. Registration
+#: accepts either CP spelling (`production` or `prod`) and never assumes one; an
+#: environment not listed here needs an EXPLICIT namespace-env at registration.
+SECRETS_ENVIRONMENT_DEFAULTS: Final = {
+    "production": "prod",
+    "prod": "prod",
+    "staging": "staging",
+}
 
-    Without this the path segments the API routes on and signs, and the
-    `product_code`/`environment` the secret_ref and the OpenBao namespace are
-    derived from, could name different things. Returns the host alias. The
-    environment segment is the OpenBao namespace name `<env>`: the same string.
+
+def default_secrets_environment(environment: str) -> str | None:
+    return SECRETS_ENVIRONMENT_DEFAULTS.get(environment)
+
+
+def check_secrets_value(value: object, what: str) -> str:
+    """A secrets namespace or namespace-env is a lowercase path segment."""
+    if not isinstance(value, str) or not _SEGMENT.fullmatch(value):
+        raise TargetApiError(f"{what} is a lowercase segment", "bad_secrets_name")
+    return value
+
+
+def openbao_namespace(secrets_namespace: str, secrets_environment: str) -> str:
+    """The OpenBao namespace `<env>/<product>`, e.g. `prod/erp`."""
+    env = check_secrets_value(secrets_environment, "the namespace env")
+    product = check_secrets_value(secrets_namespace, "the secrets namespace")
+    return f"{env}/{product}"
+
+
+def approle_name(secrets_namespace: str, secrets_environment: str, role: str) -> str:
+    """The AppRole name `<secrets_namespace>-<ns_env>-<role>`, e.g. `erp-prod-app`."""
+    check_secrets_value(role, "a role")
+    openbao_namespace(secrets_namespace, secrets_environment)
+    return f"{secrets_namespace}-{secrets_environment}-{role}"
+
+
+@dataclass(frozen=True, slots=True)
+class TargetBinding:
+    host: str
+    namespace: str
+
+
+def check_target_binding(
+    target_ref: str,
+    product_code: str,
+    environment: str,
+    *,
+    secrets_namespace: str,
+    secrets_environment: str,
+) -> TargetBinding:
+    """A descriptor-backed target's identities, tied together.
+
+    The ref is `<product_code>/<environment>/<host>` (Control's identities, what
+    the API signs and routes on). The OpenBao names are NOT those identities:
+    they follow the approved `<env>/<product>` layout, from the descriptor's
+    `secrets_namespace` and the namespace-env fixed on the target at
+    registration. Both are validated here; neither is ever sent in a dispatch.
     """
     product, env, host = _check_target_ref(target_ref)
     if (product, env) != (product_code, environment):
@@ -355,14 +405,9 @@ def check_target_binding(target_ref: str, product_code: str, environment: str) -
             f"target ref {target_ref!r} is not {product_code}/{environment}/<host>",
             "target_ref_mismatch",
         )
-    return host
-
-
-def openbao_namespace(environment: str) -> str:
-    """The OpenBao namespace for an environment: the environment name itself."""
-    if not _SEGMENT.fullmatch(environment):
-        raise TargetApiError("an environment is a lowercase segment")
-    return environment
+    return TargetBinding(
+        host=host, namespace=openbao_namespace(secrets_namespace, secrets_environment)
+    )
 
 
 def _check_target_ref(target_ref: str) -> tuple[str, str, str]:
@@ -839,11 +884,14 @@ __all__ = [
     "REQUEST_PURPOSE",
     "RESPONSE_PURPOSE",
     "RETRY_IDEMPOTENCY",
+    "SECRETS_ENVIRONMENT_DEFAULTS",
     "SIGNATURE_BYTES",
     "STATEMENT_KEYS",
     "VECTORS_RESOURCE",
     "RequestCoordinates",
     "TargetApiError",
+    "TargetBinding",
+    "approle_name",
     "archive_name",
     "audit_router_source",
     "b64u_decode",
@@ -854,9 +902,11 @@ __all__ = [
     "check_public_key_admissible",
     "check_request",
     "check_route",
+    "check_secrets_value",
     "check_skew",
     "check_target_binding",
     "classify_unsigned_response",
+    "default_secrets_environment",
     "expected_app_image",
     "format_stamp",
     "is_denied_public_key",

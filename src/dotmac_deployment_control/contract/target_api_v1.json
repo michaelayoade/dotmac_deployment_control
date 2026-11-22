@@ -3064,55 +3064,57 @@
   "secret_ref_vectors": {
     "ok": [
       {
-        "environment": "production",
+        "approle": "erp-prod-app",
         "name": "DB_PASSWORD",
-        "product": "dotmac-erp-v2",
         "role": "app",
-        "secret_ref": "bao://production/dotmac-erp-v2/kv/app/db_password"
+        "secret_ref": "bao://prod/erp/kv/app/db_password",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
       },
       {
-        "environment": "staging",
+        "approle": "erp-integrator-staging-migrate",
         "name": "MIGRATION_DATABASE_URL",
-        "product": "dotmac-integrator-companion",
         "role": "migrate",
-        "secret_ref": "bao://staging/dotmac-integrator-companion/kv/migrate/migration_database_url"
+        "secret_ref": "bao://staging/erp-integrator/kv/migrate/migration_database_url",
+        "secrets_environment": "staging",
+        "secrets_namespace": "erp-integrator"
       }
     ],
     "refused": [
       {
-        "environment": "Production",
         "name": "DB_PASSWORD",
-        "product": "dotmac-erp-v2",
         "refused": true,
-        "role": "app"
+        "role": "app",
+        "secrets_environment": "Prod",
+        "secrets_namespace": "erp"
       },
       {
-        "environment": "production",
         "name": "DB_PASSWORD",
-        "product": "dotmac erp",
         "refused": true,
-        "role": "app"
+        "role": "app",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp app"
       },
       {
-        "environment": "production",
         "name": "DB_PASSWORD",
-        "product": "dotmac-erp-v2",
         "refused": true,
-        "role": "App"
+        "role": "App",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
       },
       {
-        "environment": "production",
         "name": "db_password",
-        "product": "dotmac-erp-v2",
         "refused": true,
-        "role": "app"
+        "role": "app",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
       },
       {
-        "environment": "production",
         "name": "DB_PASSWORD",
-        "product": "dotmac-erp-v2",
         "refused": true,
-        "role": "app/x"
+        "role": "app/x",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
       }
     ]
   },
@@ -3127,21 +3129,33 @@
     }
   ],
   "target_binding": {
+    "environment_defaults": {
+      "pilot": null,
+      "prod": "prod",
+      "production": "prod",
+      "staging": "staging"
+    },
     "ok": [
       {
+        "approle_app": "erp-prod-app",
         "environment": "production",
         "host": "host-a",
-        "openbao_namespace": "production",
+        "openbao_namespace": "prod/erp",
         "product_code": "dotmac-erp-v2",
-        "secret_ref_prefix": "bao://production/dotmac-erp-v2/kv/",
+        "secret_ref_prefix": "bao://prod/erp/kv/",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
         "target_ref": "dotmac-erp-v2/production/host-a"
       },
       {
+        "approle_app": "erp-integrator-staging-app",
         "environment": "staging",
         "host": "host-1",
-        "openbao_namespace": "staging",
+        "openbao_namespace": "staging/erp-integrator",
         "product_code": "dotmac-integrator-companion",
-        "secret_ref_prefix": "bao://staging/dotmac-integrator-companion/kv/",
+        "secret_ref_prefix": "bao://staging/erp-integrator/kv/",
+        "secrets_environment": "staging",
+        "secrets_namespace": "erp-integrator",
         "target_ref": "dotmac-integrator-companion/staging/host-1"
       }
     ],
@@ -3150,34 +3164,76 @@
         "code": "target_ref_mismatch",
         "environment": "production",
         "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
         "target_ref": "erp/prod/host-a"
       },
       {
         "code": "target_ref_mismatch",
         "environment": "production",
         "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
         "target_ref": "dotmac-erp-v2/staging/host-a"
       },
       {
         "code": "target_ref_mismatch",
         "environment": "production",
         "product_code": "dotmac-sub",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
         "target_ref": "dotmac-erp-v2/production/host-a"
       },
       {
         "code": "contract_violation",
         "environment": "production",
         "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
         "target_ref": "dotmac-erp-v2/production"
       },
       {
         "code": "contract_violation",
         "environment": "production",
         "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
         "target_ref": "dotmac-erp-v2/production/Host-A"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "Erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp/x",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "Prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
       }
     ],
-    "rule": "a descriptor-backed target's ref is <product_code>/<environment>/<host>; the environment segment IS the OpenBao namespace name"
+    "rule": "the target ref is <product_code>/<environment>/<host> (Control's identities, signed and routed on). OpenBao names follow the approved <env>/<product> layout: the namespace is <secrets_environment>/<secrets_namespace> (prod/erp), the AppRole is <secrets_namespace>-<secrets_environment>-<role> (erp-prod-app), and the secret_ref is bao://<secrets_environment>/<secrets_namespace>/kv/<role>/<lower(name)>. secrets_namespace is a descriptor field; secrets_environment is fixed on the target at registration and never sent in a dispatch."
   },
   "value_vectors": [
     {

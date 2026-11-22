@@ -228,7 +228,9 @@ from dotmac_deployment_control.release_descriptor import (
 )
 from dotmac_deployment_control.target_api import (
     TargetApiError,
+    check_secrets_value,
     check_target_binding,
+    default_secrets_environment,
     is_denied_public_key,
 )
 
@@ -706,6 +708,11 @@ class RegisterTargetCommand:
     product_code: str
     environment: str
     actor_ref: str | None = None
+    #: The OpenBao namespace-env (`prod`, `staging`), FIXED at registration. When
+    #: omitted it defaults from `environment` (`production` or `prod` -> `prod`,
+    #: `staging` -> `staging`); any other environment must state it. A target
+    #: with none cannot be descriptor-backed.
+    secrets_environment: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1974,11 +1981,20 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
         ).scalar_one_or_none()
         if existing is not None:
             return {"id": str(existing.id)}
+        chosen = command.secrets_environment or default_secrets_environment(
+            command.environment
+        )
+        if chosen is not None:
+            try:
+                check_secrets_value(chosen, "the namespace env")
+            except TargetApiError as exc:
+                raise TransitionRefusedError(str(exc)) from None
         row = DeploymentTarget(
             target_ref=command.target_ref,
             subject_ref=command.subject_ref,
             product_code=command.product_code,
             environment=command.environment,
+            secrets_environment=chosen,
             status=TargetStatus.REGISTERED.value,
             desired_revision=0,
             record_version=1,
@@ -2064,13 +2080,6 @@ def set_desired_state(
                 "the verified release descriptor and never takes it from a caller"
             )
         if command.descriptor_path is not None:
-            try:
-                check_target_binding(row.target_ref, row.product_code, row.environment)
-            except TargetApiError as exc:
-                raise PlanRefusedError(
-                    f"a descriptor-backed target's ref must be "
-                    f"<product_code>/<environment>/<host>: {exc}"
-                ) from None
             settings = _effective_settings(session)
             verified = verify_release_descriptor(
                 release_source,
@@ -2079,6 +2088,26 @@ def set_desired_state(
                 descriptor_path=command.descriptor_path,
                 legacy_allowed=row.target_ref in settings.legacy_allowed_targets,
             )
+            try:
+                if row.secrets_environment is None:
+                    raise TargetApiError(
+                        "the target has no OpenBao namespace-env; state it at "
+                        "registration (secrets_environment)",
+                        "bad_secrets_name",
+                    )
+                check_target_binding(
+                    row.target_ref,
+                    row.product_code,
+                    row.environment,
+                    secrets_namespace=verified.unit.secrets_namespace,
+                    secrets_environment=row.secrets_environment,
+                )
+            except TargetApiError as exc:
+                raise PlanRefusedError(
+                    "a descriptor-backed target's ref must be "
+                    "<product_code>/<environment>/<host>, with its OpenBao "
+                    f"names valid: {exc}"
+                ) from None
             rendered = pin_params(
                 verified,
                 command.params or {},

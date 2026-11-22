@@ -213,6 +213,7 @@ _LEGACY_TOML = """
 schema = "dotmac.deploy_unit/1"
 product = "{product}"
 spec = "deploy/product.toml"
+secrets_namespace = "erp"
 
 [params.legacy_path]
 type = "path"

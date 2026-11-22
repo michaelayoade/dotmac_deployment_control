@@ -24,6 +24,7 @@ _DESCRIPTOR = """
 schema = "dotmac.deploy_unit/1"
 product = "erp_v2"
 spec = "deploy/product.toml"
+secrets_namespace = "erp"
 
 [params.public_host]
 type = "hostname"
@@ -270,6 +271,7 @@ _ERP_SHAPED = """
 schema = "dotmac.deploy_unit/1"
 product = "dotmac-erp-v2"
 spec = "deploy/product.toml"
+secrets_namespace = "erp"
 
 [image]
 source = "transfer"
@@ -435,6 +437,7 @@ def test_a_companion_descriptor_names_the_product_toml_beside_it() -> None:
     text = (
         'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-integrator-companion"\n'
         'spec = "deploy/companion/product.toml"\n'
+        'secrets_namespace = "erp-integrator"\n'
     )
     assert parse_deploy_unit(text, descriptor_path="deploy/companion/deploy-unit.toml")
     with pytest.raises(DeployUnitError, match="beside"):
@@ -480,6 +483,7 @@ def test_a_role_has_one_mode_and_roles_are_derived_sorted() -> None:
     text = (
         'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
         'spec = "deploy/product.toml"\n'
+        'secrets_namespace = "erp"\n'
         '[[bindings]]\nname = "B_KEY"\nkind = "key"\nroles = ["migrate"]\n'
         'writer = "ceremony"\nrotation = "copy_only"\nsingle_use = true\n'
         '[[bindings]]\nname = "A_KEY"\nkind = "key"\nroles = ["app"]\n'
@@ -500,3 +504,20 @@ def test_a_role_has_one_mode_and_roles_are_derived_sorted() -> None:
     bad_role = text.replace('roles = ["app"]', 'roles = ["App"]', 1)
     with pytest.raises(DeployUnitError, match="lowercase segment"):
         parse_deploy_unit(bad_role)
+
+
+def test_secrets_namespace_is_required_and_a_lowercase_segment() -> None:
+    """V-1: the `<product>` segment of the OpenBao layout is a descriptor field."""
+    text = (
+        'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
+        'spec = "deploy/product.toml"\n'
+    )
+    with pytest.raises(DeployUnitError, match="secrets_namespace is required"):
+        parse_deploy_unit(text)
+    for bad in ("Erp", "erp app", "erp/x", ""):
+        with pytest.raises(DeployUnitError, match="secrets_namespace"):
+            parse_deploy_unit(text + f'secrets_namespace = "{bad}"\n')
+    unit = parse_deploy_unit(text + 'secrets_namespace = "erp-integrator"\n')
+    assert unit.secrets_namespace == "erp-integrator"
+    # It is NOT the product code: the two are independent facts.
+    assert unit.product == "dotmac-erp-v2"
