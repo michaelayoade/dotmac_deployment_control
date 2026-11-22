@@ -37,9 +37,12 @@ this module fixes the BYTES that are signed.
 
 from __future__ import annotations
 
+import ast
 import base64
+import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import resources
 from typing import Any, Final
@@ -137,7 +140,15 @@ _FORBIDDEN_PATH_CHARS = frozenset("%?#\\ \t\r\n\x00")
 
 
 class TargetApiError(ValueError):
-    """A value violates the target-API contract. The message names the rule."""
+    """A value violates the target-API contract. The message names the rule.
+
+    `code` is a closed, machine-readable reason where the contract defines one
+    (the `check_request` refusals); it is what the negative vectors pin.
+    """
+
+    def __init__(self, message: str, code: str = "contract_violation") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # ── The shared vectors (package data) ───────────────────────────────────────
@@ -171,9 +182,14 @@ def b64u_decode(text: str) -> bytes:
     if not isinstance(text, str) or not _B64URL.fullmatch(text) or len(text) % 4 == 1:
         raise TargetApiError("not unpadded base64url")
     try:
-        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
     except ValueError:
         raise TargetApiError("not unpadded base64url") from None
+    # Non-zero trailing bits decode to the same bytes (`AB` == `AA`), which
+    # would give one signature several spellings. Require the round trip.
+    if b64u_encode(raw) != text:
+        raise TargetApiError("base64url has non-zero trailing bits")
+    return raw
 
 
 # ── Time and nonce ──────────────────────────────────────────────────────────
@@ -203,6 +219,75 @@ def check_skew(issued_at: str, store_now: str) -> None:
     delta = abs((parse_stamp(issued_at) - parse_stamp(store_now)).total_seconds())
     if delta > MAX_SKEW_SECONDS:
         raise TargetApiError(f"issued_at is {delta:.0f}s from store_now (max 60)")
+
+
+# ── Replay: the nonce ledger, and retry idempotency ────────────────────────
+
+#: Every accepted request inserts `(credential_id, nonce)` into the kernel's
+#: insert-only ledger under this scope BEFORE it is acted on, in the same
+#: transaction as its effect. Retention is PERMANENT per credential: the skew
+#: window only bounds how old a request may be, and a bounded ledger would let a
+#: captured request replay once its entry aged out. A duplicate key is refused.
+NONCE_LEDGER_SCOPE: Final = "deployment.target_request_nonce.v1"
+NONCE_LEDGER_KEY_FIELDS: Final = ("credential_id", "nonce")
+NONCE_RETENTION: Final = "permanent"
+
+#: A RETRY of a POST carries a NEW nonce (the first one is spent), so retry
+#: safety comes from the business key, never from the nonce.
+RETRY_IDEMPOTENCY: Final = {
+    "materials": "read: repeatable",
+    "observations": "dispatch id plus kind: a repeat returns the stored receipt",
+    "lease/acquire": "dispatch run: re-acquiring by the same run returns its lease",
+    "lease/covers": "read: repeatable",
+    "lease/release": "dispatch run: a second release is a replay, not an error",
+    "lease/standing": "read: repeatable",
+    "resolve": "read: repeatable",
+    "consume": "dispatch id: a replay is 409 with the existing signed committed marker",
+    "committed/<dispatch_id>": "read: repeatable",
+}
+
+
+def nonce_ledger_key(credential_id: str, nonce: str) -> str:
+    """The ledger key. `/` cannot occur in a credential id, so it is unambiguous."""
+    _check_credential_id(credential_id)
+    return f"{credential_id}/{check_nonce(nonce)}"
+
+
+def _check_credential_id(credential_id: str) -> str:
+    if not isinstance(credential_id, str) or not _DISPATCH_ID.fullmatch(credential_id):
+        raise TargetApiError("a credential id is well formed", "bad_credential_id")
+    return credential_id
+
+
+# ── Request bodies ──────────────────────────────────────────────────────────
+
+
+def parse_json_body(body: bytes) -> Any:
+    """Parse a request or response body. Refuses duplicate keys.
+
+    A parser that keeps the last duplicate and one that keeps the first would
+    read different requests from the same signed bytes; refusing them removes
+    the difference. NaN and Infinity are refused too, and the bytes must be
+    UTF-8.
+    """
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+        for key, value in items:
+            if key in seen:
+                raise TargetApiError(f"duplicate JSON key {key!r}", "duplicate_key")
+            seen[key] = value
+        return seen
+
+    def constant(name: str) -> Any:
+        raise TargetApiError(f"{name} is not valid JSON", "bad_json")
+
+    try:
+        return json.loads(
+            body.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise TargetApiError("the body is not UTF-8 JSON", "bad_json") from None
 
 
 # ── Paths ───────────────────────────────────────────────────────────────────
@@ -264,6 +349,167 @@ def check_route(method: str, route: str) -> None:
     """The verb for an route is fixed; any other verb is refused."""
     if _VERBS.get(route) != method:
         raise TargetApiError(f"{route} is {_VERBS.get(route)}, not {method}")
+
+
+# ── The one request check ───────────────────────────────────────────────────
+
+_REQUEST_HEADERS: Final = (H_CREDENTIAL, H_TARGET, H_ISSUED_AT, H_NONCE, H_SIGNATURE)
+SIGNATURE_BYTES: Final = 64
+
+
+@dataclass(frozen=True, slots=True)
+class RequestCoordinates:
+    """What `check_request` established. The server authorises on THESE."""
+
+    method: str
+    path: str
+    target_ref: str
+    route: str
+    dispatch_id: str | None
+    credential_id: str
+    issued_at: str
+    nonce: str
+    signature_b64u: str
+    signed_message: bytes
+    nonce_ledger_key: str
+
+
+def check_request(
+    *,
+    method: str,
+    raw_path: str,
+    query_string: str,
+    headers: Mapping[str, str],
+    body: bytes,
+    store_now: str,
+    credential_target_ref: str,
+) -> RequestCoordinates:
+    """EVERY server-side coordinate check, in one place, before any signature.
+
+    The signature covers the header target ref AND the path, so a signature that
+    verifies proves nothing about whether they AGREE, or whether the credential
+    belongs to either. This function requires all three to be the same target:
+    the path's, the header's and the credential's. It also requires the verb
+    the route is fixed to, an empty query string, all five request headers, a
+    well-formed nonce and timestamp within the skew, and a 64-byte signature.
+
+    Platform CP calls this and nothing else to establish a request's
+    coordinates (an architecture test enforces it, see `audit_router_source`),
+    then verifies `signed_message` under the credential's key and inserts
+    `nonce_ledger_key` under `NONCE_LEDGER_SCOPE`.
+    """
+    try:
+        target_ref, route, dispatch_id = parse_target_path(raw_path)
+    except TargetApiError as exc:
+        raise TargetApiError(str(exc), "bad_path") from None
+    if _VERBS.get(route) != method:
+        raise TargetApiError(
+            f"{route} is {_VERBS.get(route)}, not {method}", "wrong_verb"
+        )
+    if query_string:
+        raise TargetApiError("a target-API request has no query string", "query_string")
+    lowered = {str(k).lower(): v for k, v in headers.items()}
+    found: dict[str, str] = {}
+    for name in _REQUEST_HEADERS:
+        value = lowered.get(name.lower())
+        if not isinstance(value, str) or not value:
+            raise TargetApiError(f"header {name} is missing", "missing_header")
+        found[name] = value
+    if found[H_TARGET] != target_ref:
+        raise TargetApiError(
+            "the header target ref differs from the path's",
+            "target_mismatch_header_path",
+        )
+    if credential_target_ref != target_ref:
+        raise TargetApiError(
+            "the credential is bound to a different target than the path",
+            "target_mismatch_credential",
+        )
+    credential_id = _check_credential_id(found[H_CREDENTIAL])
+    try:
+        nonce = check_nonce(found[H_NONCE])
+    except TargetApiError:
+        raise TargetApiError("the nonce is malformed", "bad_nonce") from None
+    try:
+        parse_stamp(found[H_ISSUED_AT])
+    except TargetApiError:
+        raise TargetApiError("issued_at is malformed", "bad_timestamp") from None
+    try:
+        check_skew(found[H_ISSUED_AT], store_now)
+    except TargetApiError as exc:
+        raise TargetApiError(str(exc), "skew") from None
+    signature = found[H_SIGNATURE]
+    try:
+        decoded = b64u_decode(signature)
+    except TargetApiError:
+        raise TargetApiError(
+            "the signature is not canonical base64url", "bad_signature_encoding"
+        ) from None
+    if len(decoded) != SIGNATURE_BYTES:
+        raise TargetApiError(
+            "an Ed25519 signature is 64 bytes", "bad_signature_encoding"
+        )
+    return RequestCoordinates(
+        method=method,
+        path=raw_path,
+        target_ref=target_ref,
+        route=route,
+        dispatch_id=dispatch_id,
+        credential_id=credential_id,
+        issued_at=found[H_ISSUED_AT],
+        nonce=nonce,
+        signature_b64u=signature,
+        signed_message=request_message(
+            method=method,
+            path=raw_path,
+            body=body,
+            credential_id=credential_id,
+            target_ref=target_ref,
+            issued_at=found[H_ISSUED_AT],
+            nonce=nonce,
+        ),
+        nonce_ledger_key=nonce_ledger_key(credential_id, nonce),
+    )
+
+
+def audit_router_source(source: str) -> list[str]:
+    """Architecture-test helper for a consumer's router (Platform CP).
+
+    Returns the violations in `source`: no call to `check_request` that passes
+    `credential_target_ref`, or a string constant that is one of the signed
+    message purposes (a local message builder). CP's architecture test asserts
+    the list is empty for its target router module.
+    """
+    problems: list[str] = []
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "check_request")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "check_request"
+            )
+        )
+    ]
+    if not calls:
+        problems.append("the router never calls check_request")
+    elif not any(
+        any(kw.arg == "credential_target_ref" for kw in call.keywords) for call in calls
+    ):
+        problems.append("check_request is never given the credential's target")
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and (REQUEST_PURPOSE in node.value or RESPONSE_PURPOSE in node.value)
+        ):
+            problems.append(
+                f"line {node.lineno}: a local message purpose (use request_message)"
+            )
+    return problems
 
 
 # ── Signed messages ─────────────────────────────────────────────────────────
@@ -438,21 +684,31 @@ __all__ = [
     "MATERIALS_KEYS",
     "MATERIALS_SCHEMA",
     "MAX_SKEW_SECONDS",
+    "NONCE_LEDGER_KEY_FIELDS",
+    "NONCE_LEDGER_SCOPE",
+    "NONCE_RETENTION",
     "REQUEST_PURPOSE",
     "RESPONSE_PURPOSE",
+    "RETRY_IDEMPOTENCY",
+    "SIGNATURE_BYTES",
     "VECTORS_RESOURCE",
+    "RequestCoordinates",
     "TargetApiError",
     "archive_name",
+    "audit_router_source",
     "b64u_decode",
     "b64u_encode",
     "canonical_json",
     "check_materials_shape",
     "check_nonce",
+    "check_request",
     "check_route",
     "check_skew",
     "classify_unsigned_response",
     "expected_app_image",
     "format_stamp",
+    "nonce_ledger_key",
+    "parse_json_body",
     "parse_stamp",
     "parse_target_path",
     "plan_snapshot_digest",

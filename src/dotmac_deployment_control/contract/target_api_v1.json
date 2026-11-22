@@ -65,7 +65,8 @@
         "A",
         "ab cd",
         "ab\n",
-        "\u00e9\u00e9"
+        "\u00e9\u00e9",
+        "AB"
       ]
     },
     "nonces": {
@@ -127,6 +128,65 @@
     }
   },
   "file": "target_api_v1.json",
+  "json_bodies": {
+    "ok": [
+      {
+        "body_utf8": "{}",
+        "parsed": {}
+      },
+      {
+        "body_utf8": "{\"a\":1,\"b\":[1,2,{\"c\":null}]}",
+        "parsed": {
+          "a": 1,
+          "b": [
+            1,
+            2,
+            {
+              "c": null
+            }
+          ]
+        }
+      },
+      {
+        "body_utf8": "[]",
+        "parsed": []
+      },
+      {
+        "body_utf8": "\"text\"",
+        "parsed": "text"
+      }
+    ],
+    "refused": [
+      {
+        "body_hex": "7b2261223a312c2261223a327d",
+        "code": "duplicate_key"
+      },
+      {
+        "body_hex": "7b2261223a7b2262223a312c2262223a327d7d",
+        "code": "duplicate_key"
+      },
+      {
+        "body_hex": "5b7b2278223a312c2278223a317d5d",
+        "code": "duplicate_key"
+      },
+      {
+        "body_hex": "7b2261223a4e614e7d",
+        "code": "bad_json"
+      },
+      {
+        "body_hex": "7b2261223a496e66696e6974797d",
+        "code": "bad_json"
+      },
+      {
+        "body_hex": "fffe",
+        "code": "bad_json"
+      },
+      {
+        "body_hex": "6e6f74206a736f6e",
+        "code": "bad_json"
+      }
+    ]
+  },
   "keys": {
     "request": {
       "public_b64u": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
@@ -901,6 +961,16 @@
     ],
     "schema": "dotmac.deploy_target_materials/1"
   },
+  "nonce_ledger": {
+    "duplicate": "refused; a retried POST carries a NEW nonce",
+    "example_key": "cred-0001/000000000000000000000000a5a5a5a6",
+    "key_fields": [
+      "credential_id",
+      "nonce"
+    ],
+    "retention": "permanent",
+    "scope": "deployment.target_request_nonce.v1"
+  },
   "note": "Test keys come from fixed public seeds and carry no authority. `value_parts` are joined by the consumer so no secret-shaped literal sits in this file.",
   "paths": {
     "base": "/platform/deploy/target/v1",
@@ -1219,6 +1289,425 @@
       "refused": "value_invalid"
     }
   ],
+  "request_check": {
+    "ok": [
+      {
+        "coordinates": {
+          "credential_id": "cred-0001",
+          "dispatch_id": null,
+          "nonce_ledger_key": "cred-0001/000000000000000000000000a5a5a5a6",
+          "route": "materials",
+          "signed_message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a6",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      },
+      {
+        "coordinates": {
+          "credential_id": "cred-0001",
+          "dispatch_id": null,
+          "nonce_ledger_key": "cred-0001/000000000000000000000000a5a5a5a7",
+          "route": "observations",
+          "signed_message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations\n8336413defb254fb7a2da1e37bcdc172cac5e787c43f9be42d85402c14ff9424\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a7",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "{\"report\":1}",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a7",
+            "X-Dotmac-Signature": "fsWgnqHVh1duvqI03xcavSFCF1p1DCsT_KNa2mqADPj-gojoBZg0lCFRD_EN85anbWLWh4kaVX4HMEYH_MYzBg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "POST",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      },
+      {
+        "coordinates": {
+          "credential_id": "cred-0001",
+          "dispatch_id": "dispatch-0001",
+          "nonce_ledger_key": "cred-0001/000000000000000000000000a5a5a5a9",
+          "route": "committed/<dispatch_id>",
+          "signed_message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a9",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a9",
+            "X-Dotmac-Signature": "pCJMszn6TFk7G0Jlw6Yartd7LamoDYx7kkfie7S1JywZ65gnlB6rn4a_lRKMNSIttUvoIp_Mk1kY1eUjaYvPDw",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      },
+      {
+        "coordinates": {
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "x-dotmac-credential-id": "cred-0001",
+            "x-dotmac-issued-at": "2026-11-22T10:00:00Z",
+            "x-dotmac-nonce": "000000000000000000000000a5a5a5a6",
+            "x-dotmac-signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "x-dotmac-target-ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      }
+    ],
+    "refused": [
+      {
+        "code": "target_mismatch_header_path",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-b"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "header target differs from the path"
+      },
+      {
+        "code": "target_mismatch_credential",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-b",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "the credential is bound to another target"
+      },
+      {
+        "code": "wrong_verb",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "POST",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "wrong verb for the route"
+      },
+      {
+        "code": "query_string",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "x=1",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a query string"
+      },
+      {
+        "code": "bad_path",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/nonsense",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "an unknown route"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Credential-Id"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Target-Ref"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Issued-At"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Nonce"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Signature"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "an empty header"
+      },
+      {
+        "code": "bad_nonce",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "NOT-HEX",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a malformed nonce"
+      },
+      {
+        "code": "bad_timestamp",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22 10:00:00",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a malformed timestamp"
+      },
+      {
+        "code": "skew",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:05:00Z"
+        },
+        "name": "outside the skew"
+      },
+      {
+        "code": "bad_signature_encoding",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a 63-byte signature"
+      },
+      {
+        "code": "bad_signature_encoding",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bh",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a non-canonical signature spelling"
+      },
+      {
+        "code": "bad_path",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2%2Fproduction%2Fhost-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a percent-encoded path"
+      }
+    ]
+  },
   "request_vectors": [
     {
       "body_utf8": "",
@@ -1226,16 +1715,16 @@
       "headers": {
         "X-Dotmac-Credential-Id": "cred-0001",
         "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
-        "X-Dotmac-Nonce": "00112233445566778899aabbccddeeff",
-        "X-Dotmac-Signature": "UlE0jc0Xj7L7qu5clIroCsdnuzr-XUTI874o2hGzbeH-30LLqCtBWd-JMvvDGfZaq3BFga3_vhBOnkfUB4BdCA",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+        "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
         "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
       },
       "issued_at": "2026-11-22T10:00:00Z",
-      "message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n00112233445566778899aabbccddeeff",
+      "message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a6",
       "method": "GET",
-      "nonce": "00112233445566778899aabbccddeeff",
+      "nonce": "000000000000000000000000a5a5a5a6",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
-      "signature_b64u": "UlE0jc0Xj7L7qu5clIroCsdnuzr-XUTI874o2hGzbeH-30LLqCtBWd-JMvvDGfZaq3BFga3_vhBOnkfUB4BdCA",
+      "signature_b64u": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
       "target_ref": "dotmac-erp-v2/production/host-a"
     },
     {
@@ -1244,16 +1733,16 @@
       "headers": {
         "X-Dotmac-Credential-Id": "cred-0001",
         "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
-        "X-Dotmac-Nonce": "ffeeddccbbaa99887766554433221100",
-        "X-Dotmac-Signature": "uIs5MEAsCuUqxaBP-ZlL8bDjeR97CHyA4TiGhVAUMZiQIdfeTZqDOEyeqOb2K6--wpqWSdzesnc_rCBqVGGhDA",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a7",
+        "X-Dotmac-Signature": "fsWgnqHVh1duvqI03xcavSFCF1p1DCsT_KNa2mqADPj-gojoBZg0lCFRD_EN85anbWLWh4kaVX4HMEYH_MYzBg",
         "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
       },
       "issued_at": "2026-11-22T10:00:00Z",
-      "message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations\n8336413defb254fb7a2da1e37bcdc172cac5e787c43f9be42d85402c14ff9424\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\nffeeddccbbaa99887766554433221100",
+      "message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations\n8336413defb254fb7a2da1e37bcdc172cac5e787c43f9be42d85402c14ff9424\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a7",
       "method": "POST",
-      "nonce": "ffeeddccbbaa99887766554433221100",
+      "nonce": "000000000000000000000000a5a5a5a7",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations",
-      "signature_b64u": "uIs5MEAsCuUqxaBP-ZlL8bDjeR97CHyA4TiGhVAUMZiQIdfeTZqDOEyeqOb2K6--wpqWSdzesnc_rCBqVGGhDA",
+      "signature_b64u": "fsWgnqHVh1duvqI03xcavSFCF1p1DCsT_KNa2mqADPj-gojoBZg0lCFRD_EN85anbWLWh4kaVX4HMEYH_MYzBg",
       "target_ref": "dotmac-erp-v2/production/host-a"
     },
     {
@@ -1262,16 +1751,16 @@
       "headers": {
         "X-Dotmac-Credential-Id": "cred-0001",
         "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
-        "X-Dotmac-Nonce": "00112233445566778899aabbccddeeff",
-        "X-Dotmac-Signature": "CFyhzhY0bXnqQ80PvljSolAqLp1dGr137iJ_YqvpWiQCrxotQ6ruTSiyRYgQyBeW6frfn7JkAi4yrZ5p40SaCQ",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a8",
+        "X-Dotmac-Signature": "1wKgCvTU7iXDm3QdqrnBz_kkpbUpECljqogZQe5ImrgJ5fDUUgp2jhpJ7ljXSYPEI-y8-8zoYgkeXOWSftZAAA",
         "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
       },
       "issued_at": "2026-11-22T10:00:00Z",
-      "message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/lease/acquire\n47252010543d84d62184e8d987d7ecc80327e3b13f33beff354f1671e52a6a35\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n00112233445566778899aabbccddeeff",
+      "message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/lease/acquire\n47252010543d84d62184e8d987d7ecc80327e3b13f33beff354f1671e52a6a35\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a8",
       "method": "POST",
-      "nonce": "00112233445566778899aabbccddeeff",
+      "nonce": "000000000000000000000000a5a5a5a8",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/lease/acquire",
-      "signature_b64u": "CFyhzhY0bXnqQ80PvljSolAqLp1dGr137iJ_YqvpWiQCrxotQ6ruTSiyRYgQyBeW6frfn7JkAi4yrZ5p40SaCQ",
+      "signature_b64u": "1wKgCvTU7iXDm3QdqrnBz_kkpbUpECljqogZQe5ImrgJ5fDUUgp2jhpJ7ljXSYPEI-y8-8zoYgkeXOWSftZAAA",
       "target_ref": "dotmac-erp-v2/production/host-a"
     },
     {
@@ -1280,48 +1769,59 @@
       "headers": {
         "X-Dotmac-Credential-Id": "cred-0001",
         "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
-        "X-Dotmac-Nonce": "ffeeddccbbaa99887766554433221100",
-        "X-Dotmac-Signature": "naq6JCZIZutP27cpJ1UPgRgTDtbw_upWiI69yEfneQGdwUYPYNUCyQpTSTT24vIzql8C6RC7gZkrPd8rbr8EAA",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a9",
+        "X-Dotmac-Signature": "pCJMszn6TFk7G0Jlw6Yartd7LamoDYx7kkfie7S1JywZ65gnlB6rn4a_lRKMNSIttUvoIp_Mk1kY1eUjaYvPDw",
         "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
       },
       "issued_at": "2026-11-22T10:00:00Z",
-      "message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\nffeeddccbbaa99887766554433221100",
+      "message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a9",
       "method": "GET",
-      "nonce": "ffeeddccbbaa99887766554433221100",
+      "nonce": "000000000000000000000000a5a5a5a9",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001",
-      "signature_b64u": "naq6JCZIZutP27cpJ1UPgRgTDtbw_upWiI69yEfneQGdwUYPYNUCyQpTSTT24vIzql8C6RC7gZkrPd8rbr8EAA",
+      "signature_b64u": "pCJMszn6TFk7G0Jlw6Yartd7LamoDYx7kkfie7S1JywZ65gnlB6rn4a_lRKMNSIttUvoIp_Mk1kY1eUjaYvPDw",
       "target_ref": "dotmac-erp-v2/production/host-a"
     }
   ],
   "response_vectors": [
     {
       "body_utf8": "{\"ok\":true}",
-      "message_utf8": "cp-target-response.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\n00112233445566778899aabbccddeeff\n200\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+      "message_utf8": "cp-target-response.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\n000000000000000000000000a5a5a5b0\n200\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
       "method": "GET",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
-      "request_nonce": "00112233445566778899aabbccddeeff",
-      "signature_b64u": "HDsIyTtZPo35Ivr5pE1F5eigQyhiyce3j9GkIpoPlf53-Q7g41ycLo68YX9VzcxWItmzUb7RnutE-J6G7XtECA",
+      "request_nonce": "000000000000000000000000a5a5a5b0",
+      "signature_b64u": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ",
       "status": 200
     },
     {
       "body_utf8": "{\"error\":\"x\"}",
-      "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume\nffeeddccbbaa99887766554433221100\n409\n469535a7a760aaa23c38f15a48eea08848693bd2fcda382aba664e319f672300",
+      "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume\n000000000000000000000000a5a5a5b1\n409\n469535a7a760aaa23c38f15a48eea08848693bd2fcda382aba664e319f672300",
       "method": "POST",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume",
-      "request_nonce": "ffeeddccbbaa99887766554433221100",
-      "signature_b64u": "cZWYhcEYr4zwaUQOHWbkoeuFW1X16c2_EUfBMH-e6sTcHq2NFuydXt9lXqrxFVezivcrX6oM3mesbLAi_qobCA",
+      "request_nonce": "000000000000000000000000a5a5a5b1",
+      "signature_b64u": "WSstURzIoIO-FMwatVBU1IBszbgCPpGnv7NMpmzlkrApdas9MDVrgr5Z_HKPJAda0qgjQhMddN31yzV_CaqBBg",
       "status": 409
     },
     {
       "body_utf8": "",
-      "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve\n00112233445566778899aabbccddeeff\n200\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve\n000000000000000000000000a5a5a5b2\n200\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "method": "POST",
       "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve",
-      "request_nonce": "00112233445566778899aabbccddeeff",
-      "signature_b64u": "RQ0PLCCs5gsTUJVgkmpS1BjDpjwTLy-i4ikBe8ZO2s1vaNhJva4Z7y_cVllg-W25OLqBmYU-2OPjsfV2v4MzAw",
+      "request_nonce": "000000000000000000000000a5a5a5b2",
+      "signature_b64u": "EV-AGVZDl_Is6CrgRSX7KJEncCeQ1V8yOTTs44T3C_cH-U1dA9BSCzPvhPBisnBtjNrfIam6FXgVdrdsNe6pBg",
       "status": 200
     }
   ],
+  "retry_idempotency": {
+    "committed/<dispatch_id>": "read: repeatable",
+    "consume": "dispatch id: a replay is 409 with the existing signed committed marker",
+    "lease/acquire": "dispatch run: re-acquiring by the same run returns its lease",
+    "lease/covers": "read: repeatable",
+    "lease/release": "dispatch run: a second release is a replay, not an error",
+    "lease/standing": "read: repeatable",
+    "materials": "read: repeatable",
+    "observations": "dispatch id plus kind: a repeat returns the stored receipt",
+    "resolve": "read: repeatable"
+  },
   "secret_name_vectors": [
     {
       "accept": false,

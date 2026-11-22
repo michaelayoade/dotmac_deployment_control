@@ -45,6 +45,13 @@ _RESPONSE_SEED = bytes(range(32, 64))
 _ISSUED = "2026-11-22T10:00:00Z"
 _NONCE_A = "00112233445566778899aabbccddeeff"
 _NONCE_B = "ffeeddccbbaa99887766554433221100"
+
+
+def _nonce(index: int) -> str:
+    """A distinct, deterministic nonce per vector (no two requests share one)."""
+    return format(0xA5A5A5A5 + index, "032x")
+
+
 _REF = "dotmac-erp-v2/production/host-a"
 _CRED = "cred-0001"
 _D1 = "sha256:" + "1" * 64
@@ -60,14 +67,14 @@ def _sign(seed: bytes, message: bytes) -> str:
 
 def _request_vectors() -> list[dict[str, Any]]:
     cases = [
-        ("GET", api.target_path(_REF, "materials"), b"", _NONCE_A),
-        ("POST", api.target_path(_REF, "observations"), b'{"report":1}', _NONCE_B),
-        ("POST", api.target_path(_REF, "lease/acquire"), b'{"ttl":900}', _NONCE_A),
+        ("GET", api.target_path(_REF, "materials"), b"", _nonce(1)),
+        ("POST", api.target_path(_REF, "observations"), b'{"report":1}', _nonce(2)),
+        ("POST", api.target_path(_REF, "lease/acquire"), b'{"ttl":900}', _nonce(3)),
         (
             "GET",
             api.target_path(_REF, "committed", dispatch_id="dispatch-0001"),
             b"",
-            _NONCE_B,
+            _nonce(4),
         ),
     ]
     out = []
@@ -107,9 +114,9 @@ def _request_vectors() -> list[dict[str, Any]]:
 
 def _response_vectors() -> list[dict[str, Any]]:
     cases = [
-        ("GET", api.target_path(_REF, "materials"), _NONCE_A, 200, b'{"ok":true}'),
-        ("POST", api.target_path(_REF, "consume"), _NONCE_B, 409, b'{"error":"x"}'),
-        ("POST", api.target_path(_REF, "resolve"), _NONCE_A, 200, b""),
+        ("GET", api.target_path(_REF, "materials"), _nonce(11), 200, b'{"ok":true}'),
+        ("POST", api.target_path(_REF, "consume"), _nonce(12), 409, b'{"error":"x"}'),
+        ("POST", api.target_path(_REF, "resolve"), _nonce(13), 200, b""),
     ]
     out = []
     for method, path, nonce, status, body in cases:
@@ -180,7 +187,8 @@ def _encoding_vectors() -> dict[str, Any]:
     return {
         "base64url": {
             "ok": [{"hex": r.hex(), "text": api.b64u_encode(r)} for r in raws],
-            "refused": ["AA==", "ab+/", "A", "ab cd", "ab\n", "éé"],
+            # `AB` decodes to the same byte as `AA`: non-zero trailing bits.
+            "refused": ["AA==", "ab+/", "A", "ab cd", "ab\n", "éé", "AB"],
         },
         "stamps": {
             "ok": [_ISSUED, "2026-12-31T23:59:59Z"],
@@ -222,6 +230,143 @@ def _encoding_vectors() -> dict[str, Any]:
             for status in (401, 403, 404, 413, 429, 500, 502, 503)
         },
     }
+
+
+def _noncanonical(signature: str) -> str:
+    """The same 64 bytes spelled with non-zero trailing bits (last char + 1)."""
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    last = alphabet.index(signature[-1])
+    return signature[:-1] + alphabet[(last + 1) % 64]
+
+
+def _check_inputs(case: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    base = {
+        "method": case["method"],
+        "raw_path": case["path"],
+        "query_string": "",
+        "headers": dict(case["headers"]),
+        "body_utf8": case["body_utf8"],
+        "store_now": case["issued_at"],
+        "credential_target_ref": case["target_ref"],
+    }
+    base.update(overrides)
+    return base
+
+
+def _run_check(inputs: dict[str, Any]) -> api.RequestCoordinates:
+    return api.check_request(
+        method=inputs["method"],
+        raw_path=inputs["raw_path"],
+        query_string=inputs["query_string"],
+        headers=inputs["headers"],
+        body=inputs["body_utf8"].encode(),
+        store_now=inputs["store_now"],
+        credential_target_ref=inputs["credential_target_ref"],
+    )
+
+
+def _request_check_vectors() -> dict[str, Any]:
+    requests = _request_vectors()
+    get, post = requests[0], requests[1]
+    ok = []
+    for case in (get, post, requests[3]):
+        inputs = _check_inputs(case)
+        found = _run_check(inputs)
+        ok.append(
+            {
+                "inputs": inputs,
+                "coordinates": {
+                    "target_ref": found.target_ref,
+                    "route": found.route,
+                    "dispatch_id": found.dispatch_id,
+                    "credential_id": found.credential_id,
+                    "nonce_ledger_key": found.nonce_ledger_key,
+                    "signed_message_utf8": _text(found.signed_message),
+                },
+            }
+        )
+    lowered = _check_inputs(get)
+    lowered["headers"] = {k.lower(): v for k, v in lowered["headers"].items()}
+    found = _run_check(lowered)
+    ok.append({"inputs": lowered, "coordinates": {"target_ref": found.target_ref}})
+    other = "dotmac-erp-v2/production/host-b"
+    refused: list[dict[str, Any]] = []
+
+    def refuse(name: str, inputs: dict[str, Any]) -> None:
+        try:
+            _run_check(inputs)
+        except api.TargetApiError as exc:
+            refused.append({"name": name, "inputs": inputs, "code": exc.code})
+        else:  # pragma: no cover
+            raise AssertionError(name)
+
+    mismatched = _check_inputs(get)
+    mismatched["headers"][api.H_TARGET] = other
+    refuse("header target differs from the path", mismatched)
+    refuse(
+        "the credential is bound to another target",
+        _check_inputs(get, credential_target_ref=other),
+    )
+    refuse("wrong verb for the route", _check_inputs(get, method="POST"))
+    refuse("a query string", _check_inputs(get, query_string="x=1"))
+    refuse(
+        "an unknown route",
+        _check_inputs(get, raw_path=f"{api.BASE_PATH}/targets/{_REF}/nonsense"),
+    )
+    for header in (
+        api.H_CREDENTIAL,
+        api.H_TARGET,
+        api.H_ISSUED_AT,
+        api.H_NONCE,
+        api.H_SIGNATURE,
+    ):
+        broken = _check_inputs(get)
+        del broken["headers"][header]
+        refuse(f"missing header {header}", broken)
+    empty = _check_inputs(get)
+    empty["headers"][api.H_NONCE] = ""
+    refuse("an empty header", empty)
+    bad_nonce = _check_inputs(get)
+    bad_nonce["headers"][api.H_NONCE] = "NOT-HEX"
+    refuse("a malformed nonce", bad_nonce)
+    bad_stamp = _check_inputs(get)
+    bad_stamp["headers"][api.H_ISSUED_AT] = "2026-11-22 10:00:00"
+    refuse("a malformed timestamp", bad_stamp)
+    refuse("outside the skew", _check_inputs(get, store_now="2026-11-22T10:05:00Z"))
+    short = _check_inputs(get)
+    short["headers"][api.H_SIGNATURE] = api.b64u_encode(bytes(63))
+    refuse("a 63-byte signature", short)
+    spelled = _check_inputs(get)
+    spelled["headers"][api.H_SIGNATURE] = _noncanonical(get["signature_b64u"])
+    refuse("a non-canonical signature spelling", spelled)
+    encoded = f"{api.BASE_PATH}/targets/dotmac-erp-v2%2Fproduction%2Fhost-a/materials"
+    refuse("a percent-encoded path", _check_inputs(get, raw_path=encoded))
+    return {"ok": ok, "refused": refused}
+
+
+def _json_vectors() -> dict[str, Any]:
+    ok = [b"{}", b'{"a":1,"b":[1,2,{"c":null}]}', b"[]", b'"text"']
+    refused = [
+        b'{"a":1,"a":2}',
+        b'{"a":{"b":1,"b":2}}',
+        b'[{"x":1,"x":1}]',
+        b'{"a":NaN}',
+        b'{"a":Infinity}',
+        b"\xff\xfe",
+        b"not json",
+    ]
+    out_ok = [
+        {"body_utf8": _text(body), "parsed": api.parse_json_body(body)} for body in ok
+    ]
+    out_refused = []
+    for body in refused:
+        try:
+            api.parse_json_body(body)
+        except api.TargetApiError as exc:
+            out_refused.append({"body_hex": body.hex(), "code": exc.code})
+        else:  # pragma: no cover
+            raise AssertionError(body)
+    return {"ok": out_ok, "refused": out_refused}
 
 
 def _snapshot() -> dict[str, Any]:
@@ -567,6 +712,16 @@ def build_vectors() -> dict[str, Any]:
             },
         },
         "request_vectors": _request_vectors(),
+        "request_check": _request_check_vectors(),
+        "nonce_ledger": {
+            "scope": api.NONCE_LEDGER_SCOPE,
+            "key_fields": list(api.NONCE_LEDGER_KEY_FIELDS),
+            "retention": api.NONCE_RETENTION,
+            "example_key": api.nonce_ledger_key(_CRED, _nonce(1)),
+            "duplicate": "refused; a retried POST carries a NEW nonce",
+        },
+        "retry_idempotency": dict(api.RETRY_IDEMPOTENCY),
+        "json_bodies": _json_vectors(),
         "response_vectors": _response_vectors(),
         "paths": _path_vectors(),
         "encoding": _encoding_vectors(),

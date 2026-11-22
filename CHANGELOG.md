@@ -66,7 +66,7 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   `dotmac.deploy_target_materials/1` and the env names). Package data
   `contract/target_api_v1.json` holds the shared vectors; Control's functions
   reproduce every one. The agent vendors the file byte-for-byte and pins its
-  digest: target_api_v1.json sha256 354e587a8f6902ae14653ee6ff0282544fcfd5c77d19d74cc2b99500bc3ac0b7. A change is a `_v2` file and a new
+  digest: target_api_v1.json sha256 a7e2696c76d1b4ae3a759829d95fc421fd9e2983fe69e81a6ac1db92fcc6fc43. A change is a `_v2` file and a new
   release.
 - A material whose name says it is a secret (`PASSWORD`, `SECRET`, `TOKEN`,
   `PRIVATE_KEY`, `API_KEY`, `CREDENTIAL`) may only be a `path` param; refused at

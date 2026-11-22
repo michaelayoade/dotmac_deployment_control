@@ -412,3 +412,144 @@ def test_the_render_function_agrees_with_the_vector_file_directly() -> None:
     workers = next(c for c in _VECTORS["render_vectors"] if c["name"] == "workers")
     assert render.decode() == workers["render_utf8"]
     assert params_env_digest(render) == workers["digest"]
+
+
+# ── R3-M1: the one request check ────────────────────────────────────────────
+
+
+def _check(inputs: dict) -> api.RequestCoordinates:  # type: ignore[type-arg]
+    return api.check_request(
+        method=inputs["method"],
+        raw_path=inputs["raw_path"],
+        query_string=inputs["query_string"],
+        headers=inputs["headers"],
+        body=inputs["body_utf8"].encode(),
+        store_now=inputs["store_now"],
+        credential_target_ref=inputs["credential_target_ref"],
+    )
+
+
+def test_check_request_vectors_reproduce() -> None:
+    vectors = _VECTORS["request_check"]
+    for case in vectors["ok"]:
+        found = _check(case["inputs"])
+        expected = case["coordinates"]
+        assert found.target_ref == expected["target_ref"]
+        if "signed_message_utf8" in expected:
+            assert found.signed_message.decode() == expected["signed_message_utf8"]
+            assert found.route == expected["route"]
+            assert found.dispatch_id == expected["dispatch_id"]
+            assert found.nonce_ledger_key == expected["nonce_ledger_key"]
+    refusals = {}
+    for case in vectors["refused"]:
+        with pytest.raises(api.TargetApiError) as info:
+            _check(case["inputs"])
+        assert info.value.code == case["code"], case["name"]
+        refusals[case["name"]] = case["code"]
+    # Each coordinate the review named has its own negative vector.
+    assert refusals["header target differs from the path"] == (
+        "target_mismatch_header_path"
+    )
+    assert refusals["the credential is bound to another target"] == (
+        "target_mismatch_credential"
+    )
+    assert refusals["wrong verb for the route"] == "wrong_verb"
+    assert refusals["a query string"] == "query_string"
+    assert refusals["a percent-encoded path"] == "bad_path"
+    assert refusals["an unknown route"] == "bad_path"
+    assert {c for n, c in refusals.items() if n.startswith("missing header")} == {
+        "missing_header"
+    }
+    assert len([n for n in refusals if n.startswith("missing header")]) == 5
+    assert refusals["outside the skew"] == "skew"
+    assert refusals["a 63-byte signature"] == "bad_signature_encoding"
+    assert refusals["a non-canonical signature spelling"] == "bad_signature_encoding"
+
+
+def test_a_valid_signature_cannot_be_replayed_against_another_target() -> None:
+    """The confused-deputy case: a verifying signature is not authorisation."""
+    case = _VECTORS["request_check"]["ok"][0]["inputs"]
+    other = "dotmac-erp-v2/production/host-b"
+    with pytest.raises(api.TargetApiError) as info:
+        _check({**case, "credential_target_ref": other})
+    assert info.value.code == "target_mismatch_credential"
+
+
+def test_audit_router_source_requires_check_request_and_no_local_builder() -> None:
+    good = (
+        "from dotmac_deployment_control.target_api import check_request\n"
+        "def route(req):\n"
+        "    return check_request(method=req.m, raw_path=req.p, query_string='',\n"
+        "        headers=req.h, body=req.b, store_now=now(),\n"
+        "        credential_target_ref=cred.target)\n"
+    )
+    assert api.audit_router_source(good) == []
+    assert api.audit_router_source("def route(req):\n    return 1\n") == [
+        "the router never calls check_request"
+    ]
+    no_target = good.replace("credential_target_ref=cred.target", "x=1")
+    assert api.audit_router_source(no_target) == [
+        "check_request is never given the credential's target"
+    ]
+    local = good + '\nMSG = "dotmac.target_request.v1" + "\\n"\n'
+    assert any("local message purpose" in p for p in api.audit_router_source(local))
+    local_response = good + '\nR = "cp-target-response.v1"\n'
+    assert any(
+        "local message purpose" in p for p in api.audit_router_source(local_response)
+    )
+
+
+# ── R3-L1: nonce ledger and retry idempotency; unique nonces ───────────────
+
+
+def test_the_nonce_ledger_scope_key_and_retention_are_specified() -> None:
+    ledger = _VECTORS["nonce_ledger"]
+    assert ledger["scope"] == "deployment.target_request_nonce.v1"
+    assert ledger["key_fields"] == ["credential_id", "nonce"]
+    assert ledger["retention"] == "permanent"
+    first = _VECTORS["request_vectors"][0]
+    assert ledger["example_key"] == api.nonce_ledger_key(
+        first["credential_id"], first["nonce"]
+    )
+    with pytest.raises(api.TargetApiError):
+        api.nonce_ledger_key("bad/id", first["nonce"])
+    with pytest.raises(api.TargetApiError):
+        api.nonce_ledger_key(first["credential_id"], "short")
+
+
+def test_every_route_states_its_retry_idempotency() -> None:
+    table = _VECTORS["retry_idempotency"]
+    assert set(table) == {route for _verb, route, _caller in api.ENDPOINTS}
+    assert "409" in table["consume"]
+
+
+def test_every_vector_request_has_its_own_nonce() -> None:
+    nonces = [c["nonce"] for c in _VECTORS["request_vectors"]]
+    nonces += [c["request_nonce"] for c in _VECTORS["response_vectors"]]
+    assert len(nonces) == len(set(nonces))
+
+
+# ── R3-L9: duplicate JSON keys ──────────────────────────────────────────────
+
+
+def test_json_body_vectors() -> None:
+    bodies = _VECTORS["json_bodies"]
+    for case in bodies["ok"]:
+        assert api.parse_json_body(case["body_utf8"].encode()) == case["parsed"]
+    for case in bodies["refused"]:
+        with pytest.raises(api.TargetApiError) as info:
+            api.parse_json_body(bytes.fromhex(case["body_hex"]))
+        assert info.value.code == case["code"]
+    codes = {c["code"] for c in bodies["refused"]}
+    assert "duplicate_key" in codes
+    # First-wins and last-wins parsers would disagree on a duplicate; neither runs.
+    assert json.loads('{"a":1,"a":2}') == {"a": 2}
+    with pytest.raises(api.TargetApiError):
+        api.parse_json_body(b'{"a":1,"a":2}')
+
+
+def test_noncanonical_base64url_is_refused() -> None:
+    assert "AB" in _VECTORS["encoding"]["base64url"]["refused"]
+    assert api.b64u_decode("AA") == b"\x00"
+    with pytest.raises(api.TargetApiError, match="trailing bits"):
+        api.b64u_decode("AB")
