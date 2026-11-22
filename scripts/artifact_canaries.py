@@ -2594,6 +2594,58 @@ def canary_web_surface_ships_its_templates() -> str:
     return f"{len(present)} templates under namespace {templates.namespace!r} at {root}"
 
 
+def canary_target_api_vectors_ship() -> str:
+    """The target-API contract vectors are INSIDE the installed wheel.
+
+    The deploy agent vendors `contract/target_api_v1.json` byte-for-byte and pins
+    its sha256, and Platform CP replays it through its router; both depend on
+    the file being in the artifact Control publishes. Like the templates it is
+    package data, which no source-tree check can observe. Three statements:
+
+    * the file sits inside the installed package (not beside a checkout);
+    * `vector_bytes()` reads exactly those bytes and they parse as the contract;
+    * the INSTALLED functions reproduce the first signed request message, so
+      the file and the code that claims to implement it are the same version.
+    """
+    import hashlib
+    import json
+
+    module = __import__(IMPORT_NAME)
+    api = __import__(f"{IMPORT_NAME}.target_api", fromlist=["target_api"])
+    package_root = Path(module.__file__ or "").resolve().parent
+    path = (package_root / "contract" / "target_api_v1.json").resolve()
+    if not path.is_file():
+        raise CanaryFailure(
+            f"{path} is not in the installed distribution: the wheel shipped the "
+            "code and not the contract vectors, so the agent and CP have nothing "
+            "to replay"
+        )
+    if not path.is_relative_to(package_root):
+        raise CanaryFailure(f"{path} is outside the installed package")
+    raw = api.vector_bytes()
+    if raw != path.read_bytes():
+        raise CanaryFailure("vector_bytes() does not read the installed file")
+    document = json.loads(raw)
+    if document.get("contract") != api.CONTRACT_NAME:
+        raise CanaryFailure("the shipped vectors are not the target-API contract")
+    first = document["request_vectors"][0]
+    message = api.request_message(
+        method=first["method"],
+        path=first["path"],
+        body=first["body_utf8"].encode(),
+        credential_id=first["credential_id"],
+        target_ref=first["target_ref"],
+        issued_at=first["issued_at"],
+        nonce=first["nonce"],
+    )
+    if message.decode() != first["message_utf8"]:
+        raise CanaryFailure(
+            "the installed request_message does not reproduce the shipped vector"
+        )
+    digest = hashlib.sha256(raw).hexdigest()
+    return f"{len(raw)} bytes, sha256 {digest}, at {path}"
+
+
 def canary_web_surface_templates_render_their_states() -> str:
     """The SHIPPED templates render every state their views can hold.
 
@@ -2798,6 +2850,8 @@ def main(argv: list[str] | None = None) -> int:
             "web_surface_templates_render_their_states",
             canary_web_surface_templates_render_their_states,
         ),
+        # The contract vectors the agent vendors and CP replays: package data.
+        ("target_api_vectors_ship", canary_target_api_vectors_ship),
     ]
 
     print(f"artifact canaries — {DISTRIBUTION} {args.expect_version}")

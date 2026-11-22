@@ -96,6 +96,10 @@ EXPECTED_CANARIES = (
     # checkout -- the production case -- and requires each state to render
     # distinctly.
     "web_surface_templates_render_their_states",
+    # The target-API contract vectors are package data too: the deploy agent
+    # vendors the file and Platform CP replays it, so a wheel without it ships
+    # a contract nobody can check against.
+    "target_api_vectors_ship",
 )
 
 #: Every virtualenv `ci.yml` may run the canaries with, and what each proves.
