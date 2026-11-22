@@ -192,6 +192,28 @@ def test_a_params_post_sets_a_descriptor_backed_desired_state(
     assert spec["descriptor_digest"].startswith("sha256:")
 
 
+def test_a_stale_params_submit_with_different_values_is_refused_not_replayed(
+    db: Session,
+) -> None:
+    """R2-L2: the command id carries the values, so a stale resubmit is checked."""
+    source = FakeSource()
+    target = _register(db)
+    app = _web(db, source)
+    path = f"/deployments/{target.id}/params"
+    mine = {"image_repository": _LOOP}
+    first = call(app, "POST", path, form=_form(target.id, workers="4", **mine))
+    assert first.status == 303, first.text
+    stale = call(app, "POST", path, form=_form(target.id, workers="5", **mine))
+    assert stale.status == 400, stale.text
+    assert "desired revision" in stale.text
+    spec = get_target(db, target.id).desired_spec["deploy_unit"]
+    assert spec["params"]["workers"] == "4"
+    # The identical submit is an idempotent replay, not a second change.
+    again = call(app, "POST", path, form=_form(target.id, workers="4", **mine))
+    assert again.status == 303
+    assert get_target(db, target.id).desired_revision == 1
+
+
 @pytest.mark.parametrize(
     ("mutate", "needle"),
     [

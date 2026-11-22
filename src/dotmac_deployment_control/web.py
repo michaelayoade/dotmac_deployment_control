@@ -88,6 +88,7 @@ does legitimately accept.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -113,6 +114,7 @@ from sqlalchemy.orm import Session
 from dotmac_deployment_control import facts, service
 from dotmac_deployment_control.deploy_settings import SETTING_NAMES
 from dotmac_deployment_control.deploy_unit import DeployUnitError, ParamSpec
+from dotmac_deployment_control.digests import ParamsEnvDigestV1
 from dotmac_deployment_control.legacy_policy import AttendedApproval
 from dotmac_deployment_control.ports import (
     DeploymentControlError,
@@ -589,6 +591,13 @@ ReleaseSource = Annotated[
 # ── Deployment sets and deploy settings ─────────────────────────────────────
 
 
+def _values_id(release: str, path: str, typed: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        {"release": release, "path": path, "params": dict(typed)}, sort_keys=True
+    ).encode()
+    return ParamsEnvDigestV1.over_bytes(canonical).digest.hex()[:32]
+
+
 def _checked(values: Mapping[str, str], name: str) -> bool:
     return values.get(name, "").strip().lower() in {"on", "true", "yes", "1"}
 
@@ -856,7 +865,13 @@ async def set_deploy_params_submit(
         service.set_desired_state(
             db,
             service.SetDesiredStateCommand(
-                command_id=f"web.set_params:{target_id}:{expected}",
+                # The values are part of the identity: a stale submit with
+                # DIFFERENT values must reach the under-lock revision check and
+                # be refused, not replay the first submit's result.
+                command_id=(
+                    f"web.set_params:{target_id}:{expected}:"
+                    f"{_values_id(release, path, typed)}"
+                ),
                 target_id=target_id,
                 desired=service.DesiredDeployment(
                     release_ref=release,
