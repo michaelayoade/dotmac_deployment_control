@@ -81,6 +81,17 @@ class PlannedImage:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanRole:
+    """One role of an active binding and whether its secret_id is single-use."""
+
+    role: str
+    single_use: bool
+
+    def payload(self) -> dict[str, object]:
+        return {"role": self.role, "single_use": self.single_use}
+
+
+@dataclass(frozen=True, slots=True)
 class DeployPlanBinding:
     #: Computed by Control over the descriptor bytes (`DeployUnit.digest`).
     deploy_unit_digest: str
@@ -91,6 +102,12 @@ class DeployPlanBinding:
     lease_ttl_seconds: int
     #: Names of the descriptor's ACTIVE bindings (pre-staged ones deliver nothing).
     active_binding_names: tuple[str, ...] = ()
+    #: Roles derived from the verified descriptor, sorted. The agent mints
+    #: secret_ids from THIS, so the list is covered by the plan digest.
+    roles: tuple[PlanRole, ...] = ()
+    #: The service the primary image belongs to. The agent reads the primary
+    #: image through it; there is no "the only image" fallback.
+    primary_service: str = ""
     legacy: LegacyPlanBinding | None = None
     companion_order: str | None = None
 
@@ -103,6 +120,8 @@ class DeployPlanBinding:
             "images": [i.payload() for i in self.images],
             "lease_ttl_seconds": self.lease_ttl_seconds,
             "active_binding_names": list(self.active_binding_names),
+            "roles": [role.payload() for role in self.roles],
+            "primary_service": self.primary_service,
             "legacy": None if self.legacy is None else self.legacy.payload(),
             "companion_order": self.companion_order,
         }
@@ -119,6 +138,8 @@ def build_deploy_binding(
     legacy: LegacyPlanBinding | None = None,
     companion_order: str | None = None,
     active_binding_names: Sequence[str] = (),
+    roles: Sequence[PlanRole] = (),
+    primary_service: str = "",
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
@@ -151,6 +172,10 @@ def build_deploy_binding(
             planned_digest=image.planned_digest,
             allowlist=allowlist,
         )
+    if primary_service not in services:
+        raise DeployBindingRefusedError("the primary service is one of the images")
+    if len({r.role for r in roles}) != len(roles):
+        raise DeployBindingRefusedError("a role appears once")
     if companion_order not in (None, COMPANION_ORDER):
         raise DeployBindingRefusedError(f"companion order must be {COMPANION_ORDER}")
     return DeployPlanBinding(
@@ -160,6 +185,8 @@ def build_deploy_binding(
         images=tuple(sorted(images, key=lambda i: i.service)),
         lease_ttl_seconds=lease_ttl_seconds,
         active_binding_names=tuple(sorted(set(active_binding_names))),
+        roles=tuple(sorted(roles, key=lambda r: r.role)),
+        primary_service=primary_service,
         legacy=legacy,
         companion_order=companion_order,
     )

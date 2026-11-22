@@ -251,23 +251,82 @@ def test_encoding_vectors() -> None:
 def test_materials_vectors() -> None:
     materials = _VECTORS["materials"]
     api.check_materials_shape(materials["ok"])
+    api.check_materials_shape(materials["idle"])
     assert materials["schema"] == "dotmac.deploy_target_materials/1"
-    assert materials["keys"] == sorted(api.MATERIALS_KEYS)
+    assert materials["always_keys"] == sorted(api.MATERIALS_ALWAYS)
+    assert materials["pending_keys"] == sorted(api.MATERIALS_PENDING)
     assert materials["removed_keys"] == sorted(api.MATERIALS_FORBIDDEN_KEYS)
     snapshot = materials["ok"]["plan_snapshot"]
     assert api.plan_snapshot_digest(snapshot) == materials["plan_digest"]
     assert api.expected_app_image(snapshot) == materials["expected_app_image"]
     assert materials["ok"]["app_image"] == materials["expected_app_image"]
+    reasons = []
     for case in materials["refused"]:
         with pytest.raises(api.TargetApiError):
             api.check_materials_shape(case["document"])
+        reasons.append(case["reason"])
     for case in materials["archive_names"]:
         assert api.archive_name(case["service"], case["digest"]) == case["name"]
     assert materials["archive_names"][0]["name"].endswith(".oci.tar")
     # Everything the plan binds is READ from the snapshot, not carried beside it.
-    for removed in ("params_env_digest", "images", "legacy", "lease_ttl_seconds"):
+    for removed in (
+        "params_env_digest",
+        "images",
+        "legacy",
+        "lease_ttl_seconds",
+        "roles",
+        "previous_app_image",
+    ):
         assert removed not in materials["ok"]
         assert removed not in api.MATERIALS_KEYS
+    # Each R3-L3 gap has its own negative vector.
+    for needle in (
+        "dispatch_id differs",
+        "target_ref differs",
+        "the signed plan digest",
+        "pending is not a bool",
+        "nothing pending but dispatch fields",
+        "removed key previous_app_image",
+        "removed key roles",
+        "no single-image fallback",
+    ):
+        assert any(needle in reason for reason in reasons), needle
+
+
+def test_roles_come_from_the_signed_plan_only() -> None:
+    materials = _VECTORS["materials"]
+    snapshot = materials["ok"]["plan_snapshot"]
+    assert api.plan_roles(snapshot) == [
+        ("app", False),
+        ("backup", False),
+        ("migrate", True),
+    ]
+    assert materials["plan_roles"] == [
+        ["app", False],
+        ["backup", False],
+        ["migrate", True],
+    ]
+    with pytest.raises(api.TargetApiError):
+        api.plan_roles({"deploy_binding": {}})
+    with pytest.raises(api.TargetApiError):
+        api.plan_roles({"deploy_binding": {"roles": [{"role": "app"}]}})
+
+
+def test_the_primary_image_is_named_by_the_binding_with_no_fallback() -> None:
+    snapshot = _VECTORS["materials"]["ok"]["plan_snapshot"]
+    assert api.primary_image(snapshot)["service"] == "dotmac-erp-v2"
+    binding = dict(snapshot["deploy_binding"])
+    for broken in (
+        {**binding, "primary_service": ""},
+        {**binding, "primary_service": "other"},
+        {k: v for k, v in binding.items() if k != "primary_service"},
+    ):
+        with pytest.raises(api.TargetApiError):
+            api.primary_image({**snapshot, "deploy_binding": broken})
+    # One image, no name: still refused. There is no single-image fallback.
+    lone = {**binding, "primary_service": None}
+    with pytest.raises(api.TargetApiError):
+        api.primary_image({**snapshot, "deploy_binding": lone})
 
 
 def test_the_legacy_part_of_the_snapshot_carries_expires_at() -> None:

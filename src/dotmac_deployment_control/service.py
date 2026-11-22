@@ -96,6 +96,7 @@ from dotmac_deployment_control.deploy_binding import (
     DeployPlanBinding,
     DeployPlanInputs,
     PlannedImage,
+    PlanRole,
     build_deploy_binding,
 )
 from dotmac_deployment_control.deploy_settings import (
@@ -5782,6 +5783,8 @@ def _derive_deploy_binding(
         legacy=legacy,
         companion_order="after_primary_ready" if unit.companions else None,
         active_binding_names=active,
+        roles=[PlanRole(role, single) for role, single in unit.role_bindings()],
+        primary_service=unit.product,
     )
 
 

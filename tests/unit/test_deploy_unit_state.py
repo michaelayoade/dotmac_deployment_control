@@ -554,6 +554,9 @@ def test_the_binding_is_derived_images_bindings_and_companions(db: Session) -> N
     assert binding["product_toml_sha256"] == _T1
     assert binding["companion_order"] == "after_primary_ready"
     assert binding["active_binding_names"] == []
+    # Roles and the primary service are DERIVED from the descriptor and bound.
+    assert binding["primary_service"] == "dotmac-erp-v2"
+    assert binding["roles"] == []
     image = binding["images"][0]
     assert (image["source"], image["planned_repository"]) == ("transfer", _LOOP)
     assert (image["release_repository"], image["release_digest"]) == (_REPO, _D1)
@@ -1140,3 +1143,13 @@ def test_the_companion_must_run_on_the_declared_host(db: Session) -> None:
             ),
             release_source=source,
         )
+
+
+def test_active_binding_roles_are_derived_and_bound_into_the_plan(db: Session) -> None:
+    """R3: roles minting secret_ids come from the verified descriptor, signed."""
+    text = _descriptor_text(active=("API_SECRET", "DB_PASSWORD"))
+    source = FakeSource(text=text)
+    erp = _bound_target(db, source)
+    binding = _binding_of(_propose(db, erp.id, source))
+    assert binding["roles"] == [{"role": "app", "single_use": False}]
+    assert binding["primary_service"] == "dotmac-erp-v2"

@@ -381,6 +381,12 @@ def _snapshot() -> dict[str, Any]:
             "params_env_digest": "sha256:" + "3" * 64,
             "lease_ttl_seconds": 900,
             "active_binding_names": [],
+            "primary_service": "dotmac-erp-v2",
+            "roles": [
+                {"role": "app", "single_use": False},
+                {"role": "backup", "single_use": False},
+                {"role": "migrate", "single_use": True},
+            ],
             "companion_order": None,
             "legacy": {
                 "policy_version": 1,
@@ -404,6 +410,7 @@ def _snapshot() -> dict[str, Any]:
 
 def _materials_vectors() -> dict[str, Any]:
     snapshot = _snapshot()
+    plan_digest = api.plan_snapshot_digest(snapshot)
     document = {
         "schema": api.MATERIALS_SCHEMA,
         "pending": True,
@@ -414,46 +421,122 @@ def _materials_vectors() -> dict[str, Any]:
             {"name": "workers", "material": "WORKERS", "type": "int", "value": "2"}
         ],
         "app_image": api.expected_app_image(snapshot),
-        "previous_app_image": None,
-        "roles": [
-            {"role": "app", "single_use": False},
-            {"role": "migrate", "single_use": True},
-        ],
-        "dispatch_envelope": {"opaque": "signed by Control; verified by the agent"},
+        "dispatch_envelope": {
+            "statement": {
+                "dispatch_id": "dispatch-0001",
+                "target_ref": _REF,
+                "product_code": "dotmac-erp-v2",
+                "environment": "production",
+                "plan_digest": plan_digest,
+            },
+            "signature": "signed-by-control-and-verified-by-the-agent",
+        },
         "plan_snapshot": snapshot,
     }
     api.check_materials_shape(document)
-    refusals = []
-    mutations = {
-        "removed key params_env_digest": lambda d: d.update(params_env_digest="x"),
-        "removed key images": lambda d: d.update(images=[]),
-        "removed key bindings": lambda d: d.update(bindings=[]),
-        "unknown key": lambda d: d.update(surprise=1),
-        "role with container_uid": lambda d: d["roles"][0].update(container_uid=1),
-        "role with secret_ref": lambda d: d["roles"][0].update(secret_ref="bao://x"),
-        "duplicate role": lambda d: d["roles"].append(dict(d["roles"][0])),
-        "app_image is not the planned image": lambda d: d.update(
-            app_image="127.0.0.1:5000/team/other@" + _D1
-        ),
-        "no dispatch_envelope": lambda d: d.pop("dispatch_envelope"),
-        "wrong schema": lambda d: d.update(schema="dotmac.deploy_target_materials/2"),
+    idle = {
+        "schema": api.MATERIALS_SCHEMA,
+        "pending": False,
+        "store_now": _ISSUED,
+        "target_ref": _REF,
     }
-    for reason, mutate in mutations.items():
-        bad = json.loads(json.dumps(document))
-        mutate(bad)
+    api.check_materials_shape(idle)
+    refusals = []
+
+    def copy(doc: dict[str, Any]) -> dict[str, Any]:
+        return json.loads(json.dumps(doc))
+
+    def refuse(reason: str, bad: dict[str, Any]) -> None:
         try:
             api.check_materials_shape(bad)
         except api.TargetApiError:
             refusals.append({"reason": reason, "document": bad})
         else:  # pragma: no cover
             raise AssertionError(reason)
+
+    simple = {
+        "removed key params_env_digest": {"params_env_digest": "x"},
+        "removed key images": {"images": []},
+        "removed key bindings": {"bindings": []},
+        "removed key roles (they come from the signed plan)": {"roles": []},
+        "removed key previous_app_image": {"previous_app_image": None},
+        "unknown key": {"surprise": 1},
+        "wrong schema": {"schema": "dotmac.deploy_target_materials/2"},
+        "app_image is not the planned image": {
+            "app_image": "127.0.0.1:5000/team/other@" + _D1
+        },
+        "pending is not a bool": {"pending": "yes"},
+        "dispatch_id differs from the signed statement": {"dispatch_id": "dispatch-9"},
+        "target_ref differs from the signed statement": {
+            "target_ref": "dotmac-erp-v2/production/host-b"
+        },
+        "a malformed store_now": {"store_now": "yesterday"},
+    }
+    for reason, change in simple.items():
+        bad = copy(document)
+        bad.update(change)
+        refuse(reason, bad)
+    for key in (
+        "dispatch_envelope",
+        "plan_snapshot",
+        "params",
+        "dispatch_id",
+        "store_now",
+    ):
+        bad = copy(document)
+        del bad[key]
+        refuse(f"missing {key}", bad)
+    bad = copy(document)
+    bad["dispatch_envelope"]["statement"]["plan_digest"] = "sha256:" + "0" * 64
+    refuse("the signed plan digest is not the snapshot's", bad)
+    bad = copy(document)
+    bad["dispatch_envelope"]["statement"]["product_code"] = "dotmac-sub"
+    refuse("the signed product differs from the target", bad)
+    bad = copy(document)
+    del bad["dispatch_envelope"]["statement"]
+    refuse("the envelope carries no statement", bad)
+    bad = copy(document)
+    bad["plan_snapshot"]["deploy_binding"]["primary_service"] = "unknown"
+    bad["dispatch_envelope"]["statement"]["plan_digest"] = api.plan_snapshot_digest(
+        bad["plan_snapshot"]
+    )
+    refuse("the binding names a primary service that is not an image", bad)
+    bad = copy(document)
+    del bad["plan_snapshot"]["deploy_binding"]["primary_service"]
+    bad["dispatch_envelope"]["statement"]["plan_digest"] = api.plan_snapshot_digest(
+        bad["plan_snapshot"]
+    )
+    refuse("the binding names no primary service (no single-image fallback)", bad)
+    bad = copy(document)
+    bad["plan_snapshot"]["deploy_binding"]["roles"] = [
+        {"role": "migrate", "single_use": True},
+        {"role": "app", "single_use": False},
+    ]
+    bad["dispatch_envelope"]["statement"]["plan_digest"] = api.plan_snapshot_digest(
+        bad["plan_snapshot"]
+    )
+    refuse("plan roles are not sorted", bad)
+    bad = copy(idle)
+    bad["dispatch_id"] = "dispatch-0001"
+    refuse("nothing pending but dispatch fields present", bad)
+    bad = copy(idle)
+    del bad["store_now"]
+    refuse("an idle document without store_now", bad)
     return {
         "schema": api.MATERIALS_SCHEMA,
-        "keys": sorted(api.MATERIALS_KEYS),
+        "always_keys": sorted(api.MATERIALS_ALWAYS),
+        "pending_keys": sorted(api.MATERIALS_PENDING),
         "removed_keys": sorted(api.MATERIALS_FORBIDDEN_KEYS),
+        "statement_keys": sorted(api.STATEMENT_KEYS),
+        "pending_meaning": (
+            "true: a dispatch is pending and the document carries it; false: "
+            "nothing is pending, the document is exactly the always keys"
+        ),
         "ok": document,
-        "plan_digest": api.plan_snapshot_digest(snapshot),
+        "idle": idle,
+        "plan_digest": plan_digest,
         "expected_app_image": api.expected_app_image(snapshot),
+        "plan_roles": [list(r) for r in api.plan_roles(snapshot)],
         "refused": refusals,
         "archive_names": [
             {

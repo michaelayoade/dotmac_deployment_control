@@ -11,6 +11,7 @@ from dotmac_deployment_control.deploy_binding import (
     DeployBindingRefusedError,
     DeploymentSet,
     PlannedImage,
+    PlanRole,
     build_deploy_binding,
 )
 from dotmac_deployment_control.image_policy import PullAllowlist
@@ -56,6 +57,8 @@ def _binding(**overrides: object):
         "images": [_image()],
         "lease_ttl_seconds": 900,
         "allowlist": PullAllowlist(),
+        "primary_service": "app",
+        "roles": [PlanRole("migrate", True), PlanRole("app", False)],
     }
     args.update(overrides)
     return build_deploy_binding(**args)  # type: ignore[arg-type]
@@ -211,3 +214,30 @@ def test_reconcile_marker_requires_match() -> None:
         decide_reconcile_marker(
             observation=_obs("app@1"), **{**kwargs, "standing": "RELEASED"}
         )
+
+
+def test_roles_and_the_primary_service_are_bound_sorted_into_the_plan() -> None:
+    binding = _binding()
+    payload = binding.payload()
+    assert payload["roles"] == [
+        {"role": "app", "single_use": False},
+        {"role": "migrate", "single_use": True},
+    ]
+    assert payload["primary_service"] == "app"
+    base = _digest(binding)
+    assert (
+        _digest(_binding(roles=[PlanRole("app", True), PlanRole("migrate", True)]))
+        != base
+    )
+    assert _digest(_binding(roles=[PlanRole("app", False)])) != base
+    # Order of the input does not matter; the payload is sorted.
+    assert (
+        _digest(_binding(roles=[PlanRole("app", False), PlanRole("migrate", True)]))
+        == base
+    )
+    with pytest.raises(DeployBindingRefusedError, match="primary service"):
+        _binding(primary_service="other")
+    with pytest.raises(DeployBindingRefusedError, match="primary service"):
+        _binding(primary_service="")
+    with pytest.raises(DeployBindingRefusedError, match="role appears once"):
+        _binding(roles=[PlanRole("app", False), PlanRole("app", True)])

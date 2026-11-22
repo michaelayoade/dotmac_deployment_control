@@ -85,28 +85,35 @@ ENDPOINTS: Final = (
 _VERBS: Final = {route: verb for verb, route, _ in ENDPOINTS}
 
 MATERIALS_SCHEMA: Final = "dotmac.deploy_target_materials/1"
-#: Exactly these top-level keys (the first four are required in every document).
-MATERIALS_KEYS: Final = frozenset(
+#: The four keys every document carries. `pending` is a bool: True means a
+#: dispatch is pending for this target and the document carries it (the signed
+#: envelope and the plan snapshot it binds); False means NOTHING is pending, the
+#: document is exactly these four keys, and the agent does nothing.
+MATERIALS_ALWAYS: Final = frozenset({"schema", "pending", "store_now", "target_ref"})
+#: Present exactly when `pending` is True.
+MATERIALS_PENDING: Final = frozenset(
+    {"dispatch_id", "params", "app_image", "dispatch_envelope", "plan_snapshot"}
+)
+MATERIALS_KEYS: Final = MATERIALS_ALWAYS | MATERIALS_PENDING
+#: Removed from the first draft. Everything the plan binds (params digest,
+#: images, legacy part, lease TTL, ROLES, the primary service) is READ from
+#: `plan_snapshot.deploy_binding`, so a CP-supplied copy could only ever
+#: disagree with what Control signed. `previous_app_image` is unsigned and
+#: widened post-run classification, so it is gone too.
+MATERIALS_FORBIDDEN_KEYS: Final = frozenset(
     {
-        "schema",
-        "pending",
-        "store_now",
-        "dispatch_id",
-        "target_ref",
-        "params",
-        "app_image",
-        "previous_app_image",
+        "params_env_digest",
+        "images",
+        "legacy",
+        "lease_ttl_seconds",
+        "bindings",
         "roles",
-        "dispatch_envelope",
-        "plan_snapshot",
+        "previous_app_image",
     }
 )
-#: Removed from the first draft. They are READ from the plan snapshot instead,
-#: so a CP-supplied copy could only ever disagree with what Control signed.
-MATERIALS_FORBIDDEN_KEYS: Final = frozenset(
-    {"params_env_digest", "images", "legacy", "lease_ttl_seconds", "bindings"}
+STATEMENT_KEYS: Final = frozenset(
+    {"dispatch_id", "target_ref", "product_code", "environment", "plan_digest"}
 )
-ROLE_KEYS: Final = frozenset({"role", "single_use"})
 
 #: Names the bindings already read, plus the runner env the agent sets. The
 #: agent passes nothing else, and never a database DSN.
@@ -602,16 +609,45 @@ def plan_snapshot_digest(plan_snapshot: Mapping[str, Any]) -> str:
 
 
 def primary_image(plan_snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The primary service's image: the one named for the product."""
+    """The primary service's image: the one the plan binding NAMES.
+
+    The binding carries `primary_service`; there is no fallback to "the only
+    image", so a snapshot that names nothing (or an unknown service) is refused.
+    """
     binding = plan_snapshot.get("deploy_binding")
-    images = (binding or {}).get("images") or []
-    product = plan_snapshot.get("product_code")
-    chosen = [i for i in images if i.get("service") == product] or (
-        images if len(images) == 1 else []
-    )
+    if not isinstance(binding, Mapping):
+        raise TargetApiError("the plan snapshot has no deploy binding")
+    service = binding.get("primary_service")
+    chosen = [
+        image
+        for image in (binding.get("images") or [])
+        if isinstance(service, str) and service and image.get("service") == service
+    ]
     if len(chosen) != 1:
-        raise TargetApiError("the plan snapshot has no single primary image")
+        raise TargetApiError("the plan binding names no single primary image")
     return chosen[0]
+
+
+def plan_roles(plan_snapshot: Mapping[str, Any]) -> list[tuple[str, bool]]:
+    """`(role, single_use)` for secret_id minting, from the SIGNED plan only."""
+    binding = plan_snapshot.get("deploy_binding")
+    rows = binding.get("roles") if isinstance(binding, Mapping) else None
+    if not isinstance(rows, list):
+        raise TargetApiError("the plan binding carries no roles")
+    out: list[tuple[str, bool]] = []
+    for row in rows:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"role", "single_use"}
+            or not isinstance(row["role"], str)
+            or not _SEGMENT.fullmatch(row["role"])
+            or type(row["single_use"]) is not bool
+        ):
+            raise TargetApiError("a plan role is exactly {role, single_use}")
+        out.append((row["role"], row["single_use"]))
+    if [r for r, _ in out] != sorted({r for r, _ in out}):
+        raise TargetApiError("plan roles are unique and sorted")
+    return out
 
 
 def expected_app_image(plan_snapshot: Mapping[str, Any]) -> str:
@@ -631,8 +667,9 @@ def check_materials_shape(document: Mapping[str, Any]) -> None:
     """The structural contract of the materials document (not its signatures).
 
     The agent separately verifies the dispatch envelope under the
-    enrolment-pinned identity and that `sha256(canonical_json(plan_snapshot))`
-    equals the plan digest; this fixes what the document may contain.
+    enrolment-pinned identity; this fixes what the document may contain and
+    cross-checks every unsigned field against the signed statement and the plan
+    snapshot, so no CP-supplied value can differ from what Control signed.
     """
     if not isinstance(document, Mapping):
         raise TargetApiError("materials are a mapping")
@@ -643,26 +680,57 @@ def check_materials_shape(document: Mapping[str, Any]) -> None:
         raise TargetApiError("materials carry an unknown key")
     if document.get("schema") != MATERIALS_SCHEMA:
         raise TargetApiError(f"materials schema is {MATERIALS_SCHEMA}")
-    for key in ("dispatch_envelope", "plan_snapshot"):
-        if not isinstance(document.get(key), Mapping):
-            raise TargetApiError(f"materials need {key}")
-    roles = document.get("roles")
-    if not isinstance(roles, list):
-        raise TargetApiError("materials need roles")
-    seen: set[str] = set()
-    for row in roles:
-        if not isinstance(row, Mapping) or set(row) != ROLE_KEYS:
-            raise TargetApiError("a role is exactly {role, single_use}")
-        if (
-            not isinstance(row["role"], str)
-            or not _SEGMENT.fullmatch(row["role"])
-            or row["role"] in seen
-            or type(row["single_use"]) is not bool
-        ):
-            raise TargetApiError("a role has a bad name or single_use")
-        seen.add(row["role"])
-    snapshot = document["plan_snapshot"]
-    if document.get("app_image") != expected_app_image(snapshot):
+    missing = sorted(MATERIALS_ALWAYS - set(document))
+    if missing:
+        raise TargetApiError(f"materials need {', '.join(missing)}")
+    target_ref = document["target_ref"]
+    product, environment, _host = _check_target_ref(target_ref)
+    parse_stamp(document["store_now"])
+    pending = document["pending"]
+    if type(pending) is not bool:
+        raise TargetApiError("pending is a boolean")
+    present = set(document) & MATERIALS_PENDING
+    if not pending:
+        if present:
+            raise TargetApiError("nothing is pending: no dispatch fields may appear")
+        return
+    if present != MATERIALS_PENDING:
+        raise TargetApiError("a pending document carries the whole dispatch")
+    envelope, snapshot = document["dispatch_envelope"], document["plan_snapshot"]
+    if not isinstance(envelope, Mapping) or not isinstance(snapshot, Mapping):
+        raise TargetApiError("the envelope and the snapshot are mappings")
+    statement = envelope.get("statement")
+    if not isinstance(statement, Mapping) or not STATEMENT_KEYS <= set(statement):
+        raise TargetApiError("the envelope carries no signed statement")
+    if not isinstance(document["dispatch_id"], str) or not _DISPATCH_ID.fullmatch(
+        document["dispatch_id"]
+    ):
+        raise TargetApiError("dispatch_id is well formed")
+    for key, expected in (
+        ("dispatch_id", document["dispatch_id"]),
+        ("target_ref", target_ref),
+        ("product_code", product),
+        ("environment", environment),
+        ("plan_digest", plan_snapshot_digest(snapshot)),
+    ):
+        if statement.get(key) != expected:
+            raise TargetApiError(f"the signed statement's {key} differs")
+    for key, expected in (
+        ("target_ref", target_ref),
+        ("product_code", product),
+        ("environment", environment),
+    ):
+        if snapshot.get(key) != expected:
+            raise TargetApiError(f"the plan snapshot's {key} differs")
+    params = document["params"]
+    if not isinstance(params, list) or any(
+        not isinstance(row, Mapping)
+        or set(row) != {"name", "material", "type", "value"}
+        for row in params
+    ):
+        raise TargetApiError("params are a list of {name, material, type, value}")
+    plan_roles(snapshot)
+    if document["app_image"] != expected_app_image(snapshot):
         raise TargetApiError(
             "app_image is not the primary service's planned_repository@planned_digest"
         )
@@ -680,8 +748,10 @@ __all__ = [
     "H_RESPONSE_SIGNATURE",
     "H_SIGNATURE",
     "H_TARGET",
+    "MATERIALS_ALWAYS",
     "MATERIALS_FORBIDDEN_KEYS",
     "MATERIALS_KEYS",
+    "MATERIALS_PENDING",
     "MATERIALS_SCHEMA",
     "MAX_SKEW_SECONDS",
     "NONCE_LEDGER_KEY_FIELDS",
@@ -691,6 +761,7 @@ __all__ = [
     "RESPONSE_PURPOSE",
     "RETRY_IDEMPOTENCY",
     "SIGNATURE_BYTES",
+    "STATEMENT_KEYS",
     "VECTORS_RESOURCE",
     "RequestCoordinates",
     "TargetApiError",
@@ -711,6 +782,7 @@ __all__ = [
     "parse_json_body",
     "parse_stamp",
     "parse_target_path",
+    "plan_roles",
     "plan_snapshot_digest",
     "primary_image",
     "request_headers",

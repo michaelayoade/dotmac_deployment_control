@@ -473,3 +473,30 @@ def test_params_render_golden_bytes() -> None:
     assert params_env_digest(render) == (
         "sha256:00464f3d19bf85ad61c33e5fd1e0472245273600c22a15b5a86fcb9f02804921"
     )
+
+
+def test_a_role_has_one_mode_and_roles_are_derived_sorted() -> None:
+    """R3: the agent mints one secret_id per role, so a role has one answer."""
+    text = (
+        'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
+        'spec = "deploy/product.toml"\n'
+        '[[bindings]]\nname = "B_KEY"\nkind = "key"\nroles = ["migrate"]\n'
+        'writer = "ceremony"\nrotation = "copy_only"\nsingle_use = true\n'
+        '[[bindings]]\nname = "A_KEY"\nkind = "key"\nroles = ["app"]\n'
+        'writer = "ceremony"\nrotation = "copy_only"\n'
+        '[[bindings]]\nname = "C_KEY"\nstate = "pre_staged"\nkind = "key"\n'
+        'roles = ["backup"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
+    )
+    unit = parse_deploy_unit(text)
+    # Only ACTIVE bindings contribute roles; the result is sorted.
+    assert unit.role_bindings() == (("app", False), ("migrate", True))
+    mixed = text.replace(
+        'roles = ["app"]\nwriter = "ceremony"\nrotation = "copy_only"\n',
+        'roles = ["migrate"]\nwriter = "ceremony"\nrotation = "copy_only"\n',
+        1,
+    )
+    with pytest.raises(DeployUnitError, match="mixes single-use"):
+        parse_deploy_unit(mixed)
+    bad_role = text.replace('roles = ["app"]', 'roles = ["App"]', 1)
+    with pytest.raises(DeployUnitError, match="lowercase segment"):
+        parse_deploy_unit(bad_role)
