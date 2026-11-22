@@ -356,6 +356,24 @@ def default_secrets_environment(environment: str) -> str | None:
     return SECRETS_ENVIRONMENT_DEFAULTS.get(environment)
 
 
+def check_explicit_secrets_environment(environment: str, value: str) -> str:
+    """An explicit namespace-env may not contradict a KNOWN default.
+
+    Explicit values are for environments the table does not list (`pilot`); a
+    `staging` target registered with `prod` would aim it at another
+    environment's namespace.
+    """
+    check_secrets_value(value, "the namespace env")
+    default = SECRETS_ENVIRONMENT_DEFAULTS.get(environment)
+    if default is not None and value != default:
+        raise TargetApiError(
+            f"environment {environment!r} maps to namespace-env {default!r}; "
+            f"{value!r} contradicts it",
+            "contradicts_default",
+        )
+    return value
+
+
 def check_secrets_value(value: object, what: str) -> str:
     """A secrets namespace or namespace-env is a lowercase path segment."""
     if not isinstance(value, str) or not _SEGMENT.fullmatch(value):
@@ -1003,6 +1021,7 @@ __all__ = [
     "b64u_decode",
     "b64u_encode",
     "canonical_json",
+    "check_explicit_secrets_environment",
     "check_materials_shape",
     "check_nonce",
     "check_public_key_admissible",
