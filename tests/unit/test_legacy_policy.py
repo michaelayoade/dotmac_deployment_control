@@ -49,7 +49,7 @@ def _enable(fleet: LegacyFleetState, **overrides: object) -> LegacyFleetState:
         "now": _NOW,
         "enabled_by_ref": "operator",
         "exit_prestaged": True,
-        "allowed_targets": frozenset({"erp/prod/host-a"}),
+        "allowed_targets": frozenset({"erp/prod/host-a", "erp/prod/host-b"}),
     }
     args.update(overrides)
     return enable_policy(fleet, **args)  # type: ignore[arg-type]

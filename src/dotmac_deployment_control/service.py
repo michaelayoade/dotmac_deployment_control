@@ -5501,7 +5501,11 @@ def _legacy_transition(
                 enabled_by_ref=command.approval.approver_ref,
                 exit_prestaged=command.exit_prestaged,
                 companion=is_companion_descriptor_path(
-                    str(target.desired_spec["deploy_unit"]["descriptor_path"])
+                    str(
+                        ((target.desired_spec or {}).get("deploy_unit") or {}).get(
+                            "descriptor_path", ""
+                        )
+                    )
                 ),
                 allowed_targets=settings.legacy_allowed_targets,
             )
@@ -5976,13 +5980,11 @@ __all__ = [
     "AUDIT_ACTION_ROLLOUT",
     "AUDIT_ACTION_TARGET",
     "SCOPE_ACTIVATE_CREDENTIAL",
+    "SCOPE_APPROVE_DEPLOYMENT_SET",
     "SCOPE_APPROVE_PLAN",
     "SCOPE_CANCEL_PLAN",
     "SCOPE_CANCEL_ROLLOUT",
     "SCOPE_CREATE_DEPLOYMENT_SET",
-    "SCOPE_APPROVE_DEPLOYMENT_SET",
-    "ApproveDeploymentSetCommand",
-    "approve_deployment_set",
     "SCOPE_DECOMMISSION_TARGET",
     "SCOPE_DISPATCH",
     "SCOPE_ENROL_CREDENTIAL",
@@ -5999,6 +6001,7 @@ __all__ = [
     "SCOPE_SET_DEPLOY_SETTING",
     "SCOPE_SET_DESIRED",
     "SCOPE_SUSPEND_TARGET",
+    "ApproveDeploymentSetCommand",
     "ApprovePlanCommand",
     "CreateDeploymentSetCommand",
     "CredentialTransitionCommand",
@@ -6019,6 +6022,7 @@ __all__ = [
     "SettleAttemptCommand",
     "TargetTransitionCommand",
     "activate_credential",
+    "approve_deployment_set",
     "approve_plan",
     "cancel_plan",
     "cancel_rollout",

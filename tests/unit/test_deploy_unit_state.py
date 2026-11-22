@@ -883,7 +883,7 @@ def test_a_deployment_set_is_validated_against_the_primary_descriptor(
     assert again.id == made.id
     assert get_deployment_set(db, made.id) == made
     assert list_deployment_sets(db) == (made,)
-    with pytest.raises(DeployUnitError):
+    with pytest.raises(PlanRefusedError, match="not a companion"):
         create_deployment_set(
             db,
             CreateDeploymentSetCommand(
@@ -940,7 +940,8 @@ def test_set_membership_refusals(db: Session) -> None:
             CreateDeploymentSetCommand(command_id=_cmd(), primary_plan_id=unbound.id),
             release_source=source,
         )
-    # A superseded plan is no longer live.
+    # A superseded plan is no longer live (a new desired state, then a new plan).
+    _desired(db, erp.id, source)
     _propose(db, erp.id, source)
     with pytest.raises(PlanRefusedError, match="not live"):
         create_deployment_set(
