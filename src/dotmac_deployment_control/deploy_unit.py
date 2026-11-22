@@ -128,6 +128,12 @@ _SECRET_SHAPES: Final = (
     re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
     re.compile(r"://[^/\s:@]*:[^/\s@]+@"),
 )
+#: A material whose NAME says it is a secret may only point at a FILE (a `path`
+#: param), never carry a value. Enforced here, at descriptor parse (so product
+#: CI refuses it) and again, as a vector-pinned duplicate, by the agent.
+SECRET_NAMED_MATERIAL: Final = re.compile(
+    r"PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_KEY|API_KEY|CREDENTIAL"
+)
 _HIGH_ENTROPY_RUN = re.compile(r"[A-Za-z0-9+_=-]{32,}")
 
 BINDING_ACTIVE: Final = "active"
@@ -259,6 +265,17 @@ class DeployUnit:
     hold_points: tuple[HoldPointSpec, ...]
     legacy_env_file: LegacyEnvFileSpec | None
 
+    def secret_refs(self, environment: str) -> dict[tuple[str, str], str]:
+        """`(role, binding name) -> secret_ref` for every ACTIVE binding."""
+        return {
+            (role, binding.name): derive_secret_ref(
+                environment, self.product, role, binding.name
+            )
+            for binding in self.bindings
+            if binding.state == BINDING_ACTIVE
+            for role in binding.roles
+        }
+
     def active_binding_names(self) -> tuple[str, ...]:
         """Names of bindings that are real delivery sources (not pre-staged)."""
         return tuple(sorted(b.name for b in self.bindings if b.state == BINDING_ACTIVE))
@@ -276,6 +293,26 @@ class SecretRef:
 
 
 # ── secret_ref ──────────────────────────────────────────────────────────────
+
+
+def derive_secret_ref(environment: str, product: str, role: str, name: str) -> str:
+    """The secret_ref of a binding: DERIVED, never stored or entered.
+
+    `bao://<env>/<product>/kv/<role>/<lower(name)>`; the binding name is the
+    uppercase file name (K1), its path segment is lowercase.
+    """
+    ref = SecretRef(environment, product, role, name.lower())
+    for label, segment in (
+        ("env", ref.environment),
+        ("product", ref.product),
+        ("role", ref.role),
+        ("binding", ref.binding),
+    ):
+        if not _SEGMENT.fullmatch(segment):
+            raise DeployUnitError(f"a secret_ref {label} segment is not well formed")
+    if not _MATERIAL.fullmatch(name):
+        raise DeployUnitError("a binding name is an uppercase file name")
+    return ref.render()
 
 
 def parse_secret_ref(value: object) -> SecretRef:
@@ -596,6 +633,15 @@ def _parse_param(name: str, table: object) -> ParamSpec:
         not isinstance(material, str) or not _MATERIAL.fullmatch(material)
     ):
         raise DeployUnitError(f"{where}.material is not a valid material name")
+    if (
+        material is not None
+        and SECRET_NAMED_MATERIAL.search(material)
+        and kind != "path"
+    ):
+        raise DeployUnitError(
+            f"{where}: a secret-named material ({material}) may only point at "
+            "a file (type path), never carry a value"
+        )
     raw_choices = table.get("choices", [])
     if not isinstance(raw_choices, list):
         raise DeployUnitError(f"{where}.choices must be a list")

@@ -860,6 +860,17 @@ class DeployUnitDigestV1(_Sha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class RequestBodyDigestV1(_Sha256Digest):
+    """The digest of a target-API request or response body, over the RAW bytes."""
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> RequestBodyDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the body must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSetDigestV1(_Sha256Digest):
     """The identity of a deployment set: a primary plan and its companion."""
 
@@ -903,6 +914,7 @@ __all__ = [
     "PlanDigestV1",
     "PublicKeyFingerprintV1",
     "RehearsalHarnessEvidenceDigestV1",
+    "RequestBodyDigestV1",
     "SpecDigestV1",
     "canonical_json",
     "compute_host_admission_context_digest",

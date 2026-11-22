@@ -1,0 +1,405 @@
+"""Control's functions reproduce every vector in `contract/target_api_v1.json`.
+
+The vector file is the contract's oracle: this suite proves Control's own
+functions agree with it; Platform CP replays the same vectors through its real
+router and the deploy agent vendors the file byte-for-byte.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from dotmac_deployment_control import target_api as api
+from dotmac_deployment_control.deploy_unit import (
+    DeployUnitError,
+    ParamRefusedError,
+    ParamSpec,
+    canonical_render,
+    derive_secret_ref,
+    params_env_digest,
+    parse_deploy_unit,
+    validate_param_value,
+)
+from tests.unit import ed25519_reference as ed
+from tests.unit import target_api_vectors as builder
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_VECTORS = json.loads(api.vector_bytes())
+_KEY = _VECTORS["keys"]
+
+
+def _public(which: str) -> bytes:
+    return api.b64u_decode(_KEY[which]["public_b64u"])
+
+
+# ── The file itself ─────────────────────────────────────────────────────────
+
+
+def test_the_vector_file_is_exactly_what_the_builder_produces() -> None:
+    """Stable and deterministic: no timestamps, no randomness, sorted keys."""
+    assert api.vector_bytes() == builder.dump(builder.build_vectors())
+    assert api.vector_bytes() == builder.dump(builder.build_vectors())
+    text = api.vector_bytes().decode("ascii")
+    assert text.endswith("}\n")
+    assert json.loads(text)["contract"] == "dotmac.target_api/1"
+
+
+def test_the_changelog_records_the_vector_files_sha256() -> None:
+    """The agent pins this value; a vector change is a v2 file and a new release."""
+    digest = hashlib.sha256(api.vector_bytes()).hexdigest()
+    changelog = (_REPO_ROOT / "CHANGELOG.md").read_text()
+    assert f"target_api_v1.json sha256 {digest}" in changelog
+
+
+def test_the_vector_file_is_package_data() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text()
+    assert "src/dotmac_deployment_control/contract/**/*" in pyproject
+
+
+def test_no_credential_shaped_literal_sits_in_the_file() -> None:
+    text = api.vector_bytes().decode("ascii")
+    for needle in ("ghp_", "-----BEGIN", "hvs.", "AKIA", "eyJ", "hunter2"):
+        assert needle not in text, needle
+
+
+# ── Wire ────────────────────────────────────────────────────────────────────
+
+
+def test_request_vectors_reproduce_and_verify() -> None:
+    for case in _VECTORS["request_vectors"]:
+        message = api.request_message(
+            method=case["method"],
+            path=case["path"],
+            body=case["body_utf8"].encode(),
+            credential_id=case["credential_id"],
+            target_ref=case["target_ref"],
+            issued_at=case["issued_at"],
+            nonce=case["nonce"],
+        )
+        assert message.decode() == case["message_utf8"]
+        lines = case["message_utf8"].split("\n")
+        assert lines[0] == "dotmac.target_request.v1"
+        assert len(lines) == 8
+        assert ed.verify(
+            _public("request"), message, api.b64u_decode(case["signature_b64u"])
+        )
+        assert case["headers"] == api.request_headers(
+            credential_id=case["credential_id"],
+            target_ref=case["target_ref"],
+            issued_at=case["issued_at"],
+            nonce=case["nonce"],
+            signature_b64u=case["signature_b64u"],
+        )
+        # A signature over any other byte does not verify.
+        assert not ed.verify(
+            _public("request"),
+            message + b"x",
+            api.b64u_decode(case["signature_b64u"]),
+        )
+
+
+def test_a_get_signs_the_empty_body_hash() -> None:
+    empty = hashlib.sha256(b"").hexdigest()
+    get = next(c for c in _VECTORS["request_vectors"] if c["method"] == "GET")
+    assert get["message_utf8"].split("\n")[3] == empty
+
+
+def test_response_vectors_reproduce_and_verify_under_the_response_key() -> None:
+    for case in _VECTORS["response_vectors"]:
+        message = api.response_message(
+            method=case["method"],
+            path=case["path"],
+            request_nonce=case["request_nonce"],
+            status=case["status"],
+            body=case["body_utf8"].encode(),
+        )
+        assert message.decode() == case["message_utf8"]
+        assert message.decode().split("\n")[0] == "cp-target-response.v1"
+        signature = api.b64u_decode(case["signature_b64u"])
+        assert ed.verify(_public("response"), message, signature)
+        # The response key is DISTINCT from the request (PoP) key.
+        assert not ed.verify(_public("request"), message, signature)
+
+
+def test_the_header_names_are_fixed() -> None:
+    assert _VECTORS["constants"]["headers"] == {
+        "credential_id": "X-Dotmac-Credential-Id",
+        "target_ref": "X-Dotmac-Target-Ref",
+        "issued_at": "X-Dotmac-Issued-At",
+        "nonce": "X-Dotmac-Nonce",
+        "signature": "X-Dotmac-Signature",
+        "response_signature": "X-Dotmac-Response-Signature",
+    }
+
+
+def test_a_signed_field_with_a_line_break_is_refused() -> None:
+    kwargs = {
+        "method": "GET",
+        "path": "/x",
+        "body": b"",
+        "credential_id": "c",
+        "target_ref": "a/b/c",
+        "issued_at": "2026-11-22T10:00:00Z",
+        "nonce": "0" * 32,
+    }
+    api.request_message(**kwargs)  # type: ignore[arg-type]
+    for field in ("credential_id", "target_ref", "path"):
+        with pytest.raises(api.TargetApiError):
+            api.request_message(**{**kwargs, field: "a\nb"})  # type: ignore[arg-type]
+    with pytest.raises(api.TargetApiError):
+        api.request_message(**{**kwargs, "nonce": "NOT-A-NONCE"})  # type: ignore[arg-type]
+
+
+# ── Paths and routes ────────────────────────────────────────────────────────
+
+
+def test_path_vectors() -> None:
+    paths = _VECTORS["paths"]
+    assert paths["base"] == "/platform/deploy/target/v1"
+    for case in paths["ok"]:
+        path = api.target_path(
+            case["target_ref"], case["route"], dispatch_id=case.get("dispatch_id")
+        )
+        assert path == case["path"]
+        ref, route, dispatch = api.parse_target_path(path)
+        assert ref == case["target_ref"]
+        assert dispatch == case.get("dispatch_id")
+        assert "%" not in path
+        assert "?" not in path
+        assert len(path.split("/targets/")[1].split("/")) >= 4
+    for case in paths["refused"]:
+        with pytest.raises(api.TargetApiError):
+            api.parse_target_path(case["path"])
+    assert [(r["method"], r["route"], r["caller"]) for r in paths["routes"]] == list(
+        api.ENDPOINTS
+    )
+    for case in paths["wrong_verbs"]:
+        with pytest.raises(api.TargetApiError):
+            api.check_route(case["method"], case["route"])
+    for verb, route, _caller in api.ENDPOINTS:
+        api.check_route(verb, route)
+
+
+def test_a_target_ref_is_three_path_segments() -> None:
+    api.target_path("a/b/c", "materials")
+    for bad in ("a/b", "a/b/c/d", "a%2Fb%2Fc", "A/b/c", "", "a//c"):
+        with pytest.raises(api.TargetApiError):
+            api.target_path(bad, "materials")
+    with pytest.raises(api.TargetApiError):
+        api.target_path("a/b/c", "materials", dispatch_id="x")
+    with pytest.raises(api.TargetApiError):
+        api.target_path("a/b/c", "committed")
+
+
+# ── Encoding, time, nonce, status ───────────────────────────────────────────
+
+
+def test_encoding_vectors() -> None:
+    enc = _VECTORS["encoding"]
+    for case in enc["base64url"]["ok"]:
+        raw = bytes.fromhex(case["hex"])
+        assert api.b64u_encode(raw) == case["text"]
+        assert api.b64u_decode(case["text"]) == raw
+        assert "=" not in case["text"]
+    for text in enc["base64url"]["refused"]:
+        with pytest.raises(api.TargetApiError):
+            api.b64u_decode(text)
+    for stamp in enc["stamps"]["ok"]:
+        assert api.format_stamp(api.parse_stamp(stamp)) == stamp
+    for stamp in enc["stamps"]["refused"]:
+        with pytest.raises(api.TargetApiError):
+            api.parse_stamp(stamp)
+    for nonce in enc["nonces"]["ok"]:
+        assert api.check_nonce(nonce) == nonce
+    for nonce in enc["nonces"]["refused"]:
+        with pytest.raises(api.TargetApiError):
+            api.check_nonce(nonce)
+    for case in enc["skew"]:
+        if case["ok"]:
+            api.check_skew(case["issued_at"], case["store_now"])
+        else:
+            with pytest.raises(api.TargetApiError):
+                api.check_skew(case["issued_at"], case["store_now"])
+    for status, outcome in enc["unsigned_status"].items():
+        assert api.classify_unsigned_response(int(status)) == outcome
+    assert enc["unsigned_status"]["429"] == "cp_unreachable"
+    assert enc["unsigned_status"]["413"] == "cp_unreachable"
+    assert enc["unsigned_status"]["403"] == "response_signature_invalid"
+    for case in _VECTORS["stamp_vectors"]:
+        assert (
+            api.format_stamp(datetime.fromisoformat(case["input"])) == case["expected"]
+        )
+
+
+# ── Materials ───────────────────────────────────────────────────────────────
+
+
+def test_materials_vectors() -> None:
+    materials = _VECTORS["materials"]
+    api.check_materials_shape(materials["ok"])
+    assert materials["schema"] == "dotmac.deploy_target_materials/1"
+    assert materials["keys"] == sorted(api.MATERIALS_KEYS)
+    assert materials["removed_keys"] == sorted(api.MATERIALS_FORBIDDEN_KEYS)
+    snapshot = materials["ok"]["plan_snapshot"]
+    assert api.plan_snapshot_digest(snapshot) == materials["plan_digest"]
+    assert api.expected_app_image(snapshot) == materials["expected_app_image"]
+    assert materials["ok"]["app_image"] == materials["expected_app_image"]
+    for case in materials["refused"]:
+        with pytest.raises(api.TargetApiError):
+            api.check_materials_shape(case["document"])
+    for case in materials["archive_names"]:
+        assert api.archive_name(case["service"], case["digest"]) == case["name"]
+    assert materials["archive_names"][0]["name"].endswith(".oci.tar")
+    # Everything the plan binds is READ from the snapshot, not carried beside it.
+    for removed in ("params_env_digest", "images", "legacy", "lease_ttl_seconds"):
+        assert removed not in materials["ok"]
+        assert removed not in api.MATERIALS_KEYS
+
+
+def test_the_legacy_part_of_the_snapshot_carries_expires_at() -> None:
+    legacy = _VECTORS["materials"]["ok"]["plan_snapshot"]["deploy_binding"]["legacy"]
+    assert set(legacy) == {"policy_version", "sha256", "names", "expires_at"}
+    assert api.parse_stamp(legacy["expires_at"])
+
+
+def test_env_names_are_the_ruled_set() -> None:
+    constants = _VECTORS["constants"]
+    assert constants["bindings_env_names"] == [
+        "HOST_ADMISSION_MATERIALS",
+        "EXECUTION_CONTEXT_MATERIALS",
+        "AUTHORIZATION_VERIFICATION_IDENTITY",
+        "DISPATCH_VERIFICATION_IDENTITY",
+        "RELEASE_EVIDENCE_VERIFICATION_IDENTITY",
+        "RELEASE_EVIDENCE_REPOSITORY",
+        "DISPATCH_CLOCK_SKEW_LIMIT_SECONDS",
+    ]
+    assert constants["deploy_env_names"][-1] == "CREDENTIALS_DIRECTORY"
+    # No database DSN is ever passed.
+    for name in constants["bindings_env_names"] + constants["deploy_env_names"]:
+        assert "DATABASE" not in name
+        assert not name.startswith("PG")
+
+
+# ── Render, values, secret names, secret refs ───────────────────────────────
+
+
+def test_render_vectors_reproduce_through_controls_functions() -> None:
+    for case in _VECTORS["render_vectors"]:
+        again = builder._render_case(case["name"], case["params"], case["app_image"])
+        assert again == case, case["name"]
+
+
+def test_render_golden_bytes_and_bytewise_app_image_ordering() -> None:
+    workers = next(c for c in _VECTORS["render_vectors"] if c["name"] == "workers")
+    assert workers["render_utf8"] == (
+        "APP_IMAGE=127.0.0.1:5000/team/app@sha256:" + "1" * 64 + "\nWORKERS=2\n"
+    )
+    ordered = next(
+        c for c in _VECTORS["render_vectors"] if c["name"].startswith("app_image sorts")
+    )
+    names = [line.split("=")[0] for line in ordered["render_utf8"].splitlines()]
+    assert names == ["ALPHA", "APP", "APP_IMAGE", "APP_IMAGE_X", "A_B", "ZED"]
+    assert names == sorted(names, key=lambda n: n.encode())
+    assert ordered["digest"] == params_env_digest(ordered["render_utf8"].encode())
+    refusals = {
+        c["name"]: c["refused"] for c in _VECTORS["render_vectors"] if "refused" in c
+    }
+    assert refusals["a secret-named material may not carry a value"] == (
+        "secret_named_material"
+    )
+    assert refusals["APP_IMAGE is reserved"] == "claimed_twice"
+
+
+def test_value_vectors_reproduce() -> None:
+    accepted = refused = 0
+    for case in _VECTORS["value_vectors"]:
+        value = "".join(case["value_parts"])
+        spec = ParamSpec(name="p", type="string")
+        if case["accept"]:
+            accepted += 1
+            assert validate_param_value(spec, value) == value
+        else:
+            refused += 1
+            with pytest.raises(ParamRefusedError):
+                validate_param_value(spec, value)
+    assert accepted >= 3
+    assert refused >= 10
+
+
+def test_secret_named_material_vectors() -> None:
+    for case in _VECTORS["secret_name_vectors"]:
+        text = (
+            'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
+            'spec = "deploy/product.toml"\n'
+            f'[params.p]\ntype = "{case["type"]}"\nmaterial = "{case["material"]}"\n'
+        )
+        if case["accept"]:
+            assert parse_deploy_unit(text).params["p"].material == case["material"]
+        else:
+            with pytest.raises(DeployUnitError, match="secret-named"):
+                parse_deploy_unit(text)
+    by = {
+        (c["material"], c["type"]): c["accept"] for c in _VECTORS["secret_name_vectors"]
+    }
+    assert by[("DB_PASSWORD", "string")] is False
+    assert by[("DB_PASSWORD", "path")] is True
+    assert by[("SECRETS_DIR_APP", "path")] is True
+    assert by[("PUBLIC_HOST", "string")] is True
+
+
+def test_secret_ref_vectors_and_derivation() -> None:
+    vectors = _VECTORS["secret_ref_vectors"]
+    for case in vectors["ok"]:
+        ref = derive_secret_ref(
+            case["environment"], case["product"], case["role"], case["name"]
+        )
+        assert ref == case["secret_ref"]
+        assert ref.endswith("/" + case["name"].lower())
+    assert vectors["ok"][0]["secret_ref"] == (
+        "bao://production/dotmac-erp-v2/kv/app/db_password"
+    )
+    for case in vectors["refused"]:
+        with pytest.raises(DeployUnitError):
+            derive_secret_ref(
+                case["environment"], case["product"], case["role"], case["name"]
+            )
+
+
+def test_a_unit_derives_its_active_binding_refs_and_never_stores_them() -> None:
+    text = (
+        'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
+        'spec = "deploy/product.toml"\n'
+        '[[bindings]]\nname = "DB_PASSWORD"\nkind = "key"\nroles = ["app", "migrate"]\n'
+        'writer = "ceremony"\nrotation = "copy_only"\n'
+        '[[bindings]]\nname = "JWT_SECRET"\nstate = "pre_staged"\nkind = "key"\n'
+        'roles = ["app"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
+    )
+    unit = parse_deploy_unit(text)
+    assert unit.secret_refs("production") == {
+        ("app", "DB_PASSWORD"): "bao://production/dotmac-erp-v2/kv/app/db_password",
+        (
+            "migrate",
+            "DB_PASSWORD",
+        ): "bao://production/dotmac-erp-v2/kv/migrate/db_password",
+    }
+    assert "secret_ref" not in text
+
+
+def test_the_render_function_agrees_with_the_vector_file_directly() -> None:
+    unit = parse_deploy_unit(
+        'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-erp-v2"\n'
+        'spec = "deploy/product.toml"\n'
+        '[params.workers]\ntype = "int"\nmaterial = "WORKERS"\n'
+    )
+    image = "127.0.0.1:5000/team/app@sha256:" + "1" * 64
+    render = canonical_render(
+        unit, {"workers": "2"}, app_image=image, environment="production"
+    )
+    workers = next(c for c in _VECTORS["render_vectors"] if c["name"] == "workers")
+    assert render.decode() == workers["render_utf8"]
+    assert params_env_digest(render) == workers["digest"]

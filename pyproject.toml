@@ -8,6 +8,9 @@ packages = [{ include = "dotmac_deployment_control", from = "src" }]
 include = [
     { path = "src/dotmac_deployment_control/py.typed", format = ["sdist", "wheel"] },
     { path = "src/dotmac_deployment_control/migrations/**/*", format = ["sdist", "wheel"] },
+    # The target-API contract vectors, as PACKAGE DATA: the deploy agent vendors
+    # this file byte-for-byte and Platform CP replays it through its real router.
+    { path = "src/dotmac_deployment_control/contract/**/*", format = ["sdist", "wheel"] },
     # The browser surface's templates, as PACKAGE DATA.
     #
     # Not optional and not decoration: `WebSurfaceContribution` declares a
