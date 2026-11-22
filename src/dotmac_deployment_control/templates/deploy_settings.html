@@ -1,0 +1,49 @@
+{#
+  The deploy-unit settings. Every change is attended and names a register line.
+
+  Context: `settings` (DeploySettingsView), `refusal`. A setting with no stored
+  row shows its default: an empty pull allowlist, ERP v2 alone on the legacy
+  allowlist, a ceiling of 0.
+#}
+{% extends "layouts/platform.html" %}
+{% import "deployment_control/_macros.html" as ui %}
+
+{% block platform_content %}
+
+{% if refusal %}
+<div role="alert" style="border:1px solid var(--dmui-status-negative-border); background:var(--dmui-status-negative-surface); color:var(--dmui-status-negative-foreground); border-radius:var(--dmui-radius-md); padding:var(--dmui-space-md); margin-bottom:var(--dmui-space-lg);">{{ refusal }}</div>
+{% endif %}
+
+{% call ui.panel("Current values") %}
+  {{ ui.field("Pull allowlist (public_pull_repositories)", settings.public_pull_repositories | join(", ") or "empty") }}
+  {{ ui.field("Legacy env-file products (legacy_env_file_allowed_products)", settings.legacy_env_file_allowed_products | join(", ") or "none") }}
+  {{ ui.field("Legacy env-file ceiling (legacy_env_file_ceiling)", settings.legacy_env_file_ceiling) }}
+{% endcall %}
+
+{% call ui.panel("Change a setting (attended, with a register line)") %}
+{% for setting_name, hint in [
+     ("public_pull_repositories", "repositories, comma or line separated"),
+     ("legacy_env_file_allowed_products", "product codes, comma or line separated"),
+     ("legacy_env_file_ceiling", "a whole number, raise only")] %}
+<form method="post" action="{{ surface_url('set_deploy_setting') }}"
+      style="display:flex; flex-wrap:wrap; gap:var(--dmui-space-sm); align-items:flex-end; margin-bottom:var(--dmui-space-md);">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="name" value="{{ setting_name }}">
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    {{ setting_name }} ({{ hint }})
+    <input type="text" name="value" style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Register line
+    <input type="text" name="register_ref" required style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; align-items:center; gap:var(--dmui-space-2xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    <input type="checkbox" name="attended" value="on">
+    Attended approval
+  </label>
+  <button type="submit" style="padding:var(--dmui-space-2xs) var(--dmui-space-sm); border:1px solid var(--dmui-action-primary-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-action-primary-default); color:var(--dmui-action-primary-on); cursor:pointer;">Set</button>
+</form>
+{% endfor %}
+{% endcall %}
+
+{% endblock %}

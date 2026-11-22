@@ -91,7 +91,13 @@ from dotmac_deployment_control.counterparty import (
     EXECUTOR_OPERATIONS,
     require_executable_operation,
 )
-from dotmac_deployment_control.deploy_binding import DeployPlanBinding
+from dotmac_deployment_control.deploy_binding import DeploymentSet, DeployPlanBinding
+from dotmac_deployment_control.deploy_settings import (
+    SETTING_LEGACY_CEILING,
+    DeploySettings,
+    normalise_setting_value,
+    settings_from_rows,
+)
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
     DescriptorDigestV1,
@@ -123,11 +129,25 @@ from dotmac_deployment_control.host_admission import (
     HOST_ADMISSION_PRESENTATION_PURPOSE,
     admission_consumption_fingerprint,
 )
+from dotmac_deployment_control.image_policy import check_planned_image
 from dotmac_deployment_control.images import (
     AuthorizedImage,
     authorized_image_set,
     image_set_from_payload,
     image_set_payload,
+)
+from dotmac_deployment_control.legacy_policy import (
+    AttendedApproval,
+    LegacyEnvPolicy,
+    LegacyFleetState,
+    LegacyPlanBinding,
+    LegacyRetirementEvidence,
+    bind_to_plan,
+    enable_policy,
+    extend_expiry,
+    raise_ceiling,
+    retire_policy,
+    revise_policy,
 )
 from dotmac_deployment_control.models import (
     TERMINAL_ROLLOUT_STATUSES,
@@ -135,7 +155,9 @@ from dotmac_deployment_control.models import (
     CredentialStatus,
     DeploymentPlan,
     DeploymentTarget,
+    DeploySetting,
     EligibilityAtReceipt,
+    LegacyEnvPolicyVersion,
     ObservationAttempt,
     ObservationDisposition,
     ObservationReceipt,
@@ -150,6 +172,7 @@ from dotmac_deployment_control.models import (
     TargetCredential,
     TargetStatus,
 )
+from dotmac_deployment_control.models import DeploymentSet as DeploymentSetRow
 from dotmac_deployment_control.operations import (
     require_operation,
 )
@@ -2445,6 +2468,8 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         ).scalar()
         sequence = int(highest or 0) + 1
 
+        if command.deploy_binding is not None:
+            _recheck_deploy_binding(session, target, command.deploy_binding)
         snapshot = plan_snapshot(
             target,
             descriptor_digest=command.descriptor_digest,
@@ -5041,6 +5066,527 @@ def observation_attempts(
     return tuple(db.execute(statement).scalars().all())
 
 
+# ── Deploy-unit state: settings, legacy env-file policy, deployment sets ─────
+#
+# The value layer (`deploy_settings`, `legacy_policy`, `deploy_binding`) is pure.
+# These commands persist its decisions and re-run its rules inside the
+# transaction, so the database and the rules cannot disagree. Everything is
+# additive: with no stored row every setting has its default (empty pull
+# allowlist, ERP v2 only for the legacy bridge, ceiling 0), and a plan proposed
+# without a deploy binding is untouched.
+
+SCOPE_SET_DEPLOY_SETTING = "deployment.set_deploy_setting"
+SCOPE_LEGACY_POLICY = "deployment.legacy_policy"
+SCOPE_CREATE_DEPLOYMENT_SET = "deployment.create_deployment_set"
+_ENTITY_DEPLOY_SETTING = "deploy_setting"
+_ENTITY_LEGACY_POLICY = "legacy_env_policy"
+_ENTITY_DEPLOYMENT_SET = "deployment_set"
+
+
+@dataclass(frozen=True, slots=True)
+class SetDeploySettingCommand:
+    """Change one deploy setting. Always an ATTENDED approval with a register line.
+
+    The ceiling can only be RAISED here (L4); it falls only by a retirement.
+    """
+
+    command_id: str
+    name: str
+    value: Any
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EnableLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    names: tuple[str, ...]
+    sha256: str
+    secret_names: tuple[str, ...]
+    param_materials: tuple[str, ...]
+    binding_names: tuple[str, ...]
+    cutover_at: datetime
+    exit_prestaged: bool
+    approval: AttendedApproval
+    #: True when the target's descriptor lives under `deploy/companion/`.
+    companion: bool = False
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviseLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    names: tuple[str, ...]
+    sha256: str
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    new_expires_at: datetime
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RetireLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    evidence: LegacyRetirementEvidence
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CreateDeploymentSetCommand:
+    command_id: str
+    primary_plan_id: UUID
+    companion_plan_id: UUID | None = None
+    required_at_switch: bool = False
+    actor_ref: str | None = None
+
+
+def _stored_settings(session: Session) -> dict[str, DeploySetting]:
+    return {
+        row.setting_name: row
+        for row in session.execute(select(DeploySetting)).scalars().all()
+    }
+
+
+def _effective_settings(session: Session) -> DeploySettings:
+    return settings_from_rows(
+        {name: row.value for name, row in _stored_settings(session).items()}
+    )
+
+
+def get_deploy_settings(db: Session) -> facts.DeploySettingsView:
+    """The effective settings: a stored value, else the default."""
+    effective = _effective_settings(db)
+    return facts.DeploySettingsView(
+        public_pull_repositories=tuple(sorted(effective.pull_allowlist.repositories)),
+        legacy_env_file_allowed_products=tuple(
+            sorted(effective.legacy_allowed_products)
+        ),
+        legacy_env_file_ceiling=effective.legacy_ceiling,
+    )
+
+
+def _write_setting(
+    session: Session, name: str, value: Any, approval: AttendedApproval
+) -> int:
+    row = session.get(DeploySetting, name)
+    if row is None:
+        session.add(
+            DeploySetting(
+                setting_name=name,
+                value=value,
+                setting_version=1,
+                approver_ref=approval.approver_ref,
+                register_ref=approval.register_ref,
+            )
+        )
+        session.flush()
+        return 1
+    row.value = value
+    row.setting_version += 1
+    row.approver_ref = approval.approver_ref
+    row.register_ref = approval.register_ref
+    session.flush()
+    return int(row.setting_version)
+
+
+def set_deploy_setting(
+    db: Session, command: SetDeploySettingCommand
+) -> facts.DeploySettingsView:
+    """Change a deploy setting under an attended approval, once per command id."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        command.approval.require(f"changing {command.name}")
+        value = normalise_setting_value(command.name, command.value)
+        current = _effective_settings(session)
+        if command.name == SETTING_LEGACY_CEILING:
+            # Only a raise; a fall is a retirement's consequence.
+            raise_ceiling(
+                LegacyFleetState(ceiling=current.legacy_ceiling),
+                value,
+                approval=command.approval,
+            )
+        version = _write_setting(session, command.name, value, command.approval)
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.DEPLOY_SETTING_CHANGED_V1,
+            entity_type=_ENTITY_DEPLOY_SETTING,
+            entity_id=command.name,
+            actor_ref=command.actor_ref,
+            details={
+                "setting": command.name,
+                "setting_version": version,
+                "value": value,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": command.name}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_SET_DEPLOY_SETTING,
+        handler=handler,
+    )
+    return get_deploy_settings(db)
+
+
+def _latest_policy_rows(session: Session) -> dict[UUID, LegacyEnvPolicyVersion]:
+    latest: dict[UUID, LegacyEnvPolicyVersion] = {}
+    rows = session.execute(
+        select(LegacyEnvPolicyVersion).order_by(LegacyEnvPolicyVersion.policy_version)
+    ).scalars()
+    for row in rows:
+        latest[row.target_id] = row
+    return latest
+
+
+def _fleet_state(session: Session, settings: DeploySettings) -> LegacyFleetState:
+    policies: dict[str, LegacyEnvPolicy] = {}
+    for target_id, row in _latest_policy_rows(session).items():
+        target = session.get(DeploymentTarget, target_id)
+        if target is None:  # pragma: no cover - the FK forbids it
+            continue
+        policies[target.target_ref] = LegacyEnvPolicy(
+            target_ref=target.target_ref,
+            product=row.product_code,
+            version=row.policy_version,
+            names=tuple(row.names),
+            sha256=row.file_sha256,
+            expires_at=_as_utc(row.expires_at),
+            enabled_by_ref=row.enabled_by_ref,
+            state=row.state,
+        )
+    return LegacyFleetState(ceiling=settings.legacy_ceiling, policies=policies)
+
+
+def _record_policy(
+    session: Session,
+    target: DeploymentTarget,
+    policy: LegacyEnvPolicy,
+    approval: AttendedApproval,
+    *,
+    actor_ref: str | None,
+    change: str,
+) -> None:
+    session.add(
+        LegacyEnvPolicyVersion(
+            target_id=target.id,
+            policy_version=policy.version,
+            state=policy.state,
+            product_code=policy.product,
+            names=list(policy.names),
+            file_sha256=policy.sha256,
+            expires_at=policy.expires_at,
+            enabled_by_ref=policy.enabled_by_ref,
+            register_ref=approval.register_ref,
+        )
+    )
+    session.flush()
+    _audit_and_emit(
+        session,
+        action=AUDIT_ACTION_TARGET,
+        event_type=facts.LEGACY_POLICY_CHANGED_V1,
+        entity_type=_ENTITY_LEGACY_POLICY,
+        entity_id=str(target.id),
+        actor_ref=actor_ref,
+        details={
+            "target_ref": target.target_ref,
+            "change": change,
+            "policy_version": policy.version,
+            "state": policy.state,
+            "names": list(policy.names),
+            "file_sha256": policy.sha256,
+            "expires_at": policy.expires_at.isoformat(),
+            "approver_ref": approval.approver_ref,
+            "register_ref": approval.register_ref,
+        },
+    )
+
+
+def _legacy_view(
+    session: Session, target: DeploymentTarget
+) -> facts.LegacyPolicyView | None:
+    row = _latest_policy_rows(session).get(target.id)
+    if row is None:
+        return None
+    return facts.LegacyPolicyView(
+        target_id=target.id,
+        target_ref=target.target_ref,
+        product_code=row.product_code,
+        policy_version=row.policy_version,
+        state=row.state,
+        names=tuple(row.names),
+        file_sha256=row.file_sha256,
+        expires_at=_as_utc(row.expires_at),
+        enabled_by_ref=row.enabled_by_ref,
+        register_ref=row.register_ref,
+    )
+
+
+def get_legacy_policy(db: Session, target_id: UUID) -> facts.LegacyPolicyView | None:
+    """The target's current legacy env-file policy, or None if it never had one."""
+    return _legacy_view(db, _load_target(db, target_id))
+
+
+def _legacy_transition(
+    db: Session,
+    command: (
+        EnableLegacyPolicyCommand
+        | ReviseLegacyPolicyCommand
+        | ExtendLegacyPolicyCommand
+        | RetireLegacyPolicyCommand
+    ),
+    *,
+    change: str,
+) -> facts.LegacyPolicyView:
+    def handler(session: Session) -> Mapping[str, object]:
+        target = _load_target_for_update(session, command.target_id)
+        settings = _effective_settings(session)
+        fleet = _fleet_state(session, settings)
+        now = _control_now()
+        if isinstance(command, EnableLegacyPolicyCommand):
+            command.approval.require("enabling a legacy env-file policy")
+            after = enable_policy(
+                fleet,
+                target_ref=target.target_ref,
+                product=target.product_code,
+                names=command.names,
+                sha256=command.sha256,
+                secret_names=command.secret_names,
+                param_materials=command.param_materials,
+                binding_names=command.binding_names,
+                cutover_at=command.cutover_at,
+                now=now,
+                enabled_by_ref=command.approval.approver_ref,
+                exit_prestaged=command.exit_prestaged,
+                companion=command.companion,
+                allowed_products=settings.legacy_allowed_products,
+            )
+        elif isinstance(command, ReviseLegacyPolicyCommand):
+            after = revise_policy(
+                fleet,
+                target_ref=target.target_ref,
+                names=command.names,
+                sha256=command.sha256,
+                approval=command.approval,
+            )
+        elif isinstance(command, ExtendLegacyPolicyCommand):
+            after = extend_expiry(
+                fleet,
+                target_ref=target.target_ref,
+                new_expires_at=command.new_expires_at,
+                approval=command.approval,
+            )
+        else:
+            command.approval.require("retiring a legacy env-file policy")
+            after = retire_policy(
+                fleet, target_ref=target.target_ref, evidence=command.evidence
+            )
+            # The ratchet falls with the retirement, in the same transaction.
+            _write_setting(
+                session, SETTING_LEGACY_CEILING, after.ceiling, command.approval
+            )
+        _record_policy(
+            session,
+            target,
+            after.policies[target.target_ref],
+            command.approval,
+            actor_ref=command.actor_ref,
+            change=change,
+        )
+        return {"id": str(target.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_LEGACY_POLICY,
+        handler=handler,
+    )
+    view = _legacy_view(db, _load_target(db, command.target_id))
+    assert view is not None
+    return view
+
+
+def enable_legacy_policy(
+    db: Session, command: EnableLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="enabled")
+
+
+def revise_legacy_policy(
+    db: Session, command: ReviseLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="revised")
+
+
+def extend_legacy_policy(
+    db: Session, command: ExtendLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="extended")
+
+
+def retire_legacy_policy(
+    db: Session, command: RetireLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="retired")
+
+
+def legacy_plan_binding(
+    db: Session, target_id: UUID, *, observed_sha256: str | None = None
+) -> LegacyPlanBinding:
+    """What a plan binds for this target's legacy file (L1, L4, L5 re-checked)."""
+    target = _load_target(db, target_id)
+    fleet = _fleet_state(db, _effective_settings(db))
+    return bind_to_plan(
+        fleet,
+        target_ref=target.target_ref,
+        now=_control_now(),
+        observed_sha256=observed_sha256,
+    )
+
+
+def _recheck_deploy_binding(
+    session: Session, target: DeploymentTarget, binding: DeployPlanBinding
+) -> None:
+    """Re-run the image and legacy rules against the STORED state at proposal.
+
+    A binding object built earlier, or elsewhere, is never trusted: the pull
+    allowlist and the legacy policy are read here, in the proposing transaction.
+    """
+    settings = _effective_settings(session)
+    for image in binding.images:
+        check_planned_image(
+            source=image.source,
+            release_repository=image.release_repository,
+            release_digest=image.release_digest,
+            planned_repository=image.planned_repository,
+            planned_digest=image.planned_digest,
+            allowlist=settings.pull_allowlist,
+        )
+    if binding.legacy is not None:
+        current = bind_to_plan(
+            _fleet_state(session, settings),
+            target_ref=target.target_ref,
+            now=_control_now(),
+        )
+        if current != binding.legacy:
+            raise PlanRefusedError(
+                "the bound legacy env-file policy is not the target's current "
+                "policy version, sha and names"
+            )
+
+
+def create_deployment_set(
+    db: Session, command: CreateDeploymentSetCommand
+) -> facts.DeploymentSetView:
+    """Record a primary plan and its optional companion under one `set_digest`."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        primary = _load_plan(session, command.primary_plan_id)
+        companion = (
+            None
+            if command.companion_plan_id is None
+            else _load_plan(session, command.companion_plan_id)
+        )
+        unit = DeploymentSet(
+            primary_plan_digest=primary.plan_digest,
+            companion_plan_digest=None if companion is None else companion.plan_digest,
+            required_at_switch=command.required_at_switch,
+        )
+        digest = unit.set_digest()
+        existing = session.execute(
+            select(DeploymentSetRow).where(DeploymentSetRow.set_digest == digest)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return {"id": str(existing.id)}
+        row = DeploymentSetRow(
+            primary_plan_id=primary.id,
+            companion_plan_id=None if companion is None else companion.id,
+            order_policy=unit.order,
+            required_at_switch=unit.required_at_switch,
+            set_digest=digest,
+        )
+        session.add(row)
+        session.flush()
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.DEPLOYMENT_SET_CREATED_V1,
+            entity_type=_ENTITY_DEPLOYMENT_SET,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "set_digest": digest,
+                "primary_plan_id": str(primary.id),
+                "companion_plan_id": (None if companion is None else str(companion.id)),
+                "order": unit.order,
+                "required_at_switch": unit.required_at_switch,
+            },
+        )
+        return {"id": str(row.id)}
+
+    outcome = process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_CREATE_DEPLOYMENT_SET,
+        handler=handler,
+    )
+    return _deployment_set_view(
+        _load_deployment_set(db, UUID(str(outcome.result["id"])))
+    )
+
+
+def _load_deployment_set(session: Session, set_id: UUID) -> DeploymentSetRow:
+    row = session.get(DeploymentSetRow, set_id)
+    if row is None:
+        raise TransitionRefusedError(f"deployment set {set_id} not found")
+    return row
+
+
+def _deployment_set_view(row: DeploymentSetRow) -> facts.DeploymentSetView:
+    return facts.DeploymentSetView(
+        id=row.id,
+        primary_plan_id=row.primary_plan_id,
+        companion_plan_id=row.companion_plan_id,
+        order_policy=row.order_policy,
+        required_at_switch=row.required_at_switch,
+        set_digest=row.set_digest,
+        created_at=_as_utc(row.created_at),
+    )
+
+
+def get_deployment_set(db: Session, set_id: UUID) -> facts.DeploymentSetView:
+    return _deployment_set_view(_load_deployment_set(db, set_id))
+
+
+def list_deployment_sets(
+    db: Session, *, limit: int = 50
+) -> tuple[facts.DeploymentSetView, ...]:
+    rows = (
+        db.execute(
+            select(DeploymentSetRow)
+            .order_by(DeploymentSetRow.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(_deployment_set_view(row) for row in rows)
+
+
 __all__ = [
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
@@ -5050,10 +5596,12 @@ __all__ = [
     "SCOPE_APPROVE_PLAN",
     "SCOPE_CANCEL_PLAN",
     "SCOPE_CANCEL_ROLLOUT",
+    "SCOPE_CREATE_DEPLOYMENT_SET",
     "SCOPE_DECOMMISSION_TARGET",
     "SCOPE_DISPATCH",
     "SCOPE_ENROL_CREDENTIAL",
     "SCOPE_ENROL_HOST_ADMISSION_CREDENTIAL",
+    "SCOPE_LEGACY_POLICY",
     "SCOPE_OBSERVE",
     "SCOPE_PROPOSE_PLAN",
     "SCOPE_REGISTER_TARGET",
@@ -5062,18 +5610,25 @@ __all__ = [
     "SCOPE_REVOKE_CREDENTIAL",
     "SCOPE_REVOKE_PLAN_APPROVAL",
     "SCOPE_SETTLE",
+    "SCOPE_SET_DEPLOY_SETTING",
     "SCOPE_SET_DESIRED",
     "SCOPE_SUSPEND_TARGET",
     "ApprovePlanCommand",
+    "CreateDeploymentSetCommand",
     "CredentialTransitionCommand",
+    "EnableLegacyPolicyCommand",
     "EnrolCredentialCommand",
     "EnrolHostAdmissionCredentialCommand",
+    "ExtendLegacyPolicyCommand",
     "ProposePlanCommand",
     "RecordObservationCommand",
     "RegisterTargetCommand",
     "RequestRolloutCommand",
+    "RetireLegacyPolicyCommand",
+    "ReviseLegacyPolicyCommand",
     "RevokePlanApprovalCommand",
     "RolloutTransitionCommand",
+    "SetDeploySettingCommand",
     "SetDesiredStateCommand",
     "SettleAttemptCommand",
     "TargetTransitionCommand",
@@ -5081,16 +5636,24 @@ __all__ = [
     "approve_plan",
     "cancel_plan",
     "cancel_rollout",
+    "create_deployment_set",
     "credential_is_eligible",
     "decommission_target",
     "dispatch_attempt",
     "drift",
+    "enable_legacy_policy",
     "enrol_credential",
     "enrol_host_admission_credential",
+    "extend_legacy_policy",
     "find_approved_plan",
+    "get_deploy_settings",
+    "get_deployment_set",
+    "get_legacy_policy",
     "get_plan",
     "get_rollout",
     "get_target",
+    "legacy_plan_binding",
+    "list_deployment_sets",
     "list_targets",
     "observation_attempts",
     "observation_log",
@@ -5106,9 +5669,12 @@ __all__ = [
     "require_approved_plan",
     "require_manual_repair",
     "retire_credential",
+    "retire_legacy_policy",
+    "revise_legacy_policy",
     "revoke_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
+    "set_deploy_setting",
     "set_desired_state",
     "settle_attempt",
     "snapshot_digest",

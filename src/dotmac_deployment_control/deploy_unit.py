@@ -27,8 +27,9 @@ structurally and carries no value.
 
 `[legacy_env_file]` policy decisions (sha, expiry, ceiling) live in
 :mod:`dotmac_deployment_control.legacy_policy`. This module only parses the
-descriptor's `names` and `path_param`, and refuses the table for a product on
-the `legacy_never` list.
+descriptor's `names` and `path_param`, and refuses the table unless the product
+is on `legacy_env_file_allowed_products` (default-deny) and the descriptor is
+not under `deploy/companion/`.
 """
 
 from __future__ import annotations
@@ -41,7 +42,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-from dotmac_deployment_control.digests import ParamsEnvDigestV1, is_canonical_digest
+from dotmac_deployment_control.digests import (
+    DeployUnitDigestV1,
+    ParamsEnvDigestV1,
+    is_canonical_digest,
+)
 
 DESCRIPTOR_SCHEMA: Final = "dotmac.deploy_unit/1"
 
@@ -68,10 +73,25 @@ DEFAULT_IMAGE_SOURCE: Final = "transfer"
 #: a legacy name equal to it, would let a value override the planned image.
 APP_IMAGE_MATERIAL: Final = "APP_IMAGE"
 
-#: Products on which `[legacy_env_file]` is refused at parse. `sub_thin` is a new
-#: build, and every `deploy/companion/` descriptor is new by construction. The
-#: set is a Control setting in the fleet; this is its default.
-LEGACY_NEVER_DEFAULT: Final = frozenset({"sub_thin"})
+#: DEFAULT-DENY. `[legacy_env_file]` is accepted only for a product on the
+#: Control setting `legacy_env_file_allowed_products`; its default holds ERP v2's
+#: product code (the name in dotmac_erp_v2's product.toml) and nothing else.
+#: Adding a product is a visible, attended setting change. A descriptor under
+#: `deploy/companion/` is ALWAYS refused, whatever the setting says.
+LEGACY_ENV_FILE_ALLOWED_DEFAULT: Final = frozenset({"dotmac-erp-v2"})
+COMPANION_DESCRIPTOR_PREFIX: Final = "deploy/companion/"
+DEFAULT_DESCRIPTOR_PATH: Final = "deploy/deploy-unit.toml"
+
+
+def is_companion_descriptor_path(path: str) -> bool:
+    """True for any descriptor located under `deploy/companion/`."""
+    parts = path.replace("\\", "/").split("/")
+    if ".." in parts or path.startswith("/"):
+        raise DeployUnitError("a descriptor path must be repository-relative")
+    return "/".join(p for p in parts if p not in ("", ".")).startswith(
+        COMPANION_DESCRIPTOR_PREFIX
+    )
+
 
 _MATERIAL = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -162,7 +182,8 @@ class LegacyEnvFileSpec:
 class DeployUnit:
     product: str
     spec: str
-    spec_digest: str | None
+    #: Computed by Control over the descriptor bytes; never self-declared.
+    digest: str
     params: Mapping[str, ParamSpec]
     bindings: tuple[BindingSpec, ...]
     companions: tuple[CompanionSpec, ...]
@@ -421,7 +442,6 @@ _TOP_KEYS = frozenset(
         "schema",
         "product",
         "spec",
-        "spec_digest",
         "params",
         "bindings",
         "companions",
@@ -565,13 +585,15 @@ def _parse_companion(index: int, table: object) -> CompanionSpec:
 def parse_deploy_unit(
     text: str,
     *,
-    companion: bool = False,
-    legacy_never: frozenset[str] = LEGACY_NEVER_DEFAULT,
+    descriptor_path: str = DEFAULT_DESCRIPTOR_PATH,
+    legacy_allowed: frozenset[str] = LEGACY_ENV_FILE_ALLOWED_DEFAULT,
 ) -> DeployUnit:
     """Parse and structurally validate a `deploy-unit.toml`.
 
-    `companion` is true for a `deploy/companion/` descriptor: it is on the
-    `legacy_never` list by construction. Refusals are `DeployUnitError`.
+    `descriptor_path` is where the descriptor lives in its repository; a path
+    under `deploy/companion/` always refuses `[legacy_env_file]`. `legacy_allowed`
+    is the Control setting `legacy_env_file_allowed_products` (default-deny).
+    Refusals are `DeployUnitError`.
     """
     try:
         document = tomllib.loads(text)
@@ -586,9 +608,6 @@ def parse_deploy_unit(
     spec = document.get("spec")
     if spec != "deploy/product.toml":
         raise DeployUnitError("spec must be deploy/product.toml")
-    spec_digest = document.get("spec_digest")
-    if spec_digest is not None and not is_canonical_digest(spec_digest):
-        raise DeployUnitError("spec_digest must be sha256:<64 lowercase hex>")
 
     raw_params = document.get("params", {})
     if not isinstance(raw_params, dict):
@@ -627,15 +646,15 @@ def parse_deploy_unit(
     legacy = _parse_legacy(
         document.get("legacy_env_file"),
         product=product,
-        companion=companion,
-        legacy_never=legacy_never,
+        companion=is_companion_descriptor_path(descriptor_path),
+        legacy_allowed=legacy_allowed,
         params=params,
         bindings=bindings,
     )
     return DeployUnit(
         product=product,
         spec=str(spec),
-        spec_digest=spec_digest,
+        digest=DeployUnitDigestV1.over_bytes(text.encode()).canonical,
         params=params,
         bindings=bindings,
         companions=companions,
@@ -650,16 +669,20 @@ def _parse_legacy(
     *,
     product: str,
     companion: bool,
-    legacy_never: frozenset[str],
+    legacy_allowed: frozenset[str],
     params: Mapping[str, ParamSpec],
     bindings: Sequence[BindingSpec],
 ) -> LegacyEnvFileSpec | None:
     if table is None:
         return None
-    if companion or product in legacy_never:
+    if companion:
         raise DeployUnitError(
-            "[legacy_env_file] is refused for this product: it is on the "
-            "legacy_never list (new builds and companions never use the bridge)"
+            "[legacy_env_file] is always refused for a deploy/companion/ descriptor"
+        )
+    if product not in legacy_allowed:
+        raise DeployUnitError(
+            "[legacy_env_file] is refused: this product is not on "
+            "legacy_env_file_allowed_products (default-deny)"
         )
     if not isinstance(table, dict):
         raise DeployUnitError("legacy_env_file must be a table")

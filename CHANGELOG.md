@@ -22,7 +22,7 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
 - `legacy_policy`: the M11 `[legacy_env_file]` invariants L1-L5 and L8 as pure
   transitions (sha fixed at enable, secret names only, names only shrink,
   enabled-target ceiling starting at 0, one expiry, attended extension, full
-  retirement that decrements the ceiling) and the `legacy_never` refusal.
+  retirement that decrements the ceiling).
 - `deploy_binding`: `ProposePlanCommand.deploy_binding` freezes
   `params_env_digest`, the pinned image references and digests, `image.source`,
   the loopback repository, the legacy policy version/sha/names, the companion
@@ -32,8 +32,24 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
 - `reconcile`: the rule that issues a reconcile marker for a lease that expired
   unreleased only on a verified read-only observation that matches the last
   committed or the planned release.
-- NOT in this change: persistence tables (`dc_0017`), commands and the typed
-  form and set page; see the pull request for why.
+- `dc_0017_deploy_unit_state` (expand-only, three tables): `deploy_settings`
+  (mutable; each change records its approver and register line),
+  `legacy_env_policy_versions` and `deployment_sets` (append-only evidence).
+  Downgrade refuses while either evidence table has rows. The catalogue extent
+  is now 25 tables and 273 columns; `contract_version` is the kernel's manifest
+  contract and is unchanged.
+- Commands and reads that persist the value layer: `set_deploy_setting`,
+  `enable_legacy_policy`, `revise_legacy_policy`, `extend_legacy_policy`,
+  `retire_legacy_policy`, `legacy_plan_binding`, `create_deployment_set`,
+  `get_deploy_settings`, `get_legacy_policy`, `get_deployment_set`,
+  `list_deployment_sets`. `propose_plan` re-checks a supplied deploy binding
+  against the STORED pull allowlist and legacy policy.
+- `[legacy_env_file]` is DEFAULT-DENY: accepted only for a product on the
+  setting `legacy_env_file_allowed_products` (default: ERP v2's product code
+  only) and always refused for a descriptor under `deploy/companion/`.
+- The descriptor digest is computed by Control (`DeployUnitDigestV1`) and bound
+  into the plan; a descriptor-declared digest is refused.
+- Operator surface: `/deployment-sets` and `/deploy-settings` pages.
 
 ## 0.1.0a17 (published 2026-10-01) — permanent controller-key nonreuse
 

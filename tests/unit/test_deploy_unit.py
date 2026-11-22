@@ -58,13 +58,24 @@ single_use = false
 """
 
 
-def _unit(extra: str = "", *, companion: bool = False, product: str = "erp_v2"):
+def _unit(extra: str = "", *, product: str = "erp_v2"):
     text = _DESCRIPTOR.replace('product = "erp_v2"', f'product = "{product}"') + extra
-    return parse_deploy_unit(text, companion=companion)
+    return parse_deploy_unit(text)
 
 
 def _spec(kind: str, **kw: object) -> ParamSpec:
     return ParamSpec(name="p", type=kind, **kw)  # type: ignore[arg-type]
+
+
+def test_descriptor_digest_is_computed_by_control_not_declared() -> None:
+    unit = _unit()
+    assert unit.digest.startswith("sha256:")
+    assert unit.digest == _unit().digest
+    assert unit.digest != _unit("\n# a comment changes the bytes\n").digest
+    with pytest.raises(DeployUnitError):
+        parse_deploy_unit(
+            _DESCRIPTOR + "spec_digest = " + '"sha256:' + "a" * 64 + '"\n'
+        )
 
 
 def test_descriptor_parses_and_image_defaults_to_transfer() -> None:

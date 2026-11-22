@@ -93,7 +93,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from dotmac_kernel.deps import get_platform_db
 from dotmac_kernel.facet_principal import require_facet_principal
@@ -111,6 +111,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts, service
+from dotmac_deployment_control.deploy_settings import SETTING_NAMES
+from dotmac_deployment_control.deploy_unit import DeployUnitError
+from dotmac_deployment_control.legacy_policy import AttendedApproval
 from dotmac_deployment_control.ports import DeploymentControlError
 
 #: The stable identity of this contribution inside the facet. Route names are
@@ -162,6 +165,15 @@ _PROPOSE_FIELDS: Final[frozenset[str]] = frozenset(
         # a form with two buttons is exactly that declaration.
         "operation",
     }
+)
+
+#: The deployment-set and deploy-setting forms. Plan IDS, never plan digests: the
+#: set digest is derived by Control from the two plans it names.
+_SET_FIELDS: Final[frozenset[str]] = frozenset(
+    {"primary_plan_id", "companion_plan_id", "required_at_switch"}
+)
+_SETTING_FIELDS: Final[frozenset[str]] = frozenset(
+    {"name", "value", "attended", "register_ref"}
 )
 
 #: `require_csrf` puts its proof here and the kernel validates it before this
@@ -549,6 +561,147 @@ def arrivals(
     )
 
 
+# ── Deployment sets and deploy settings ─────────────────────────────────────
+
+
+def _checked(values: Mapping[str, str], name: str) -> bool:
+    return values.get(name, "").strip().lower() in {"on", "true", "yes", "1"}
+
+
+def _optional_uuid(values: Mapping[str, str], name: str) -> UUID | None:
+    raw = values.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{name} must be a plan id, got {raw!r}",
+        ) from None
+
+
+def _sets_context(db: Session, *, refusal: str | None = None) -> dict[str, Any]:
+    return {
+        "page_title": "Deployment sets",
+        "sets": service.list_deployment_sets(db),
+        "refusal": refusal,
+    }
+
+
+@router.get("/deployment-sets", response_class=HTMLResponse, name="deployment_sets")
+def deployment_sets(request: Request, db: PlatformSession) -> HTMLResponse:
+    """The recorded sets: a primary plan, its optional companion, one digest."""
+    return _render(request, "deployment_sets.html", _sets_context(db))
+
+
+@router.post("/deployment-sets", response_model=None, name="create_deployment_set")
+async def create_deployment_set_submit(
+    request: Request, db: PlatformSession
+) -> HTMLResponse | RedirectResponse:
+    """Record a set from two plan ids; the set digest is derived, never sent."""
+    values = await _read_form(request, _SET_FIELDS)
+    actor = _actor_ref(request)
+    primary = _optional_uuid(values, "primary_plan_id")
+    if primary is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="primary_plan_id is required",
+        )
+    companion = _optional_uuid(values, "companion_plan_id")
+    try:
+        service.create_deployment_set(
+            db,
+            service.CreateDeploymentSetCommand(
+                command_id=f"web.create_set:{primary}:{companion}",
+                primary_plan_id=primary,
+                companion_plan_id=companion,
+                required_at_switch=_checked(values, "required_at_switch"),
+                actor_ref=actor,
+            ),
+        )
+    except (DeploymentControlError, DeployUnitError) as exc:
+        return _render(
+            request,
+            "deployment_sets.html",
+            _sets_context(db, refusal=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse(
+        url=surface_path(request, "deployment_sets"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _settings_context(db: Session, *, refusal: str | None = None) -> dict[str, Any]:
+    return {
+        "page_title": "Deploy settings",
+        "settings": service.get_deploy_settings(db),
+        "refusal": refusal,
+    }
+
+
+@router.get("/deploy-settings", response_class=HTMLResponse, name="deploy_settings")
+def deploy_settings(request: Request, db: PlatformSession) -> HTMLResponse:
+    """The three deploy-unit settings and their defaults."""
+    return _render(request, "deploy_settings.html", _settings_context(db))
+
+
+def _setting_value(name: str, raw: str) -> Any:
+    """Type the one text box each setting has: a whole number, or a list."""
+    if name == "legacy_env_file_ceiling":
+        try:
+            return int(raw.strip())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"the ceiling must be a whole number, got {raw!r}",
+            ) from None
+    return [part.strip() for part in re.split(r"[,\n]", raw) if part.strip()]
+
+
+@router.post("/deploy-settings", response_model=None, name="set_deploy_setting")
+async def set_deploy_setting_submit(
+    request: Request, db: PlatformSession
+) -> HTMLResponse | RedirectResponse:
+    """Change one setting. Always attended, always with a register line."""
+    values = await _read_form(request, _SETTING_FIELDS)
+    actor = _actor_ref(request)
+    name = values.get("name", "").strip()
+    if name not in SETTING_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{name!r} is not a deploy setting",
+        )
+    value = _setting_value(name, values.get("value", ""))
+    try:
+        service.set_deploy_setting(
+            db,
+            service.SetDeploySettingCommand(
+                command_id=f"web.set_setting:{name}:{uuid4().hex}",
+                name=name,
+                value=value,
+                approval=AttendedApproval(
+                    approver_ref=actor,
+                    attended=_checked(values, "attended"),
+                    register_ref=values.get("register_ref", "").strip(),
+                ),
+                actor_ref=actor,
+            ),
+        )
+    except (DeploymentControlError, DeployUnitError) as exc:
+        return _render(
+            request,
+            "deploy_settings.html",
+            _settings_context(db, refusal=str(exc)),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse(
+        url=surface_path(request, "deploy_settings"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 # ── The composed contribution ───────────────────────────────────────────────
 
 #: Where the packaged templates live, resolved by PACKAGE PATH. An installed
@@ -584,6 +737,20 @@ DEPLOYMENT_CONTROL_SURFACE = WebSurfaceContribution(
             label=LocalizedText("deployment_control.nav.arrivals", "Arrivals"),
             route_name="arrivals",
             order=50,
+        ),
+        WebNavItem(
+            code="deployment_control.sets",
+            region="primary",
+            label=LocalizedText("deployment_control.nav.sets", "Deployment sets"),
+            route_name="deployment_sets",
+            order=60,
+        ),
+        WebNavItem(
+            code="deployment_control.settings",
+            region="primary",
+            label=LocalizedText("deployment_control.nav.settings", "Deploy settings"),
+            route_name="deploy_settings",
+            order=70,
         ),
     ),
     templates=_TEMPLATE_ROOT,

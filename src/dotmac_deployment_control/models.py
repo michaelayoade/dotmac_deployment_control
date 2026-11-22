@@ -126,6 +126,9 @@ _TARGET_CURRENT_HOSTS = "target_current_hosts"
 _TARGET_ADMISSION_POLICIES = "target_admission_policies"
 _TARGET_ADMISSION_POLICY_CLOSURES = "target_admission_policy_closures"
 _TARGET_CURRENT_ADMISSION_POLICIES = "target_current_admission_policies"
+_DEPLOY_SETTINGS = "deploy_settings"
+_LEGACY_ENV_POLICY_VERSIONS = "legacy_env_policy_versions"
+_DEPLOYMENT_SETS = "deployment_sets"
 
 
 class TargetStatus(StrEnum):
@@ -1395,6 +1398,100 @@ class TargetCurrentAdmissionPolicy(Base, TimestampMixin):
     )
 
 
+class DeploySetting(Base, TimestampMixin):
+    """One named Control setting, with the attended approval that last set it.
+
+    Deliberately mutable, and the only table here that is: the setting is
+    current state, and each change is recorded in the platform audit trail with
+    the approver and register line. No row means the default (an empty
+    allowlist, a ceiling of 0).
+    """
+
+    __tablename__ = _DEPLOY_SETTINGS
+    __table_args__ = (
+        CheckConstraint(
+            "setting_version >= 1", name="ck_deploy_settings_version_positive"
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    setting_name: Mapped[str] = mapped_column(String(200), primary_key=True)
+    value: Mapped[Any] = mapped_column(_JSON_DOC, nullable=False)
+    setting_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    approver_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    register_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class LegacyEnvPolicyVersion(Base, TimestampMixin):
+    """Append-only: one row per policy VERSION of a target's legacy env file.
+
+    The current policy is the highest version. A changed sha, a shrunk name set,
+    an extended expiry or a retirement is a NEW row, never an edit.
+    """
+
+    __tablename__ = _LEGACY_ENV_POLICY_VERSIONS
+    __table_args__ = (
+        UniqueConstraint(
+            "target_id",
+            "policy_version",
+            name="uq_legacy_env_policy_versions_target_version",
+        ),
+        CheckConstraint(
+            "policy_version >= 1",
+            name="ck_legacy_env_policy_versions_version_positive",
+        ),
+        CheckConstraint(
+            "state IN ('enabled', 'retired')",
+            name="ck_legacy_env_policy_versions_state",
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    id: Mapped[UUID] = uuid_pk()
+    target_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_TARGETS}.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    product_code: Mapped[str] = mapped_column(String(200), nullable=False)
+    names: Mapped[Any] = mapped_column(_JSON_DOC, nullable=False)
+    file_sha256: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    enabled_by_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    register_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+class DeploymentSet(Base, TimestampMixin):
+    """Append-only: a primary plan and its optional companion, under one digest."""
+
+    __tablename__ = _DEPLOYMENT_SETS
+    __table_args__ = (
+        UniqueConstraint("set_digest", name="uq_deployment_sets_set_digest"),
+        CheckConstraint(
+            "companion_plan_id IS NULL OR companion_plan_id <> primary_plan_id",
+            name="ck_deployment_sets_distinct_plans",
+        ),
+        schema_table_args(SCHEMA),
+    )
+
+    id: Mapped[UUID] = uuid_pk()
+    primary_plan_id: Mapped[UUID] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_PLANS}.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    companion_plan_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(f"{SCHEMA}.{_PLANS}.id", ondelete="RESTRICT")
+    )
+    order_policy: Mapped[str] = mapped_column(String(40), nullable=False)
+    required_at_switch: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    set_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class ObservationAttempt(Base, TimestampMixin):
     """Append-only: one row per ARRIVAL, whatever happens to it.
 
@@ -1468,9 +1565,12 @@ __all__ = [
     "AttestationRootDescriptor",
     "AttestationSubjectLock",
     "CredentialStatus",
+    "DeploySetting",
     "DeploymentPlan",
+    "DeploymentSet",
     "DeploymentTarget",
     "EligibilityAtReceipt",
+    "LegacyEnvPolicyVersion",
     "ObservationAttempt",
     "ObservationDisposition",
     "ObservationReceipt",
@@ -1480,9 +1580,9 @@ __all__ = [
     "RolloutAttemptSettlement",
     "RolloutStatus",
     "SignatureStatus",
-    "TargetCredential",
     "TargetAdmissionPolicy",
     "TargetAdmissionPolicyClosure",
+    "TargetCredential",
     "TargetCurrentAdmissionPolicy",
     "TargetCurrentHost",
     "TargetHostAssociation",

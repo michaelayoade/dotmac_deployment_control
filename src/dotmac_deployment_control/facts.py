@@ -77,6 +77,15 @@ REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1: Final[str] = (
     "deployment.rehearsal_issuer_authorization.changed.v1"
 )
 
+#: A deploy-unit setting (pull allowlist, legacy product allowlist, ceiling)
+#: changed under an attended approval.
+DEPLOY_SETTING_CHANGED_V1: Final[str] = "deployment.deploy_setting.changed.v1"
+#: A target's legacy env-file policy gained a new version (enabled, revised,
+#: extended or retired).
+LEGACY_POLICY_CHANGED_V1: Final[str] = "deployment.legacy_policy.changed.v1"
+#: A deployment set (primary plan plus optional companion) was recorded.
+DEPLOYMENT_SET_CREATED_V1: Final[str] = "deployment.set.created.v1"
+
 #: Every type this module can emit. A consumer building a subscription set reads
 #: this rather than a hand-kept list that drifts, and the module's own test
 #: asserts the set matches what the service actually emits.
@@ -104,6 +113,9 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         OBSERVATION_RECORDED_V1,
         DRIFT_DETECTED_V1,
         REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1,
+        DEPLOY_SETTING_CHANGED_V1,
+        LEGACY_POLICY_CHANGED_V1,
+        DEPLOYMENT_SET_CREATED_V1,
     }
 )
 
@@ -753,13 +765,54 @@ class DriftReport:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DeploySettingsView:
+    """The effective deploy-unit settings (stored value, or the default)."""
+
+    public_pull_repositories: tuple[str, ...]
+    legacy_env_file_allowed_products: tuple[str, ...]
+    legacy_env_file_ceiling: int
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyPolicyView:
+    """The CURRENT (highest) legacy env-file policy version of one target."""
+
+    target_id: UUID
+    target_ref: str
+    product_code: str
+    policy_version: int
+    state: str
+    names: tuple[str, ...]
+    file_sha256: str
+    expires_at: datetime
+    enabled_by_ref: str
+    register_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentSetView:
+    """A recorded deployment set: one digest, one approval, two plans at most."""
+
+    id: UUID
+    primary_plan_id: UUID
+    companion_plan_id: UUID | None
+    order_policy: str
+    required_at_switch: bool
+    set_digest: str
+    created_at: datetime
+
+
 __all__ = [
     "CREDENTIAL_ACTIVATED_V1",
     "CREDENTIAL_ENROLLED_V1",
     "CREDENTIAL_RETIRED_V1",
     "CREDENTIAL_REVOKED_V1",
+    "DEPLOYMENT_SET_CREATED_V1",
+    "DEPLOY_SETTING_CHANGED_V1",
     "DRIFT_DETECTED_V1",
     "INTENT_DISPATCHED_V1",
+    "LEGACY_POLICY_CHANGED_V1",
     "OBSERVATION_RECORDED_V1",
     "PLAN_APPROVAL_REVOKED_V1",
     "PLAN_APPROVED_V1",
@@ -783,7 +836,10 @@ __all__ = [
     "ApprovedPlanRefusalCode",
     "AttemptView",
     "AuthorizedImage",
+    "DeploySettingsView",
+    "DeploymentSetView",
     "DriftReport",
+    "LegacyPolicyView",
     "ObservationAttemptView",
     "ObservationReceiptView",
     "ObservationVerdict",

@@ -1328,6 +1328,18 @@ CATALOGUE_TABLES: tuple[
         ),
     ),
     (
+        "deploy_settings",
+        (
+            ("setting_name", 1, _V200, False, ""),
+            ("value", 2, _JSONB, False, ""),
+            ("setting_version", 3, _INT, False, ""),
+            ("approver_ref", 4, _V200, False, ""),
+            ("register_ref", 5, _V200, False, ""),
+            ("created_at", 6, _TS, False, "now()"),
+            ("updated_at", 7, _TS, False, "now()"),
+        ),
+    ),
+    (
         "deployment_plans",
         (
             ("id", 1, _UUID, False, ""),
@@ -1362,6 +1374,19 @@ CATALOGUE_TABLES: tuple[
         ),
     ),
     (
+        "deployment_sets",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("primary_plan_id", 2, _UUID, False, ""),
+            ("companion_plan_id", 3, _UUID, True, ""),
+            ("order_policy", 4, _V40, False, ""),
+            ("required_at_switch", 5, _BOOL, False, ""),
+            ("set_digest", 6, _V128, False, ""),
+            ("created_at", 7, _TS, False, "now()"),
+            ("updated_at", 8, _TS, False, "now()"),
+        ),
+    ),
+    (
         "deployment_targets",
         (
             ("id", 1, _UUID, False, ""),
@@ -1388,6 +1413,23 @@ CATALOGUE_TABLES: tuple[
             ("last_execution_sequence", 20, _INT, True, ""),
             ("last_execution_attempt_no", 21, _INT, True, ""),
             ("last_execution_state_digest", 22, _V128, True, ""),
+        ),
+    ),
+    (
+        "legacy_env_policy_versions",
+        (
+            ("id", 1, _UUID, False, ""),
+            ("target_id", 2, _UUID, False, ""),
+            ("policy_version", 3, _INT, False, ""),
+            ("state", 4, _V20, False, ""),
+            ("product_code", 5, _V200, False, ""),
+            ("names", 6, _JSONB, False, ""),
+            ("file_sha256", 7, _V128, False, ""),
+            ("expires_at", 8, _TS, False, ""),
+            ("enabled_by_ref", 9, _V200, False, ""),
+            ("register_ref", 10, _V200, False, ""),
+            ("created_at", 11, _TS, False, "now()"),
+            ("updated_at", 12, _TS, False, "now()"),
         ),
     ),
     (

@@ -3,6 +3,7 @@
 Everything here goes INSIDE the plan snapshot and therefore inside the plan
 digest, so an approval over the digest covers all of it:
 
+* `deploy_unit_digest`, computed by Control over the descriptor bytes;
 * `params_env_digest` (design 2.5);
 * every image reference and its pinned manifest digest, with `image.source` and
   the loopback repository string (2.7);
@@ -67,6 +68,8 @@ class PlannedImage:
 
 @dataclass(frozen=True, slots=True)
 class DeployPlanBinding:
+    #: Computed by Control over the descriptor bytes (`DeployUnit.digest`).
+    deploy_unit_digest: str
     params_env_digest: str
     images: tuple[PlannedImage, ...]
     lease_ttl_seconds: int
@@ -76,6 +79,7 @@ class DeployPlanBinding:
     def payload(self) -> dict[str, Any]:
         """The canonical, JSON-safe document that enters the plan snapshot."""
         return {
+            "deploy_unit_digest": self.deploy_unit_digest,
             "params_env_digest": self.params_env_digest,
             "images": [i.payload() for i in self.images],
             "lease_ttl_seconds": self.lease_ttl_seconds,
@@ -86,6 +90,7 @@ class DeployPlanBinding:
 
 def build_deploy_binding(
     *,
+    deploy_unit_digest: str,
     params_env_digest: str,
     images: Sequence[PlannedImage],
     lease_ttl_seconds: int,
@@ -94,6 +99,8 @@ def build_deploy_binding(
     companion_order: str | None = None,
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
+    if not is_canonical_digest(deploy_unit_digest):
+        raise DeployBindingRefusedError("deploy_unit_digest must be sha256:<64 hex>")
     if not is_canonical_digest(params_env_digest):
         raise DeployBindingRefusedError("params_env_digest must be sha256:<64 hex>")
     if (
@@ -123,6 +130,7 @@ def build_deploy_binding(
     if companion_order not in (None, COMPANION_ORDER):
         raise DeployBindingRefusedError(f"companion order must be {COMPANION_ORDER}")
     return DeployPlanBinding(
+        deploy_unit_digest=deploy_unit_digest,
         params_env_digest=params_env_digest,
         images=tuple(sorted(images, key=lambda i: i.service)),
         lease_ttl_seconds=lease_ttl_seconds,
@@ -147,6 +155,8 @@ class DeploymentSet:
         for digest in (self.primary_plan_digest, self.companion_plan_digest):
             if digest is not None and not is_canonical_digest(digest):
                 raise DeployBindingRefusedError("set members are plan digests")
+        if self.primary_plan_digest == self.companion_plan_digest:
+            raise DeployBindingRefusedError("a set cannot name one plan twice")
         if self.order != COMPANION_ORDER:
             raise DeployBindingRefusedError(f"set order must be {COMPANION_ORDER}")
         if self.companion_plan_digest is None and self.required_at_switch:

@@ -845,6 +845,21 @@ class ParamsEnvDigestV1(_Sha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class DeployUnitDigestV1(_Sha256Digest):
+    """The identity of one `deploy-unit.toml`, computed by Control over its bytes.
+
+    Control computes this itself and binds it into the plan; a digest the
+    descriptor declares about itself is never trusted.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> DeployUnitDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the descriptor must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSetDigestV1(_Sha256Digest):
     """The identity of a deployment set: a primary plan and its companion."""
 
@@ -871,6 +886,7 @@ __all__ = [
     "DIGEST_BYTES",
     "AuthorizationEnvelopeDigestV1",
     "ControlPlanDigestV1",
+    "DeployUnitDigestV1",
     "DeploymentSetDigestV1",
     "DescriptorDigestV1",
     "DigestEncodingError",

@@ -13,6 +13,8 @@ itself, and the one deliberately mutable current-root pointer table.
 ``dc_0012`` adds the durable rehearsal-grant lifecycle ledger.
 ``dc_0016`` adds the permanent controller-fingerprint uniqueness constraint
 without changing the catalogue's table or column extent.
+``dc_0017`` adds the deploy-unit state tables: settings, legacy env-file policy
+versions and deployment sets.
 
 Schema, owner and persistence plane are intentionally absent here.  The kernel
 derives them from :mod:`dotmac_deployment_control.manifest`, so this contribution
@@ -102,13 +104,91 @@ def _table(
 
 
 database_catalog = ModuleDatabaseCatalogContributionV1(
-    lineage_head="dc_0016_controller_key_nonreuse",
+    lineage_head="dc_0017_deploy_unit_state",
     # The contribution contract requires canonical table-name order. Column
     # order remains physical ordinal order inside each table.
     tables=tuple(
         sorted(
             (
                 # dc_0013 entries are kept in canonical table-name order below.
+                _table(
+                    "deploy_settings",
+                    (
+                        _column("setting_name", 1, _VARCHAR_200, nullable=False),
+                        _column("value", 2, _JSONB, nullable=False),
+                        _column("setting_version", 3, _INTEGER, nullable=False),
+                        _column("approver_ref", 4, _VARCHAR_200, nullable=False),
+                        _column("register_ref", 5, _VARCHAR_200, nullable=False),
+                        _column(
+                            "created_at",
+                            6,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "deployment_sets",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("primary_plan_id", 2, _UUID, nullable=False),
+                        _column("companion_plan_id", 3, _UUID, nullable=True),
+                        _column("order_policy", 4, _VARCHAR_40, nullable=False),
+                        _column("required_at_switch", 5, _BOOLEAN, nullable=False),
+                        _column("set_digest", 6, _VARCHAR_128, nullable=False),
+                        _column(
+                            "created_at",
+                            7,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            8,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
+                _table(
+                    "legacy_env_policy_versions",
+                    (
+                        _column("id", 1, _UUID, nullable=False),
+                        _column("target_id", 2, _UUID, nullable=False),
+                        _column("policy_version", 3, _INTEGER, nullable=False),
+                        _column("state", 4, _VARCHAR_20, nullable=False),
+                        _column("product_code", 5, _VARCHAR_200, nullable=False),
+                        _column("names", 6, _JSONB, nullable=False),
+                        _column("file_sha256", 7, _VARCHAR_128, nullable=False),
+                        _column("expires_at", 8, _TIMESTAMPTZ, nullable=False),
+                        _column("enabled_by_ref", 9, _VARCHAR_200, nullable=False),
+                        _column("register_ref", 10, _VARCHAR_200, nullable=False),
+                        _column(
+                            "created_at",
+                            11,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                        _column(
+                            "updated_at",
+                            12,
+                            _TIMESTAMPTZ,
+                            nullable=False,
+                            default="now()",
+                        ),
+                    ),
+                ),
                 _table(
                     "attestation_root_descriptors",
                     (

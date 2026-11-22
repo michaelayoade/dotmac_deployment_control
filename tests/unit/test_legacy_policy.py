@@ -1,4 +1,4 @@
-"""M11 `[legacy_env_file]` invariants L1-L5, L8 and `legacy_never` (design 2.8)."""
+"""M11 `[legacy_env_file]` invariants L1-L5, L8 and default-deny products (2.8)."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _fleet(ceiling: int = 1) -> LegacyFleetState:
 def _enable(fleet: LegacyFleetState, **overrides: object) -> LegacyFleetState:
     args: dict[str, object] = {
         "target_ref": "erp/prod/host-a",
-        "product": "erp_v2",
+        "product": "dotmac-erp-v2",
         "names": _NAMES,
         "sha256": _SHA,
         "secret_names": set(_NAMES),
@@ -220,30 +220,63 @@ path_param = "legacy_path"
 """
 
 
-def test_legacy_never_products() -> None:
-    # An existing app may declare the table.
-    unit = parse_deploy_unit(_LEGACY_TOML.format(product="erp_v2"))
+_ERP = "dotmac-erp-v2"
+_COMPANION_PATH = "deploy/companion/deploy-unit.toml"
+
+
+def test_legacy_refused_unless_allowlisted() -> None:
+    """DEFAULT-DENY: only a product on the allowlist may declare the table."""
+    unit = parse_deploy_unit(_LEGACY_TOML.format(product=_ERP))
     assert unit.legacy_env_file is not None
     assert unit.legacy_env_file.names == ("DB_PASSWORD",)
-    # sub_thin (the default legacy_never set) is refused at parse.
-    with pytest.raises(DeployUnitError, match="legacy_never"):
-        parse_deploy_unit(_LEGACY_TOML.format(product="sub_thin"))
-    # Every companion descriptor is refused, whatever its product.
-    with pytest.raises(DeployUnitError, match="legacy_never"):
-        parse_deploy_unit(_LEGACY_TOML.format(product="integrator"), companion=True)
-    # The set is a Control setting: a caller-supplied set is honoured.
-    with pytest.raises(DeployUnitError, match="legacy_never"):
+    # An unlisted product is refused at parse and again by the policy.
+    with pytest.raises(DeployUnitError, match="default-deny"):
+        parse_deploy_unit(_LEGACY_TOML.format(product="some-other-app"))
+    with pytest.raises(LegacyPolicyRefusedError, match="allowed_products"):
+        _enable(_fleet(), product="some-other-app")
+    # Adding the product to the setting admits it (a visible, attended change).
+    allowed = frozenset({_ERP, "some-other-app"})
+    assert (
         parse_deploy_unit(
-            _LEGACY_TOML.format(product="erp_v2"), legacy_never=frozenset({"erp_v2"})
-        )
-    # And the policy refuses the same products independently of the descriptor.
-    with pytest.raises(LegacyPolicyRefusedError, match="legacy_never"):
-        _enable(_fleet(), product="sub_thin")
-    with pytest.raises(LegacyPolicyRefusedError, match="legacy_never"):
-        _enable(_fleet(), companion=True)
+            _LEGACY_TOML.format(product="some-other-app"), legacy_allowed=allowed
+        ).legacy_env_file
+        is not None
+    )
+    assert _enable(_fleet(), product="some-other-app", allowed_products=allowed)
+    # Removing ERP from the setting refuses ERP too.
+    with pytest.raises(DeployUnitError, match="default-deny"):
+        parse_deploy_unit(_LEGACY_TOML.format(product=_ERP), legacy_allowed=frozenset())
     # Names colliding with a param material are refused at parse as well.
-    colliding = _LEGACY_TOML.format(product="erp_v2").replace(
+    colliding = _LEGACY_TOML.format(product=_ERP).replace(
         'type = "path"', 'type = "path"\nmaterial = "DB_PASSWORD"', 1
     )
     with pytest.raises(DeployUnitError, match="collide"):
         parse_deploy_unit(colliding)
+
+
+def test_legacy_never_products() -> None:
+    """sub_thin (product code `dotmac-sub`) and companions are refused BY DEFAULT."""
+    with pytest.raises(DeployUnitError, match="default-deny"):
+        parse_deploy_unit(_LEGACY_TOML.format(product="dotmac-sub"))
+    with pytest.raises(LegacyPolicyRefusedError, match="allowed_products"):
+        _enable(_fleet(), product="dotmac-sub")
+    # A companion descriptor is ALWAYS refused, even for an allowlisted product
+    # and even if the setting were widened to name it.
+    for path in (_COMPANION_PATH, "deploy/companion/sub/deploy-unit.toml"):
+        for allowed in (frozenset({_ERP}), frozenset({_ERP, "dotmac-integrator"})):
+            with pytest.raises(DeployUnitError, match="companion"):
+                parse_deploy_unit(
+                    _LEGACY_TOML.format(product=_ERP),
+                    descriptor_path=path,
+                    legacy_allowed=allowed,
+                )
+    with pytest.raises(LegacyPolicyRefusedError, match="companion"):
+        _enable(_fleet(), companion=True)
+    # Only the exact prefix counts, and an escaping path is itself refused.
+    parse_deploy_unit(
+        _LEGACY_TOML.format(product=_ERP), descriptor_path="deploy/deploy-unit.toml"
+    )
+    with pytest.raises(DeployUnitError, match="repository-relative"):
+        parse_deploy_unit(
+            _LEGACY_TOML.format(product=_ERP), descriptor_path="../deploy/x.toml"
+        )

@@ -124,6 +124,9 @@ module = ModuleManifest(
         "target_admission_policies",
         "target_admission_policy_closures",
         "target_current_admission_policies",
+        "deploy_settings",
+        "legacy_env_policy_versions",
+        "deployment_sets",
     ),
     requires=(IDEMPOTENCY_LEDGER_V1.name, PLATFORM_AUDIT_LOG_V1.name),
     #: The operator's browser surface, on the kernel's CONTRACT-V2 shape.

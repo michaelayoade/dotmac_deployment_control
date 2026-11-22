@@ -1,7 +1,8 @@
 """M11 bridge: the invariants Control enforces on EVERY `[legacy_env_file]` policy.
 
 Scope is fleet-wide and existing apps only (each target enabled as its own act).
-New builds never use it: `legacy_never` products and every companion descriptor
+New builds never use it: the bridge is DEFAULT-DENY (only products on
+`legacy_env_file_allowed_products`) and every companion descriptor
 are refused. This module implements the Control column of the design's
 invariants:
 
@@ -37,7 +38,7 @@ from typing import Final
 
 from dotmac_deployment_control.deploy_unit import (
     APP_IMAGE_MATERIAL,
-    LEGACY_NEVER_DEFAULT,
+    LEGACY_ENV_FILE_ALLOWED_DEFAULT,
     DeployUnitError,
 )
 from dotmac_deployment_control.digests import is_canonical_digest
@@ -192,12 +193,16 @@ def enable_policy(
     enabled_by_ref: str,
     exit_prestaged: bool,
     companion: bool = False,
-    legacy_never: frozenset[str] = LEGACY_NEVER_DEFAULT,
+    allowed_products: frozenset[str] = LEGACY_ENV_FILE_ALLOWED_DEFAULT,
 ) -> LegacyFleetState:
     """Enable the bridge for one existing target (its own policy act)."""
-    if companion or product in legacy_never:
+    if companion:
         raise LegacyPolicyRefusedError(
-            f"product {product!r} is on the legacy_never list"
+            "a companion descriptor can never use the legacy env-file bridge"
+        )
+    if product not in allowed_products:
+        raise LegacyPolicyRefusedError(
+            f"product {product!r} is not on legacy_env_file_allowed_products"
         )
     existing = fleet.policies.get(target_ref)
     if existing is not None and existing.state == ENABLED:

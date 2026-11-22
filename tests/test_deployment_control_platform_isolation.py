@@ -403,8 +403,9 @@ def _migrated_database() -> Iterator[tuple[str, str, str]]:
 
     admin_url = _url_for(superuser, name, user="app_admin")
     try:
-        from alembic import command
         from alembic.config import Config
+
+        from alembic import command
 
         cfg = Config(str(REPO_ROOT / "alembic.ini"))
         cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
@@ -704,7 +705,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0016_controller_key_nonreuse",
+                revision="dc_0017_deploy_unit_state",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -818,14 +819,15 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 246 columns across twenty-two tables; `dc_0005` is 105.
+    The head extent is 246 columns across twenty-five tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
     drifting.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     superuser = _superuser_url()
     name = f"deploy_down_{uuid.uuid4().hex[:10]}"
@@ -854,7 +856,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 246
+                    == 273
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -932,7 +934,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 246
+                    == 273
                 )
                 purpose, snapshot = conn.execute(
                     text(
@@ -1004,8 +1006,9 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
     isolated_migrated_scratch: tuple[str, str, str],
 ) -> None:
     """a14 must not reinterpret a newly approved Foundation plan as issuer-eligible."""
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     admin_url, _, _ = isolated_migrated_scratch
     engine = create_engine(admin_url)
@@ -1036,7 +1039,7 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deploy_unit_state"
             )
     finally:
         engine.dispose()
@@ -1045,8 +1048,9 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
 def test_dc_0016_refuses_duplicate_history_without_rewriting_it(
     isolated_migrated_scratch: tuple[str, str, str],
 ) -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     admin_url, _, _ = isolated_migrated_scratch
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
@@ -1115,8 +1119,9 @@ def test_dc_0016_refuses_duplicate_history_without_rewriting_it(
 def test_dc_0016_refuses_downgrade_with_controller_key_history(
     isolated_migrated_scratch: tuple[str, str, str],
 ) -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     admin_url, _, _ = isolated_migrated_scratch
     engine = create_engine(admin_url)
@@ -1160,7 +1165,7 @@ def test_dc_0016_refuses_downgrade_with_controller_key_history(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deploy_unit_state"
             )
     finally:
         engine.dispose()
@@ -1176,8 +1181,9 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
     the shared database would otherwise refuse first and hide dc_0012's own
     refusal, which is what this test proves.
     """
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     admin_url, _, _ = isolated_migrated_scratch
     grant_id = f"downgrade-{uuid.uuid4().hex}"
@@ -1228,7 +1234,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deploy_unit_state"
             )
     finally:
         engine.dispose()
@@ -1236,8 +1242,9 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
 
 def test_dc_0010_copies_terminal_legacy_attempt_without_rewriting_issuance() -> None:
     """A historical terminal outcome becomes new evidence, never a source edit."""
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     superuser = _superuser_url()
     name = f"deploy_settlement_{uuid.uuid4().hex[:10]}"
