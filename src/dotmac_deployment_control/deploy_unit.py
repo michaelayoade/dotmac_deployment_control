@@ -33,7 +33,6 @@ the `legacy_never` list.
 
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import math
 import re
@@ -41,6 +40,8 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
+
+from dotmac_deployment_control.digests import ParamsEnvDigestV1, is_canonical_digest
 
 DESCRIPTOR_SCHEMA: Final = "dotmac.deploy_unit/1"
 
@@ -76,7 +77,6 @@ _MATERIAL = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 _NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PRODUCT = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 _SEGMENT = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _REPO_COMPONENT = re.compile(r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*")
 _REPO_HOST = re.compile(
@@ -114,10 +114,6 @@ class DeployUnitError(ValueError):
 
 class ParamRefusedError(DeployUnitError):
     """A param value (or the set of values) was refused by the grammar."""
-
-
-def _sha256_digest(payload: bytes) -> str:
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 # ── Descriptor model ────────────────────────────────────────────────────────
@@ -350,7 +346,7 @@ def validate_param_value(spec: ParamSpec, value: object) -> str:
     elif kind == "path":
         _validate_path(name, value)
     elif kind == "image_digest":
-        if not _DIGEST.fullmatch(value):
+        if not is_canonical_digest(value):
             raise _refuse(name, "is not sha256:<64 lowercase hex>")
         return value
     elif kind == "image_repository":
@@ -415,7 +411,7 @@ def canonical_render(
 
 def params_env_digest(render: bytes) -> str:
     """`sha256:<hex>` over the canonical render, as bound into the plan."""
-    return _sha256_digest(render)
+    return ParamsEnvDigestV1.over_bytes(render).canonical
 
 
 # ── Parsing ─────────────────────────────────────────────────────────────────
@@ -591,9 +587,7 @@ def parse_deploy_unit(
     if spec != "deploy/product.toml":
         raise DeployUnitError("spec must be deploy/product.toml")
     spec_digest = document.get("spec_digest")
-    if spec_digest is not None and not (
-        isinstance(spec_digest, str) and _DIGEST.fullmatch(spec_digest)
-    ):
+    if spec_digest is not None and not is_canonical_digest(spec_digest):
         raise DeployUnitError("spec_digest must be sha256:<64 lowercase hex>")
 
     raw_params = document.get("params", {})

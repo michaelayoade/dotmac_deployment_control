@@ -829,11 +829,49 @@ class FoundationArtifactDigestV1(_ReceivedSha256Digest):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class ParamsEnvDigestV1(_Sha256Digest):
+    """The identity of one canonical `params.env` render (deploy-unit contract).
+
+    Computed over the exact rendered bytes, so a plan binding it binds every
+    typed param value and the planned image reference.
+    """
+
+    @classmethod
+    def over_bytes(cls, payload: bytes) -> ParamsEnvDigestV1:
+        if not isinstance(payload, bytes):
+            raise _refuse(cls.__name__, payload, "the render must be bytes")
+        return cls(ALGORITHM, hashlib.sha256(payload).digest())
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentSetDigestV1(_Sha256Digest):
+    """The identity of a deployment set: a primary plan and its companion."""
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyEnvFileDigestV1(_ReceivedSha256Digest):
+    """The whole-file sha256 an operator fixes in a `[legacy_env_file]` policy.
+
+    Received, never computed here: Control never reads the file.
+    """
+
+
+def is_canonical_digest(value: object) -> bool:
+    """True when `value` is canonical `sha256:<64 lowercase hex>`; never raises."""
+    try:
+        _ReceivedSha256Digest.parse(value)
+    except DigestEncodingError:
+        return False
+    return True
+
+
 __all__ = [
     "ALGORITHM",
     "DIGEST_BYTES",
     "AuthorizationEnvelopeDigestV1",
     "ControlPlanDigestV1",
+    "DeploymentSetDigestV1",
     "DescriptorDigestV1",
     "DigestEncodingError",
     "DispatchEnvelopeDigestV1",
@@ -842,8 +880,10 @@ __all__ = [
     "FoundationArtifactDigestV1",
     "HealthEvidenceDigestV1",
     "ImageDigestV1",
+    "LegacyEnvFileDigestV1",
     "ObservationEnvelopeDigestV1",
     "ObservedExecutionStateDigestV1",
+    "ParamsEnvDigestV1",
     "PlanDigestV1",
     "PublicKeyFingerprintV1",
     "RehearsalHarnessEvidenceDigestV1",
@@ -851,4 +891,5 @@ __all__ = [
     "canonical_json",
     "compute_host_admission_context_digest",
     "compute_host_admission_presentation_digest",
+    "is_canonical_digest",
 ]

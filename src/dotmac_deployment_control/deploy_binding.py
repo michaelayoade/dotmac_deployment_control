@@ -20,14 +20,16 @@ only after the primary's signed observation is `healthy`.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
 from dotmac_deployment_control.deploy_unit import DeployUnitError
+from dotmac_deployment_control.digests import (
+    DeploymentSetDigestV1,
+    is_canonical_digest,
+)
 from dotmac_deployment_control.image_policy import (
     PullAllowlist,
     check_planned_image,
@@ -36,7 +38,6 @@ from dotmac_deployment_control.legacy_policy import LegacyPlanBinding
 
 MAX_LEASE_TTL_SECONDS: Final = 3600
 COMPANION_ORDER: Final = "after_primary_ready"
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _SERVICE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 
 
@@ -93,7 +94,7 @@ def build_deploy_binding(
     companion_order: str | None = None,
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
-    if not _DIGEST.fullmatch(params_env_digest):
+    if not is_canonical_digest(params_env_digest):
         raise DeployBindingRefusedError("params_env_digest must be sha256:<64 hex>")
     if (
         isinstance(lease_ttl_seconds, bool)
@@ -144,7 +145,7 @@ class DeploymentSet:
 
     def __post_init__(self) -> None:
         for digest in (self.primary_plan_digest, self.companion_plan_digest):
-            if digest is not None and not _DIGEST.fullmatch(digest):
+            if digest is not None and not is_canonical_digest(digest):
                 raise DeployBindingRefusedError("set members are plan digests")
         if self.order != COMPANION_ORDER:
             raise DeployBindingRefusedError(f"set order must be {COMPANION_ORDER}")
@@ -160,7 +161,7 @@ class DeploymentSet:
         }
 
     def set_digest(self) -> str:
-        return digest_of_payload(self.payload())
+        return DeploymentSetDigestV1.over_json(self.payload()).canonical
 
     def may_release_companion(self, primary_observation_state: str) -> bool:
         """The companion is released only after the primary is `healthy`."""
@@ -168,10 +169,3 @@ class DeploymentSet:
             self.companion_plan_digest is not None
             and primary_observation_state == "healthy"
         )
-
-
-def digest_of_payload(payload: Mapping[str, Any]) -> str:
-    canonical = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode()
-    return "sha256:" + hashlib.sha256(canonical).hexdigest()

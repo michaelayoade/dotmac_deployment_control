@@ -40,9 +40,9 @@ from dotmac_deployment_control.deploy_unit import (
     LEGACY_NEVER_DEFAULT,
     DeployUnitError,
 )
+from dotmac_deployment_control.digests import is_canonical_digest
 
 EXPIRY_AFTER_CUTOVER: Final = timedelta(days=30)
-_SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _MATERIAL = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 
 ENABLED: Final = "enabled"
@@ -159,7 +159,7 @@ def _check_names(
 
 
 def _check_sha(sha256: str) -> None:
-    if not _SHA256.fullmatch(sha256):
+    if not is_canonical_digest(sha256):
         raise LegacyPolicyRefusedError("the legacy file sha must be sha256:<64 hex>")
 
 

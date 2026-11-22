@@ -19,7 +19,6 @@ Pure value rules: no I/O, no database, no clock.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -30,9 +29,9 @@ from dotmac_deployment_control.deploy_unit import (
     DeployUnitError,
     valid_repository,
 )
+from dotmac_deployment_control.digests import is_canonical_digest
 
 LOOPBACK_HOST: Final = "127.0.0.1"
-_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class ImagePolicyRefusedError(DeployUnitError):
@@ -114,7 +113,7 @@ def check_planned_image(
     """
     effective = check_image_source(source, release_repository, allowlist)
     for label, digest in (("release", release_digest), ("planned", planned_digest)):
-        if not _DIGEST.fullmatch(digest):
+        if not is_canonical_digest(digest):
             raise ImagePolicyRefusedError(f"the {label} digest is not canonical")
     if planned_digest != release_digest:
         raise ImagePolicyRefusedError("the planned digest differs from the release")
