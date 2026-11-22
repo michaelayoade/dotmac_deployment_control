@@ -617,6 +617,9 @@ class PlanProposalPreview:
     #: this is the serialization the digest is computed from, so what they read
     #: and what was hashed are one artefact.
     canonical_plan_json: str = ""
+    #: True for a descriptor-backed target: the plan binding is derived at
+    #: propose, so no plan digest is shown here (`plan_digest` is empty).
+    binding_derived_at_propose: bool = False
     would_supersede_plan_id: UUID | None = None
     digest_matches_current: bool = True
     #: Why proposing would be refused RIGHT NOW, computed from the same

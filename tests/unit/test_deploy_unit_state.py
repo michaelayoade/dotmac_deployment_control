@@ -1054,3 +1054,20 @@ def test_a_set_is_approved_once(db: Session) -> None:
     assert len(_approved_facts(db)) == 1
     fact = _approved_facts(db)[0]
     assert fact.payload["authoritative"] is False  # type: ignore[attr-defined]
+
+
+def test_preview_shows_no_digest_for_a_descriptor_backed_target(db: Session) -> None:
+    """R2-L1: propose can never produce the binding-less digest, so none is shown."""
+    from dotmac_deployment_control import preview_plan_proposal
+
+    source = FakeSource()
+    backed = _bound_target(db, source)
+    shown = preview_plan_proposal(db, backed.id)
+    assert shown is not None
+    assert shown.binding_derived_at_propose is True
+    assert shown.plan_digest == ""
+    plain = _plain_target(db, "erp/prod/plain")
+    unbound = preview_plan_proposal(db, plain.id)
+    assert unbound is not None
+    assert unbound.binding_derived_at_propose is False
+    assert unbound.plan_digest.startswith("sha256:")

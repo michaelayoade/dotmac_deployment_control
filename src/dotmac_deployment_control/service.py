@@ -4553,12 +4553,18 @@ def preview_plan_proposal(
     ).scalar_one_or_none()
 
     blockers = _plan_blockers(target)
+    # A descriptor-backed target's plan carries a binding Control DERIVES at
+    # propose (params digest, images, TTL, legacy part). The digest computed
+    # here has no binding in it, so it is a digest propose can never produce;
+    # showing it would be showing an operator something they cannot approve.
+    backed = (target.desired_spec or {}).get("deploy_unit") is not None
     return facts.PlanProposalPreview(
         target_id=target.id,
         target_ref=target.target_ref,
         desired_revision=target.desired_revision,
         canonical_plan=snapshot,
-        plan_digest=derived.canonical,
+        plan_digest="" if backed else derived.canonical,
+        binding_derived_at_propose=backed,
         # The bytes the digest is over, from the one function that produces
         # them, so the preview cannot describe a different serialization than
         # the one `PlanDigestV1.over_json` hashed a line earlier.
@@ -4570,7 +4576,7 @@ def preview_plan_proposal(
         # a4 defect exactly, and `_frozen_plan_digest` is the helper that reads
         # a stored digest — including a4's bare-hex form — as a value.
         digest_matches_current=(
-            current is None or _frozen_plan_digest(current) == derived
+            current is None or (not backed and _frozen_plan_digest(current) == derived)
         ),
     )
 
