@@ -42,8 +42,9 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   `enable_legacy_policy`, `revise_legacy_policy`, `extend_legacy_policy`,
   `retire_legacy_policy`, `legacy_plan_binding`, `create_deployment_set`,
   `get_deploy_settings`, `get_legacy_policy`, `get_deployment_set`,
-  `list_deployment_sets`. `propose_plan` re-checks a supplied deploy binding
-  against the STORED pull allowlist and legacy policy.
+  `list_deployment_sets`, `approve_deployment_set`. `propose_plan` DERIVES the
+  deploy binding from the re-verified descriptor and the STORED pull allowlist
+  and legacy policy; a caller supplies only the lease TTL and loopback port.
 - `[legacy_env_file]` is DEFAULT-DENY, keyed by TARGET: accepted only for a
   target on the setting `legacy_env_file_allowed_targets` (empty by default) and
   always refused for a descriptor under `deploy/companion/`.
