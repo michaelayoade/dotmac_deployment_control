@@ -51,6 +51,7 @@ from dotmac_deployment_control.models import DeploymentTarget, LegacyEnvPolicyVe
 from dotmac_deployment_control.ports import (
     ApprovalEvidence,
     ApprovalRefusedError,
+    PlanMaterialUnsuppliedError,
     PlanRefusedError,
     ReleaseDescriptorEvidence,
     ReleaseDescriptorRefusedError,
@@ -155,6 +156,7 @@ def _descriptor_text(
     companion: bool = False,
     companion_required: bool = False,
     workers: bool = True,
+    job_materials: tuple[str, ...] = (),
 ) -> str:
     spec = (
         "deploy/companion/product.toml"
@@ -188,6 +190,13 @@ def _descriptor_text(
                 'roles = ["app"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
                 "single_use = false\n"
             )
+    if job_materials:
+        names = ", ".join(f'"{m}"' for m in job_materials)
+        out += (
+            '[[jobs]]\nname = "import"\ncommand = ["run", "import"]\n'
+            f'trigger = "operator"\nmaterials = [{names}]\n'
+            'runbook = "docs/rehearsal.md"\n'
+        )
     if companion:
         out += (
             f'[[companions]]\nproduct = "{_COMPANION}"\ndescriptor = "{_CPATH}"\n'
@@ -1223,3 +1232,28 @@ def test_a_published_test_key_cannot_be_enrolled(db: Session) -> None:
                     enrollment_authority="platform_admin_policy",
                 ),
             )
+
+
+def test_a_job_material_nothing_supplies_is_refused_at_propose(db: Session) -> None:
+    """C-3: a job's material must come from a param, an active binding or the
+    legacy names of THIS plan, so the gap fails at plan time, not mid-deploy."""
+    source = FakeSource(job_materials=("DB_PASSWORD",))
+    erp = _bound_target(db, source)
+    # DB_PASSWORD is only a PRE-STAGED binding: it delivers nothing yet.
+    with pytest.raises(PlanMaterialUnsuppliedError, match="DB_PASSWORD"):
+        _propose(db, erp.id, source)
+    # A param material supplies it.
+    by_param = FakeSource(job_materials=("WORKERS",))
+    ok = _bound_target(db, by_param, ref=_E + "host-p")
+    assert _propose(db, ok.id, by_param)
+    # An ACTIVE binding supplies it.
+    active = FakeSource(job_materials=("DB_PASSWORD",), active=("DB_PASSWORD",))
+    got = _bound_target(db, active, ref=_E + "host-b")
+    assert _propose(db, got.id, active)
+
+
+def test_a_legacy_name_supplies_a_job_material(db: Session) -> None:
+    source = FakeSource(legacy=True, job_materials=("DB_PASSWORD",))
+    erp = _legacy_target(db, source)
+    _enable(db, erp.id, source)
+    assert _propose(db, erp.id, source)

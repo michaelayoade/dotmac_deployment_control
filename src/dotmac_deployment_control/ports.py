@@ -143,6 +143,13 @@ class PlanRefusedError(DeploymentControlError):
     """A plan cannot be built or approved as asked."""
 
 
+class PlanMaterialUnsuppliedError(PlanRefusedError):
+    """A job needs a material that nothing in the plan supplies.
+
+    Refused at propose so the gap fails at plan time and not mid-deploy.
+    """
+
+
 class ApprovalRefusedError(DeploymentControlError):
     """Approval evidence does not bind to the plan snapshot it claims to cover.
 
@@ -509,6 +516,7 @@ __all__ = [
     "ImageSetRefusedError",
     "ObservationRefusedError",
     "OperationRefusedError",
+    "PlanMaterialUnsuppliedError",
     "PlanRefusedError",
     "ReleaseDescriptorEvidence",
     "ReleaseDescriptorRefusedError",

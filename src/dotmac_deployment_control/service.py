@@ -206,6 +206,7 @@ from dotmac_deployment_control.ports import (
     ImageSetRefusedError,
     ObservationRefusedError,
     OperationRefusedError,
+    PlanMaterialUnsuppliedError,
     PlanRefusedError,
     ReleaseDescriptorRefusedError,
     ReleaseDescriptorSource,
@@ -5782,6 +5783,18 @@ def _derive_deploy_binding(
         )
         refuse_activation_of_legacy_names(active, policy.names)
         legacy = bind_to_plan(fleet, target_ref=target.target_ref, now=_control_now())
+    supplied = (
+        set(materials)
+        | set(active)
+        | (set(legacy.names) if legacy is not None else set())
+    )
+    for job in unit.jobs:
+        missing = sorted(set(job.materials) - supplied)
+        if missing:
+            raise PlanMaterialUnsuppliedError(
+                f"job {job.name!r} needs {', '.join(missing)}, which no param, "
+                "active binding or legacy name in this plan supplies"
+            )
     return build_deploy_binding(
         deploy_unit_digest=verified.digest,
         product_toml_sha256=verified.product_toml_sha256,
