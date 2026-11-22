@@ -32,6 +32,7 @@ _U1 = "sha256:" + "5" * 64
 _U2 = "sha256:" + "6" * 64
 _T1 = "sha256:" + "8" * 64
 _T2 = "sha256:" + "9" * 64
+_EXP = "2027-01-01T00:00:00Z"
 
 
 def _image(**overrides: str) -> PlannedImage:
@@ -112,7 +113,7 @@ def test_every_bound_field_moves_the_plan_digest() -> None:
         _binding(images=[_image(release_digest=_D2, planned_digest=_D2)]),
         _binding(images=[_image(planned_repository="127.0.0.1:5001/team/app")]),
         _binding(companion_order="after_primary_ready"),
-        _binding(legacy=LegacyPlanBinding(1, _P1, ("DB_PASSWORD",))),
+        _binding(legacy=LegacyPlanBinding(1, _P1, ("DB_PASSWORD",), _EXP)),
         _binding(
             allowlist=PullAllowlist.of([_REPO]),
             images=[_image(source="pull", planned_repository=_REPO)],
@@ -123,10 +124,11 @@ def test_every_bound_field_moves_the_plan_digest() -> None:
     assert len(digests) == len(variants)
     # Legacy policy version, sha and names each move it.
     legacy = [
-        LegacyPlanBinding(1, _P1, ("DB_PASSWORD",)),
-        LegacyPlanBinding(2, _P1, ("DB_PASSWORD",)),
-        LegacyPlanBinding(1, _P2, ("DB_PASSWORD",)),
-        LegacyPlanBinding(1, _P1, ("DB_PASSWORD", "API_SECRET")),
+        LegacyPlanBinding(1, _P1, ("DB_PASSWORD",), _EXP),
+        LegacyPlanBinding(2, _P1, ("DB_PASSWORD",), _EXP),
+        LegacyPlanBinding(1, _P2, ("DB_PASSWORD",), _EXP),
+        LegacyPlanBinding(1, _P1, ("DB_PASSWORD", "API_SECRET"), _EXP),
+        LegacyPlanBinding(1, _P1, ("DB_PASSWORD",), "2028-01-01T00:00:00Z"),
     ]
     assert len({_digest(_binding(legacy=item)) for item in legacy}) == len(legacy)
 

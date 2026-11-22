@@ -569,6 +569,10 @@ def test_legacy_part_is_required_and_always_checked(db: Session) -> None:
     legacy = _binding_of(_propose(db, erp.id, source))["legacy"]
     assert (legacy["policy_version"], legacy["sha256"]) == (1, _SHA)
     assert legacy["names"] == list(_NAMES)
+    # The expiry is bound into the plan, in the contract's timestamp format.
+    from dotmac_deployment_control.target_api import parse_stamp
+
+    assert parse_stamp(legacy["expires_at"]) > datetime.now(UTC)
     # L5: an expired policy refuses the plan.
     original = svc._control_now
     svc._control_now = lambda: datetime.now(UTC) + timedelta(days=31)

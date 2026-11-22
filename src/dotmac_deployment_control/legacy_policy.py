@@ -41,6 +41,7 @@ from dotmac_deployment_control.deploy_unit import (
     DeployUnitError,
 )
 from dotmac_deployment_control.digests import is_canonical_digest
+from dotmac_deployment_control.target_api import format_stamp
 
 EXPIRY_AFTER_CUTOVER: Final = timedelta(days=30)
 _MATERIAL = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
@@ -120,12 +121,16 @@ class LegacyPlanBinding:
     policy_version: int
     sha256: str
     names: tuple[str, ...]
+    #: The policy's expiry, `YYYY-MM-DDTHH:MM:SSZ` (UTC). Bound into the plan so
+    #: the agent refuses a legacy file past it without asking anyone.
+    expires_at: str
 
     def payload(self) -> dict[str, object]:
         return {
             "policy_version": self.policy_version,
             "sha256": self.sha256,
             "names": list(self.names),
+            "expires_at": self.expires_at,
         }
 
 
@@ -392,5 +397,8 @@ def bind_to_plan(
             "the legacy file sha differs from the sha fixed in the policy"
         )
     return LegacyPlanBinding(
-        policy_version=policy.version, sha256=policy.sha256, names=policy.names
+        policy_version=policy.version,
+        sha256=policy.sha256,
+        names=policy.names,
+        expires_at=format_stamp(policy.expires_at),
     )
