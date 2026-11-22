@@ -5523,7 +5523,7 @@ def _pin_release_images(supplied: Any, pin: Mapping[str, str], *, where: str) ->
     if supplied is None:
         return [dict(pin)]
     images = authorized_image_set(supplied, where=f"desired state for {where}")
-    only = images[0] if len(images) == 1 else None
+    only = images[0] if images is not None and len(images) == 1 else None
     if (
         only is None
         or only.repository != pin["repository"]
