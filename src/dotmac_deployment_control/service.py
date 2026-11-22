@@ -5230,7 +5230,6 @@ class EnableLegacyPolicyCommand:
     #: the verified descriptor, never taken from the caller.
     secret_names: tuple[str, ...]
     cutover_at: datetime
-    exit_prestaged: bool
     approval: AttendedApproval
     actor_ref: str | None = None
 
@@ -5526,7 +5525,10 @@ def _legacy_transition(
                 cutover_at=command.cutover_at,
                 now=now,
                 enabled_by_ref=command.approval.approver_ref,
-                exit_prestaged=command.exit_prestaged,
+                # DERIVED, not asserted: every legacy name needs a pre-staged
+                # binding in the verified descriptor (the exit is declared).
+                exit_prestaged=set(command.names)
+                <= {b.name for b in verified.unit.bindings if b.state == "pre_staged"},
                 companion=is_companion_descriptor_path(
                     str(
                         ((target.desired_spec or {}).get("deploy_unit") or {}).get(

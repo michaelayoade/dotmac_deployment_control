@@ -157,6 +157,7 @@ def _descriptor_text(
     companion_required: bool = False,
     workers: bool = True,
     job_materials: tuple[str, ...] = (),
+    omit_bindings: tuple[str, ...] = (),
 ) -> str:
     spec = (
         "deploy/companion/product.toml"
@@ -184,6 +185,8 @@ def _descriptor_text(
         )
     if product == _ERP:
         for name in ("API_SECRET", "DB_PASSWORD"):
+            if name in omit_bindings:
+                continue
             state = "" if name in active else 'state = "pre_staged"\n'
             out += (
                 f'[[bindings]]\nname = "{name}"\n{state}kind = "key"\n'
@@ -330,7 +333,6 @@ def _enable(db, target_id, source, **overrides):  # type: ignore[no-untyped-def]
         "sha256": _SHA,
         "secret_names": _NAMES,
         "cutover_at": datetime.now(UTC),
-        "exit_prestaged": True,
         "approval": _ATTENDED,
     }
     args.update(overrides)
@@ -1257,3 +1259,19 @@ def test_a_legacy_name_supplies_a_job_material(db: Session) -> None:
     erp = _legacy_target(db, source)
     _enable(db, erp.id, source)
     assert _propose(db, erp.id, source)
+
+
+def test_the_legacy_exit_must_be_pre_staged_in_the_descriptor(db: Session) -> None:
+    """C-4: exit_prestaged is derived, not an operator bool."""
+    source = FakeSource(legacy=True, omit_bindings=("DB_PASSWORD",))
+    erp = _legacy_target(db, source)
+    with pytest.raises(LegacyPolicyRefusedError, match="pre-staged"):
+        _enable(db, erp.id, source)
+    assert get_legacy_policy(db, erp.id) is None
+    # Names that DO have pre-staged bindings enable; the claim is not a field.
+    assert "exit_prestaged" not in EnableLegacyPolicyCommand.__dataclass_fields__
+    _set(db, "legacy_env_file_allowed_targets", [_REF, _E + "host-s"])
+    _set(db, "legacy_env_file_ceiling", 2)
+    staged = FakeSource(legacy=True)
+    other = _bound_target(db, staged, ref=_E + "host-s")
+    assert _enable(db, other.id, staged).state == "enabled"
