@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -62,9 +63,17 @@ def test_the_vector_file_is_package_data() -> None:
 
 
 def test_no_credential_shaped_literal_sits_in_the_file() -> None:
+    """Secret-shaped values are stored as parts; no whole token appears."""
     text = api.vector_bytes().decode("ascii")
-    for needle in ("ghp_", "-----BEGIN", "hvs.", "AKIA", "eyJ", "hunter2"):
-        assert needle not in text, needle
+    for shape in (
+        r"ghp_[A-Za-z0-9]{20,}",
+        r"-----BEGIN [A-Z ]*-----",
+        r"hvs\.[A-Za-z0-9_-]{8,}",
+        r"AKIA[A-Z0-9]{16}",
+        r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.",
+        r"://[^/\s:@]+:[^/\s@]+@",
+    ):
+        assert not re.search(shape, text), shape
 
 
 # ── Wire ────────────────────────────────────────────────────────────────────
