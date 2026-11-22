@@ -146,6 +146,7 @@ from dotmac_deployment_control.legacy_policy import (
     enable_policy,
     extend_expiry,
     raise_ceiling,
+    refuse_activation_of_legacy_names,
     retire_policy,
     revise_policy,
 )
@@ -5476,6 +5477,11 @@ def _recheck_deploy_binding(
             planned_digest=image.planned_digest,
             allowlist=settings.pull_allowlist,
         )
+    fleet = _fleet_state(session, settings)
+    policy = fleet.policies.get(target.target_ref)
+    if policy is not None and policy.state == "enabled":
+        # An active binding may not take a name the legacy file still supplies.
+        refuse_activation_of_legacy_names(binding.active_binding_names, policy.names)
     if binding.legacy is not None:
         current = bind_to_plan(
             _fleet_state(session, settings),
@@ -5502,8 +5508,10 @@ def create_deployment_set(
             else _load_plan(session, command.companion_plan_id)
         )
         unit = DeploymentSet(
-            primary_plan_digest=primary.plan_digest,
-            companion_plan_digest=None if companion is None else companion.plan_digest,
+            primary_plan_digest=str(primary.plan_digest),
+            companion_plan_digest=(
+                None if companion is None else str(companion.plan_digest)
+            ),
             required_at_switch=command.required_at_switch,
         )
         digest = unit.set_digest()

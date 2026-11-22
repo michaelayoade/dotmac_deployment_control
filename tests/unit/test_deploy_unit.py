@@ -33,8 +33,8 @@ required_in = ["staging", "production"]
 [params.workers]
 type = "int"
 material = "WORKERS"
-minimum = 1
-maximum = 16
+min = 1
+max = 16
 
 [params.log_level]
 type = "enum"
@@ -258,3 +258,187 @@ def test_plan_binds_params_env_digest() -> None:
     assert digest({**base, "workers": 3}) != reference
     assert digest(base, image.replace("c", "d")) != reference
     assert digest(dict(base)) == reference
+
+
+# ── The a18 descriptor schema (shapes the descriptor lane relies on) ─────────
+
+_ERP_SHAPED = """
+schema = "dotmac.deploy_unit/1"
+product = "dotmac-erp-v2"
+spec = "deploy/product.toml"
+
+[image]
+source = "transfer"
+
+[params.trusted_hosts]
+type = "string"
+required_in = ["production"]
+material = "TRUSTED_HOSTS"
+pattern = "^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$"
+max_length = 512
+
+[params.seed_on_startup]
+type = "bool"
+default = false
+choices = [false]
+required_in = ["production"]
+material = "SEED_ON_STARTUP"
+
+[params.port_mode]
+type = "enum"
+default = "mirror"
+choices = ["mirror", "write"]
+material = "PORT_MODE"
+
+[params.legacy_env_path]
+type = "path"
+pattern = "^/etc/dotmac/legacy/[A-Za-z0-9._-]+\\\\.env$"
+max_length = 255
+
+[params.hold_timeout_seconds]
+type = "duration_seconds"
+default = 1800
+min = 60
+max = 3600
+required_in = ["production"]
+material = "HOLD_TIMEOUT_SECONDS"
+
+[legacy_env_file]
+names = ["DATABASE_URL", "JWT_SECRET"]
+path_param = "legacy_env_path"
+
+[[bindings]]
+name = "DATABASE_URL"
+state = "pre_staged"
+kind = "pg_login_dsn"
+roles = ["app"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = false
+
+[[bindings]]
+name = "JWT_SECRET"
+state = "pre_staged"
+kind = "key"
+roles = ["app"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = false
+
+[[bindings]]
+name = "MIGRATION_DATABASE_URL"
+kind = "pg_login_dsn"
+roles = ["migrate"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = true
+
+[[jobs]]
+name = "import"
+command = ["python", "-m", "erp_v2.importer", "execute"]
+trigger = "operator"
+materials = ["MIGRATION_DATABASE_URL"]
+runbook = "docs/rehearsal.md"
+
+[[hold_points]]
+name = "companion-genesis-window"
+member = "companion"
+before = "migrate"
+timeout_param = "hold_timeout_seconds"
+on_timeout = "abandon_member_record_deviation"
+released_by = "operator"
+
+[[companions]]
+product = "dotmac-integrator-companion"
+descriptor = "deploy/companion/deploy-unit.toml"
+order = "after_primary_ready"
+required_at_switch = false
+host = "same"
+
+[health]
+gates = ["migrate", "heads", "live", "ready"]
+"""
+
+
+def test_the_full_descriptor_shape_parses() -> None:
+    unit = parse_deploy_unit(_ERP_SHAPED)
+    assert [b.state for b in unit.bindings] == ["pre_staged", "pre_staged", "active"]
+    assert unit.active_binding_names() == ("MIGRATION_DATABASE_URL",)
+    assert [j.name for j in unit.jobs] == ["import"]
+    assert unit.hold_points[0].timeout_param == "hold_timeout_seconds"
+    assert unit.companions[0].host == "same"
+    assert unit.health_gates == ("migrate", "heads", "live", "ready")
+    assert unit.params["hold_timeout_seconds"].default == "1800"
+    assert unit.params["seed_on_startup"].default == "false"
+    assert unit.params["seed_on_startup"].choices == ("false",)
+
+
+def test_defaults_fill_an_absent_value_and_choices_and_patterns_bind() -> None:
+    unit = parse_deploy_unit(_ERP_SHAPED)
+    rendered = validate_params(
+        unit, {"trusted_hosts": "erp.example.test"}, environment="production"
+    )
+    assert rendered["hold_timeout_seconds"] == "1800"
+    assert rendered["seed_on_startup"] == "false"
+    assert rendered["port_mode"] == "mirror"
+    base = {"trusted_hosts": "ok.example.test"}
+    for bad in (
+        {"trusted_hosts": "bad host"},
+        {**base, "seed_on_startup": True},
+        {**base, "port_mode": "other"},
+        {**base, "hold_timeout_seconds": 3601},
+        {**base, "hold_timeout_seconds": 59},
+        {**base, "legacy_env_path": "/opt/x.env"},
+    ):
+        with pytest.raises(ParamRefusedError):
+            validate_params(unit, bad, environment="production")
+    ok = {**base, "legacy_env_path": "/etc/dotmac/legacy/e.env"}
+    assert validate_params(unit, ok, environment="production")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        (
+            'rotation = "copy_only"\nsingle_use = false\n\n[[bindings]]\nname = "JWT',
+            'rotation = "weekly"\nsingle_use = false\n\n[[bindings]]\nname = "JWT',
+        ),
+        ('state = "pre_staged"\nkind = "key"', 'state = "half"\nkind = "key"'),
+        ('trigger = "operator"', 'trigger = "cron"'),
+        ('materials = ["MIGRATION_DATABASE_URL"]', 'materials = ["NOT_A_MATERIAL"]'),
+        ('timeout_param = "hold_timeout_seconds"', 'timeout_param = "trusted_hosts"'),
+        ('on_timeout = "abandon_member_record_deviation"', 'on_timeout = "retry"'),
+        ('before = "migrate"', 'before = "teatime"'),
+        (
+            'gates = ["migrate", "heads", "live", "ready"]',
+            'gates = ["migrate", "migrate"]',
+        ),
+        ('gates = ["migrate", "heads", "live", "ready"]', 'gates = ["unheard_of"]'),
+        ('host = "same"', 'host = "Bad Host"'),
+        ('runbook = "docs/rehearsal.md"', 'runbook = "/etc/passwd"'),
+        ("max = 3600\n", ""),
+        ('pattern = "^[A-Za-z0-9.-]+(,[A-Za-z0-9.-]+)*$"', 'pattern = "(unclosed"'),
+        ('spec = "deploy/product.toml"', 'spec = "deploy/companion/product.toml"'),
+    ],
+)
+def test_descriptor_shape_refusals(mutation: tuple[str, str]) -> None:
+    assert mutation[0] in _ERP_SHAPED, mutation[0]
+    with pytest.raises(DeployUnitError):
+        parse_deploy_unit(_ERP_SHAPED.replace(*mutation))
+
+
+def test_a_companion_descriptor_names_the_product_toml_beside_it() -> None:
+    text = (
+        'schema = "dotmac.deploy_unit/1"\nproduct = "dotmac-integrator-companion"\n'
+        'spec = "deploy/companion/product.toml"\n'
+    )
+    assert parse_deploy_unit(text, descriptor_path="deploy/companion/deploy-unit.toml")
+    with pytest.raises(DeployUnitError, match="beside"):
+        parse_deploy_unit(text)
+
+
+def test_pre_staged_bindings_may_reuse_legacy_names_but_active_ones_may_not() -> None:
+    assert parse_deploy_unit(_ERP_SHAPED).legacy_env_file is not None
+    active = _ERP_SHAPED.replace('state = "pre_staged"\nkind = "key"', 'kind = "key"')
+    with pytest.raises(DeployUnitError, match="collide"):
+        parse_deploy_unit(active)

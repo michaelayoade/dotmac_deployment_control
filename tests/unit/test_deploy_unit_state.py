@@ -438,3 +438,29 @@ def test_a_deployment_set_is_recorded_once_per_digest(db: Session) -> None:
                 companion_plan_id=primary.id,
             ),
         )
+
+
+def test_a_plan_with_an_active_binding_on_a_legacy_name_is_refused(
+    db: Session,
+) -> None:
+    from dotmac_deployment_control.legacy_policy import LegacyPolicyRefusedError as Err
+
+    erp = _target(db)
+    _set(db, "legacy_env_file_ceiling", 1)
+    _enable(db, erp.id)
+    clash = _binding(active_binding_names=["DB_PASSWORD"])
+    with pytest.raises(Err, match="retire the name"):
+        _propose(db, erp.id, clash)
+    # Retire the policy (ceiling falls), and the same activation is accepted.
+    retire_legacy_policy(
+        db,
+        RetireLegacyPolicyCommand(
+            command_id=_cmd(),
+            target_id=erp.id,
+            evidence=LegacyRetirementEvidence(True, True, True),
+            approval=_ATTENDED,
+        ),
+    )
+    assert _propose(db, erp.id, clash).snapshot["deploy_binding"][
+        "active_binding_names"
+    ] == ["DB_PASSWORD"]

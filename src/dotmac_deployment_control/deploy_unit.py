@@ -39,7 +39,7 @@ import math
 import re
 import tomllib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final
 
 from dotmac_deployment_control.digests import (
@@ -83,6 +83,13 @@ COMPANION_DESCRIPTOR_PREFIX: Final = "deploy/companion/"
 DEFAULT_DESCRIPTOR_PATH: Final = "deploy/deploy-unit.toml"
 
 
+def _normal_parts(path: str) -> list[str]:
+    parts = path.replace("\\", "/").split("/")
+    if ".." in parts or path.startswith("/"):
+        raise DeployUnitError("a descriptor path must be repository-relative")
+    return [p for p in parts if p not in ("", ".")]
+
+
 def is_companion_descriptor_path(path: str) -> bool:
     """True for any descriptor located under `deploy/companion/`."""
     parts = path.replace("\\", "/").split("/")
@@ -123,6 +130,32 @@ _SECRET_SHAPES: Final = (
 )
 _HIGH_ENTROPY_RUN = re.compile(r"[A-Za-z0-9+_=-]{32,}")
 
+BINDING_ACTIVE: Final = "active"
+BINDING_PRE_STAGED: Final = "pre_staged"
+BINDING_STATES: Final = frozenset({BINDING_ACTIVE, BINDING_PRE_STAGED})
+#: `copy_only`: the value is copied from its source and never rotated by the
+#: deploy; `manual`: an operator rotates it. A new mode is a schema revision.
+BINDING_ROTATIONS: Final = frozenset({"copy_only", "manual"})
+#: The gates a runner can be asked to pass, in the order a descriptor lists them.
+HEALTH_GATES: Final = frozenset(
+    {
+        "migrate",
+        "grant_mirror",
+        "heads",
+        "live",
+        "ready",
+        "composition_equals_pins",
+        "runtime_policy_digest",
+        "census_zero_enabled",
+    }
+)
+JOB_TRIGGERS: Final = frozenset({"operator"})
+HOLD_MEMBERS: Final = frozenset({"primary", "companion"})
+HOLD_BEFORE: Final = frozenset({"migrate", "start", "switch"})
+HOLD_ON_TIMEOUT: Final = frozenset({"abandon_member_record_deviation"})
+HOLD_RELEASED_BY: Final = frozenset({"operator"})
+_PATTERN_TYPES: Final = frozenset({"string", "hostname", "url", "path"})
+_MAX_PATTERN_LENGTH = 256
 _DEFAULT_MAX_LENGTH = 512
 _MAX_PATH_LENGTH = 1024
 _MAX_DURATION_SECONDS = 31_536_000
@@ -150,7 +183,12 @@ class ParamSpec:
     maximum: int | None = None
     min_length: int | None = None
     max_length: int | None = None
+    #: Canonical renderings ("true"/"false", decimal ints, strings).
     choices: tuple[str, ...] = ()
+    #: Canonical rendering, validated at parse; used when no value is supplied.
+    default: str | None = None
+    #: A full-match regular expression (string, hostname, url and path only).
+    pattern: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +199,32 @@ class BindingSpec:
     writer: str
     rotation: str
     single_use: bool
+    #: `active` is a delivery source; `pre_staged` is declared and reviewable
+    #: but delivers nothing (the exit from the legacy bridge, staged early).
+    state: str = BINDING_ACTIVE
+
+
+@dataclass(frozen=True, slots=True)
+class JobSpec:
+    """An operator-triggered one-shot. Its arguments come from the runbook."""
+
+    name: str
+    command: tuple[str, ...]
+    trigger: str
+    materials: tuple[str, ...]
+    runbook: str
+
+
+@dataclass(frozen=True, slots=True)
+class HoldPointSpec:
+    """A bounded wait: the agent holds at `before` until released or timed out."""
+
+    name: str
+    member: str
+    before: str
+    timeout_param: str
+    on_timeout: str
+    released_by: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,8 +254,14 @@ class DeployUnit:
     #: `transfer` unless the descriptor says otherwise AND Control later allows
     #: it (see `image_policy`). Absence of `[image]` is `transfer`.
     image_source: str
-    health: Mapping[str, Any]
+    health_gates: tuple[str, ...]
+    jobs: tuple[JobSpec, ...]
+    hold_points: tuple[HoldPointSpec, ...]
     legacy_env_file: LegacyEnvFileSpec | None
+
+    def active_binding_names(self) -> tuple[str, ...]:
+        """Names of bindings that are real delivery sources (not pre-staged)."""
+        return tuple(sorted(b.name for b in self.bindings if b.state == BINDING_ACTIVE))
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +392,15 @@ def validate_param_value(spec: ParamSpec, value: object) -> str:
 
     The rendering is what lands in params.env and what the digest covers.
     """
+    rendered = _validate_typed(spec, value)
+    if spec.choices and rendered not in spec.choices:
+        raise _refuse(spec.name, "is not one of the declared choices")
+    if spec.pattern is not None and not re.fullmatch(spec.pattern, rendered):
+        raise _refuse(spec.name, "does not match its declared pattern")
+    return rendered
+
+
+def _validate_typed(spec: ParamSpec, value: object) -> str:
     name = spec.name
     kind = spec.type
     if kind == "bool":
@@ -353,8 +432,7 @@ def validate_param_value(spec: ParamSpec, value: object) -> str:
         if spec.min_length is not None and len(value) < spec.min_length:
             raise _refuse(name, f"is shorter than {spec.min_length}")
     elif kind == "enum":
-        if value not in spec.choices:
-            raise _refuse(name, "is not one of the declared choices")
+        pass  # membership is checked against `choices` by the caller
     elif kind == "hostname":
         _validate_hostname(name, value)
     elif kind == "cidr":
@@ -394,6 +472,9 @@ def validate_params(
     rendered: dict[str, str] = {}
     for name, spec in unit.params.items():
         if name not in values:
+            if spec.default is not None:
+                rendered[name] = spec.default
+                continue
             if environment in spec.required_in:
                 raise ParamRefusedError(
                     f"param {name!r} is required in {environment!r}"
@@ -447,6 +528,8 @@ _TOP_KEYS = frozenset(
         "companions",
         "image",
         "health",
+        "jobs",
+        "hold_points",
         "legacy_env_file",
     }
 )
@@ -455,14 +538,23 @@ _PARAM_KEYS = frozenset(
         "type",
         "required_in",
         "material",
-        "minimum",
-        "maximum",
+        "min",
+        "max",
         "min_length",
         "max_length",
         "choices",
+        "default",
+        "pattern",
     }
 )
-_BINDING_KEYS = frozenset({"name", "kind", "roles", "writer", "rotation", "single_use"})
+_BINDING_KEYS = frozenset(
+    {"name", "kind", "roles", "writer", "rotation", "single_use", "state"}
+)
+_JOB_KEYS = frozenset({"name", "command", "trigger", "materials", "runbook"})
+_HOLD_KEYS = frozenset(
+    {"name", "member", "before", "timeout_param", "on_timeout", "released_by"}
+)
+_HOST = re.compile(r"[a-z0-9][a-z0-9_.-]{0,62}")
 _COMPANION_KEYS = frozenset(
     {"product", "descriptor", "order", "required_at_switch", "host"}
 )
@@ -504,19 +596,40 @@ def _parse_param(name: str, table: object) -> ParamSpec:
         not isinstance(material, str) or not _MATERIAL.fullmatch(material)
     ):
         raise DeployUnitError(f"{where}.material is not a valid material name")
-    choices = _string_list(f"{where}.choices", table.get("choices", []))
-    if kind == "enum" and not choices:
+    raw_choices = table.get("choices", [])
+    if not isinstance(raw_choices, list):
+        raise DeployUnitError(f"{where}.choices must be a list")
+    if kind == "enum" and not raw_choices:
         raise DeployUnitError(f"{where}: an enum declares its choices")
-    if kind != "enum" and choices:
-        raise DeployUnitError(f"{where}: only an enum declares choices")
+    if raw_choices and kind not in ("enum", "bool", "int", "string"):
+        raise DeployUnitError(f"{where}: choices apply to enum, bool, int, string")
     required_in = frozenset(
         _string_list(f"{where}.required_in", table.get("required_in", []))
     )
-    minimum = _opt_int(where, table, "minimum")
-    maximum = _opt_int(where, table, "maximum")
+    minimum = _opt_int(where, table, "min")
+    maximum = _opt_int(where, table, "max")
     if minimum is not None and maximum is not None and minimum > maximum:
-        raise DeployUnitError(f"{where}: minimum exceeds maximum")
-    return ParamSpec(
+        raise DeployUnitError(f"{where}: min exceeds max")
+    if (minimum is not None or maximum is not None) and kind not in (
+        "int",
+        "duration_seconds",
+    ):
+        raise DeployUnitError(f"{where}: min and max apply to int types only")
+    pattern = table.get("pattern")
+    if pattern is not None:
+        if kind not in _PATTERN_TYPES:
+            raise DeployUnitError(
+                f"{where}: pattern applies to {sorted(_PATTERN_TYPES)}"
+            )
+        if not isinstance(pattern, str) or not 0 < len(pattern) <= _MAX_PATTERN_LENGTH:
+            raise DeployUnitError(f"{where}.pattern is empty or too long")
+        try:
+            re.compile(pattern)
+        except re.error:
+            raise DeployUnitError(
+                f"{where}.pattern is not a valid expression"
+            ) from None
+    base = ParamSpec(
         name=name,
         type=str(kind),
         material=material,
@@ -525,8 +638,18 @@ def _parse_param(name: str, table: object) -> ParamSpec:
         maximum=maximum,
         min_length=_opt_int(where, table, "min_length"),
         max_length=_opt_int(where, table, "max_length"),
-        choices=choices,
+        pattern=pattern,
     )
+    try:
+        choices = tuple(_validate_typed(base, c) for c in raw_choices)
+        spec = replace(base, choices=choices)
+        default = table.get("default")
+        rendered_default = (
+            None if default is None else validate_param_value(spec, default)
+        )
+    except ParamRefusedError as exc:
+        raise DeployUnitError(f"{where}: {exc}") from None
+    return replace(spec, default=rendered_default)
 
 
 def _parse_binding(index: int, table: object, product: str) -> BindingSpec:
@@ -540,6 +663,13 @@ def _parse_binding(index: int, table: object, product: str) -> BindingSpec:
     for key in ("kind", "writer", "rotation"):
         if not isinstance(table.get(key), str) or not table.get(key):
             raise DeployUnitError(f"{where}.{key} is required")
+    if table["rotation"] not in BINDING_ROTATIONS:
+        raise DeployUnitError(
+            f"{where}.rotation must be one of {sorted(BINDING_ROTATIONS)}"
+        )
+    state = table.get("state", BINDING_ACTIVE)
+    if state not in BINDING_STATES:
+        raise DeployUnitError(f"{where}.state must be active or pre_staged")
     single_use = table.get("single_use", False)
     if not isinstance(single_use, bool):
         raise DeployUnitError(f"{where}.single_use must be a boolean")
@@ -556,6 +686,69 @@ def _parse_binding(index: int, table: object, product: str) -> BindingSpec:
         writer=str(table["writer"]),
         rotation=str(table["rotation"]),
         single_use=single_use,
+        state=str(state),
+    )
+
+
+def _parse_job(index: int, table: object) -> JobSpec:
+    where = f"jobs[{index}]"
+    if not isinstance(table, dict):
+        raise DeployUnitError(f"{where} must be a table")
+    _only_keys(where, table, _JOB_KEYS)
+    name = table.get("name")
+    if not isinstance(name, str) or not _NAME.fullmatch(name.replace("-", "_")):
+        raise DeployUnitError(f"{where}.name is not well formed")
+    command = _string_list(f"{where}.command", table.get("command"))
+    if not command or any(not part or "\x00" in part for part in command):
+        raise DeployUnitError(f"{where}.command must be a non-empty argument list")
+    if table.get("trigger") not in JOB_TRIGGERS:
+        raise DeployUnitError(f"{where}.trigger must be one of {sorted(JOB_TRIGGERS)}")
+    materials = _string_list(f"{where}.materials", table.get("materials", []))
+    if not all(_MATERIAL.fullmatch(m) for m in materials):
+        raise DeployUnitError(f"{where}.materials must be material names")
+    runbook = table.get("runbook")
+    if (
+        not isinstance(runbook, str)
+        or not runbook
+        or runbook.startswith("/")
+        or ".." in runbook.split("/")
+    ):
+        raise DeployUnitError(f"{where}.runbook must be a repository-relative path")
+    return JobSpec(
+        name=name,
+        command=command,
+        trigger=str(table["trigger"]),
+        materials=materials,
+        runbook=runbook,
+    )
+
+
+def _parse_hold_point(index: int, table: object) -> HoldPointSpec:
+    where = f"hold_points[{index}]"
+    if not isinstance(table, dict):
+        raise DeployUnitError(f"{where} must be a table")
+    _only_keys(where, table, _HOLD_KEYS)
+    name = table.get("name")
+    if not isinstance(name, str) or not _NAME.fullmatch(name.replace("-", "_")):
+        raise DeployUnitError(f"{where}.name is not well formed")
+    for key, allowed in (
+        ("member", HOLD_MEMBERS),
+        ("before", HOLD_BEFORE),
+        ("on_timeout", HOLD_ON_TIMEOUT),
+        ("released_by", HOLD_RELEASED_BY),
+    ):
+        if table.get(key) not in allowed:
+            raise DeployUnitError(f"{where}.{key} must be one of {sorted(allowed)}")
+    timeout_param = table.get("timeout_param")
+    if not isinstance(timeout_param, str):
+        raise DeployUnitError(f"{where}.timeout_param is required")
+    return HoldPointSpec(
+        name=name,
+        member=str(table["member"]),
+        before=str(table["before"]),
+        timeout_param=timeout_param,
+        on_timeout=str(table["on_timeout"]),
+        released_by=str(table["released_by"]),
     )
 
 
@@ -573,6 +766,8 @@ def _parse_companion(index: int, table: object) -> CompanionSpec:
     required = table.get("required_at_switch", False)
     if not isinstance(required, bool):
         raise DeployUnitError(f"{where}.required_at_switch must be a boolean")
+    if not _HOST.fullmatch(str(table["host"])):
+        raise DeployUnitError(f"{where}.host is `same` or a host alias")
     return CompanionSpec(
         product=str(table["product"]),
         descriptor=str(table["descriptor"]),
@@ -606,8 +801,9 @@ def parse_deploy_unit(
     if not isinstance(product, str) or not _PRODUCT.fullmatch(product):
         raise DeployUnitError("the descriptor product is not well formed")
     spec = document.get("spec")
-    if spec != "deploy/product.toml":
-        raise DeployUnitError("spec must be deploy/product.toml")
+    sibling = "/".join([*_normal_parts(descriptor_path)[:-1], "product.toml"])
+    if spec != sibling:
+        raise DeployUnitError(f"spec must be {sibling}, the product.toml beside it")
 
     raw_params = document.get("params", {})
     if not isinstance(raw_params, dict):
@@ -642,6 +838,48 @@ def parse_deploy_unit(
     health = document.get("health", {})
     if not isinstance(health, dict):
         raise DeployUnitError("health must be a table")
+    _only_keys("health", health, frozenset({"gates"}))
+    gates = _string_list("health.gates", health.get("gates", []))
+    if len(set(gates)) != len(gates) or not set(gates) <= HEALTH_GATES:
+        raise DeployUnitError(
+            f"health.gates must be unique members of {sorted(HEALTH_GATES)}"
+        )
+
+    raw_jobs = document.get("jobs", [])
+    if not isinstance(raw_jobs, list):
+        raise DeployUnitError("jobs must be an array of tables")
+    jobs = tuple(_parse_job(i, t) for i, t in enumerate(raw_jobs))
+    if len({j.name for j in jobs}) != len(jobs):
+        raise DeployUnitError("two jobs share a name")
+    known = {p.material for p in params.values() if p.material} | {
+        b.name for b in bindings
+    }
+    for job in jobs:
+        unknown_materials = sorted(set(job.materials) - known)
+        if unknown_materials:
+            raise DeployUnitError(
+                f"job {job.name!r} names unknown materials: "
+                f"{', '.join(unknown_materials)}"
+            )
+
+    raw_holds = document.get("hold_points", [])
+    if not isinstance(raw_holds, list):
+        raise DeployUnitError("hold_points must be an array of tables")
+    hold_points = tuple(_parse_hold_point(i, t) for i, t in enumerate(raw_holds))
+    if len({h.name for h in hold_points}) != len(hold_points):
+        raise DeployUnitError("two hold points share a name")
+    for hold in hold_points:
+        timeout = params.get(hold.timeout_param)
+        if timeout is None or timeout.type != "duration_seconds":
+            raise DeployUnitError(
+                f"hold point {hold.name!r}: timeout_param must name a "
+                "duration_seconds param"
+            )
+        if timeout.maximum is None:
+            raise DeployUnitError(
+                f"hold point {hold.name!r}: the timeout param needs a max, so the "
+                "wait is bounded"
+            )
 
     legacy = _parse_legacy(
         document.get("legacy_env_file"),
@@ -659,7 +897,9 @@ def parse_deploy_unit(
         bindings=bindings,
         companions=companions,
         image_source=str(source),
-        health=health,
+        health_gates=gates,
+        jobs=jobs,
+        hold_points=hold_points,
         legacy_env_file=legacy,
     )
 
@@ -698,14 +938,17 @@ def _parse_legacy(
         raise DeployUnitError("legacy_env_file.path_param must name a declared param")
     if params[path_param].type != "path":
         raise DeployUnitError("legacy_env_file.path_param must be a path param")
+    # L2: a collision is refused only with an ACTIVE binding. A pre-staged
+    # binding may reuse a legacy name; activating it later is refused by
+    # `legacy_policy` until the name is retired from the policy.
     taken = {p.material for p in params.values() if p.material} | {
-        b.name for b in bindings
+        b.name for b in bindings if b.state == BINDING_ACTIVE
     }
     taken.add(APP_IMAGE_MATERIAL)
     collisions = sorted(set(names) & taken)
     if collisions:
         raise DeployUnitError(
-            "legacy_env_file names collide with a param material, a binding or "
+            "legacy_env_file names collide with a param material, an active binding or "
             f"APP_IMAGE: {', '.join(collisions)}"
         )
     return LegacyEnvFileSpec(names=tuple(sorted(names)), path_param=path_param)

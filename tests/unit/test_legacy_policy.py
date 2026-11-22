@@ -16,6 +16,7 @@ from dotmac_deployment_control.legacy_policy import (
     enable_policy,
     extend_expiry,
     raise_ceiling,
+    refuse_activation_of_legacy_names,
     retire_policy,
     revise_policy,
 )
@@ -280,3 +281,44 @@ def test_legacy_never_products() -> None:
         parse_deploy_unit(
             _LEGACY_TOML.format(product=_ERP), descriptor_path="../deploy/x.toml"
         )
+
+
+def test_legacy_l2_collision_is_with_active_bindings_only() -> None:
+    """A pre-staged binding may reuse a legacy name; an active one may not."""
+    # `binding_names` carries the ACTIVE bindings only: a pre-staged name is not
+    # passed, so enabling succeeds even though a pre-staged binding shares it.
+    assert _enable(_fleet(), binding_names={"MIGRATION_DATABASE_URL"})
+    # An ACTIVE binding with a legacy name collides.
+    with pytest.raises(LegacyPolicyRefusedError, match="collide"):
+        _enable(_fleet(), binding_names={"DB_PASSWORD"})
+
+
+def test_activating_a_binding_still_in_the_legacy_names_is_refused() -> None:
+    fleet = _enable(_fleet())
+    policy = fleet.policies["erp/prod/host-a"]
+    # Still legacy: activation refused until the name is retired.
+    with pytest.raises(LegacyPolicyRefusedError, match="retire the name"):
+        refuse_activation_of_legacy_names({"DB_PASSWORD"}, policy.names)
+    # An unrelated active binding is fine.
+    refuse_activation_of_legacy_names({"OTHER"}, policy.names)
+    # Retire the name (a shrinking revision), then activation passes.
+    shrunk = revise_policy(
+        fleet,
+        target_ref="erp/prod/host-a",
+        names=("API_SECRET", "SMTP_PASSWORD"),
+        sha256=_SHA,
+        approval=_ATTENDED,
+    ).policies["erp/prod/host-a"]
+    refuse_activation_of_legacy_names({"DB_PASSWORD"}, shrunk.names)
+    with pytest.raises(LegacyPolicyRefusedError):
+        refuse_activation_of_legacy_names({"API_SECRET"}, shrunk.names)
+    # Full retirement frees every name and decrements the ceiling (L4).
+    retired = retire_policy(
+        fleet,
+        target_ref="erp/prod/host-a",
+        evidence=LegacyRetirementEvidence(True, True, True),
+    )
+    assert retired.ceiling == fleet.ceiling - 1
+    refuse_activation_of_legacy_names(
+        set(_NAMES), retired.policies["erp/prod/host-a"].names
+    )

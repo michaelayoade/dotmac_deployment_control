@@ -73,6 +73,8 @@ class DeployPlanBinding:
     params_env_digest: str
     images: tuple[PlannedImage, ...]
     lease_ttl_seconds: int
+    #: Names of the descriptor's ACTIVE bindings (pre-staged ones deliver nothing).
+    active_binding_names: tuple[str, ...] = ()
     legacy: LegacyPlanBinding | None = None
     companion_order: str | None = None
 
@@ -83,6 +85,7 @@ class DeployPlanBinding:
             "params_env_digest": self.params_env_digest,
             "images": [i.payload() for i in self.images],
             "lease_ttl_seconds": self.lease_ttl_seconds,
+            "active_binding_names": list(self.active_binding_names),
             "legacy": None if self.legacy is None else self.legacy.payload(),
             "companion_order": self.companion_order,
         }
@@ -97,6 +100,7 @@ def build_deploy_binding(
     allowlist: PullAllowlist,
     legacy: LegacyPlanBinding | None = None,
     companion_order: str | None = None,
+    active_binding_names: Sequence[str] = (),
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
@@ -134,6 +138,7 @@ def build_deploy_binding(
         params_env_digest=params_env_digest,
         images=tuple(sorted(images, key=lambda i: i.service)),
         lease_ttl_seconds=lease_ttl_seconds,
+        active_binding_names=tuple(sorted(set(active_binding_names))),
         legacy=legacy,
         companion_order=companion_order,
     )

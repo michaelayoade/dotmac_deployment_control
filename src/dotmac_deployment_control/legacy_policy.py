@@ -149,6 +149,8 @@ def _check_names(
             "legacy names must be declared secret-class; non-secret values "
             f"become typed params: {', '.join(nonsecret)}"
         )
+    # `binding_names` are the ACTIVE bindings' names; pre-staged ones may reuse
+    # a legacy name (see `refuse_activation_of_legacy_names`).
     taken = set(param_materials) | set(binding_names) | {APP_IMAGE_MATERIAL}
     collisions = sorted(set(ordered) & taken)
     if collisions:
@@ -157,6 +159,24 @@ def _check_names(
             f"{APP_IMAGE_MATERIAL}: {', '.join(collisions)}"
         )
     return ordered
+
+
+def refuse_activation_of_legacy_names(
+    active_binding_names: Collection[str], legacy_names: Collection[str]
+) -> None:
+    """L2, activation half: a binding may not go ACTIVE while its name is legacy.
+
+    A pre-staged binding may reuse a legacy name; making it a real delivery
+    source while the legacy file still supplies that name would be two sources
+    for one name. The name must first be retired from the policy (a revision
+    that shrinks the names, or the full retirement).
+    """
+    clash = sorted(set(active_binding_names) & set(legacy_names))
+    if clash:
+        raise LegacyPolicyRefusedError(
+            "an active binding names a legacy env-file name still in the policy; "
+            f"retire the name from the policy first: {', '.join(clash)}"
+        )
 
 
 def _check_sha(sha256: str) -> None:
@@ -294,7 +314,10 @@ def extend_expiry(
     approval.require("extending a legacy policy expiry")
     if new_expires_at <= current.expires_at:
         raise LegacyPolicyRefusedError("an extension must move the expiry later")
-    return _with(fleet, replace(current, expires_at=new_expires_at))
+    return _with(
+        fleet,
+        replace(current, expires_at=new_expires_at, version=current.version + 1),
+    )
 
 
 def retire_policy(
