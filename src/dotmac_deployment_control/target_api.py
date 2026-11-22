@@ -548,9 +548,12 @@ def audit_router_source(source: str) -> list[str]:
     """Architecture-test helper for a consumer's router (Platform CP).
 
     Returns the violations in `source`: no call to `check_request` that passes
-    `credential_target_ref`, or a string constant that is one of the signed
-    message purposes (a local message builder). CP's architecture test asserts
-    the list is empty for its target router module.
+    `credential_target_ref`; no use of `.signed_message` (verification) or
+    `.nonce_ledger_key` (the replay ledger); a string constant that is a signed
+    message purpose (a local message builder); or a literal `X-Dotmac-` header
+    name. This is a LINT, not enforcement: CP's HTTP replay of every vector and
+    a composed-route test that every target route carries the auth dependency
+    are the enforcement. CP asserts the list is empty for its router module.
     """
     problems: list[str] = []
     tree = ast.parse(source)
@@ -572,14 +575,24 @@ def audit_router_source(source: str) -> list[str]:
         any(kw.arg == "credential_target_ref" for kw in call.keywords) for call in calls
     ):
         problems.append("check_request is never given the credential's target")
+    attributes = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    for needed, why in (
+        ("signed_message", "the signature is never verified over signed_message"),
+        ("nonce_ledger_key", "nonce_ledger_key is never inserted"),
+    ):
+        if needed not in attributes:
+            problems.append(why)
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and (REQUEST_PURPOSE in node.value or RESPONSE_PURPOSE in node.value)
-        ):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if REQUEST_PURPOSE in node.value or RESPONSE_PURPOSE in node.value:
             problems.append(
                 f"line {node.lineno}: a local message purpose (use request_message)"
+            )
+        if "x-dotmac-" in node.value.lower():
+            problems.append(
+                f"line {node.lineno}: a literal X-Dotmac- header name "
+                "(use the H_* constants and request_credential_id)"
             )
     return problems
 

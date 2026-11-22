@@ -568,17 +568,24 @@ def test_audit_router_source_requires_check_request_and_no_local_builder() -> No
         "    return check_request(method=req.m, raw_path=req.p, query_string='',\n"
         "        headers=req.h, body=req.b, store_now=now(),\n"
         "        credential_target_ref=cred.target)\n"
+        "def verify(found):\n"
+        "    key.verify(found.signed_message)\n"
+        "    ledger.insert(found.nonce_ledger_key)\n"
     )
     assert api.audit_router_source(good) == []
-    assert api.audit_router_source("def route(req):\n    return 1\n") == [
-        "the router never calls check_request"
-    ]
+    empty = api.audit_router_source("def route(req):\n    return 1\n")
+    assert empty[0] == "the router never calls check_request"
+    assert len(empty) == 3  # nor verifies signed_message, nor inserts the ledger key
     no_target = good.replace("credential_target_ref=cred.target", "x=1")
     assert api.audit_router_source(no_target) == [
         "check_request is never given the credential's target"
     ]
     local = good + '\nMSG = "dotmac.target_request.v1" + "\\n"\n'
     assert any("local message purpose" in p for p in api.audit_router_source(local))
+    for dropped in ("signed_message", "nonce_ledger_key"):
+        assert api.audit_router_source(good.replace(dropped, "other")) != []
+    literal = good + '\nH = "X-Dotmac-Nonce"\n'
+    assert any("literal X-Dotmac-" in p for p in api.audit_router_source(literal))
     local_response = good + '\nR = "cp-target-response.v1"\n'
     assert any(
         "local message purpose" in p for p in api.audit_router_source(local_response)
