@@ -3145,6 +3145,202 @@
       "target_ref": "dotmac-erp-v2/production/host-a"
     }
   ],
+  "response_check": {
+    "ok": [
+      {
+        "body_utf8": "{\"ok\":true}",
+        "headers": {
+          "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+        },
+        "message_utf8": "cp-target-response.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\n000000000000000000000000a5a5a5b0\n200\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+        "method": "GET",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+        "request_nonce": "000000000000000000000000a5a5a5b0",
+        "signature_b64u": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ",
+        "status": 200
+      },
+      {
+        "body_utf8": "{\"error\":\"x\"}",
+        "headers": {
+          "X-Dotmac-Response-Signature": "WSstURzIoIO-FMwatVBU1IBszbgCPpGnv7NMpmzlkrApdas9MDVrgr5Z_HKPJAda0qgjQhMddN31yzV_CaqBBg"
+        },
+        "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume\n000000000000000000000000a5a5a5b1\n409\n469535a7a760aaa23c38f15a48eea08848693bd2fcda382aba664e319f672300",
+        "method": "POST",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume",
+        "request_nonce": "000000000000000000000000a5a5a5b1",
+        "signature_b64u": "WSstURzIoIO-FMwatVBU1IBszbgCPpGnv7NMpmzlkrApdas9MDVrgr5Z_HKPJAda0qgjQhMddN31yzV_CaqBBg",
+        "status": 409
+      },
+      {
+        "body_utf8": "",
+        "headers": {
+          "X-Dotmac-Response-Signature": "EV-AGVZDl_Is6CrgRSX7KJEncCeQ1V8yOTTs44T3C_cH-U1dA9BSCzPvhPBisnBtjNrfIam6FXgVdrdsNe6pBg"
+        },
+        "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve\n000000000000000000000000a5a5a5b2\n200\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "method": "POST",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve",
+        "request_nonce": "000000000000000000000000a5a5a5b2",
+        "signature_b64u": "EV-AGVZDl_Is6CrgRSX7KJEncCeQ1V8yOTTs44T3C_cH-U1dA9BSCzPvhPBisnBtjNrfIam6FXgVdrdsNe6pBg",
+        "status": 200
+      }
+    ],
+    "refused": [
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "unsigned 200"
+      },
+      {
+        "code": "cp_unreachable",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 413
+        },
+        "name": "unsigned 413 is a transport fault"
+      },
+      {
+        "code": "cp_unreachable",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 429
+        },
+        "name": "unsigned 429 is a transport fault"
+      },
+      {
+        "code": "cp_unreachable",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 502
+        },
+        "name": "unsigned 502 is a transport fault"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 403
+        },
+        "name": "unsigned 403 is not a transport fault"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+          },
+          "headers_pairs": [
+            [
+              "X-Dotmac-Response-Signature",
+              "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+            ],
+            [
+              "x-dotmac-response-signature",
+              "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+            ]
+          ],
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a repeated response signature"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "not base64!"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a malformed signature"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a 63-byte signature"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BR"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a non-canonical signature spelling"
+      },
+      {
+        "code": "response_binding_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+          },
+          "method": "GET",
+          "path": "/elsewhere",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a path that is not a target path"
+      },
+      {
+        "code": "response_binding_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "short",
+          "status": 200
+        },
+        "name": "a malformed request nonce"
+      }
+    ]
+  },
   "response_vectors": [
     {
       "body_utf8": "{\"ok\":true}",

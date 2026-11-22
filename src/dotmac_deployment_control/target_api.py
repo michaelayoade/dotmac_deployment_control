@@ -621,6 +621,63 @@ def check_request(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ResponseCheck:
+    """What a client verifies: `signature` over `message` under the pinned key."""
+
+    message: bytes
+    signature: bytes
+
+
+def check_response(
+    *,
+    method: str,
+    path: str,
+    request_nonce: str,
+    status: int,
+    body: bytes,
+    headers: HeaderInput,
+) -> ResponseCheck:
+    """The CLIENT half: everything about a response before its signature check.
+
+    Requires a well-formed path and request nonce and exactly one canonical
+    64-byte `X-Dotmac-Response-Signature`. An UNSIGNED 413, 429 or 5xx is a
+    retryable transport fault (`cp_unreachable`); any other unsigned or
+    malformed response is `response_signature_invalid`. The caller then verifies
+    `signature` over `message` under the pinned CP response key (never a denied
+    key) and maps a failure to `response_signature_invalid`.
+    """
+    try:
+        parse_target_path(path)
+        check_nonce(request_nonce)
+    except TargetApiError as exc:
+        raise TargetApiError(str(exc), "response_binding_invalid") from None
+    unsigned = classify_unsigned_response(status)
+    try:
+        text = _single_header(headers, H_RESPONSE_SIGNATURE)
+    except TargetApiError:
+        raise TargetApiError("the response is not signed", unsigned) from None
+    try:
+        signature = b64u_decode(text)
+    except TargetApiError:
+        signature = b""
+    if len(signature) != SIGNATURE_BYTES:
+        raise TargetApiError(
+            "the response signature is not a canonical 64-byte value",
+            "response_signature_invalid",
+        )
+    return ResponseCheck(
+        message=response_message(
+            method=method,
+            path=path,
+            request_nonce=request_nonce,
+            status=status,
+            body=body,
+        ),
+        signature=signature,
+    )
+
+
 def audit_router_source(source: str) -> list[str]:
     """Architecture-test helper for a consumer's router (Platform CP).
 
@@ -935,6 +992,7 @@ __all__ = [
     "VECTORS_RESOURCE",
     "HeaderInput",
     "RequestCoordinates",
+    "ResponseCheck",
     "TargetApiError",
     "TargetBinding",
     "approle_name",
@@ -947,6 +1005,7 @@ __all__ = [
     "check_nonce",
     "check_public_key_admissible",
     "check_request",
+    "check_response",
     "check_route",
     "check_secrets_value",
     "check_skew",

@@ -400,6 +400,89 @@ def _credential_id_vectors(case: dict[str, Any]) -> dict[str, Any]:
     return {"ok": ok, "refused": refused}
 
 
+def _response_check_vectors() -> dict[str, Any]:
+    """`check_response`: the client half (the agent calls this, not its own)."""
+    responses = _response_vectors()
+    ok = []
+    for case in responses:
+        headers = {api.H_RESPONSE_SIGNATURE: case["signature_b64u"]}
+        found = api.check_response(
+            method=case["method"],
+            path=case["path"],
+            request_nonce=case["request_nonce"],
+            status=case["status"],
+            body=case["body_utf8"].encode(),
+            headers=headers,
+        )
+        ok.append(
+            {
+                "method": case["method"],
+                "path": case["path"],
+                "request_nonce": case["request_nonce"],
+                "status": case["status"],
+                "body_utf8": case["body_utf8"],
+                "headers": headers,
+                "message_utf8": _text(found.message),
+                "signature_b64u": api.b64u_encode(found.signature),
+            }
+        )
+    first = responses[0]
+    base = {
+        "method": first["method"],
+        "path": first["path"],
+        "request_nonce": first["request_nonce"],
+        "status": first["status"],
+        "body_utf8": first["body_utf8"],
+        "headers": {api.H_RESPONSE_SIGNATURE: first["signature_b64u"]},
+    }
+    refused: list[dict[str, Any]] = []
+
+    def refuse(name: str, **change: Any) -> None:
+        inputs = {**base, **change}
+        try:
+            api.check_response(
+                method=inputs["method"],
+                path=inputs["path"],
+                request_nonce=inputs["request_nonce"],
+                status=inputs["status"],
+                body=inputs["body_utf8"].encode(),
+                headers=(
+                    [tuple(p) for p in inputs["headers_pairs"]]
+                    if "headers_pairs" in inputs
+                    else inputs["headers"]
+                ),
+            )
+        except api.TargetApiError as exc:
+            refused.append({"name": name, "inputs": inputs, "code": exc.code})
+        else:  # pragma: no cover
+            raise AssertionError(name)
+
+    refuse("unsigned 200", headers={})
+    refuse("unsigned 413 is a transport fault", headers={}, status=413)
+    refuse("unsigned 429 is a transport fault", headers={}, status=429)
+    refuse("unsigned 502 is a transport fault", headers={}, status=502)
+    refuse("unsigned 403 is not a transport fault", headers={}, status=403)
+    refuse(
+        "a repeated response signature",
+        headers_pairs=[
+            [api.H_RESPONSE_SIGNATURE, first["signature_b64u"]],
+            [api.H_RESPONSE_SIGNATURE.lower(), first["signature_b64u"]],
+        ],
+    )
+    refuse("a malformed signature", headers={api.H_RESPONSE_SIGNATURE: "not base64!"})
+    refuse(
+        "a 63-byte signature",
+        headers={api.H_RESPONSE_SIGNATURE: api.b64u_encode(bytes(63))},
+    )
+    refuse(
+        "a non-canonical signature spelling",
+        headers={api.H_RESPONSE_SIGNATURE: _noncanonical(first["signature_b64u"])},
+    )
+    refuse("a path that is not a target path", path="/elsewhere")
+    refuse("a malformed request nonce", request_nonce="short")
+    return {"ok": ok, "refused": refused}
+
+
 def _json_vectors() -> dict[str, Any]:
     ok = [b"{}", b'{"a":1,"b":[1,2,{"c":null}]}', b"[]", b'"text"']
     refused = [
@@ -989,6 +1072,7 @@ def build_vectors() -> dict[str, Any]:
         },
         "request_vectors": _request_vectors(),
         "request_check": _request_check_vectors(),
+        "response_check": _response_check_vectors(),
         "nonce_ledger": {
             "scope": api.NONCE_LEDGER_SCOPE,
             "key_fields": list(api.NONCE_LEDGER_KEY_FIELDS),

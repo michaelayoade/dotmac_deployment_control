@@ -788,3 +788,50 @@ def test_denied_public_key_vectors_and_the_reference_derivation() -> None:
     assert not api.is_denied_public_key(denied["accepted_example"])
     api.check_public_key_admissible(denied["accepted_example"])
     assert denied["refused_at"] == ["enrolment", "response-key pinning"]
+
+
+# ── C-5: the client half ────────────────────────────────────────────────────
+
+
+def test_check_response_vectors_reproduce_and_verify() -> None:
+    vectors = _VECTORS["response_check"]
+    for case in vectors["ok"]:
+        found = api.check_response(
+            method=case["method"],
+            path=case["path"],
+            request_nonce=case["request_nonce"],
+            status=case["status"],
+            body=case["body_utf8"].encode(),
+            headers=case["headers"],
+        )
+        assert found.message.decode() == case["message_utf8"]
+        assert api.b64u_encode(found.signature) == case["signature_b64u"]
+        assert ed.verify(_public("response"), found.message, found.signature)
+    codes = {}
+    for case in vectors["refused"]:
+        inputs = case["inputs"]
+        headers = (
+            [tuple(p) for p in inputs["headers_pairs"]]
+            if "headers_pairs" in inputs
+            else inputs["headers"]
+        )
+        with pytest.raises(api.TargetApiError) as info:
+            api.check_response(
+                method=inputs["method"],
+                path=inputs["path"],
+                request_nonce=inputs["request_nonce"],
+                status=inputs["status"],
+                body=inputs["body_utf8"].encode(),
+                headers=headers,
+            )
+        assert info.value.code == case["code"], case["name"]
+        codes[case["name"]] = case["code"]
+    assert codes["unsigned 200"] == "response_signature_invalid"
+    for status in ("413", "429", "502"):
+        assert codes[f"unsigned {status} is a transport fault"] == "cp_unreachable"
+    assert (
+        codes["unsigned 403 is not a transport fault"] == "response_signature_invalid"
+    )
+    assert codes["a repeated response signature"] == "response_signature_invalid"
+    assert codes["a path that is not a target path"] == "response_binding_invalid"
+    assert codes["a malformed request nonce"] == "response_binding_invalid"

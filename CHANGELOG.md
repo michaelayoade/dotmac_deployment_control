@@ -66,8 +66,16 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   `dotmac.deploy_target_materials/1` and the env names). Package data
   `contract/target_api_v1.json` holds the shared vectors; Control's functions
   reproduce every one. The agent vendors the file byte-for-byte and pins its
-  digest: target_api_v1.json sha256 548ca5ee593a571b9fc4f826db9e4f05cc6c14288e3e3df2be1681a2c0b61f07. A change is a `_v2` file and a new
+  digest: target_api_v1.json sha256 2e02f2ca295ee531d819d8c09aa7887ed4801c6272e60dd8b2c151d21929a907. A change is a `_v2` file and a new
   release.
+- Contract hardening (architect r4): `request_credential_id` is the one way to
+  look the credential up (an absent or repeated header is refused) and
+  `check_request` requires the id it finds to equal the looked-up one;
+  `check_response` is the client half (path and request nonce, exactly one
+  canonical response signature, unsigned 413/429/5xx as `cp_unreachable`);
+  `audit_router_source` also requires `request_credential_id`, `signed_message`
+  and `nonce_ledger_key` and refuses literal `X-Dotmac-` names. Vectors cover
+  repeated headers and the response check.
 - Contract hardening (architect r3): `check_request` is the one server-side
   coordinate check (header target == path target == the credential's target, the
   closed verb, empty query, all headers, nonce, skew, canonical signature) with a
