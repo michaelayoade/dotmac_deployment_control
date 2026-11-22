@@ -68,8 +68,22 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   reproduce every one. The agent vendors the file byte-for-byte and pins its
   digest: target_api_v1.json sha256 ff0a25b8284f7c22c9e5d930274ae4001ef3510529f75c74144544baa4158970. A change is a `_v2` file and a new
   release.
-- A material whose name says it is a secret (`PASSWORD`, `SECRET`, `TOKEN`,
-  `PRIVATE_KEY`, `API_KEY`, `CREDENTIAL`) may only be a `path` param; refused at
+- Contract hardening (architect r3): `check_request` is the one server-side
+  coordinate check (header target == path target == the credential's target, the
+  closed verb, empty query, all headers, nonce, skew, canonical signature) with a
+  negative vector for each; `audit_router_source` lets Platform CP assert it uses
+  it. The nonce ledger is specified (scope `deployment.target_request_nonce.v1`,
+  key `(credential_id, nonce)`, permanent). Base64url must round-trip; request
+  bodies refuse duplicate JSON keys. Materials define `pending`, drop `roles` and
+  `previous_app_image`, and cross-check `dispatch_id`, `target_ref`, product and
+  plan digest against the signed statement and the snapshot. The plan binding
+  carries the roles (derived from the verified descriptor, sorted) and names the
+  primary service, so there is no single-image fallback. A descriptor-backed
+  target's ref must be `<product_code>/<environment>/<host>`. The vector file's
+  published test keys are refused at enrolment.
+- A material whose name says it is a secret (`PASS`, `PWD`, `SECRET`,
+  `TOKEN`, `CREDENTIAL`, `DSN`, `SALT`, `COOKIE`, `PRIVATE_KEY`, `API_KEY`,
+  `*_KEY`) may only be a `path` param; refused at
   descriptor parse. `secret_ref` is DERIVED (`bao://<env>/<product>/kv/<role>/
   <lower(name)>`), never stored. The legacy part of the plan binding carries
   `expires_at`.
