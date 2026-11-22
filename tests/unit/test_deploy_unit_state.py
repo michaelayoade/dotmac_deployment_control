@@ -501,6 +501,11 @@ def test_plan_binds_params_env_digest(db: Session) -> None:
         unit, params, app_image=f"{_LOOP}@{_D1}", environment="production"
     )
     assert _binding_of(plan)["params_env_digest"] == params_env_digest(render)
+    # And that digest is the one of these fixed bytes, not just of the function.
+    assert render == f"APP_IMAGE={_LOOP}@{_D1}\nWORKERS=2\n".encode()
+    assert _binding_of(plan)["params_env_digest"] == (
+        "sha256:6deb479b927ce1ac4db421665dcb9d561f2314749151ca0f78ca43146ea3526a"
+    )
     # Different params give a different derived digest (and a different plan).
     _desired(db, erp.id, source, params={"image_repository": _LOOP, "workers": 3})
     again = _propose(db, erp.id, source)
@@ -572,10 +577,15 @@ def test_legacy_part_is_required_and_always_checked(db: Session) -> None:
             _propose(db, erp.id, source)
     finally:
         svc._control_now = original
-    # A policy with a descriptor that dropped the table is refused too.
-    source.set_text(_descriptor_text())
-    with pytest.raises(ReleaseDescriptorRefusedError):
-        _propose(db, erp.id, source)  # digest moved since desired state
+    # A new release whose descriptor DROPPED the bridge, while the policy is
+    # still enabled: desired state is set from it (so the digest matches), and
+    # the plan is refused by the policy-versus-descriptor check itself.
+    dropped = FakeSource()
+    _desired(db, erp.id, dropped)
+    with pytest.raises(
+        LegacyPolicyRefusedError, match=r"declares no \[legacy_env_file\]"
+    ):
+        _propose(db, erp.id, dropped)
 
 
 def test_an_active_binding_on_a_legacy_name_is_refused_until_retired(
@@ -594,7 +604,9 @@ def test_an_active_binding_on_a_legacy_name_is_refused_until_retired(
     activated = FakeSource(legacy=False, active=("DB_PASSWORD",))
     # Same target, new release with the bridge dropped but the policy live.
     _desired(db, erp.id, activated)
-    with pytest.raises(LegacyPolicyRefusedError, match="legacy"):
+    with pytest.raises(
+        LegacyPolicyRefusedError, match=r"declares no \[legacy_env_file\]"
+    ):
         _propose(db, erp.id, activated)
     retire_legacy_policy(
         db,

@@ -448,3 +448,28 @@ def test_pre_staged_bindings_may_reuse_legacy_names_but_active_ones_may_not() ->
     active = _ERP_SHAPED.replace('state = "pre_staged"\nkind = "key"', 'kind = "key"')
     with pytest.raises(DeployUnitError, match="collide"):
         parse_deploy_unit(active, legacy_allowed=True)
+
+
+def test_params_render_golden_bytes() -> None:
+    """Fixed bytes and a fixed digest, independent of the production function.
+
+    APP_IMAGE sorts with the other lines (bytewise), the file is LF-terminated
+    and has no trailing blank line.
+    """
+    unit = parse_deploy_unit(_ERP_SHAPED, legacy_allowed=True)
+    image = "127.0.0.1:5000/team/app@sha256:" + "b" * 64
+    render = canonical_render(
+        unit,
+        {"trusted_hosts": "erp.example.test"},
+        app_image=image,
+        environment="production",
+    )
+    assert render == (
+        b"APP_IMAGE=127.0.0.1:5000/team/app@sha256:"
+        + b"b" * 64
+        + b"\nHOLD_TIMEOUT_SECONDS=1800\nPORT_MODE=mirror\n"
+        b"SEED_ON_STARTUP=false\nTRUSTED_HOSTS=erp.example.test\n"
+    )
+    assert params_env_digest(render) == (
+        "sha256:00464f3d19bf85ad61c33e5fd1e0472245273600c22a15b5a86fcb9f02804921"
+    )
