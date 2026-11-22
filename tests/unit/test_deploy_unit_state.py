@@ -490,7 +490,7 @@ def test_a_pull_binding_is_refused_unless_the_stored_allowlist_has_it(
     )
     # The stored allowlist is re-read at proposal: remove it and the binding fails.
     _set(db, "public_pull_repositories", [])
-    with pytest.raises(DeployUnitError, match="public_pull_repositories"):
+    with pytest.raises(ReleaseDescriptorRefusedError, match="public_pull_repositories"):
         _propose_with(db, erp.id, source, forged)
 
 
@@ -556,7 +556,7 @@ def test_release_image_mismatch_is_refused(db: Session) -> None:
         _desired(db, erp.id, source, images=other)
     assert info.value.code == "release_image_mismatch"
     # Nothing was half-written.
-    assert get_target_images(db, erp.id) is None
+    assert get_target_images(db, erp.id) == []  # still the empty declared set
 
 
 def get_target_images(db: Session, target_id):  # type: ignore[no-untyped-def]
