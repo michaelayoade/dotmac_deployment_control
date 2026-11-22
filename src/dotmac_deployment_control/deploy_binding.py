@@ -70,6 +70,8 @@ class PlannedImage:
 class DeployPlanBinding:
     #: Computed by Control over the descriptor bytes (`DeployUnit.digest`).
     deploy_unit_digest: str
+    #: sha256 of the released product.toml the descriptor's spec names.
+    product_toml_sha256: str
     params_env_digest: str
     images: tuple[PlannedImage, ...]
     lease_ttl_seconds: int
@@ -82,6 +84,7 @@ class DeployPlanBinding:
         """The canonical, JSON-safe document that enters the plan snapshot."""
         return {
             "deploy_unit_digest": self.deploy_unit_digest,
+            "product_toml_sha256": self.product_toml_sha256,
             "params_env_digest": self.params_env_digest,
             "images": [i.payload() for i in self.images],
             "lease_ttl_seconds": self.lease_ttl_seconds,
@@ -94,6 +97,7 @@ class DeployPlanBinding:
 def build_deploy_binding(
     *,
     deploy_unit_digest: str,
+    product_toml_sha256: str,
     params_env_digest: str,
     images: Sequence[PlannedImage],
     lease_ttl_seconds: int,
@@ -105,6 +109,8 @@ def build_deploy_binding(
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
         raise DeployBindingRefusedError("deploy_unit_digest must be sha256:<64 hex>")
+    if not is_canonical_digest(product_toml_sha256):
+        raise DeployBindingRefusedError("product_toml_sha256 must be sha256:<64 hex>")
     if not is_canonical_digest(params_env_digest):
         raise DeployBindingRefusedError("params_env_digest must be sha256:<64 hex>")
     if (
@@ -135,6 +141,7 @@ def build_deploy_binding(
         raise DeployBindingRefusedError(f"companion order must be {COMPANION_ORDER}")
     return DeployPlanBinding(
         deploy_unit_digest=deploy_unit_digest,
+        product_toml_sha256=product_toml_sha256,
         params_env_digest=params_env_digest,
         images=tuple(sorted(images, key=lambda i: i.service)),
         lease_ttl_seconds=lease_ttl_seconds,

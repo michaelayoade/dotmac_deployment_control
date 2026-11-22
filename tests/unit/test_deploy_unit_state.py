@@ -71,6 +71,8 @@ _SHA = "sha256:" + "a" * 64
 _SHA2 = "sha256:" + "b" * 64
 _D1 = "sha256:" + "1" * 64
 _U1 = "sha256:" + "5" * 64
+_T1 = "sha256:" + "8" * 64
+_T2 = "sha256:" + "9" * 64
 _P1 = "sha256:" + "3" * 64
 _REPO = "registry.example.test/team/app"
 _EXEC = "sha256:" + "1a" * 32
@@ -209,6 +211,7 @@ def _image(**overrides: str) -> PlannedImage:
 def _binding(allowlist: PullAllowlist | None = None, **overrides: object):
     args: dict[str, object] = {
         "deploy_unit_digest": _U1,
+        "product_toml_sha256": _T1,
         "params_env_digest": _P1,
         "images": [_image()],
         "lease_ttl_seconds": 900,
@@ -384,6 +387,8 @@ class FakeSource:
         self.image_repository = _REPO
         self.product_code = _ERP
         self.attested_override: str | None = None
+        self.toml_path: str | None = "deploy/product.toml"
+        self.toml_sha: str | None = _T1
 
     def set_text(self, text: str) -> None:
         self.text = text
@@ -403,6 +408,8 @@ class FakeSource:
             deploy_unit_bytes=data,
             attested_digest=self.attested_override
             or DeployUnitDigestV1.over_bytes(data).canonical,
+            product_toml_path=self.toml_path,
+            product_toml_sha256=self.toml_sha,
         )
 
 
@@ -671,6 +678,12 @@ def test_propose_re_resolves_and_refuses_when_the_release_moved(
     before = source.calls
     assert _propose_with(db, erp.id, source).plan_digest
     assert source.calls > before, "propose did not re-resolve the descriptor"
+    # The released product.toml changed after desired state was set.
+    source.toml_sha = _T2
+    with pytest.raises(ReleaseDescriptorRefusedError) as info:
+        _propose_with(db, erp.id, source)
+    assert info.value.code == "descriptor_digest_mismatch"
+    source.toml_sha = _T1
     # The descriptor bytes changed after desired state was set.
     source.set_text(source.text + "\n# edited\n")
     with pytest.raises(ReleaseDescriptorRefusedError) as info:
@@ -698,6 +711,10 @@ def test_a_binding_must_agree_with_the_re_verified_descriptor(db: Session) -> No
         _propose_with(db, erp.id, source, _binding(deploy_unit_digest=_U1))
     assert info.value.code == "descriptor_digest_mismatch"
     digest = _unit_digest(source)
+    wrong_toml = _binding(deploy_unit_digest=digest, product_toml_sha256=_T2)
+    with pytest.raises(ReleaseDescriptorRefusedError) as info:
+        _propose_with(db, erp.id, source, wrong_toml)
+    assert info.value.code == "descriptor_digest_mismatch"
     wrong_image = _binding(
         deploy_unit_digest=digest,
         images=[
@@ -785,3 +802,79 @@ def test_a_deployment_set_is_recorded_once_per_digest(db: Session) -> None:
                 companion_plan_id=primary.id,
             ),
         )
+
+
+def test_product_toml_evidence_binds_the_plan_and_is_checked(db: Session) -> None:
+    source = FakeSource()
+    erp = _bound_target(db, source)
+    digest = _unit_digest(source)
+    a = _propose_with(
+        db, erp.id, source, _binding(deploy_unit_digest=digest, product_toml_sha256=_T1)
+    )
+    assert a.snapshot["spec"]["deploy_unit"]["product_toml_sha256"] == _T1
+    assert a.snapshot["deploy_binding"]["product_toml_sha256"] == _T1
+    # The sha moves the plan digest: same target, only the stored pin changes.
+    from dotmac_deployment_control import plan_digest_of, plan_snapshot
+    from dotmac_deployment_control.models import DeploymentTarget
+
+    row = db.get(DeploymentTarget, erp.id)
+    before = plan_digest_of(plan_snapshot(row, purpose="foundation_execution"))
+    spec = dict(row.desired_spec)
+    spec["deploy_unit"] = {**spec["deploy_unit"], "product_toml_sha256": _T2}
+    row.desired_spec = spec
+    after = plan_digest_of(plan_snapshot(row, purpose="foundation_execution"))
+    assert before != after
+    # The path must be the descriptor's `spec`; path and sha come together.
+    cases = (("deploy/other.toml", _T1), ("deploy/product.toml", None), (None, _T1))
+    for index, (path, sha) in enumerate(cases):
+        bad = FakeSource()
+        bad.toml_path, bad.toml_sha = path, sha
+        with pytest.raises(ReleaseDescriptorRefusedError) as info:
+            _bound_target_ref(db, bad, f"erp/prod/bad-{index}")
+        assert info.value.code == "descriptor_evidence_mismatch"
+    # Absent for a non-companion descriptor is refused outright.
+    none = FakeSource()
+    none.toml_path = none.toml_sha = None
+    with pytest.raises(ReleaseDescriptorRefusedError) as info:
+        _bound_target_ref(db, none, "erp/prod/host-none")
+    assert info.value.code == "descriptor_evidence_mismatch"
+
+
+def _bound_target_ref(db: Session, source: FakeSource, ref: str):  # type: ignore[no-untyped-def]
+    target = _target(db, ref=ref)
+    _desired(db, target.id, source)
+    return target
+
+
+def test_a_companion_with_no_product_toml_yet_can_be_set_but_never_planned(
+    db: Session,
+) -> None:
+    source = FakeSource()
+    source.set_text(
+        _descriptor_text().replace(
+            "deploy/product.toml", "deploy/companion/product.toml"
+        )
+    )
+    source.toml_path = source.toml_sha = None
+    target = _target(db, ref="integrator/prod/host-a")
+    set_desired_state(
+        db,
+        SetDesiredStateCommand(
+            command_id=_cmd(),
+            target_id=target.id,
+            desired=DesiredDeployment(release_ref="erp@1"),
+            descriptor_path="deploy/companion/deploy-unit.toml",
+            params={"image_repository": "127.0.0.1:5000/team/app"},
+        ),
+        release_source=source,
+    )
+    with pytest.raises(ReleaseDescriptorRefusedError) as info:
+        _propose_with(db, target.id, source)
+    assert info.value.code == "product_toml_absent"
+    # Present once I3 lands: the same target can then be planned.
+    source.toml_path = "deploy/companion/product.toml"
+    source.toml_sha = _T1
+    # The stored pin was None, so the changed evidence is a mismatch, not a plan:
+    # desired state must be set again from the now-complete evidence.
+    with pytest.raises(ReleaseDescriptorRefusedError):
+        _propose_with(db, target.id, source)

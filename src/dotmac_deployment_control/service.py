@@ -2043,6 +2043,7 @@ def set_desired_state(
                 "descriptor_path": command.descriptor_path,
                 "descriptor_digest": verified.digest,
                 "source_revision": verified.evidence.source_revision,
+                "product_toml_sha256": verified.product_toml_sha256,
                 "params": rendered,
             }
         elif command.params is not None:
@@ -5570,6 +5571,16 @@ def _reresolve_release_descriptor(
             code.DIGEST_MISMATCH,
             "the release descriptor differs from the one desired state was set from",
         )
+    if verified.product_toml_sha256 is None:
+        raise code(
+            code.PRODUCT_TOML_ABSENT,
+            "the released product.toml is not present; no plan until it is",
+        )
+    if verified.product_toml_sha256 != stored.get("product_toml_sha256"):
+        raise code(
+            code.DIGEST_MISMATCH,
+            "the released product.toml differs from the one desired state was set from",
+        )
     pin = image_pin(verified)
     pinned = list(target.desired_images or [])
     if not any(
@@ -5588,6 +5599,8 @@ def _reresolve_release_descriptor(
         return
     if binding.deploy_unit_digest != verified.digest:
         raise code(code.DIGEST_MISMATCH, "the binding's descriptor digest differs")
+    if binding.product_toml_sha256 != verified.product_toml_sha256:
+        raise code(code.DIGEST_MISMATCH, "the binding's product.toml sha differs")
     if binding.active_binding_names != verified.unit.active_binding_names():
         raise code(
             code.EVIDENCE_MISMATCH,

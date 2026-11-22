@@ -447,6 +447,7 @@ class ReleaseDescriptorRefusedError(DeploymentControlError):
     IMAGE_MISMATCH = "release_image_mismatch"
     PRODUCT_MISMATCH = "descriptor_product_mismatch"
     EVIDENCE_MISMATCH = "descriptor_evidence_mismatch"
+    PRODUCT_TOML_ABSENT = "product_toml_absent"
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")
@@ -472,6 +473,11 @@ class ReleaseDescriptorEvidence:
     image_digest: str
     deploy_unit_bytes: bytes = field(repr=False)
     attested_digest: str
+    #: The released product.toml the descriptor's `spec` names, and its sha256.
+    #: Both None only while a companion's product.toml does not exist yet (I3);
+    #: Control accepts that for a companion path and refuses every plan for it.
+    product_toml_path: str | None = None
+    product_toml_sha256: str | None = None
 
 
 class ReleaseDescriptorSource(Protocol):
@@ -487,10 +493,6 @@ class ReleaseDescriptorSource(Protocol):
 
 
 __all__ = [
-    "ReleaseDescriptorEvidence",
-    "ReleaseDescriptorRefusedError",
-    "ReleaseDescriptorSource",
-    "ReleaseDescriptorUnavailableError",
     "ApprovalEvidence",
     "ApprovalRefusedError",
     "ApprovedPlanRefusedError",
@@ -508,5 +510,9 @@ __all__ = [
     "ObservationRefusedError",
     "OperationRefusedError",
     "PlanRefusedError",
+    "ReleaseDescriptorEvidence",
+    "ReleaseDescriptorRefusedError",
+    "ReleaseDescriptorSource",
+    "ReleaseDescriptorUnavailableError",
     "TransitionRefusedError",
 ]

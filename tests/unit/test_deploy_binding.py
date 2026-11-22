@@ -30,6 +30,8 @@ _P1 = "sha256:" + "3" * 64
 _P2 = "sha256:" + "4" * 64
 _U1 = "sha256:" + "5" * 64
 _U2 = "sha256:" + "6" * 64
+_T1 = "sha256:" + "8" * 64
+_T2 = "sha256:" + "9" * 64
 
 
 def _image(**overrides: str) -> PlannedImage:
@@ -48,6 +50,7 @@ def _image(**overrides: str) -> PlannedImage:
 def _binding(**overrides: object):
     args: dict[str, object] = {
         "deploy_unit_digest": _U1,
+        "product_toml_sha256": _T1,
         "params_env_digest": _P1,
         "images": [_image()],
         "lease_ttl_seconds": 900,
@@ -104,6 +107,7 @@ def test_every_bound_field_moves_the_plan_digest() -> None:
     base = _digest(_binding())
     variants = [
         _binding(deploy_unit_digest=_U2),
+        _binding(product_toml_sha256=_T2),
         _binding(lease_ttl_seconds=901),
         _binding(images=[_image(release_digest=_D2, planned_digest=_D2)]),
         _binding(images=[_image(planned_repository="127.0.0.1:5001/team/app")]),
@@ -139,6 +143,8 @@ def test_binding_refuses_bad_images_and_digests() -> None:
         _binding(params_env_digest="nope")
     with pytest.raises(DeployBindingRefusedError):
         _binding(deploy_unit_digest="nope")
+    with pytest.raises(DeployBindingRefusedError):
+        _binding(product_toml_sha256="nope")
     with pytest.raises(DeployBindingRefusedError):
         _binding(images=[])
     with pytest.raises(DeployBindingRefusedError):

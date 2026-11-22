@@ -27,6 +27,7 @@ from typing import Any
 
 from dotmac_deployment_control.deploy_unit import (
     DeployUnit,
+    is_companion_descriptor_path,
     parse_deploy_unit,
     validate_params,
 )
@@ -52,6 +53,9 @@ class VerifiedDescriptor:
     evidence: ReleaseDescriptorEvidence
     #: Recomputed by Control; equal to the attested digest or we never get here.
     digest: str
+    #: sha256 of the released product.toml; None only for a companion path
+    #: whose product.toml is pending (plans are refused until it is present).
+    product_toml_sha256: str | None = None
 
 
 def verify_release_descriptor(
@@ -108,7 +112,30 @@ def verify_release_descriptor(
         raise _E(_E.DIGEST_MISMATCH, "the descriptor is not UTF-8") from None
     if unit.product != product_code:
         raise _E(_E.PRODUCT_MISMATCH, "the descriptor declares another product")
-    return VerifiedDescriptor(unit=unit, evidence=evidence, digest=recomputed)
+    toml_sha = _check_product_toml(unit, evidence, descriptor_path)
+    return VerifiedDescriptor(
+        unit=unit, evidence=evidence, digest=recomputed, product_toml_sha256=toml_sha
+    )
+
+
+def _check_product_toml(
+    unit: DeployUnit, evidence: ReleaseDescriptorEvidence, descriptor_path: str
+) -> str | None:
+    path, sha = evidence.product_toml_path, evidence.product_toml_sha256
+    if path is None and sha is None:
+        if is_companion_descriptor_path(descriptor_path):
+            return None  # pending (I3); every plan is refused meanwhile
+        raise _E(_E.EVIDENCE_MISMATCH, "the evidence carries no product.toml")
+    if path is None or sha is None:
+        raise _E(_E.EVIDENCE_MISMATCH, "product.toml path and sha come together")
+    if path != unit.spec:
+        raise _E(
+            _E.EVIDENCE_MISMATCH,
+            "the evidence's product.toml is not the descriptor's spec",
+        )
+    if not is_canonical_digest(sha):
+        raise _E(_E.EVIDENCE_MISMATCH, "the product.toml sha is not canonical")
+    return sha
 
 
 def pin_params(
