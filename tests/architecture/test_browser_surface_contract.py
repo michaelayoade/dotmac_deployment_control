@@ -429,7 +429,7 @@ class TestTheComposedRoutesKeepTheirGuards:
 
     #: Every route the surface contributes. A count, so a traversal that stops
     #: finding routes fails instead of passing over an empty set.
-    EXPECTED_ROUTES = 8
+    EXPECTED_ROUTES = 10
 
     def _surface_routes(self) -> list[Any]:
         app = FastAPI()

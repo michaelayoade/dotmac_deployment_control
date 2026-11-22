@@ -64,7 +64,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from dotmac_deployment_control.authorization import AuthorizationEnvelopeV2
@@ -429,7 +429,68 @@ class DeliveryIntent:
         return self.dispatch_envelope.statement.attempt_no
 
 
+# ── The release descriptor, as evidence an assembly supplies ─────────────────
+
+
+class ReleaseDescriptorUnavailableError(DeploymentControlError):
+    """The assembly's source could not supply the release descriptor evidence.
+
+    Fail-closed: no source injected, an unknown release, or an ambiguous record
+    all land here, and nothing is planned from a descriptor nobody could show.
+    """
+
+
+class ReleaseDescriptorRefusedError(DeploymentControlError):
+    """The evidence was supplied and does not hold. `code` names why."""
+
+    DIGEST_MISMATCH = "descriptor_digest_mismatch"
+    IMAGE_MISMATCH = "release_image_mismatch"
+    PRODUCT_MISMATCH = "descriptor_product_mismatch"
+    EVIDENCE_MISMATCH = "descriptor_evidence_mismatch"
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseDescriptorEvidence:
+    """What the assembly vouches for about one release's deploy descriptor.
+
+    `deploy_unit_bytes` are the exact bytes of `deploy-unit.toml` at
+    `source_revision`; `attested_digest` is the digest the release record
+    attests over them. Control recomputes the digest itself and refuses on any
+    difference, so a source that lies about either is caught. The bytes are
+    never stored: only the digest and the image pins are.
+    """
+
+    release_ref: str
+    product_code: str
+    descriptor_path: str
+    source_revision: str
+    image_repository: str
+    image_digest: str
+    deploy_unit_bytes: bytes = field(repr=False)
+    attested_digest: str
+
+
+class ReleaseDescriptorSource(Protocol):
+    """Implemented by the ASSEMBLY (Platform CP over its release catalogue).
+
+    `release_ref` stays opaque to Control: the implementation interprets it.
+    Raises :class:`ReleaseDescriptorUnavailableError` when it cannot answer.
+    """
+
+    def resolve(
+        self, release_ref: str, *, product_code: str, descriptor_path: str
+    ) -> ReleaseDescriptorEvidence: ...
+
+
 __all__ = [
+    "ReleaseDescriptorEvidence",
+    "ReleaseDescriptorRefusedError",
+    "ReleaseDescriptorSource",
+    "ReleaseDescriptorUnavailableError",
     "ApprovalEvidence",
     "ApprovalRefusedError",
     "ApprovedPlanRefusedError",

@@ -192,6 +192,9 @@ from dotmac_deployment_control.ports import (
     ObservationRefusedError,
     OperationRefusedError,
     PlanRefusedError,
+    ReleaseDescriptorRefusedError,
+    ReleaseDescriptorSource,
+    ReleaseDescriptorUnavailableError,
     TransitionRefusedError,
 )
 from dotmac_deployment_control.recovery_grant import (
@@ -200,6 +203,11 @@ from dotmac_deployment_control.recovery_grant import (
     RecoveryStandingResult,
     RecoverySubject,
     recovery_standing,
+)
+from dotmac_deployment_control.release_descriptor import (
+    image_pin,
+    pin_params,
+    verify_release_descriptor,
 )
 
 #: The audit actions this module declares and writes. Four, split by SUBJECT
@@ -687,6 +695,11 @@ class SetDesiredStateCommand:
     desired: DesiredDeployment
     expected_version: int | None = None
     actor_ref: str | None = None
+    #: Opt-in descriptor-backed desired state. The descriptor is NEVER supplied
+    #: here: only its repository path, which the injected
+    #: `ReleaseDescriptorSource` resolves. `params` are the typed values.
+    descriptor_path: str | None = None
+    params: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1973,7 +1986,12 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
     return _target_view(target, approval_standing=_approval_standing_for(db, target.id))
 
 
-def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.TargetView:
+def set_desired_state(
+    db: Session,
+    command: SetDesiredStateCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.TargetView:
     """Declare what a target should converge on, bumping `desired_revision`.
 
     Bumping unconditionally — even when the values happen to match — is
@@ -1996,8 +2014,41 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
                 f"target {row.target_ref} is decommissioned; a desired state for "
                 "a retired deployment would be an intent nothing can converge on"
             )
+        spec = dict(command.desired.spec)
+        images_in = command.desired.images
+        if "deploy_unit" in spec:
+            raise PlanRefusedError(
+                "`deploy_unit` in the spec is reserved: Control derives it from "
+                "the verified release descriptor and never takes it from a caller"
+            )
+        if command.descriptor_path is not None:
+            settings = _effective_settings(session)
+            verified = verify_release_descriptor(
+                release_source,
+                release_ref=command.desired.release_ref,
+                product_code=row.product_code,
+                descriptor_path=command.descriptor_path,
+                legacy_allowed=settings.legacy_allowed_products,
+            )
+            rendered = pin_params(
+                verified,
+                command.params or {},
+                environment=row.environment,
+                allowlist=settings.pull_allowlist,
+            )
+            images_in = _pin_release_images(
+                images_in, image_pin(verified), where=row.target_ref
+            )
+            spec["deploy_unit"] = {
+                "descriptor_path": command.descriptor_path,
+                "descriptor_digest": verified.digest,
+                "source_revision": verified.evidence.source_revision,
+                "params": rendered,
+            }
+        elif command.params is not None:
+            raise PlanRefusedError("params need a descriptor_path to be validated")
         row.desired_release_ref = command.desired.release_ref
-        row.desired_spec = dict(command.desired.spec)
+        row.desired_spec = spec
         row.licence_ref = command.desired.licence_ref
         row.brand_profile_ref = command.desired.brand_profile_ref
         # CANONICALIZED ON THE WAY IN, refused if it is not a set. Ordering and
@@ -2009,7 +2060,7 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
         # state and is not an empty set (see `DesiredDeployment.images`).
         row.desired_images = image_set_payload(
             authorized_image_set(
-                command.desired.images,
+                images_in,
                 where=f"desired state for target {row.target_ref}",
             )
         )
@@ -2407,7 +2458,12 @@ def _as_utc(value: datetime) -> datetime:
 # ── Plans ───────────────────────────────────────────────────────────────────
 
 
-def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
+def propose_plan(
+    db: Session,
+    command: ProposePlanCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.PlanView:
     """Freeze the target's CURRENT desired state into an immutable plan.
 
     Freezing at proposal — rather than reading the desired state at dispatch —
@@ -2469,6 +2525,9 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         ).scalar()
         sequence = int(highest or 0) + 1
 
+        _reresolve_release_descriptor(
+            session, target, command.deploy_binding, release_source
+        )
         if command.deploy_binding is not None:
             _recheck_deploy_binding(session, target, command.deploy_binding)
         snapshot = plan_snapshot(
@@ -5457,6 +5516,94 @@ def legacy_plan_binding(
         now=_control_now(),
         observed_sha256=observed_sha256,
     )
+
+
+def _pin_release_images(supplied: Any, pin: Mapping[str, str], *, where: str) -> Any:
+    """Pin the release image. A caller-supplied set must be exactly that image."""
+    if supplied is None:
+        return [dict(pin)]
+    images = authorized_image_set(supplied, where=f"desired state for {where}")
+    only = images[0] if len(images) == 1 else None
+    if (
+        only is None
+        or only.repository != pin["repository"]
+        or only.digest.canonical != pin["digest"]
+    ):
+        raise ReleaseDescriptorRefusedError(
+            ReleaseDescriptorRefusedError.IMAGE_MISMATCH,
+            "the declared images are not exactly the release's image",
+        )
+    return supplied
+
+
+def _reresolve_release_descriptor(
+    session: Session,
+    target: DeploymentTarget,
+    binding: DeployPlanBinding | None,
+    source: ReleaseDescriptorSource | None,
+) -> None:
+    """Resolve the descriptor AGAIN at proposal; refuse if anything moved.
+
+    Desired state is set at one time and proposed at another. The evidence is
+    re-read, the digest recomputed and compared with the stored one, the image
+    pin and the params re-checked, and a supplied binding must agree with what
+    was just verified (never with what the caller says).
+    """
+    code = ReleaseDescriptorRefusedError
+    stored = (target.desired_spec or {}).get("deploy_unit")
+    if stored is None:
+        if binding is not None:
+            raise ReleaseDescriptorUnavailableError(
+                "a deploy binding needs a descriptor-backed desired state"
+            )
+        return
+    settings = _effective_settings(session)
+    verified = verify_release_descriptor(
+        source,
+        release_ref=str(target.desired_release_ref or ""),
+        product_code=target.product_code,
+        descriptor_path=str(stored["descriptor_path"]),
+        legacy_allowed=settings.legacy_allowed_products,
+    )
+    if verified.digest != stored["descriptor_digest"]:
+        raise code(
+            code.DIGEST_MISMATCH,
+            "the release descriptor differs from the one desired state was set from",
+        )
+    pin = image_pin(verified)
+    pinned = list(target.desired_images or [])
+    if not any(
+        item.get("repository") == pin["repository"]
+        and item.get("digest") == pin["digest"]
+        for item in pinned
+    ):
+        raise code(code.IMAGE_MISMATCH, "the pinned image is not the release's image")
+    pin_params(
+        verified,
+        stored["params"],
+        environment=target.environment,
+        allowlist=settings.pull_allowlist,
+    )
+    if binding is None:
+        return
+    if binding.deploy_unit_digest != verified.digest:
+        raise code(code.DIGEST_MISMATCH, "the binding's descriptor digest differs")
+    if binding.active_binding_names != verified.unit.active_binding_names():
+        raise code(
+            code.EVIDENCE_MISMATCH,
+            "the binding's active bindings differ from the descriptor's",
+        )
+    for image in binding.images:
+        if image.source != verified.unit.image_source:
+            raise code(
+                code.EVIDENCE_MISMATCH,
+                "a bound image's source differs from the descriptor's [image] source",
+            )
+        if (image.release_repository, image.release_digest) != (
+            pin["repository"],
+            pin["digest"],
+        ):
+            raise code(code.IMAGE_MISMATCH, "a bound image is not the release's image")
 
 
 def _recheck_deploy_binding(

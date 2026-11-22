@@ -112,9 +112,13 @@ from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts, service
 from dotmac_deployment_control.deploy_settings import SETTING_NAMES
-from dotmac_deployment_control.deploy_unit import DeployUnitError
+from dotmac_deployment_control.deploy_unit import DeployUnitError, ParamSpec
 from dotmac_deployment_control.legacy_policy import AttendedApproval
-from dotmac_deployment_control.ports import DeploymentControlError
+from dotmac_deployment_control.ports import (
+    DeploymentControlError,
+    ReleaseDescriptorSource,
+)
+from dotmac_deployment_control.release_descriptor import verify_release_descriptor
 
 #: The stable identity of this contribution inside the facet. Route names are
 #: derived from it by the kernel, so it is part of the composed surface's
@@ -175,6 +179,14 @@ _SET_FIELDS: Final[frozenset[str]] = frozenset(
 _SETTING_FIELDS: Final[frozenset[str]] = frozenset(
     {"name", "value", "attended", "register_ref"}
 )
+#: The typed params form. Each param is its own `param__<name>` field, derived
+#: from the VERIFIED descriptor; there is no descriptor-text field, and no
+#: digest field (the descriptor's digest is recomputed by Control).
+_PARAMS_FIELDS: Final[frozenset[str]] = frozenset(
+    {"release_ref", "descriptor_path", "expected_desired_revision"}
+)
+_PARAM_PREFIX: Final[str] = "param__"
+_DEFAULT_DESCRIPTOR_PATH: Final[str] = "deploy/deploy-unit.toml"
 
 #: `require_csrf` puts its proof here and the kernel validates it before this
 #: surface sees the request. It is allowed through the field allowlist for that
@@ -698,6 +710,192 @@ async def set_deploy_setting_submit(
         )
     return RedirectResponse(
         url=surface_path(request, "deploy_settings"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ── The typed params form ───────────────────────────────────────────────────
+
+
+def release_descriptor_source(request: Request) -> ReleaseDescriptorSource | None:
+    """The assembly's source, read from `app.state`; None when not configured.
+
+    The assembly that composes this surface sets
+    `app.state.deployment_control_release_source`. Absent, the form refuses
+    rather than accepting descriptor text from a browser.
+    """
+    return getattr(request.app.state, "deployment_control_release_source", None)
+
+
+ReleaseSource = Annotated[
+    ReleaseDescriptorSource | None, Depends(release_descriptor_source)
+]
+
+
+def _field_view(spec: ParamSpec, current: str | None) -> dict[str, Any]:
+    """One form field, from a ParamSpec. Image digests are Control's, not typed."""
+    return {
+        "name": spec.name,
+        "input": f"{_PARAM_PREFIX}{spec.name}",
+        "type": spec.type,
+        "required": bool(spec.required_in),
+        "default": spec.default,
+        "choices": spec.choices or (("true", "false") if spec.type == "bool" else ()),
+        "min": spec.minimum,
+        "max": spec.maximum,
+        "max_length": spec.max_length,
+        "pattern": spec.pattern,
+        "value": current if current is not None else (spec.default or ""),
+    }
+
+
+def _params_context(
+    db: Session,
+    source: ReleaseDescriptorSource | None,
+    target_id: UUID,
+    *,
+    release_ref: str | None = None,
+    descriptor_path: str = _DEFAULT_DESCRIPTOR_PATH,
+    refusal: str | None = None,
+) -> dict[str, Any]:
+    target = service.get_target(db, target_id)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Deployment target not found"
+        )
+    release = release_ref or target.desired_release_ref or ""
+    fields: list[dict[str, Any]] = []
+    problem = refusal
+    if release and problem is None:
+        try:
+            settings = service.get_deploy_settings(db)
+            verified = verify_release_descriptor(
+                source,
+                release_ref=release,
+                product_code=target.product_code,
+                descriptor_path=descriptor_path,
+                legacy_allowed=frozenset(settings.legacy_env_file_allowed_products),
+            )
+            stored = dict(
+                (target.desired_spec.get("deploy_unit") or {}).get("params", {})
+            )
+            fields = [
+                _field_view(spec, stored.get(spec.name))
+                for spec in verified.unit.params.values()
+                if spec.type != "image_digest"
+            ]
+        except DeploymentControlError as exc:
+            problem = str(exc)
+    return {
+        "page_title": f"Parameters - {target.target_ref}",
+        "target": target,
+        "release_ref": release,
+        "descriptor_path": descriptor_path,
+        "fields": fields,
+        "refusal": problem,
+    }
+
+
+@router.get(
+    "/deployments/{target_id}/params", response_class=HTMLResponse, name="deploy_params"
+)
+def deploy_params(
+    request: Request,
+    target_id: UUID,
+    db: PlatformSession,
+    source: ReleaseSource,
+    release_ref: str | None = None,
+    descriptor_path: str = _DEFAULT_DESCRIPTOR_PATH,
+) -> HTMLResponse:
+    """The typed params form, rendered from the verified descriptor's ParamSpecs."""
+    return _render(
+        request,
+        "deploy_params.html",
+        _params_context(
+            db,
+            source,
+            target_id,
+            release_ref=release_ref,
+            descriptor_path=descriptor_path,
+        ),
+    )
+
+
+@router.post(
+    "/deployments/{target_id}/params", response_model=None, name="set_deploy_params"
+)
+async def set_deploy_params_submit(
+    request: Request,
+    target_id: UUID,
+    db: PlatformSession,
+    source: ReleaseSource,
+) -> HTMLResponse | RedirectResponse:
+    """Validate typed values against the VERIFIED descriptor and set desired state."""
+    form = await request.form()
+    allowed = _PARAMS_FIELDS | {key for key in form if key.startswith(_PARAM_PREFIX)}
+    values = await _read_form(request, allowed)
+    actor = _actor_ref(request)
+    target = service.get_target(db, target_id)
+    if target is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Deployment target not found"
+        )
+    release = values.get("release_ref", "").strip()
+    path = values.get("descriptor_path", "").strip() or _DEFAULT_DESCRIPTOR_PATH
+    expected = _optional_int(values, "expected_desired_revision")
+    if not release or expected is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="release_ref and expected_desired_revision are required",
+        )
+    typed: dict[str, Any] = {
+        key[len(_PARAM_PREFIX) :]: raw
+        for key, raw in values.items()
+        if key.startswith(_PARAM_PREFIX) and raw.strip() != ""
+    }
+    try:
+        if expected != target.desired_revision:
+            raise DeploymentControlError(
+                f"the target is at desired revision {target.desired_revision}, "
+                f"not the {expected} this form was rendered from"
+            )
+        service.set_desired_state(
+            db,
+            service.SetDesiredStateCommand(
+                command_id=f"web.set_params:{target_id}:{expected}",
+                target_id=target_id,
+                desired=service.DesiredDeployment(
+                    release_ref=release,
+                    spec={
+                        k: v
+                        for k, v in target.desired_spec.items()
+                        if k != "deploy_unit"
+                    },
+                    licence_ref=target.licence_ref,
+                    brand_profile_ref=target.brand_profile_ref,
+                ),
+                descriptor_path=path,
+                params=typed,
+                actor_ref=actor,
+            ),
+            release_source=source,
+        )
+    except (DeploymentControlError, DeployUnitError) as exc:
+        return _render(
+            request,
+            "deploy_params.html",
+            _params_context(
+                db,
+                source,
+                target_id,
+                release_ref=release,
+                descriptor_path=path,
+                refusal=str(exc),
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    return RedirectResponse(
+        url=surface_path(request, "target_detail", target_id=target_id),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

@@ -355,6 +355,10 @@ from dotmac_deployment_control.ports import (
     OperationNotExecutableError,
     OperationRefusedError,
     PlanRefusedError,
+    ReleaseDescriptorEvidence,
+    ReleaseDescriptorRefusedError,
+    ReleaseDescriptorSource,
+    ReleaseDescriptorUnavailableError,
     TransitionRefusedError,
 )
 from dotmac_deployment_control.recovery_grant import (
@@ -558,6 +562,10 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+not-installed"
 
 __all__ = [
+    "ReleaseDescriptorEvidence",
+    "ReleaseDescriptorRefusedError",
+    "ReleaseDescriptorSource",
+    "ReleaseDescriptorUnavailableError",
     "CreateDeploymentSetCommand",
     "EnableLegacyPolicyCommand",
     "ExtendLegacyPolicyCommand",
