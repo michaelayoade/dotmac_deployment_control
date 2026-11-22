@@ -951,8 +951,22 @@ def test_set_membership_refusals(db: Session) -> None:
         )
 
 
-def test_an_approval_is_bound_to_the_set_digest(db: Session) -> None:
-    source, _erp, integ, primary = _set_fixture(db)
+def _evidence(digest: str, **overrides: object) -> ApprovalEvidence:
+    args: dict[str, object] = {
+        "policy_code": "deployment.production",
+        "policy_version": 4,
+        "decision_ref": "decision-1",
+        "content_digest": digest,
+        "decided_at": datetime.now(UTC),
+        "approver_refs": ("operator",),
+        "decision_status": "granted",
+    }
+    args.update(overrides)
+    return ApprovalEvidence(**args)  # type: ignore[arg-type]
+
+
+def _made_set(db: Session):  # type: ignore[no-untyped-def]
+    source, erp, integ, primary = _set_fixture(db)
     companion_plan = _propose(db, integ.id, source)
     made = create_deployment_set(
         db,
@@ -963,47 +977,80 @@ def test_an_approval_is_bound_to_the_set_digest(db: Session) -> None:
         ),
         release_source=source,
     )
+    return source, erp, integ, primary, companion_plan, made
 
-    def evidence(digest: str) -> ApprovalEvidence:
-        return ApprovalEvidence(
-            policy_code="deployment.production",
-            policy_version=4,
-            decision_ref="decision-1",
-            content_digest=digest,
-            decided_at=datetime.now(UTC),
-            approver_refs=("operator",),
-        )
 
-    with pytest.raises(ApprovalRefusedError, match="different set digest"):
-        approve_deployment_set(
-            db,
-            ApproveDeploymentSetCommand(
-                command_id=_cmd(),
-                set_id=made.id,
-                evidence=evidence("sha256:" + "0" * 64),
-            ),
-        )
-    with pytest.raises(ApprovalRefusedError, match="not a set digest"):
-        approve_deployment_set(
-            db,
-            ApproveDeploymentSetCommand(
-                command_id=_cmd(), set_id=made.id, evidence=evidence("nope")
-            ),
-        )
-    # The PLAN digest is not the set digest.
-    with pytest.raises(ApprovalRefusedError):
-        approve_deployment_set(
-            db,
-            ApproveDeploymentSetCommand(
-                command_id=_cmd(),
-                set_id=made.id,
-                evidence=evidence(primary.plan_digest),
-            ),
-        )
-    ok = approve_deployment_set(
+def _approve_set(db, set_id, evidence):  # type: ignore[no-untyped-def]
+    return approve_deployment_set(
         db,
         ApproveDeploymentSetCommand(
-            command_id=_cmd(), set_id=made.id, evidence=evidence(made.set_digest)
+            command_id=_cmd(), set_id=set_id, evidence=evidence
         ),
     )
-    assert ok.id == made.id
+
+
+def test_an_approval_is_bound_to_the_set_digest(db: Session) -> None:
+    _source, _erp, _integ, primary, _comp, made = _made_set(db)
+    with pytest.raises(ApprovalRefusedError, match="different set digest"):
+        _approve_set(db, made.id, _evidence("sha256:" + "0" * 64))
+    with pytest.raises(ApprovalRefusedError, match="not a set digest"):
+        _approve_set(db, made.id, _evidence("nope"))
+    # The PLAN digest is not the set digest.
+    with pytest.raises(ApprovalRefusedError, match="different set digest"):
+        _approve_set(db, made.id, _evidence(primary.plan_digest))
+    assert _approve_set(db, made.id, _evidence(made.set_digest)).id == made.id
+
+
+def test_a_set_approval_accepts_no_less_than_a_plan_approval(db: Session) -> None:
+    """R2-M1: revoked, unstated and denied decisions never become a fact."""
+    _source, _erp, _integ, _primary, _comp, made = _made_set(db)
+    with pytest.raises(ApprovalRefusedError, match="standing 'revoked'"):
+        _approve_set(db, made.id, _evidence(made.set_digest, decision_status="revoked"))
+    with pytest.raises(ApprovalRefusedError, match="does not say what the decision"):
+        _approve_set(db, made.id, _evidence(made.set_digest, decision_status=None))
+    with pytest.raises(ApprovalRefusedError, match="not a decision standing"):
+        _approve_set(db, made.id, _evidence(made.set_digest, decision_status="denied"))
+    with pytest.raises(ApprovalRefusedError, match="not proposed under"):
+        _approve_set(db, made.id, _evidence(made.set_digest, policy_version=9))
+    with pytest.raises(ApprovalRefusedError, match="not proposed under"):
+        _approve_set(
+            db, made.id, _evidence(made.set_digest, policy_code="other.policy")
+        )
+    with pytest.raises(ApprovalRefusedError, match="names no decision"):
+        _approve_set(db, made.id, _evidence(made.set_digest, decision_ref=" "))
+    assert not _approved_facts(db), "a refused approval emitted the fact"
+
+
+def _approved_facts(db: Session) -> list[object]:
+    from dotmac_kernel.messaging.models import PlatformOutboxEvent
+
+    return list(
+        db.execute(
+            select(PlatformOutboxEvent).where(
+                PlatformOutboxEvent.event_type == "deployment.set.approved.v1"
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def test_a_set_approval_refuses_a_non_live_member_plan(db: Session) -> None:
+    _source, erp, _integ, _primary, _comp, made = _made_set(db)
+    # A newer plan for the primary supersedes it: the set's member is no longer live.
+    _desired(db, erp.id, _source)
+    _propose(db, erp.id, _source)
+    with pytest.raises(ApprovalRefusedError, match="not live"):
+        _approve_set(db, made.id, _evidence(made.set_digest))
+    assert not _approved_facts(db)
+
+
+def test_a_set_is_approved_once(db: Session) -> None:
+    _source, _erp, _integ, _primary, _comp, made = _made_set(db)
+    _approve_set(db, made.id, _evidence(made.set_digest))
+    assert len(_approved_facts(db)) == 1
+    with pytest.raises(ApprovalRefusedError, match="already has an approval"):
+        _approve_set(db, made.id, _evidence(made.set_digest, decision_ref="decision-2"))
+    assert len(_approved_facts(db)) == 1
+    fact = _approved_facts(db)[0]
+    assert fact.payload["authoritative"] is False  # type: ignore[attr-defined]

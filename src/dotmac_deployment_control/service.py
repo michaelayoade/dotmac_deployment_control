@@ -5173,6 +5173,7 @@ SCOPE_SET_DEPLOY_SETTING = "deployment.set_deploy_setting"
 SCOPE_LEGACY_POLICY = "deployment.legacy_policy"
 SCOPE_CREATE_DEPLOYMENT_SET = "deployment.create_deployment_set"
 SCOPE_APPROVE_DEPLOYMENT_SET = "deployment.approve_deployment_set"
+SCOPE_APPROVE_DEPLOYMENT_SET_ONCE = "deployment.approve_deployment_set_once"
 _ENTITY_DEPLOY_SETTING = "deploy_setting"
 _ENTITY_LEGACY_POLICY = "legacy_env_policy"
 _ENTITY_DEPLOYMENT_SET = "deployment_set"
@@ -5891,15 +5892,23 @@ def approve_deployment_set(
 ) -> facts.DeploymentSetView:
     """Accept ONE approval decision over a set, bound to its digest.
 
-    The decision's `content_digest` must equal the set digest Control derived,
-    compared as typed values. The fact carries the decision reference and the
-    digest; per-plan approvals still gate each rollout.
+    NON-AUTHORITATIVE until WP6: this records a fact (`deployment.set.approved.v1`)
+    and gates nothing. Per-plan approvals still gate every rollout, and nothing
+    may read the fact as an approval until WP6 decides whether it becomes a
+    gating, append-only record.
+
+    It accepts no less than `approve_plan` does: the decision must STATE that it
+    was granted (a revoked or unstated decision is refused), name the policy
+    both member plans were proposed under, and the member plans must still be
+    live. The digest is compared as typed values. A set is approved once; a
+    second decision over the same digest is refused.
     """
 
     def handler(session: Session) -> Mapping[str, object]:
         row = _load_deployment_set(session, command.set_id)
+        evidence = command.evidence
         try:
-            supplied = DeploymentSetDigestV1.parse(command.evidence.content_digest)
+            supplied = DeploymentSetDigestV1.parse(evidence.content_digest)
         except DigestEncodingError as exc:
             raise ApprovalRefusedError(
                 f"the approval digest is not a set digest: {exc}"
@@ -5908,8 +5917,48 @@ def approve_deployment_set(
             raise ApprovalRefusedError(
                 "the approval was decided over a different set digest"
             )
-        if not command.evidence.decision_ref.strip():
+        where = f"approval evidence for deployment set {row.id}"
+        if evidence.decision_status is None:
+            raise ApprovalRefusedError(
+                f"{where} does not say what the decision was; reaching this "
+                "function is not evidence that it was granted"
+            )
+        standing = require_decision_status(evidence.decision_status, where=where)
+        if standing is not ApprovalDecisionStatus.GRANTED:
+            raise ApprovalRefusedError(
+                f"{where} carries decision {evidence.decision_ref!r} with standing "
+                f"{standing.value!r}; a decision that does not grant cannot "
+                "approve a set"
+            )
+        if not evidence.decision_ref.strip():
             raise ApprovalRefusedError("the approval names no decision")
+        members = [_load_plan(session, row.primary_plan_id)]
+        if row.companion_plan_id is not None:
+            members.append(_load_plan(session, row.companion_plan_id))
+        live = {PlanStatus.PROPOSED.value, PlanStatus.APPROVED.value}
+        for plan in members:
+            if plan.status not in live:
+                raise ApprovalRefusedError(
+                    f"member plan {plan.id} is {plan.status!r}, not live"
+                )
+            if (
+                evidence.policy_code != (plan.approval_policy_code or "")
+                or evidence.policy_version != plan.approval_policy_version
+            ):
+                raise ApprovalRefusedError(
+                    f"the approval names a policy member plan {plan.id} was not "
+                    "proposed under"
+                )
+        once = process_once_platform(
+            session,
+            command_id=f"deployment-set-approval:{row.set_digest}",
+            command_type=SCOPE_APPROVE_DEPLOYMENT_SET_ONCE,
+            handler=lambda _s: {"decision_ref": evidence.decision_ref},
+        )
+        if once.status == "duplicate":
+            raise ApprovalRefusedError(
+                f"deployment set {row.id} already has an approval decision"
+            )
         _audit_and_emit(
             session,
             action=AUDIT_ACTION_ROLLOUT,
@@ -5919,10 +5968,12 @@ def approve_deployment_set(
             actor_ref=command.actor_ref,
             details={
                 "set_digest": row.set_digest,
-                "decision_ref": command.evidence.decision_ref,
-                "policy_code": command.evidence.policy_code,
-                "policy_version": command.evidence.policy_version,
-                "approver_refs": list(command.evidence.approver_refs),
+                "decision_ref": evidence.decision_ref,
+                "decision_status": standing.value,
+                "policy_code": evidence.policy_code,
+                "policy_version": evidence.policy_version,
+                "approver_refs": list(evidence.approver_refs),
+                "authoritative": False,
             },
         )
         return {"id": str(row.id)}
