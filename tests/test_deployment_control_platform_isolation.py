@@ -6743,3 +6743,189 @@ def test_dc_0017_refuses_downgrade_with_evidence_rows(
             )
     finally:
         engine.dispose()
+
+
+# ── The ceiling lock (M2): real-PG races on the legacy settings ─────────────
+
+
+def _race_under_the_settings_lock(  # type: ignore[no-untyped-def]
+    engine: Engine, monkeypatch, first, second
+) -> dict[str, str]:
+    """Run `first` and `second` in two real sessions, `second` provably BLOCKED.
+
+    `first` is gated INSIDE its transaction, after `_lock_deploy_settings` and
+    after it has read the fleet state, and holds the advisory lock there. The
+    test then starts `second` and waits until PostgreSQL reports its backend
+    waiting on a lock (condition-based, no sleep as synchronisation) before
+    releasing `first`. If the lock were missing, `second` would not block and
+    the wait below would fail rather than pass by luck.
+    """
+    from dotmac_deployment_control.legacy_policy import LegacyPolicyRefusedError
+
+    inside = threading.Event()
+    release = threading.Event()
+    original = control_service._fleet_state
+
+    def gated(session, settings):  # type: ignore[no-untyped-def]
+        fleet = original(session, settings)
+        if threading.current_thread().name == "race-first":
+            inside.set()
+            if not release.wait(timeout=30):
+                raise AssertionError("the first session was never released")
+        return fleet
+
+    monkeypatch.setattr(control_service, "_fleet_state", gated)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    outcomes: dict[str, str] = {}
+    pids: dict[str, int] = {}
+    errors: list[BaseException] = []
+
+    def run(name: str, work) -> None:  # type: ignore[no-untyped-def]
+        try:
+            with sessions() as db:
+                pids[name] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                try:
+                    work(db)
+                    db.commit()
+                    outcomes[name] = "ok"
+                except LegacyPolicyRefusedError as exc:
+                    db.rollback()
+                    outcomes[name] = f"refused: {exc}"
+        except BaseException as exc:
+            errors.append(exc)
+
+    one = threading.Thread(target=run, args=("first", first), name="race-first")
+    two = threading.Thread(target=run, args=("second", second), name="race-second")
+    try:
+        one.start()
+        assert inside.wait(timeout=20), "the first session never took the lock"
+        two.start()
+        deadline = time.monotonic() + 10
+        while "second" not in pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "second" in pids, "the second session never opened a backend"
+        _wait_until_postgres_reports_lock(engine, pids["second"])
+        release.set()
+        for worker in (one, two):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "the settings-lock race deadlocked"
+    finally:
+        release.set()
+    assert not errors, errors
+    return outcomes
+
+
+def _seed_two_legacy_targets(engine: Engine, ceiling: int):  # type: ignore[no-untyped-def]
+    from tests.unit.test_deploy_unit_state import FakeSource, _bound_target, _set
+
+    source = FakeSource(legacy=True)
+    refs = [f"erp/prod/race-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+    with Session(engine) as db:
+        _set(db, "legacy_env_file_allowed_targets", refs)
+        _set(db, "legacy_env_file_ceiling", ceiling)
+        targets = [_bound_target(db, source, ref=ref) for ref in refs]
+        db.commit()
+    return source, [target.id for target in targets]
+
+
+def test_concurrent_legacy_enables_at_the_ceiling_admit_exactly_one(
+    isolated_migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two enables race for ONE ceiling slot: exactly one wins, the other gets the
+    typed refusal, and the enabled count never exceeds the ceiling."""
+    from tests.unit.test_deploy_unit_state import _enable
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url, future=True)
+    try:
+        source, (first_id, second_id) = _seed_two_legacy_targets(engine, ceiling=1)
+        outcomes = _race_under_the_settings_lock(
+            engine,
+            monkeypatch,
+            lambda db: _enable(db, first_id, source),
+            lambda db: _enable(db, second_id, source),
+        )
+        assert outcomes["first"] == "ok"
+        assert outcomes["second"].startswith("refused:")
+        assert "ceiling" in outcomes["second"]
+        with Session(engine) as db:
+            rows = db.execute(
+                text(
+                    "SELECT target_id, state FROM mod_deploy.legacy_env_policy_versions"
+                )
+            ).all()
+            ceiling = db.execute(
+                text(
+                    "SELECT value FROM mod_deploy.deploy_settings "
+                    "WHERE setting_name = 'legacy_env_file_ceiling'"
+                )
+            ).scalar_one()
+        assert [(str(t), s) for t, s in rows] == [(str(first_id), "enabled")]
+        assert ceiling == 1
+        assert sum(1 for _, s in rows if s == "enabled") <= ceiling
+    finally:
+        engine.dispose()
+
+
+def test_a_concurrent_retirement_and_ceiling_raise_do_not_lose_an_update(
+    isolated_migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retirement (ceiling - 1) races an attended raise (ceiling + 1 step).
+
+    Serialised, the retirement takes 1 to 0 and the raise then goes 0 to 2. A
+    lost update would leave the retirement's stale write, or the raise's, as the
+    final value; both orders of that bug end somewhere other than 2.
+    """
+    from dotmac_deployment_control.legacy_policy import LegacyRetirementEvidence
+    from tests.unit.test_deploy_unit_state import _ATTENDED, _cmd, _enable
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url, future=True)
+    try:
+        source, (first_id, _second_id) = _seed_two_legacy_targets(engine, ceiling=1)
+        with Session(engine) as db:
+            _enable(db, first_id, source)
+            db.commit()
+
+        def retire(db: Session) -> None:
+            control_service.retire_legacy_policy(
+                db,
+                control_service.RetireLegacyPolicyCommand(
+                    command_id=_cmd(),
+                    target_id=first_id,
+                    evidence=LegacyRetirementEvidence(True, True, True),
+                    approval=_ATTENDED,
+                ),
+            )
+
+        def raise_to_two(db: Session) -> None:
+            control_service.set_deploy_setting(
+                db,
+                control_service.SetDeploySettingCommand(
+                    command_id=_cmd(),
+                    name="legacy_env_file_ceiling",
+                    value=2,
+                    approval=_ATTENDED,
+                ),
+            )
+
+        outcomes = _race_under_the_settings_lock(
+            engine, monkeypatch, retire, raise_to_two
+        )
+        assert outcomes == {"first": "ok", "second": "ok"}
+        with Session(engine) as db:
+            final = db.execute(
+                text(
+                    "SELECT value FROM mod_deploy.deploy_settings "
+                    "WHERE setting_name = 'legacy_env_file_ceiling'"
+                )
+            ).scalar_one()
+        assert final == 2
+    finally:
+        engine.dispose()
