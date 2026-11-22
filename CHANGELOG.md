@@ -44,9 +44,17 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   `get_deploy_settings`, `get_legacy_policy`, `get_deployment_set`,
   `list_deployment_sets`. `propose_plan` re-checks a supplied deploy binding
   against the STORED pull allowlist and legacy policy.
-- `[legacy_env_file]` is DEFAULT-DENY: accepted only for a product on the
-  setting `legacy_env_file_allowed_products` (default: ERP v2's product code
-  only) and always refused for a descriptor under `deploy/companion/`.
+- `[legacy_env_file]` is DEFAULT-DENY, keyed by TARGET: accepted only for a
+  target on the setting `legacy_env_file_allowed_targets` (empty by default) and
+  always refused for a descriptor under `deploy/companion/`.
+- Control DERIVES the whole plan binding at propose from the re-verified
+  descriptor and its stored state (params digest from the canonical render,
+  images, active bindings, companion order, legacy part). A caller supplies only
+  the lease TTL and loopback port. A descriptor-backed target cannot be planned
+  without them, and cannot drop its descriptor.
+- A deployment set is validated against the primary descriptor's companions,
+  and `approve_deployment_set` binds one approval decision to the set digest.
+  A set alone confers no approval.
 - The descriptor digest is computed by Control (`DeployUnitDigestV1`) and bound
   into the plan; a descriptor-declared digest is refused.
 - Operator surface: `/deployment-sets` and `/deploy-settings` pages.
