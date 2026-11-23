@@ -650,7 +650,7 @@ def test_job_credentials_are_never_legacy_names_or_app_materials() -> None:
             parse_deploy_unit(text, legacy_allowed=True)
     # An UNSCOPED param may not carry one of them as an app material...
     app_material = _IMPORT.replace(
-        '[params.workers]\ntype = "int"\nmaterial = "WORKERS"',
+        '[params.workers]\ntype = "int"\nmaterial = "WORKERS"\ndefault = 2',
         '[params.workers]\ntype = "string"\nmaterial = "LEGACY_DATABASE_URL"',
     )
     with pytest.raises(DeployUnitError, match="may not be an app material"):
