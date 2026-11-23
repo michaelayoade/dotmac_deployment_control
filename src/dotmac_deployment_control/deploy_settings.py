@@ -34,12 +34,18 @@ SETTING_ROLE_JOB_LEASE_CEILING: Final = "role_job_lease_ceiling_seconds"
 DEFAULT_ROLE_JOB_LEASE_CEILING: Final = 900
 MIN_ROLE_JOB_LEASE_CEILING: Final = 240
 MAX_ROLE_JOB_LEASE_CEILING: Final = 3600
+#: How far past its opening a role-job window's hard stop may lie (C-14 is the
+#: flip + 30 days). Global, attended, default 30, 1..365.
+SETTING_ROLE_JOB_WINDOW_MAX_DAYS: Final = "role_job_window_max_days"
+DEFAULT_ROLE_JOB_WINDOW_MAX_DAYS: Final = 30
+MAX_ROLE_JOB_WINDOW_MAX_DAYS: Final = 365
 SETTING_NAMES: Final = frozenset(
     {
         SETTING_PULL_REPOSITORIES,
         SETTING_LEGACY_TARGETS,
         SETTING_LEGACY_CEILING,
         SETTING_ROLE_JOB_LEASE_CEILING,
+        SETTING_ROLE_JOB_WINDOW_MAX_DAYS,
     }
 )
 
@@ -56,6 +62,7 @@ class DeploySettings:
     legacy_allowed_targets: frozenset[str] = frozenset()
     legacy_ceiling: int = 0
     role_job_lease_ceilings: Mapping[str, int] = field(default_factory=dict)
+    role_job_window_max_days: int = DEFAULT_ROLE_JOB_WINDOW_MAX_DAYS
 
     def role_job_lease_ceiling(self, target_ref: str) -> int:
         return self.role_job_lease_ceilings.get(
@@ -70,6 +77,16 @@ def normalise_setting_value(name: str, value: object) -> Any:
     if name == SETTING_LEGACY_CEILING:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise DeploySettingRefusedError("the ceiling is a non-negative integer")
+        return value
+    if name == SETTING_ROLE_JOB_WINDOW_MAX_DAYS:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= MAX_ROLE_JOB_WINDOW_MAX_DAYS
+        ):
+            raise DeploySettingRefusedError(
+                f"the window maximum is 1..{MAX_ROLE_JOB_WINDOW_MAX_DAYS} days"
+            )
         return value
     if name == SETTING_ROLE_JOB_LEASE_CEILING:
         if not isinstance(value, Mapping):
@@ -111,4 +128,7 @@ def settings_from_rows(rows: Mapping[str, Any]) -> DeploySettings:
         legacy_allowed_targets=frozenset(rows.get(SETTING_LEGACY_TARGETS, ())),
         legacy_ceiling=int(rows.get(SETTING_LEGACY_CEILING, 0)),
         role_job_lease_ceilings=dict(rows.get(SETTING_ROLE_JOB_LEASE_CEILING, {})),
+        role_job_window_max_days=int(
+            rows.get(SETTING_ROLE_JOB_WINDOW_MAX_DAYS, DEFAULT_ROLE_JOB_WINDOW_MAX_DAYS)
+        ),
     )

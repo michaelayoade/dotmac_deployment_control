@@ -34,6 +34,7 @@ from dotmac_deployment_control.deploy_binding import (
     DeployBindingRefusedError,
     DeploymentSet,
     DeployPlanInputs,
+    PlannedImage,
 )
 from dotmac_deployment_control.deploy_unit import (
     DeployUnitError,
@@ -42,6 +43,7 @@ from dotmac_deployment_control.deploy_unit import (
     parse_deploy_unit,
 )
 from dotmac_deployment_control.digests import DeployUnitDigestV1
+from dotmac_deployment_control.image_policy import PullAllowlist
 from dotmac_deployment_control.legacy_policy import (
     AttendedApproval,
     LegacyPolicyRefusedError,
@@ -595,11 +597,13 @@ def test_plan_binds_params_env_digest(db: Session) -> None:
 def test_lease_ttl_is_capped_by_the_plan(db: Session) -> None:
     source = FakeSource()
     erp = _bound_target(db, source)
-    for bad in (0, -1, 3601, 86400):
+    # The TTL is per GRANT: 120..900 (the total is lease_max_seconds).
+    for bad in (0, -1, 119, 901, 3600, 86400):
         with pytest.raises(DeployBindingRefusedError, match="TTL"):
             _propose(db, erp.id, source, DeployPlanInputs(bad, 5000))
-    plan = _propose(db, erp.id, source, DeployPlanInputs(3600, 5000))
-    assert _binding_of(plan)["lease_ttl_seconds"] == 3600
+    plan = _propose(db, erp.id, source, DeployPlanInputs(120, 5000))
+    assert _binding_of(plan)["lease_ttl_seconds"] == 120
+    assert _binding_of(plan)["lease_max_seconds"] == 3120
 
 
 def test_a_descriptor_backed_plan_needs_inputs_and_others_refuse_them(
@@ -1512,6 +1516,11 @@ def test_a_plan_with_roles_needs_the_targets_namespace_env(db: Session) -> None:
 
 _ARGS = {"--mode": "execute"}
 _JP = {"import_approved": "true", "import_payable": "acct.net-payable"}
+#: The same values as the signed object keys them: by MATERIAL.
+_JPM = {
+    "ERP_IMPORT_APPROVED": "true",
+    "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF": "acct.net-payable",
+}
 _JOB = DeployPlanInputs(
     lease_ttl_seconds=900,
     loopback_port=5000,
@@ -1592,7 +1601,7 @@ def test_a_job_role_is_derived_for_the_job_only_and_its_params_are_scoped(
         "LEGACY_DATABASE_URL",
         "MIGRATION_DATABASE_URL",
     ]
-    assert job["params"] == _JP
+    assert job["params"] == _JPM
     unit = parse_deploy_unit(source.text)
     params = get_target(db, erp.id).desired_spec["deploy_unit"]["params"]
     assert "import_approved" not in params  # per dispatch, never stored
@@ -1626,14 +1635,14 @@ def test_job_scoped_values_move_the_job_digest_and_the_plan_not_the_app_digest(
         {**_JP, "import_payable": "other-acct"},
     )
     second = _propose(db, erp.id, source, other)
-    assert _binding_of(second)["dispatched_job"]["params"]["import_payable"] == (
-        "other-acct"
-    )
+    assert _binding_of(second)["dispatched_job"]["params"][
+        "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF"
+    ] == ("other-acct")
     # A gate defaults to "0" when it is not entered.
     bare = DeployPlanInputs(900, 5000, "import", _ARGS, {"import_payable": "x"})
     assert (
         _binding_of(_propose(db, erp.id, source, bare))["dispatched_job"]["params"][
-            "import_approved"
+            "ERP_IMPORT_APPROVED"
         ]
         == "false"
     )
@@ -1653,7 +1662,7 @@ def test_the_job_scope_is_covered_by_the_plan_digest(db: Session) -> None:
     scoped = FakeSource(import_job=True, import_scoped=True)
     one = _import_target(db, scoped, _E + "host-s1")
     binding = _binding_of(_propose(db, one.id, scoped, _JOB))
-    assert binding["dispatched_job"]["params"] == _JP
+    assert binding["dispatched_job"]["params"] == _JPM
     assert binding["dispatched_job"]["materials"]
     # Unscoped, the same params would be APP materials and so could not supply
     # the role job: the plan is refused rather than leaking them into the app.
@@ -1718,10 +1727,12 @@ def test_a_job_lease_is_its_timeout_plus_120_under_the_target_ceiling(
     erp = _import_target(db, source)
     plan = _propose(db, erp.id, source, _JOB)
     assert _binding_of(plan)["lease_ttl_seconds"] == 720
+    assert _binding_of(plan)["lease_max_seconds"] == 720
     assert _binding_of(plan)["dispatched_job"]["timeout_seconds"] == 600
-    # A serving plan is not capped by the job ceiling.
-    serving = _propose(db, erp.id, source, DeployPlanInputs(3600, 5000))
-    assert _binding_of(serving)["lease_ttl_seconds"] == 3600
+    # A serving plan is not capped by the job ceiling: ttl per grant, max = need.
+    serving = _propose(db, erp.id, source, DeployPlanInputs(600, 5000))
+    assert _binding_of(serving)["lease_ttl_seconds"] == 600
+    assert _binding_of(serving)["lease_max_seconds"] == 3120
     # A 23-minute job does not fit the default ceiling...
     long_text = _descriptor_text(import_job=True).replace(
         "timeout_seconds = 600\n", "timeout_seconds = 1800\n"
@@ -1736,6 +1747,7 @@ def test_a_job_lease_is_its_timeout_plus_120_under_the_target_ceiling(
     _set(db, "role_job_lease_ceiling_seconds", {other.target_ref: 2000})
     long_plan = _propose(db, other.id, slow, _JOB)
     assert _binding_of(long_plan)["lease_ttl_seconds"] == 1920
+    assert _binding_of(long_plan)["lease_max_seconds"] == 1920
     # Another target keeps the default.
     with pytest.raises(PlanRefusedError, match="ceiling of 900s"):
         third = _import_target(db, FakeSource(long_text), _E + "host-long2")
@@ -1825,32 +1837,116 @@ def test_a_role_is_all_or_nothing_active_when_minted(db: Session) -> None:
     ]
 
 
-def test_a_serving_lease_is_sized_to_transfer_run_holds_and_margin(
+def test_a_serving_lease_max_is_transfer_run_holds_and_margin(
     db: Session,
 ) -> None:
-    """The agent clips Foundation's run to the remaining lease less 120 s and
-    cannot renew, so Control sizes the lease: transfer (300 s, transfer source)
-    + run (2700 s) + hold timeouts + 120 s, refused when over the 3600 s maximum."""
+    """Split lease: `lease_ttl_seconds` is one grant (renewed), `lease_max_seconds`
+    the total = transfer (300 s, transfer source) + run (2700 s) + every hold
+    timeout + 120 s, at most 10800 s. The 3600 s refusal is gone."""
     plain = FakeSource()
     quiet = _bound_target(db, plain)
-    # No hold: 300 + 2700 + 120, whatever small TTL the caller sent.
-    sized = _propose(db, quiet.id, plain, DeployPlanInputs(900, 5000))
-    assert _binding_of(sized)["lease_ttl_seconds"] == 3120
-    # A larger caller TTL is kept (up to the maximum).
-    other = _bound_target(db, plain, ref=_E + "host-big")
-    big = _propose(db, other.id, plain, DeployPlanInputs(3600, 5000))
-    assert _binding_of(big)["lease_ttl_seconds"] == 3600
-    # The default 1800 s hold does not fit: 300 + 2700 + 1800 + 120 > 3600.
+    sized = _binding_of(_propose(db, quiet.id, plain, DeployPlanInputs(900, 5000)))
+    assert (sized["lease_ttl_seconds"], sized["lease_max_seconds"]) == (900, 3120)
+    # The default 1800 s hold now fits: 300 + 2700 + 1800 + 120 under 10800.
     source = FakeSource(import_job=True, hold=True)
     erp = _import_target(db, source)
-    with pytest.raises(PlanRefusedError, match="4920s lease"):
-        _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
-    # A 300 s hold fits: 300 + 2700 + 300 + 120.
+    held = _binding_of(_propose(db, erp.id, source, DeployPlanInputs(600, 5000)))
+    assert (held["lease_ttl_seconds"], held["lease_max_seconds"]) == (600, 4920)
+    # A 300 s hold shrinks it: 300 + 2700 + 300 + 120.
     _desired(db, erp.id, source, params=_import_params(hold_seconds="300"))
-    plan = _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
-    assert _binding_of(plan)["lease_ttl_seconds"] == 3420
+    short = _binding_of(_propose(db, erp.id, source, DeployPlanInputs(600, 5000)))
+    assert short["lease_max_seconds"] == 3420
     # A dispatch plan is not held to the serving deploy's hold points.
     assert _binding_of(_propose(db, erp.id, source, _JOB))["dispatched_job"]
+
+
+def test_the_lease_maximum_is_bounded_at_ten_thousand_eight_hundred() -> None:
+    from dotmac_deployment_control.deploy_binding import (
+        MAX_LEASE_MAX_SECONDS,
+        build_deploy_binding,
+    )
+
+    assert MAX_LEASE_MAX_SECONDS == 10800
+    base = {
+        "deploy_unit_digest": "sha256:" + "5" * 64,
+        "product_toml_sha256": "sha256:" + "8" * 64,
+        "params_env_digest": "sha256:" + "3" * 64,
+        "images": [
+            PlannedImage(
+                "dotmac-erp-v2",
+                "pull",
+                "registry.example.test/team/app",
+                _D1,
+                "registry.example.test/team/app",
+                _D1,
+            )
+        ],
+        "allowlist": PullAllowlist.of(["registry.example.test/team/app"]),
+        "primary_service": "dotmac-erp-v2",
+        "lease_ttl_seconds": 600,
+    }
+    assert build_deploy_binding(**base, lease_max_seconds=10800)
+    for bad in (10801, 599):
+        with pytest.raises(DeployBindingRefusedError, match="maximum"):
+            build_deploy_binding(**base, lease_max_seconds=bad)
+
+
+def test_a_job_plan_uses_the_image_already_on_the_host(db: Session) -> None:
+    """R2-C1: a run_job plan binds `source = present`: no transfer, the agent
+    verifies the image locally by digest."""
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    job = _binding_of(_propose(db, erp.id, source, _JOB))
+    assert [i["source"] for i in job["images"]] == ["present"]
+    assert job["images"][0]["planned_digest"] == job["images"][0]["release_digest"]
+    # A serving plan still transfers.
+    serving = _binding_of(_propose(db, erp.id, source))
+    assert [i["source"] for i in serving["images"]] == ["transfer"]
+
+
+def test_the_window_hard_stop_is_bounded_by_the_deploy_setting(db: Session) -> None:
+    target = _register(db, _E + "host-days")
+    now = datetime.now(UTC)
+    far = {
+        "hard_stop_at": now + timedelta(days=31),
+        "closes_at": now + timedelta(days=2),
+    }
+    with pytest.raises(TransitionRefusedError, match="30 days"):
+        svc.open_role_job_window(db, _window_cmd(target.id, **far))
+    # An attended setting raises the bound (default 30, 1..365).
+    _set(db, "role_job_window_max_days", 45)
+    assert svc.open_role_job_window(db, _window_cmd(target.id, **far))
+    with pytest.raises(Exception, match="days"):
+        _set(db, "role_job_window_max_days", 366)
+    with pytest.raises(Exception, match="days"):
+        _set(db, "role_job_window_max_days", 0)
+
+
+def test_run_job_plans_are_cancelled_when_the_executor_gains_run_job(
+    db: Session,
+) -> None:
+    """Ruling 1: the release that adds run_job to EXECUTOR_OPERATIONS cancels every
+    run_job plan proposed or approved before it; deploy plans are untouched."""
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    job_plan = _propose(db, erp.id, source, _JOB)
+    serving = _propose(db, erp.id, source)
+    # While the executor cannot honour run_job there is nothing to cancel, and the
+    # plans stay (fail-closed at freeze, sign and dispatch).
+    with pytest.raises(TransitionRefusedError, match="not support run_job"):
+        svc.cancel_run_job_plans_before_executor_support(db, command_id=_cmd())
+    assert db.get(svc.DeploymentPlan, job_plan.id).status == "proposed"
+    original = svc.EXECUTOR_OPERATIONS
+    svc.EXECUTOR_OPERATIONS = frozenset({*original, "run_job"})
+    try:
+        cancelled = svc.cancel_run_job_plans_before_executor_support(
+            db, command_id=_cmd()
+        )
+    finally:
+        svc.EXECUTOR_OPERATIONS = original
+    assert cancelled == [str(job_plan.id)]
+    assert db.get(svc.DeploymentPlan, job_plan.id).status == "cancelled"
+    assert db.get(svc.DeploymentPlan, serving.id).status == "proposed"
 
 
 # ── The role-job window ─────────────────────────────────────────────────────

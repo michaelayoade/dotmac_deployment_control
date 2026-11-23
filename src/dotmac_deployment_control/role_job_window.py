@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from dotmac_deployment_control.deploy_unit import DeployUnitError
@@ -91,8 +91,10 @@ def open_window(
     now: datetime,
     closes_at: datetime,
     hard_stop_at: datetime,
+    max_days: int = 30,
 ) -> tuple[RoleJobWindow, ...]:
-    """Add an OPEN window. `closes_at` is required and bounded by the hard stop."""
+    """Add an OPEN window. `closes_at` is required and bounded by the hard stop,
+    which itself may not lie more than `max_days` past the opening."""
     if not _ROLE.fullmatch(role):
         raise RoleJobWindowRefusedError("a window role is a lowercase segment")
     if not _ID.fullmatch(window_id):
@@ -101,6 +103,10 @@ def open_window(
         raise RoleJobWindowRefusedError("window times are timezone-aware")
     if closes_at <= now:
         raise RoleJobWindowRefusedError("closes_at must be in the future")
+    if hard_stop_at > now + timedelta(days=max_days):
+        raise RoleJobWindowRefusedError(
+            f"the hard stop may not be more than {max_days} days past the opening"
+        )
     if closes_at > hard_stop_at:
         raise RoleJobWindowRefusedError(
             "closes_at may not be later than the hard stop (C-14)"

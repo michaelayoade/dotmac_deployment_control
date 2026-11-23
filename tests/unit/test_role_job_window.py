@@ -99,3 +99,11 @@ def test_rows_round_trip_through_their_stored_form() -> None:
     with pytest.raises(RoleJobWindowRefusedError):
         windows_of("nope")
     assert parse_stamp(stamp(_NOW)) == _NOW
+
+
+def test_the_hard_stop_may_not_exceed_the_opening_plus_max_days() -> None:
+    far = _NOW + timedelta(days=31)
+    with pytest.raises(RoleJobWindowRefusedError, match="30 days"):
+        _open(hard_stop_at=far, closes_at=_NOW + timedelta(days=2))
+    assert _open(hard_stop_at=_NOW + timedelta(days=30))
+    assert _open(hard_stop_at=far, closes_at=_NOW + timedelta(days=2), max_days=45)

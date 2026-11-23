@@ -37,16 +37,22 @@ from dotmac_deployment_control.image_policy import (
 )
 from dotmac_deployment_control.legacy_policy import LegacyPlanBinding
 
-MAX_LEASE_TTL_SECONDS: Final = 3600
+#: The lease is split. `lease_ttl_seconds` is what ONE grant (acquire or renew)
+#: lasts: 120..900 (a crashed agent frees the host within minutes).
+#: `lease_max_seconds` is the TOTAL the plan may hold the host, renewed in grants:
+#: what the plan needs (transfer + run + holds + 120), at most 10800.
+MIN_LEASE_TTL_SECONDS: Final = 120
+MAX_LEASE_TTL_SECONDS: Final = 900
+MAX_LEASE_MAX_SECONDS: Final = 10800
 #: A `run_job` plan's lease is the job's own timeout plus this margin, and must
 #: fit the target's `role_job_lease_ceiling_seconds` (default 900, hard maximum
-#: 3600). Serving plans keep MAX_LEASE_TTL_SECONDS (they must cover their holds).
+#: 3600). A job plan has ttl = max = timeout + 120 and no transfer term.
 JOB_LEASE_MARGIN_SECONDS: Final = 120
 #: A SERVING plan's lease must cover what the agent does inside it: the image
 #: transfer (transfer source only), Foundation's own run (its 2700 s timeout; the
 #: agent clips the run to the remaining lease less 120 s and cannot renew), and
 #: every hold-point timeout. Control sizes the lease to the sum plus the margin and
-#: refuses at propose when it cannot fit under MAX_LEASE_TTL_SECONDS.
+#: refuses at propose when it cannot fit under MAX_LEASE_MAX_SECONDS.
 SERVING_TRANSFER_SECONDS: Final = 300
 SERVING_RUN_SECONDS: Final = 2700
 DEFAULT_JOB_LEASE_CEILING_SECONDS: Final = 900
@@ -199,6 +205,8 @@ class DeployPlanBinding:
     params_env_digest: str
     images: tuple[PlannedImage, ...]
     lease_ttl_seconds: int
+    #: The total the plan may hold the host across renewals.
+    lease_max_seconds: int
     #: Names of the ACTIVE bindings with a SERVING role (pre-staged deliver nothing).
     active_binding_names: tuple[str, ...] = ()
     #: Roles derived from the verified descriptor, sorted. The agent mints
@@ -232,6 +240,7 @@ class DeployPlanBinding:
             "params_env_digest": self.params_env_digest,
             "images": [i.payload() for i in self.images],
             "lease_ttl_seconds": self.lease_ttl_seconds,
+            "lease_max_seconds": self.lease_max_seconds,
             "active_binding_names": list(self.active_binding_names),
             "roles": [role.payload() for role in self.roles],
             "primary_service": self.primary_service,
@@ -267,6 +276,7 @@ def build_deploy_binding(
     dispatched_job: PlanJob | None = None,
     min_lease_seconds: int = 0,
     job_lease_ceiling_seconds: int = DEFAULT_JOB_LEASE_CEILING_SECONDS,
+    lease_max_seconds: int | None = None,
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
@@ -275,13 +285,21 @@ def build_deploy_binding(
         raise DeployBindingRefusedError("product_toml_sha256 must be sha256:<64 hex>")
     if not is_canonical_digest(params_env_digest):
         raise DeployBindingRefusedError("params_env_digest must be sha256:<64 hex>")
-    if (
-        isinstance(lease_ttl_seconds, bool)
-        or not isinstance(lease_ttl_seconds, int)
-        or not 1 <= lease_ttl_seconds <= MAX_LEASE_TTL_SECONDS
+    lease_max = lease_ttl_seconds if lease_max_seconds is None else lease_max_seconds
+    for label, value in (("TTL", lease_ttl_seconds), ("maximum", lease_max)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DeployBindingRefusedError(f"the lease {label} is an integer")
+    if dispatched_job is None and not (
+        MIN_LEASE_TTL_SECONDS <= lease_ttl_seconds <= MAX_LEASE_TTL_SECONDS
     ):
         raise DeployBindingRefusedError(
-            f"the lease TTL must be 1..{MAX_LEASE_TTL_SECONDS} seconds"
+            f"the lease TTL must be {MIN_LEASE_TTL_SECONDS}..{MAX_LEASE_TTL_SECONDS} "
+            "seconds per grant"
+        )
+    if not lease_ttl_seconds <= lease_max <= MAX_LEASE_MAX_SECONDS:
+        raise DeployBindingRefusedError(
+            "the lease maximum must be at least the TTL and at most "
+            f"{MAX_LEASE_MAX_SECONDS} seconds"
         )
     if dispatched_job is not None:
         ceiling = job_lease_ceiling_seconds
@@ -304,9 +322,12 @@ def build_deploy_binding(
                 f"a job timeout is 1..{ceiling - JOB_LEASE_MARGIN_SECONDS} seconds "
                 f"(the ceiling {ceiling}s less {JOB_LEASE_MARGIN_SECONDS}s)"
             )
-        if lease_ttl_seconds != timeout + JOB_LEASE_MARGIN_SECONDS:
+        if (
+            lease_ttl_seconds != timeout + JOB_LEASE_MARGIN_SECONDS
+            or lease_max != lease_ttl_seconds
+        ):
             raise DeployBindingRefusedError(
-                "a run_job lease is the job timeout "
+                "a run_job lease ttl and maximum are both the job timeout "
                 f"({timeout}s) plus {JOB_LEASE_MARGIN_SECONDS}s"
             )
         present = (
@@ -319,10 +340,10 @@ def build_deploy_binding(
                 "a dispatched job's role, single_use and window are all present "
                 "or all null"
             )
-    if dispatched_job is None and lease_ttl_seconds < min_lease_seconds:
+    if dispatched_job is None and lease_max < min_lease_seconds:
         raise DeployBindingRefusedError(
-            f"the lease ({lease_ttl_seconds}s) is shorter than the longest hold "
-            f"point ({min_lease_seconds}s)"
+            f"the lease maximum ({lease_max}s) is shorter than what the plan "
+            f"needs, the hold points included ({min_lease_seconds}s)"
         )
     if dispatched_job is not None and (roles or companion_order is not None):
         raise DeployBindingRefusedError(
@@ -374,6 +395,7 @@ def build_deploy_binding(
         params_env_digest=params_env_digest,
         images=tuple(sorted(images, key=lambda i: i.service)),
         lease_ttl_seconds=lease_ttl_seconds,
+        lease_max_seconds=lease_max,
         active_binding_names=tuple(sorted(set(active_binding_names))),
         roles=tuple(sorted(roles, key=lambda r: r.role)),
         primary_service=primary_service,

@@ -32,6 +32,9 @@ from dotmac_deployment_control.deploy_unit import (
 from dotmac_deployment_control.digests import is_canonical_digest
 
 LOOPBACK_HOST: Final = "127.0.0.1"
+#: A `run_job` plan runs the release image ALREADY on the host: nothing is
+#: transferred or pulled, and the agent verifies the image locally by digest.
+PRESENT_IMAGE_SOURCE: Final = "present"
 
 
 class ImagePolicyRefusedError(DeployUnitError):
@@ -113,12 +116,23 @@ def check_planned_image(
     * `pull`: the planned repository must equal the release repository, which
       must itself be on the allowlist.
     """
-    effective = check_image_source(source, release_repository, allowlist)
+    present = source == PRESENT_IMAGE_SOURCE
+    effective = (
+        "present"
+        if present
+        else check_image_source(source, release_repository, allowlist)
+    )
     for label, digest in (("release", release_digest), ("planned", planned_digest)):
         if not is_canonical_digest(digest):
             raise ImagePolicyRefusedError(f"the {label} digest is not canonical")
     if planned_digest != release_digest:
         raise ImagePolicyRefusedError("the planned digest differs from the release")
+    if present:
+        # Already on the host: either the release's own reference (a pulled
+        # image) or its loopback form (a transferred one); same path, same digest.
+        if planned_repository == release_repository:
+            return
+        effective = "transfer"
     if effective == "pull":
         if planned_repository != release_repository:
             raise ImagePolicyRefusedError("a pulled image keeps the release repository")

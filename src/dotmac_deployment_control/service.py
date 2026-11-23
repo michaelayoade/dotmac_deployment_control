@@ -93,10 +93,9 @@ from dotmac_deployment_control.counterparty import (
 )
 from dotmac_deployment_control.deploy_binding import (
     JOB_LEASE_MARGIN_SECONDS,
-    MAX_LEASE_TTL_SECONDS,
+    MAX_LEASE_MAX_SECONDS,
     SERVING_RUN_SECONDS,
     SERVING_TRANSFER_SECONDS,
-    DeployBindingRefusedError,
     DeploymentSet,
     DeployPlanBinding,
     DeployPlanInputs,
@@ -155,7 +154,10 @@ from dotmac_deployment_control.host_admission import (
     HOST_ADMISSION_PRESENTATION_PURPOSE,
     admission_consumption_fingerprint,
 )
-from dotmac_deployment_control.image_policy import loopback_repository
+from dotmac_deployment_control.image_policy import (
+    PRESENT_IMAGE_SOURCE,
+    loopback_repository,
+)
 from dotmac_deployment_control.images import (
     AuthorizedImage,
     authorized_image_set,
@@ -5476,6 +5478,7 @@ def get_deploy_settings(db: Session) -> facts.DeploySettingsView:
         role_job_lease_ceilings=tuple(
             sorted(effective.role_job_lease_ceilings.items())
         ),
+        role_job_window_max_days=effective.role_job_window_max_days,
     )
 
 
@@ -5567,16 +5570,25 @@ def _target_windows(session: Session, target_ref: str) -> tuple[RoleJobWindow, .
     return _stored_windows(session).get(target_ref, ())
 
 
-def _cancel_window_work(
-    session: Session, target: DeploymentTarget, window_id: str
+def _cancel_run_job_work(
+    session: Session,
+    *,
+    target_id: UUID | None,
+    window_id: str | None,
+    reason: str,
 ) -> list[str]:
-    """Cancel every outstanding `run_job` plan (and rollout) of a closed window."""
+    """Cancel outstanding `run_job` plans (and their rollouts and pending attempts).
+
+    `window_id` limits it to one window's plans; `target_id` to one target. Both
+    None cancels every run_job plan of every target (see
+    `cancel_run_job_plans_before_executor_support`).
+    """
     cancelled: list[str] = []
     plans = (
         session.execute(
             select(DeploymentPlan).where(
-                DeploymentPlan.target_id == target.id,
                 DeploymentPlan.operation == DeploymentOperation.RUN_JOB.value,
+                *([DeploymentPlan.target_id == target_id] if target_id else []),
                 DeploymentPlan.status.in_(
                     (
                         PlanStatus.DRAFT.value,
@@ -5593,7 +5605,10 @@ def _cancel_window_work(
         job = ((plan.snapshot or {}).get("deploy_binding") or {}).get(
             "dispatched_job"
         ) or {}
-        if (job.get("window") or {}).get("window_id") != window_id:
+        if (
+            window_id is not None
+            and (job.get("window") or {}).get("window_id") != window_id
+        ):
             continue
         completed = datetime.now(UTC)
         for rollout in (
@@ -5604,7 +5619,7 @@ def _cancel_window_work(
             if rollout.status in TERMINAL_ROLLOUT_STATUSES:
                 continue
             rollout.status = RolloutStatus.CANCELLED.value
-            rollout.reason = f"role-job window {window_id} closed"
+            rollout.reason = reason
             rollout.completed_at = completed
             rollout.record_version += 1
             for attempt in _load_pending_attempts(session, rollout.id):
@@ -5628,6 +5643,52 @@ def _cancel_window_work(
     return cancelled
 
 
+def cancel_run_job_plans_before_executor_support(
+    db: Session, *, command_id: str, actor_ref: str | None = None
+) -> list[str]:
+    """Cancel EVERY `run_job` plan (draft, proposed or approved) and its rollouts.
+
+    The Control release that adds `run_job` to `EXECUTOR_OPERATIONS` must run this
+    once, so no approval given while the executor could not honour the operation
+    can become dispatchable without notice. Refuses to run while the executor does
+    not support `run_job`, because then the plans are still correctly fail-closed
+    and cancelling them would only destroy approvals for nothing. Idempotent.
+    """
+    if DeploymentOperation.RUN_JOB.value not in EXECUTOR_OPERATIONS:
+        raise TransitionRefusedError(
+            "the executor does not support run_job yet; there is nothing to cancel"
+        )
+
+    done: list[str] = []
+
+    def handler(session: Session) -> Mapping[str, object]:
+        cancelled = _cancel_run_job_work(
+            session,
+            target_id=None,
+            window_id=None,
+            reason="run_job became executable; earlier approvals are void",
+        )
+        done.extend(cancelled)
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.RUN_JOB_PLANS_CANCELLED_V1,
+            entity_type=_ENTITY_ROLE_JOB_WINDOW,
+            entity_id="run_job",
+            actor_ref=actor_ref,
+            details={"cancelled_plans": cancelled},
+        )
+        return {"cancelled": len(cancelled)}
+
+    process_once_platform(
+        db,
+        command_id=command_id,
+        command_type=SCOPE_ROLE_JOB_WINDOW,
+        handler=handler,
+    )
+    return done
+
+
 def open_role_job_window(
     db: Session, command: OpenRoleJobWindowCommand
 ) -> tuple[RoleJobWindow, ...]:
@@ -5646,6 +5707,7 @@ def open_role_job_window(
                 now=_control_now(),
                 closes_at=command.closes_at,
                 hard_stop_at=command.hard_stop_at,
+                max_days=_effective_settings(session).role_job_window_max_days,
             )
         except RoleJobWindowRefusedError as exc:
             raise TransitionRefusedError(str(exc)) from None
@@ -5701,7 +5763,12 @@ def close_role_job_window(
             raise TransitionRefusedError(str(exc)) from None
         every[target.target_ref] = rows
         version = _write_windows(session, every, command.approval)
-        cancelled = _cancel_window_work(session, target, closed.window_id)
+        cancelled = _cancel_run_job_work(
+            session,
+            target_id=target.id,
+            window_id=closed.window_id,
+            reason=f"role-job window {closed.window_id} closed",
+        )
         _audit_and_emit(
             session,
             action=AUDIT_ACTION_TARGET,
@@ -6240,7 +6307,14 @@ def _derive_deploy_binding(
             role=job_spec.role,
             single_use=unit.job_role_single_use(job_spec),
             materials=tuple(sorted(job_spec.materials)),
-            params=tuple(sorted(job_values.items())),
+            # Keyed by MATERIAL (the agent has no descriptor): every scoped material
+            # of the job, defaults filled. The digest covers exactly these lines.
+            params=tuple(
+                sorted(
+                    (str(unit.params[name].material), text)
+                    for name, text in job_values.items()
+                )
+            ),
             params_env_digest=params_env_digest(
                 canonical_job_render(
                     unit,
@@ -6265,36 +6339,32 @@ def _derive_deploy_binding(
         int(values.get(h.timeout_param) or unit.params[h.timeout_param].default or 0)
         for h in unit.hold_points
     ]
-    lease = inputs.lease_ttl_seconds
+    # The lease is split: `ttl` is one grant, `lease_max` the total the plan may
+    # hold the host across renewals (CP 5c `lease/renew`).
+    ttl = inputs.lease_ttl_seconds
+    lease_max = ttl
+    ceiling = settings.role_job_lease_ceiling(target.target_ref)
     if dispatched is None:
-        needed = (
+        lease_max = (
             (SERVING_TRANSFER_SECONDS if unit.image_source == "transfer" else 0)
             + SERVING_RUN_SECONDS
             + sum(holds)
             + JOB_LEASE_MARGIN_SECONDS
         )
-        if needed > MAX_LEASE_TTL_SECONDS:
+        if lease_max > MAX_LEASE_MAX_SECONDS:
             raise PlanRefusedError(
-                f"a serving plan needs a {needed}s lease (transfer + run "
+                f"a serving plan needs a {lease_max}s lease maximum (transfer + run "
                 f"{SERVING_RUN_SECONDS}s + hold timeouts {sum(holds)}s + "
-                f"{JOB_LEASE_MARGIN_SECONDS}s), over the {MAX_LEASE_TTL_SECONDS}s "
-                "maximum; shorten the hold timeouts"
+                f"{JOB_LEASE_MARGIN_SECONDS}s), over the {MAX_LEASE_MAX_SECONDS}s "
+                "limit; shorten the hold timeouts"
             )
-        if (
-            isinstance(lease, bool)
-            or not isinstance(lease, int)
-            or not 1 <= lease <= MAX_LEASE_TTL_SECONDS
-        ):
-            raise DeployBindingRefusedError(
-                f"the lease TTL must be 1..{MAX_LEASE_TTL_SECONDS} seconds"
-            )
-        lease = max(lease, needed)
-    ceiling = settings.role_job_lease_ceiling(target.target_ref)
-    if dispatched is not None:
-        lease = dispatched.run_limit_seconds + JOB_LEASE_MARGIN_SECONDS
-        if lease > ceiling:
+    else:
+        # A job plan: ttl = max = timeout + 120, no transfer term (the image is
+        # already on the host), under the target's role-job lease ceiling.
+        ttl = lease_max = dispatched.run_limit_seconds + JOB_LEASE_MARGIN_SECONDS
+        if ttl > ceiling:
             raise PlanRefusedError(
-                f"job {dispatched.name!r} needs a {lease}s lease (timeout "
+                f"job {dispatched.name!r} needs a {ttl}s lease (timeout "
                 f"{dispatched.run_limit_seconds}s + {JOB_LEASE_MARGIN_SECONDS}s), over "
                 f"this target's role-job lease ceiling of {ceiling}s"
             )
@@ -6305,14 +6375,20 @@ def _derive_deploy_binding(
         images=[
             PlannedImage(
                 service=unit.product,
-                source=unit.image_source,
+                # A run_job plan runs the image already on the host: no transfer.
+                source=(
+                    PRESENT_IMAGE_SOURCE
+                    if dispatched is not None
+                    else unit.image_source
+                ),
                 release_repository=evidence.image_repository,
                 release_digest=evidence.image_digest,
                 planned_repository=planned,
                 planned_digest=evidence.image_digest,
             )
         ],
-        lease_ttl_seconds=lease,
+        lease_ttl_seconds=ttl,
+        lease_max_seconds=lease_max,
         allowlist=settings.pull_allowlist,
         legacy=legacy,
         companion_order=(
@@ -6728,6 +6804,7 @@ __all__ = [
     "revoke_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
+    "cancel_run_job_plans_before_executor_support",
     "close_role_job_window",
     "open_role_job_window",
     "set_bao_environment",

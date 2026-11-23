@@ -87,6 +87,8 @@ DEPLOY_SETTING_CHANGED_V1: Final[str] = "deployment.deploy_setting.changed.v1"
 #: under an attended approval.
 ROLE_JOB_WINDOW_OPENED_V1: Final[str] = "deployment.role_job_window.opened.v1"
 ROLE_JOB_WINDOW_CLOSED_V1: Final[str] = "deployment.role_job_window.closed.v1"
+#: Every run_job plan was cancelled because run_job became executable.
+RUN_JOB_PLANS_CANCELLED_V1: Final[str] = "deployment.run_job_plans.cancelled.v1"
 #: A target's legacy env-file policy gained a new version (enabled, revised,
 #: extended or retired).
 LEGACY_POLICY_CHANGED_V1: Final[str] = "deployment.legacy_policy.changed.v1"
@@ -126,6 +128,7 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         TARGET_BAO_ENVIRONMENT_SET_V1,
         ROLE_JOB_WINDOW_OPENED_V1,
         ROLE_JOB_WINDOW_CLOSED_V1,
+        RUN_JOB_PLANS_CANCELLED_V1,
         LEGACY_POLICY_CHANGED_V1,
         DEPLOYMENT_SET_CREATED_V1,
         DEPLOYMENT_SET_APPROVED_V1,
@@ -790,6 +793,7 @@ class DeploySettingsView:
     legacy_env_file_ceiling: int
     #: Per-target `run_job` lease ceilings, `(target_ref, seconds)`; absent = 900.
     role_job_lease_ceilings: tuple[tuple[str, int], ...] = ()
+    role_job_window_max_days: int = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -846,6 +850,7 @@ __all__ = [
     "ROLLOUT_SUCCEEDED_V1",
     "ROLLOUT_TIMED_OUT_V1",
     "ROLE_JOB_WINDOW_CLOSED_V1",
+    "RUN_JOB_PLANS_CANCELLED_V1",
     "ROLE_JOB_WINDOW_OPENED_V1",
     "TARGET_BAO_ENVIRONMENT_SET_V1",
     "TARGET_DECOMMISSIONED_V1",

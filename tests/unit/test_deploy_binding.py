@@ -114,7 +114,8 @@ def test_every_bound_field_moves_the_plan_digest() -> None:
     variants = [
         _binding(deploy_unit_digest=_U2),
         _binding(product_toml_sha256=_T2),
-        _binding(lease_ttl_seconds=901),
+        _binding(lease_ttl_seconds=600),
+        _binding(lease_max_seconds=1800),
         _binding(images=[_image(release_digest=_D2, planned_digest=_D2)]),
         _binding(images=[_image(planned_repository="127.0.0.1:5001/team/app")]),
         _binding(companion_order="after_primary_ready"),
@@ -138,11 +139,19 @@ def test_every_bound_field_moves_the_plan_digest() -> None:
     assert len({_digest(_binding(legacy=item)) for item in legacy}) == len(legacy)
 
 
-def test_binding_builder_caps_the_lease_ttl() -> None:
-    assert _binding(lease_ttl_seconds=3600).lease_ttl_seconds == 3600
-    for bad in (0, -1, 3601, True, "900"):
+def test_binding_builder_splits_the_lease_into_ttl_and_maximum() -> None:
+    # The TTL is per grant (120..900); the maximum is the total (to 10800).
+    assert _binding(lease_ttl_seconds=120).lease_ttl_seconds == 120
+    assert _binding(lease_ttl_seconds=900).lease_ttl_seconds == 900
+    assert _binding().lease_max_seconds == 900  # default: one grant
+    for bad in (0, -1, 119, 901, 3600, True, "900"):
         with pytest.raises(DeployBindingRefusedError, match="TTL"):
             _binding(lease_ttl_seconds=bad)
+    assert _binding(lease_max_seconds=10800).lease_max_seconds == 10800
+    for bad in (899, 10801, True):
+        with pytest.raises(DeployBindingRefusedError, match="maximum|integer"):
+            _binding(lease_max_seconds=bad)
+    assert _binding(lease_max_seconds=3120).payload()["lease_max_seconds"] == 3120
 
 
 def test_binding_refuses_bad_images_and_digests() -> None:
