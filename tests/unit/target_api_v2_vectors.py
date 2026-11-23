@@ -61,7 +61,8 @@ VECTOR_PATH = (
 )
 
 _REF = "dotmac-erp-v2/production/host-a"
-_WORK_PATTERN = "^/var/lib/dotmac/erp-v2/job-work/import_execute/[A-Za-z0-9._-]+$"
+_OUT_PATTERN = "^/job/out/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+_IN_PATTERN = "^/job/in/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 _D1 = "sha256:" + "1" * 64
 _T0 = datetime(2026, 12, 1, 10, 0, 0, tzinfo=UTC)
 _JOB_PARAMS = {
@@ -76,11 +77,12 @@ _JOB_ARGV = [
     "erp_v2.importer",
     "execute",
     "--receipt",
-    "/var/lib/dotmac/erp-v2/job-work/import_execute/receipt.json",
+    "/job/out/receipt.json",
     "--manifest",
-    "/var/lib/dotmac/erp-v2/job-work/import_execute/manifest.json",
+    "/job/in/manifest.json",
     "--apply",
 ]
+_MANIFEST_SHA = "sha256:" + "7" * 64
 
 
 def _image(source: str) -> PlannedImage:
@@ -94,6 +96,22 @@ def _image(source: str) -> PlannedImage:
     )
 
 
+def _arg(flag: str, kind: str, **over: Any) -> dict[str, Any]:
+    arg: dict[str, Any] = {
+        "flag": flag,
+        "type": kind,
+        "required": False,
+        "pattern": None,
+        "choices": [],
+        "max_length": 240,
+        "io": None,
+        "apply_mode": False,
+        "apply_choices": [],
+    }
+    arg.update(over)
+    return arg
+
+
 def _definition() -> PlanJobDefinition:
     return PlanJobDefinition(
         name="import_execute",
@@ -102,16 +120,11 @@ def _definition() -> PlanJobDefinition:
         materials=("LEGACY_DATABASE_URL", "MIGRATION_DATABASE_URL"),
         params=tuple(sorted(("import_apply_ok", "import_approved"))),
         args=(
-            {
-                "flag": "--receipt",
-                "type": "path",
-                "required": True,
-                "pattern": _WORK_PATTERN,
-                "choices": [],
-                "max_length": 240,
-            },
+            _arg("--receipt", "path", pattern=_OUT_PATTERN, io="output", required=True),
+            _arg("--manifest", "path", pattern=_IN_PATTERN, io="input"),
+            _arg("--apply", "bool", apply_mode=True),
         ),
-        run_limit_seconds=3000,
+        run_limit_seconds=2400,
     )
 
 
@@ -162,16 +175,19 @@ def _job() -> dict[str, Any]:
         materials=("LEGACY_DATABASE_URL", "MIGRATION_DATABASE_URL"),
         params=tuple(sorted(_JOB_PARAMS.items())),
         params_env_digest=params_env_digest(_job_render()),
-        run_limit_seconds=3000,
+        run_limit_seconds=2400,
         window=PlanJobWindow("window-1", "2026-12-31T00:00:00Z"),
+        inputs=(("--manifest", "/job/in/manifest.json", _MANIFEST_SHA),),
+        output_dir="/job/out",
+        apply_class=True,
     )
     binding = build_deploy_binding(
         deploy_unit_digest="sha256:" + "5" * 64,
         product_toml_sha256="sha256:" + "8" * 64,
         params_env_digest="sha256:" + "3" * 64,
         images=[_image("present")],
-        lease_ttl_seconds=3120,
-        lease_max_seconds=3120,
+        lease_ttl_seconds=2520,
+        lease_max_seconds=2520,
         allowlist=PullAllowlist(),
         primary_service="dotmac-erp-v2",
         secrets_namespace="erp",
@@ -291,6 +307,91 @@ def _binding_vectors() -> dict[str, Any]:
             "run_job",
         ),
         (
+            "an input without its digest",
+            _mutate(job, ["dispatched_job", "inputs"], []),
+            "run_job",
+        ),
+        (
+            "a digest on an output",
+            _mutate(
+                job,
+                ["dispatched_job", "inputs"],
+                [
+                    *job["deploy_binding"]["dispatched_job"]["inputs"],
+                    {
+                        "flag": "--receipt",
+                        "path": "/job/out/receipt.json",
+                        "sha256": _MANIFEST_SHA,
+                    },
+                ],
+            ),
+            "run_job",
+        ),
+        (
+            "an input path outside /job/in",
+            _mutate(
+                job,
+                ["dispatched_job", "inputs"],
+                [
+                    {
+                        "flag": "--manifest",
+                        "path": "/etc/passwd",
+                        "sha256": _MANIFEST_SHA,
+                    }
+                ],
+            ),
+            "run_job",
+        ),
+        (
+            "an input path with ..",
+            _mutate(
+                job,
+                ["dispatched_job", "inputs"],
+                [
+                    {
+                        "flag": "--manifest",
+                        "path": "/job/in/../etc",
+                        "sha256": _MANIFEST_SHA,
+                    }
+                ],
+            ),
+            "run_job",
+        ),
+        (
+            "a duplicate input flag",
+            _mutate(
+                job,
+                ["dispatched_job", "inputs"],
+                job["deploy_binding"]["dispatched_job"]["inputs"] * 2,
+            ),
+            "run_job",
+        ),
+        (
+            "a non-canonical input digest",
+            _mutate(
+                job,
+                ["dispatched_job", "inputs"],
+                [
+                    {
+                        "flag": "--manifest",
+                        "path": "/job/in/manifest.json",
+                        "sha256": "7" * 64,
+                    }
+                ],
+            ),
+            "run_job",
+        ),
+        (
+            "an apply_class that is not a bool",
+            _mutate(job, ["dispatched_job", "apply_class"], "yes"),
+            "run_job",
+        ),
+        (
+            "an output dir outside /job/out",
+            _mutate(job, ["dispatched_job", "output_dir"], "/run/dotmac/out"),
+            "run_job",
+        ),
+        (
             "a dispatched job with a stray key",
             _mutate(job, ["dispatched_job", "extra"], 1),
             "run_job",
@@ -332,6 +433,95 @@ def _with_source(base: dict[str, Any], source: str) -> dict[str, Any]:
     out = copy.deepcopy(base)
     out["deploy_binding"]["images"][0]["source"] = source
     return out
+
+
+_ARG_BASE = """
+schema = "dotmac.deploy_unit/1"
+product = "dotmac-erp-v2"
+spec = "deploy/product.toml"
+secrets_namespace = "erp"
+
+[[jobs]]
+name = "j"
+command = ["x"]
+trigger = "operator"
+materials = []
+runbook = "docs/r.md"
+timeout_seconds = 60
+"""
+
+
+def _arg_schema_vectors() -> dict[str, Any]:
+    """The `[[jobs.args]]` schema for paths (`io`) and apply markers."""
+    from dotmac_deployment_control.deploy_unit import DeployUnitError, parse_deploy_unit
+
+    def table(**fields: Any) -> str:
+        lines = ["", "[[jobs.args]]"]
+        for key, value in fields.items():
+            lines.append(f"{key} = {json.dumps(value)}")
+        return "\n".join(lines) + "\n"
+
+    ok_cases = {
+        "an input path under /job/in": table(
+            flag="--manifest", type="path", io="input", pattern=_IN_PATTERN
+        ),
+        "an output path under /job/out": table(
+            flag="--receipt", type="path", io="output", pattern=_OUT_PATTERN
+        ),
+        "a bool flag that applies": table(flag="--apply", type="bool", apply_mode=True),
+        "enum choices that apply": table(
+            flag="--mode",
+            type="enum",
+            choices=["plan", "apply"],
+            apply_choices=["apply"],
+        ),
+    }
+    refused_cases = {
+        "a path without io": table(flag="--x", type="path", pattern=_IN_PATTERN),
+        "io on a non-path": table(flag="--x", type="string", io="input"),
+        "an unknown io": table(
+            flag="--x", type="path", io="inout", pattern=_IN_PATTERN
+        ),
+        "an input pattern under /job/out": table(
+            flag="--x", type="path", io="input", pattern=_OUT_PATTERN
+        ),
+        "an output pattern under /job/in": table(
+            flag="--x", type="path", io="output", pattern=_IN_PATTERN
+        ),
+        "a pattern outside /job": table(
+            flag="--x", type="path", io="input", pattern="^/etc/[a-z]+$"
+        ),
+        "a pattern with ..": table(
+            flag="--x", type="path", io="input", pattern="^/job/in/../[a-z]+$"
+        ),
+        "apply_mode on a non-bool": table(flag="--x", type="string", apply_mode=True),
+        "apply_choices that are not choices": table(
+            flag="--m", type="enum", choices=["a", "b"], apply_choices=["c"]
+        ),
+    }
+    ok = []
+    for name, text in ok_cases.items():
+        parse_deploy_unit(_ARG_BASE + text)
+        ok.append({"name": name, "descriptor": _ARG_BASE + text})
+    refused = []
+    for name, text in refused_cases.items():
+        try:
+            parse_deploy_unit(_ARG_BASE + text)
+        except DeployUnitError:
+            refused.append({"name": name, "descriptor": _ARG_BASE + text})
+        else:  # pragma: no cover
+            raise AssertionError(name)
+    return {
+        "rule": (
+            "A `path` argument declares `io`: an `input` lives at /job/in/<name> and "
+            "its sha256 is entered at propose and signed in dispatched_job.inputs; an "
+            "`output` lives at /job/out/<name>. <name> is [A-Za-z0-9][A-Za-z0-9._-]"
+            "{0,127}; there is no `..`. `apply_mode` marks a bool flag, and "
+            "`apply_choices` the enum choices, that make a plan apply-class."
+        ),
+        "ok": ok,
+        "refused": refused,
+    }
 
 
 def _lease_body_vectors() -> dict[str, Any]:
@@ -408,6 +598,7 @@ def _step(ledger: v2.LeaseLedger, at: int, call: str, **args: Any) -> dict[str, 
                 ttl_seconds=args["ttl_seconds"],
                 lease_max_seconds=args["lease_max_seconds"],
                 marker_present=args["marker_present"],
+                renewable=args.get("renewable", True),
             )
         elif call == "covers":
             body = ledger.covers(
@@ -450,6 +641,23 @@ def _scenarios() -> list[dict[str, Any]]:
                 (1450, "renew", held),
                 (1500, "renew", held),
                 (1500, "standing", {}),
+            ],
+        ),
+        (
+            "a run_job lease is granted once and never renewed",
+            [
+                (
+                    0,
+                    "acquire",
+                    {
+                        **acquire,
+                        "ttl_seconds": 2520,
+                        "lease_max_seconds": 2520,
+                        "renewable": False,
+                    },
+                ),
+                (100, "renew", held),
+                (200, "covers", held),
             ],
         ),
         (
@@ -1392,6 +1600,7 @@ def build_vectors() -> dict[str, Any]:
         "lease_scenarios": _scenarios(),
         "observation_vectors": _observation_vectors(),
         "binding": _binding_vectors(),
+        "job_arg_schema": _arg_schema_vectors(),
         "agent_observation": _agent_observation_vectors(),
         "domain_separation": _domain_separation_vectors(),
         "attestation_pair": _attestation_pair_vectors(),

@@ -107,6 +107,7 @@ def test_every_lease_scenario_replays_on_a_fresh_ledger() -> None:
                         ttl_seconds=a["ttl_seconds"],
                         lease_max_seconds=a["lease_max_seconds"],
                         marker_present=a["marker_present"],
+                        renewable=a.get("renewable", True),
                     )
                 elif step["call"] == "covers":
                     body = ledger.covers(
@@ -274,7 +275,7 @@ def test_binding_vectors_replay_and_pin_the_example_snapshots() -> None:
     assert serving["dispatched_job"] is None and serving["jobs"]
     job = binding["job"]["snapshot"]["deploy_binding"]
     assert job["roles"] == [] and job["images"][0]["source"] == "present"
-    assert job["lease_ttl_seconds"] == job["lease_max_seconds"] == 3120
+    assert job["lease_ttl_seconds"] == job["lease_max_seconds"] == 2520
     for item in binding["refused"]:
         with pytest.raises(api.TargetApiError) as refused:
             v2.check_deploy_binding(
@@ -537,3 +538,63 @@ def test_the_pair_evidence_mirrors_the_host_admission_foreign_types() -> None:
         "context_digest",
     } <= context_fields
     assert set(names(vectors._Root)) <= set(names(hac.HostAdmissionRootContextV1))
+
+
+def test_a_job_lease_is_granted_once_and_never_renewed() -> None:
+    """RQ-1: ttl = max = timeout + 120; a renew on a run_job lease is refused with
+    its own code, and the refusal is a signed 409."""
+    ledger = v2.LeaseLedger()
+    got = ledger.acquire(
+        now=_t(),
+        dispatch_run="job-1",
+        ttl_seconds=2520,
+        lease_max_seconds=2520,
+        marker_present=False,
+        renewable=False,
+    )
+    assert got["ttl_seconds"] == 2520
+    with pytest.raises(api.TargetApiError) as refused:
+        ledger.renew(now=_t(100), lease_id="lease-0001", dispatch_run="job-1")
+    assert refused.value.code == "lease_not_renewable"
+    assert v2.LEASE_ERRORS["lease_not_renewable"] == 409
+    # The lease still covers the run until it expires.
+    assert ledger.covers(now=_t(200), lease_id="lease-0001", dispatch_run="job-1")
+
+
+def test_job_arg_schema_vectors_replay() -> None:
+    from dotmac_deployment_control.deploy_unit import (
+        DeployUnitError,
+        parse_deploy_unit,
+    )
+
+    schema = _V["job_arg_schema"]
+    for item in schema["ok"]:
+        parse_deploy_unit(item["descriptor"])
+    for item in schema["refused"]:
+        with pytest.raises(DeployUnitError):
+            parse_deploy_unit(item["descriptor"])
+    assert len(schema["refused"]) >= 8
+
+
+def test_job_inputs_carry_a_signed_digest_and_outputs_none() -> None:
+    job = _V["binding"]["job"]["snapshot"]["deploy_binding"]["dispatched_job"]
+    assert job["inputs"] == [
+        {
+            "flag": "--manifest",
+            "path": "/job/in/manifest.json",
+            "sha256": "sha256:" + "7" * 64,
+        }
+    ]
+    assert job["output_dir"] == "/job/out" and job["apply_class"] is True
+    # Every input path in argv is covered, and the output has no entry.
+    assert "/job/out/receipt.json" in job["argv"]
+    assert all(not e["path"].startswith("/job/out") for e in job["inputs"])
+    names = {r["name"] for r in _V["binding"]["refused"]}
+    assert {
+        "an input without its digest",
+        "a digest on an output",
+        "an input path outside /job/in",
+        "an input path with ..",
+        "a duplicate input flag",
+        "a non-canonical input digest",
+    } <= names

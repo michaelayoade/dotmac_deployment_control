@@ -244,6 +244,35 @@ class JobSpec:
     args: tuple[JobArgSpec, ...] = ()
     #: Upper bound on the run, signed into a dispatch plan (declared, no default).
     run_limit_seconds: int = 1
+    #: True when the job's own command applies (a positional `apply` mode, say): the
+    #: plan is apply-class whatever its arguments.
+    apply_command: bool = False
+
+    def is_apply(self, values: Mapping[str, object] | None = None) -> bool:
+        """Whether the supplied arguments (or the command itself) apply."""
+        if self.apply_command:
+            return True
+        supplied = dict(values or {})
+        for arg in self.args:
+            value = supplied.get(arg.flag)
+            if arg.apply_mode and value is True:
+                return True
+            if arg.apply_choices and value in arg.apply_choices:
+                return True
+        return False
+
+    def input_flags(
+        self, values: Mapping[str, object] | None = None
+    ) -> tuple[str, ...]:
+        """The supplied INPUT path arguments: each needs a signed sha256."""
+        supplied = dict(values or {})
+        return tuple(
+            sorted(
+                a.flag
+                for a in self.args
+                if a.type == "path" and a.io == "input" and a.flag in supplied
+            )
+        )
 
     def argv(self, values: Mapping[str, object] | None = None) -> tuple[str, ...]:
         """`command` followed by `[flag, value]` per supplied declared arg.
@@ -282,6 +311,13 @@ class JobArgSpec:
     pattern: str | None = None
     choices: tuple[str, ...] = ()
     max_length: int = MAX_JOB_ARG_VALUE
+    #: A `path` argument is an `input` (its sha256 is entered at propose and
+    #: signed) or an `output` (confined to the job's `output_dir`).
+    io: str | None = None
+    #: A bool flag that, when true, makes the plan apply-class.
+    apply_mode: bool = False
+    #: The enum choices that make the plan apply-class.
+    apply_choices: tuple[str, ...] = ()
 
     def payload(self) -> dict[str, object]:
         return {
@@ -291,6 +327,9 @@ class JobArgSpec:
             "pattern": self.pattern,
             "choices": list(self.choices),
             "max_length": self.max_length,
+            "io": self.io,
+            "apply_mode": self.apply_mode,
+            "apply_choices": list(self.apply_choices),
         }
 
     def render(self, value: object) -> tuple[str, ...]:
@@ -314,10 +353,14 @@ class JobArgSpec:
             raise DeployUnitError(f"{self.flag} is one of {list(self.choices)}")
         if self.type == "sha256" and not is_canonical_digest(f"sha256:{value}"):
             raise DeployUnitError(f"{self.flag} is a sha256 in hex")
-        if self.type == "path" and (
-            not value.startswith("/") or ".." in value.split("/")
-        ):
-            raise DeployUnitError(f"{self.flag} is an absolute path without '..'")
+        if self.type == "path":
+            root = JOB_IN_DIR if self.io == "input" else JOB_OUT_DIR
+            if ".." in value.split("/") or not re.fullmatch(
+                re.escape(root) + "/" + _JOB_NAME, value
+            ):
+                raise DeployUnitError(
+                    f"{self.flag} is {root}/<name> (an {self.io}), with no '..'"
+                )
         if self.pattern is not None and not re.fullmatch(self.pattern, value):
             raise DeployUnitError(f"{self.flag} does not match its declared pattern")
         # A sha256 is high-entropy by nature; it is checked for secret SHAPES only.
@@ -855,11 +898,29 @@ _JOB_KEYS = frozenset(
         "role",
         "args",
         "timeout_seconds",
+        "apply_command",
     }
 )
 _JOB_ARG_KEYS = frozenset(
-    {"flag", "type", "pattern", "choices", "max_length", "required"}
+    {
+        "flag",
+        "type",
+        "pattern",
+        "choices",
+        "max_length",
+        "required",
+        "io",
+        "apply_mode",
+        "apply_choices",
+    }
 )
+JOB_ARG_IO: Final = frozenset({"input", "output"})
+#: Where a per-dispatch output may never be written: the runtime's own tree.
+JOB_IN_DIR: Final = "/job/in"
+#: THE per-dispatch output directory: every `io = "output"` path lives here, and
+#: never under /run/dotmac (the runtime's own tree).
+JOB_OUT_DIR: Final = "/job/out"
+_JOB_NAME: Final = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 _HOLD_KEYS = frozenset(
     {"name", "member", "before", "timeout_param", "on_timeout", "released_by"}
 )
@@ -1060,6 +1121,9 @@ def _parse_job(index: int, table: object) -> JobSpec:
         raise DeployUnitError(
             f"{where}.timeout_seconds is 1..{MAX_JOB_TIMEOUT_SECONDS}"
         )
+    apply_command = table.get("apply_command", False)
+    if not isinstance(apply_command, bool):
+        raise DeployUnitError(f"{where}.apply_command is a bool")
     return JobSpec(
         name=name,
         command=command,
@@ -1069,6 +1133,7 @@ def _parse_job(index: int, table: object) -> JobSpec:
         role=role,
         args=args,
         run_limit_seconds=timeout,
+        apply_command=apply_command,
     )
 
 
@@ -1115,6 +1180,27 @@ def _parse_job_args(where: str, raw: object) -> tuple[JobArgSpec, ...]:
             or not 1 <= length <= MAX_JOB_ARG_VALUE
         ):
             raise DeployUnitError(f"{here}.max_length is 1..{MAX_JOB_ARG_VALUE}")
+        io = table.get("io")
+        if (kind == "path") != (io is not None) or (
+            io is not None and io not in JOB_ARG_IO
+        ):
+            raise DeployUnitError(
+                f"{here}.io is one of {sorted(JOB_ARG_IO)}, and only a path has it"
+            )
+        if kind == "path":
+            anchor = f"^{JOB_IN_DIR if io == 'input' else JOB_OUT_DIR}/"
+            if not str(pattern).startswith(anchor) or ".." in str(pattern):
+                raise DeployUnitError(
+                    f"{here}: a {io} path pattern starts {anchor} (no '..')"
+                )
+        apply_mode = table.get("apply_mode", False)
+        if not isinstance(apply_mode, bool) or (apply_mode and kind != "bool"):
+            raise DeployUnitError(f"{here}.apply_mode is a bool flag's marker")
+        apply_choices = _string_list(
+            f"{here}.apply_choices", table.get("apply_choices", [])
+        )
+        if apply_choices and (kind != "enum" or not set(apply_choices) <= set(choices)):
+            raise DeployUnitError(f"{here}.apply_choices are choices of an enum")
         out.append(
             JobArgSpec(
                 flag=flag,
@@ -1123,6 +1209,9 @@ def _parse_job_args(where: str, raw: object) -> tuple[JobArgSpec, ...]:
                 pattern=pattern,
                 choices=choices,
                 max_length=length,
+                io=io,
+                apply_mode=apply_mode,
+                apply_choices=apply_choices,
             )
         )
     if len({a.flag for a in out}) != len(out):

@@ -79,7 +79,7 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   (kind deploy|reconcile|job, ingested by `record_observation`), the domain
   separation of a request message from an observation envelope, and the
   host-admission attestation-pair format with Control's own `verify_attestation_pair`. CP and the agent vendor it next to v1 and pin
-  its digest: target_api_v2.json sha256 0fe9c6be1b49af5fb4b9267bce51dfaccc016e83b1c5dd8b2332916f698d834d.
+  its digest: target_api_v2.json sha256 95756ba1d9a1e4c12cafef82ba4fb7e343c29c677772087bec2dd3bbc5374988.
 - Contract hardening (architect r4): `request_credential_id` is the one way to
   look the credential up (an absent or repeated header is refused) and
   `check_request` requires the id it finds to equal the looked-up one;

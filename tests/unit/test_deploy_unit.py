@@ -716,6 +716,7 @@ required = true
 [[jobs.args]]
 flag = "--apply"
 type = "bool"
+apply_mode = true
 
 [[jobs.args]]
 flag = "--plan-sha"
@@ -724,8 +725,15 @@ type = "sha256"
 [[jobs.args]]
 flag = "--receipt"
 type = "path"
-pattern = "^/work/[a-z0-9._-]+$"
+io = "output"
+pattern = "^/job/out/[a-z0-9._-]+$"
 required = true
+
+[[jobs.args]]
+flag = "--manifest"
+type = "path"
+io = "input"
+pattern = "^/job/in/[a-z0-9._-]+$"
 
 [[jobs.args]]
 flag = "--limit"
@@ -743,7 +751,7 @@ def test_a_job_carries_a_closed_argv_of_declared_flags() -> None:
     sha = "ab" * 32
     argv = job.argv(
         {
-            "--receipt": "/work/r.json",
+            "--receipt": "/job/out/r.json",
             "--mode": "execute",
             "--plan-sha": sha,
             "--apply": True,
@@ -762,12 +770,14 @@ def test_a_job_carries_a_closed_argv_of_declared_flags() -> None:
         "--plan-sha",
         sha,
         "--receipt",
-        "/work/r.json",
+        "/job/out/r.json",
         "--limit",
         "5",
     )
     # A false bool and an unset optional are simply absent.
-    assert job.argv({"--mode": "plan", "--receipt": "/work/a", "--apply": False}) == (
+    assert job.argv(
+        {"--mode": "plan", "--receipt": "/job/out/a", "--apply": False}
+    ) == (
         "python",
         "-m",
         "erp_v2.importer",
@@ -775,20 +785,22 @@ def test_a_job_carries_a_closed_argv_of_declared_flags() -> None:
         "--mode",
         "plan",
         "--receipt",
-        "/work/a",
+        "/job/out/a",
     )
 
 
 def test_an_undeclared_missing_or_bad_argument_is_refused() -> None:
     job = parse_deploy_unit(_with_args()).jobs[0]
-    good = {"--mode": "plan", "--receipt": "/work/a"}
+    good = {"--mode": "plan", "--receipt": "/job/out/a"}
     assert job.argv(good)
     for bad in (
         {**good, "--source-url-env": "X"},  # undeclared: never passable
-        {"--receipt": "/work/a"},  # required missing
+        {"--receipt": "/job/out/a"},  # required missing
         {**good, "--mode": "other"},  # not a choice
         {**good, "--receipt": "/etc/passwd"},  # outside the work dir pattern
-        {**good, "--receipt": "/work/../etc"},  # traversal
+        {**good, "--receipt": "/job/out/../etc"},  # traversal
+        {**good, "--receipt": "/job/in/a"},  # an output is under /job/out
+        {**good, "--manifest": "/job/out/a"},  # an input is under /job/in
         {**good, "--receipt": "relative"},
         {**good, "--plan-sha": "xyz"},
         {**good, "--limit": "5; rm"},
@@ -820,8 +832,15 @@ def test_job_arg_tables_are_validated_at_parse() -> None:
         'flag = "--x"\ntype = "blob"',
         'flag = "--x"\ntype = "enum"',  # enum needs choices
         'flag = "--x"\ntype = "string"\nchoices = ["a"]',
-        'flag = "--x"\ntype = "path"',  # a path needs a work-dir pattern
-        'flag = "--x"\ntype = "path"\npattern = "work/.*"',  # not anchored at /
+        'flag = "--x"\ntype = "path"',  # a path needs io and a pattern
+        # not anchored
+        'flag = "--x"\ntype = "path"\nio = "input"\npattern = "work/.*"',
+        'flag = "--x"\ntype = "path"\nio = "input"\npattern = "^/job/out/.+$"',
+        'flag = "--x"\ntype = "path"\nio = "output"\npattern = "^/job/in/.+$"',
+        'flag = "--x"\ntype = "string"\nio = "input"',
+        'flag = "--x"\ntype = "path"\nio = "input"\npattern = "^/job/in/../x$"',
+        'flag = "--x"\ntype = "string"\napply_mode = true',
+        'flag = "--m"\ntype = "enum"\nchoices = ["a"]\napply_choices = ["b"]',
         'flag = "--x"\ntype = "string"\npattern = "("',
         'flag = "--x"\ntype = "string"\nmax_length = 999',
         'flag = "--x"\ntype = "string"\nextra = 1',
@@ -903,3 +922,26 @@ def test_job_credentials_are_derived_from_the_descriptor_not_named_in_control() 
     )
     with pytest.raises(DeployUnitError, match="never include a dispatched job"):
         parse_deploy_unit(legacy, legacy_allowed=True)
+
+
+def test_apply_markers_and_input_flags_come_from_the_closed_arg_list() -> None:
+    job = parse_deploy_unit(_with_args()).jobs[0]
+    plan = {"--mode": "plan", "--receipt": "/job/out/a"}
+    assert not job.is_apply(plan)
+    assert not job.is_apply({**plan, "--apply": False})
+    assert job.is_apply({**plan, "--apply": True})
+    # Only an INPUT path needs a digest; an output never does.
+    both = {**plan, "--manifest": "/job/in/m.json"}
+    assert job.input_flags(both) == ("--manifest",)
+    assert job.input_flags(plan) == ()
+    # Enum choices can mark apply; so can a command that applies by itself.
+    enum = _with_args(
+        '[[jobs.args]]\nflag = "--do"\ntype = "enum"\nchoices = ["plan", "apply"]\n'
+        'apply_choices = ["apply"]\n'
+    )
+    do = parse_deploy_unit(enum).jobs[0]
+    assert do.is_apply({"--do": "apply"}) and not do.is_apply({"--do": "plan"})
+    command = _IMPORT.replace(
+        'role = "import"\n', 'role = "import"\napply_command = true\n'
+    )
+    assert parse_deploy_unit(command).jobs[0].is_apply({})

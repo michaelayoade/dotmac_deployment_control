@@ -117,6 +117,7 @@ from dotmac_deployment_control.deploy_settings import (
     settings_from_rows,
 )
 from dotmac_deployment_control.deploy_unit import (
+    JOB_OUT_DIR,
     DeployUnit,
     DeployUnitError,
     canonical_job_render,
@@ -137,6 +138,7 @@ from dotmac_deployment_control.digests import (
     PublicKeyFingerprintV1,
     SpecDigestV1,
     canonical_json,
+    is_canonical_digest,
 )
 from dotmac_deployment_control.dispatch_envelope import (
     DispatchEnvelopeV1,
@@ -2743,6 +2745,16 @@ def propose_plan(
         )
         if command.operation == DeploymentOperation.RUN_JOB.value and derived is None:
             raise PlanRefusedError("a run_job plan needs a descriptor-backed target")
+        if (
+            derived is not None
+            and derived.dispatched_job is not None
+            and derived.dispatched_job.apply_class
+            and not command.requires_approval
+        ):
+            raise PlanRefusedError(
+                "an apply-class run_job plan (a gate is 1 or an apply argument is "
+                "set) needs its own per-dispatch approval"
+            )
         snapshot = plan_snapshot(
             target,
             descriptor_digest=command.descriptor_digest,
@@ -6520,6 +6532,23 @@ def _derive_deploy_binding(
             argv = job_spec.argv(inputs.job_args)
         except DeployUnitError as exc:
             raise PlanRefusedError(str(exc)) from None
+        # Every INPUT path the run reads carries the sha256 approved with the plan.
+        input_digests = dict(inputs.job_input_digests)
+        if set(input_digests) != set(job_spec.input_flags(inputs.job_args)):
+            raise PlanRefusedError(
+                "every input path argument carries its sha256 at propose, and no "
+                "other argument does"
+            )
+        if not all(is_canonical_digest(d) for d in input_digests.values()):
+            raise PlanRefusedError("an input digest is sha256:<64 hex>")
+        # Apply-class is DERIVED from the bound plan, never asserted by a caller.
+        gate_on = any(
+            unit.params[name].type == "enum"
+            and tuple(unit.params[name].choices) == ("0", "1")
+            and value == "1"
+            for name, value in job_values.items()
+        )
+        apply_class = gate_on or job_spec.is_apply(inputs.job_args)
         if job_spec.role is not None:
             # A dispatched job with a role gets its secrets ONLY from that
             # role's mint (and its own scoped params): never from the serving
@@ -6584,6 +6613,18 @@ def _derive_deploy_binding(
             ),
             run_limit_seconds=job_spec.run_limit_seconds,
             window=window,
+            inputs=tuple(
+                sorted(
+                    (flag, str(inputs.job_args[flag]), digest)
+                    for flag, digest in input_digests.items()
+                )
+            ),
+            output_dir=(
+                JOB_OUT_DIR
+                if any(a.type == "path" and a.io == "output" for a in job_spec.args)
+                else None
+            ),
+            apply_class=apply_class,
         )
     deploy_roles = unit.deploy_role_bindings() if dispatched is None else ()
     for role, _single in deploy_roles:
@@ -6668,6 +6709,7 @@ def _derive_deploy_binding(
                 params=scoped_param_names(unit, j.name),
                 args=tuple(a.payload() for a in j.args),
                 run_limit_seconds=j.run_limit_seconds,
+                apply_command=j.apply_command,
             )
             for j in unit.jobs
         ],

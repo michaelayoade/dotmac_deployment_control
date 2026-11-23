@@ -89,6 +89,9 @@ class DeployPlanInputs:
     #: desired state. An unsupplied param takes its descriptor default ("0" for a
     #: gate). For a job plan the lease is derived (timeout + 120), not supplied.
     job_params: Mapping[str, object] = field(default_factory=dict)
+    #: `flag -> sha256:<hex>` of every INPUT path argument the run supplies,
+    #: entered at propose and signed. A run reads exactly the bytes approved.
+    job_input_digests: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +148,13 @@ class PlanJobDefinition:
     params: tuple[str, ...]
     args: tuple[dict[str, object], ...]
     run_limit_seconds: int
+    apply_command: bool = False
 
     def payload(self) -> dict[str, object]:
         return {
             "name": self.name,
             "role": self.role,
+            "apply_command": self.apply_command,
             "command": list(self.command),
             "materials": list(self.materials),
             "params": list(self.params),
@@ -181,9 +186,22 @@ class PlanJob:
     params_env_digest: str
     run_limit_seconds: int
     window: PlanJobWindow | None = None
+    #: `(flag, path, sha256)` of every input path argument, sorted by flag; the
+    #: sha256 is entered at propose and signed with the plan.
+    inputs: tuple[tuple[str, str, str], ...] = ()
+    #: The per-dispatch output directory when the job has output args, else None.
+    output_dir: str | None = None
+    #: Derived by Control from the bound plan: a scoped gate is "1", or an
+    #: apply-mode argument is set, or the command applies. Needs its own approval.
+    apply_class: bool = False
 
     def payload(self) -> dict[str, object]:
         return {
+            "inputs": [
+                {"flag": f, "path": p, "sha256": d} for f, p, d in sorted(self.inputs)
+            ],
+            "output_dir": self.output_dir,
+            "apply_class": self.apply_class,
             "name": self.name,
             "role": self.role,
             "single_use": self.single_use,

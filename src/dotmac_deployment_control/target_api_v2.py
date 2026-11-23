@@ -99,6 +99,8 @@ LEASE_ERRORS: Final = {
     "lease_max_reached": 409,
     "lease_held": 409,
     "reconcile_marker_required": 409,
+    # A run_job lease is granted ONCE (ttl = max = timeout + 120) and never renewed.
+    "lease_not_renewable": 409,
 }
 
 _TYPES: Final = {"str": str, "int": int, "bool": bool, "optstr": (str, type(None))}
@@ -161,6 +163,7 @@ class LeaseRow:
     max_seconds: int
     acquired_at: datetime
     host_mutated: bool = False
+    renewable: bool = True
 
 
 class LeaseLedger:
@@ -199,6 +202,7 @@ class LeaseLedger:
         ttl_seconds: int,
         lease_max_seconds: int,
         marker_present: bool,
+        renewable: bool = True,
     ) -> dict[str, object]:
         standing = self.standing(now=now)["standing"]
         if standing == "expired_unreleased" and not marker_present:
@@ -224,6 +228,7 @@ class LeaseLedger:
             ttl_seconds=ttl_seconds,
             max_seconds=lease_max_seconds,
             acquired_at=now,
+            renewable=renewable,
         )
         self.rows.append(row)
         return {"lease_id": row.lease_id, "ttl_seconds": grant}
@@ -253,6 +258,8 @@ class LeaseLedger:
             raise TargetApiError("no such lease is held by this run", "lease_not_held")
         if now >= held.expires_at:
             raise TargetApiError("the lease expired", "lease_expired")
+        if not held.renewable:
+            raise TargetApiError("a job lease is never renewed", "lease_not_renewable")
         grant = renew_grant(
             ttl_seconds=held.ttl_seconds,
             lease_max_seconds=held.max_seconds,
@@ -268,6 +275,7 @@ class LeaseLedger:
                 ttl_seconds=held.ttl_seconds,
                 max_seconds=held.max_seconds,
                 acquired_at=held.acquired_at,
+                renewable=True,
             )
         )
         return {"lease_id": held.lease_id, "ttl_seconds": grant}
@@ -341,6 +349,9 @@ _DISPATCHED_KEYS: Final = frozenset(
         "argv",
         "timeout_seconds",
         "window",
+        "inputs",
+        "output_dir",
+        "apply_class",
     }
 )
 _MATERIAL: Final = re.compile(r"[A-Z][A-Z0-9_]*")
@@ -411,6 +422,7 @@ def check_deploy_binding(binding: Mapping[str, Any], *, operation: str) -> None:
         raise _bad("materials are sorted", "job_shape")
     if not is_canonical_digest(job["params_env_digest"]):
         raise _bad("params_env_digest is sha256:<64 hex>", "job_shape")
+    _check_job_io(job)
     timeout = job["timeout_seconds"]
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
         raise _bad("timeout_seconds is a positive integer", "job_shape")
@@ -460,3 +472,50 @@ def parse_request_message(message: bytes) -> dict[str, str]:
         "nonce",
     )
     return dict(zip(keys, lines, strict=True))
+
+
+_IN_PATH = re.compile(r"/job/in/[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_OUT_PATH = re.compile(r"/job/out/[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+JOB_OUT_DIR: Final = "/job/out"
+
+
+def _check_job_io(job: Mapping[str, Any]) -> None:
+    """`inputs` carry the sha256 of every input path in argv; outputs carry none."""
+    if not isinstance(job["apply_class"], bool):
+        raise _bad("apply_class is a bool", "job_shape")
+    inputs = job["inputs"]
+    if not isinstance(inputs, list):
+        raise _bad("inputs is a list", "job_inputs")
+    flags: list[str] = []
+    for entry in inputs:
+        if not isinstance(entry, dict) or set(entry) != {"flag", "path", "sha256"}:
+            raise _bad("an input is exactly {flag, path, sha256}", "job_inputs")
+        flag, path = entry["flag"], entry["path"]
+        if not isinstance(flag, str) or not isinstance(path, str):
+            raise _bad("an input flag and path are text", "job_inputs")
+        if _OUT_PATH.fullmatch(path):
+            raise _bad("an output path carries no digest", "job_inputs")
+        if ".." in path.split("/") or not _IN_PATH.fullmatch(path):
+            raise _bad("an input path is /job/in/<name>, no '..'", "job_inputs")
+        if not is_canonical_digest(entry["sha256"]):
+            raise _bad("an input sha256 is canonical sha256:<64 hex>", "job_inputs")
+        argv = job["argv"]
+        at = [i for i, token in enumerate(argv) if token == flag]
+        if len(at) != 1 or at[0] + 1 >= len(argv) or argv[at[0] + 1] != path:
+            raise _bad("an input flag is followed by its path in argv", "job_inputs")
+        flags.append(flag)
+    if flags != sorted(flags) or len(set(flags)) != len(flags):
+        raise _bad("inputs are sorted by flag, one per flag", "job_inputs")
+    covered = {entry["path"] for entry in inputs}
+    for token in job["argv"]:
+        if (
+            isinstance(token, str)
+            and token.startswith("/job/in/")
+            and token not in covered
+        ):
+            raise _bad("an input path in argv has no digest", "job_inputs")
+    out = job["output_dir"]
+    if out is not None and out != JOB_OUT_DIR:
+        raise _bad(
+            f"the output dir is {JOB_OUT_DIR}, never under /run/dotmac", "job_inputs"
+        )

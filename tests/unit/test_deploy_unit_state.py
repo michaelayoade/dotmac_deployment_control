@@ -241,6 +241,8 @@ def _descriptor_text(
             '[params.import_payable]\ntype = "string"\n'
             'material = "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF"\n'
             f'pattern = "^[A-Za-z0-9._:-]+$"\nmax_length = 64\n{scope}'
+            '[params.import_gate]\ntype = "enum"\nchoices = ["0", "1"]\n'
+            f'default = "0"\nmaterial = "ERP_IMPORT_GATE"\n{scope}'
             '[[bindings]]\nname = "MIGRATION_DATABASE_URL"\n'
             f'{state}kind = "pg_login_dsn"\n'
             'roles = ["migrate", "import"]\nwriter = "ceremony"\n'
@@ -257,6 +259,11 @@ def _descriptor_text(
             'runbook = "docs/rehearsal.md"\n'
             '[[jobs.args]]\nflag = "--mode"\ntype = "enum"\n'
             'choices = ["plan", "execute"]\nrequired = true\n'
+            '[[jobs.args]]\nflag = "--apply"\ntype = "bool"\napply_mode = true\n'
+            '[[jobs.args]]\nflag = "--manifest"\ntype = "path"\nio = "input"\n'
+            'pattern = "^/job/in/[a-z0-9._-]+$"\n'
+            '[[jobs.args]]\nflag = "--receipt"\ntype = "path"\nio = "output"\n'
+            'pattern = "^/job/out/[a-z0-9._-]+$"\n'
         )
     return out
 
@@ -394,7 +401,7 @@ def _enable(db, target_id, source, **overrides):  # type: ignore[no-untyped-def]
     )
 
 
-def _propose(db, target_id, source, inputs=_INPUTS):  # type: ignore[no-untyped-def]
+def _propose(db, target_id, source, inputs=_INPUTS, *, approved=True):  # type: ignore[no-untyped-def]
     return propose_plan(
         db,
         ProposePlanCommand(
@@ -404,7 +411,7 @@ def _propose(db, target_id, source, inputs=_INPUTS):  # type: ignore[no-untyped-
             descriptor_digest=_DESC,
             execution_plan_digest=_EXEC,
             purpose="foundation_execution",
-            requires_approval=True,
+            requires_approval=approved,
             approval_policy_code="deployment.production",
             approval_policy_version=4,
             deploy_inputs=inputs,
@@ -1519,6 +1526,7 @@ _JP = {"import_approved": "true", "import_payable": "acct.net-payable"}
 #: The same values as the signed object keys them: by MATERIAL.
 _JPM = {
     "ERP_IMPORT_APPROVED": "true",
+    "ERP_IMPORT_GATE": "0",
     "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF": "acct.net-payable",
 }
 _JOB = DeployPlanInputs(
@@ -1614,6 +1622,7 @@ def test_a_job_role_is_derived_for_the_job_only_and_its_params_are_scoped(
     )
     assert job_render == (
         b"ERP_IMPORT_APPROVED=true\n"
+        b"ERP_IMPORT_GATE=0\n"
         b"ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF=acct.net-payable\n"
     )
     assert job["params_env_digest"] == params_env_digest(job_render)
@@ -2077,3 +2086,118 @@ def test_real_plan_bindings_satisfy_the_v2_contract_rules(db: Session) -> None:
     # The refusals the contract pins hold for the real thing too.
     with pytest.raises(Exception, match="dispatched_job"):
         v2.check_deploy_binding(job, operation="deploy")
+
+
+# ── RQ-2 / RQ-3: signed inputs, derived apply-class, gates never persist ─────
+
+_SHA = "sha256:" + "7" * 64
+
+
+def _job_inputs(args=None, params=None, digests=None):  # type: ignore[no-untyped-def]
+    return DeployPlanInputs(
+        900,
+        5000,
+        "import",
+        {"--mode": "execute", **(args or {})},
+        {**_JP, **(params or {})},
+        digests or {},
+    )
+
+
+def test_every_input_path_carries_a_signed_sha256_and_an_output_none(
+    db: Session,
+) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    manifest = {"--manifest": "/job/in/m.json"}
+    plan = _binding_of(
+        _propose(
+            db, erp.id, source, _job_inputs(manifest, digests={"--manifest": _SHA})
+        )
+    )
+    job = plan["dispatched_job"]
+    assert job["inputs"] == [
+        {"flag": "--manifest", "path": "/job/in/m.json", "sha256": _SHA}
+    ]
+    assert job["output_dir"] is None  # no output argument in this run
+    withheld = [
+        (manifest, {}),  # an input without its digest
+        ({}, {"--manifest": _SHA}),  # a digest for an argument not supplied
+        (
+            {"--receipt": "/job/out/r.json"},
+            {"--receipt": _SHA},  # a digest on an OUTPUT
+        ),
+        (manifest, {"--manifest": "7" * 64}),  # not a canonical digest
+        ({"--manifest": "/etc/passwd"}, {"--manifest": _SHA}),  # outside /job/in
+    ]
+    for args, digests in withheld:
+        with pytest.raises(PlanRefusedError):
+            _propose(db, erp.id, source, _job_inputs(args, digests=digests))
+    out = _binding_of(
+        _propose(db, erp.id, source, _job_inputs({"--receipt": "/job/out/r.json"}))
+    )
+    assert out["dispatched_job"]["output_dir"] == "/job/out"
+    assert out["dispatched_job"]["inputs"] == []
+
+
+def test_the_digest_is_part_of_the_plan_digest(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    manifest = {"--manifest": "/job/in/m.json"}
+    one = _propose(
+        db, erp.id, source, _job_inputs(manifest, digests={"--manifest": _SHA})
+    )
+    other = "sha256:" + "8" * 64
+    two = _propose(
+        db, erp.id, source, _job_inputs(manifest, digests={"--manifest": other})
+    )
+    assert one.plan_digest != two.plan_digest
+
+
+def test_apply_class_is_derived_from_the_bound_plan(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    dry = _binding_of(_propose(db, erp.id, source, _job_inputs()))
+    assert dry["dispatched_job"]["apply_class"] is False
+    assert dry["dispatched_job"]["params"]["ERP_IMPORT_GATE"] == "0"
+    flag = _binding_of(_propose(db, erp.id, source, _job_inputs({"--apply": True})))
+    assert flag["dispatched_job"]["apply_class"] is True
+    gate = _binding_of(
+        _propose(db, erp.id, source, _job_inputs(params={"import_gate": "1"}))
+    )
+    assert gate["dispatched_job"]["apply_class"] is True
+
+
+def test_an_apply_class_plan_needs_its_own_approval(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    with pytest.raises(PlanRefusedError, match="per-dispatch approval"):
+        _propose(db, erp.id, source, _job_inputs({"--apply": True}), approved=False)
+    with pytest.raises(PlanRefusedError, match="per-dispatch approval"):
+        _propose(
+            db, erp.id, source, _job_inputs(params={"import_gate": "1"}), approved=False
+        )
+    # A dry run needs no standing exemption, and an approved apply plan proposes.
+    assert _propose(db, erp.id, source, _job_inputs(), approved=False)
+    assert _propose(db, erp.id, source, _job_inputs({"--apply": True}))
+
+
+def test_a_gate_set_for_one_dispatch_is_never_persisted_into_the_next(
+    db: Session,
+) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    applied = _binding_of(
+        _propose(db, erp.id, source, _job_inputs(params={"import_gate": "1"}))
+    )
+    assert applied["dispatched_job"]["params"]["ERP_IMPORT_GATE"] == "1"
+    assert applied["dispatched_job"]["apply_class"] is True
+    # The next plan, with no gate entered, defaults to "0" and is not apply-class.
+    nxt = _binding_of(
+        _propose(db, erp.id, source, _job_inputs(args={"--mode": "plan"}))
+    )
+    assert nxt["dispatched_job"]["params"]["ERP_IMPORT_GATE"] == "0"
+    assert nxt["dispatched_job"]["apply_class"] is False
+    # Nor is it stored as desired state.
+    stored = get_target(db, erp.id).desired_spec["deploy_unit"]["params"]
+    assert "import_gate" not in stored and "ERP_IMPORT_GATE" not in str(stored)
