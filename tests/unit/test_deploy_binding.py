@@ -59,6 +59,8 @@ def _binding(**overrides: object):
         "allowlist": PullAllowlist(),
         "primary_service": "app",
         "roles": [PlanRole("migrate", True), PlanRole("app", False)],
+        "secrets_namespace": "erp",
+        "secrets_environment": "prod",
     }
     args.update(overrides)
     return build_deploy_binding(**args)  # type: ignore[arg-type]
@@ -241,3 +243,26 @@ def test_roles_and_the_primary_service_are_bound_sorted_into_the_plan() -> None:
         _binding(primary_service="")
     with pytest.raises(DeployBindingRefusedError, match="role appears once"):
         _binding(roles=[PlanRole("app", False), PlanRole("app", True)])
+
+
+def test_the_openbao_naming_is_carried_in_the_signed_binding() -> None:
+    """The agent reads these two keys from the plan, never from CP."""
+    payload = _binding().payload()
+    assert payload["secrets_namespace"] == "erp"
+    assert payload["secrets_environment"] == "prod"
+    base = _digest(_binding())
+    assert _digest(_binding(secrets_namespace="sub")) != base
+    assert _digest(_binding(secrets_environment="staging")) != base
+
+
+def test_roles_require_the_openbao_naming() -> None:
+    with pytest.raises(DeployBindingRefusedError, match="OpenBao naming"):
+        _binding(secrets_environment=None)
+    with pytest.raises(DeployBindingRefusedError, match="OpenBao naming"):
+        _binding(secrets_namespace="")
+    # With no roles there is nothing to mint: the keys may be absent (null).
+    bare = _binding(roles=[], secrets_namespace="erp", secrets_environment=None)
+    assert bare.payload()["secrets_environment"] is None
+    for label, bad in (("secrets_namespace", "Erp"), ("secrets_environment", "Prod")):
+        with pytest.raises(DeployBindingRefusedError, match="lowercase segment"):
+            _binding(**{label: bad})

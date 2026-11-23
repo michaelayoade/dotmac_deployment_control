@@ -5902,6 +5902,11 @@ def _derive_deploy_binding(
                 f"job {job.name!r} needs {', '.join(missing)}, which no param, "
                 "active binding or legacy name in this plan supplies"
             )
+    if unit.role_bindings() and target.bao_environment is None:
+        raise PlanRefusedError(
+            f"target {target.target_ref} has roles to mint secret_ids for but no "
+            "OpenBao namespace-env; set it once (set_bao_environment) before planning"
+        )
     return build_deploy_binding(
         deploy_unit_digest=verified.digest,
         product_toml_sha256=verified.product_toml_sha256,
@@ -5923,6 +5928,8 @@ def _derive_deploy_binding(
         active_binding_names=active,
         roles=[PlanRole(role, single) for role, single in unit.role_bindings()],
         primary_service=unit.product,
+        secrets_namespace=unit.secrets_namespace,
+        secrets_environment=target.bao_environment,
     )
 
 

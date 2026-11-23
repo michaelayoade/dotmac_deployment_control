@@ -1197,6 +1197,9 @@ def test_active_binding_roles_are_derived_and_bound_into_the_plan(db: Session) -
     binding = _binding_of(_propose(db, erp.id, source))
     assert binding["roles"] == [{"role": "app", "single_use": False}]
     assert binding["primary_service"] == "dotmac-erp-v2"
+    # The OpenBao naming comes from the descriptor and the target, in the plan.
+    assert binding["secrets_namespace"] == "erp"
+    assert binding["secrets_environment"] == "prod"
 
 
 def test_a_descriptor_backed_target_ref_is_tied_to_product_and_environment(
@@ -1416,3 +1419,39 @@ def test_the_namespace_env_is_set_once_while_null(db: Session) -> None:
     pilot = _a17_target(db, "dotmac-erp-v2/pilot/host-1", "pilot")
     set_bao_environment(db, command(pilot.id, "pilot"))
     assert db.get(DeploymentTarget, pilot.id).bao_environment == "pilot"
+
+
+def test_a_plan_with_roles_needs_the_targets_namespace_env(db: Session) -> None:
+    """Propose refuses when roles exist and `bao_environment` is NULL."""
+    from dotmac_deployment_control import SetBaoEnvironmentCommand, set_bao_environment
+
+    roles = FakeSource(text=_descriptor_text(active=("API_SECRET", "DB_PASSWORD")))
+    erp = _bound_target(db, roles)
+    row = db.get(DeploymentTarget, erp.id)
+    row.bao_environment = None  # a target registered before the column existed
+    db.flush()
+    with pytest.raises(PlanRefusedError, match="namespace-env"):
+        _propose(db, erp.id, roles)
+    set_bao_environment(
+        db,
+        SetBaoEnvironmentCommand(
+            command_id=_cmd(),
+            target_id=erp.id,
+            bao_environment="prod",
+            approval=_ATTENDED,
+        ),
+    )
+    binding = _binding_of(_propose(db, erp.id, roles))
+    assert (binding["secrets_namespace"], binding["secrets_environment"]) == (
+        "erp",
+        "prod",
+    )
+    # No roles, nothing to mint: a NULL namespace-env still plans, carrying null.
+    quiet = FakeSource()
+    other = _bound_target(db, quiet, ref=_E + "host-q")
+    db.get(DeploymentTarget, other.id).bao_environment = None
+    db.flush()
+    binding = _binding_of(_propose(db, other.id, quiet))
+    assert binding["roles"] == []
+    assert binding["secrets_namespace"] == "erp"
+    assert binding["secrets_environment"] is None

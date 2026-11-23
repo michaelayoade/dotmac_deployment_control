@@ -39,6 +39,7 @@ from dotmac_deployment_control.legacy_policy import LegacyPlanBinding
 
 MAX_LEASE_TTL_SECONDS: Final = 3600
 COMPANION_ORDER: Final = "after_primary_ready"
+_SEGMENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _SERVICE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 
 
@@ -108,6 +109,12 @@ class DeployPlanBinding:
     #: The service the primary image belongs to. The agent reads the primary
     #: image through it; there is no "the only image" fallback.
     primary_service: str = ""
+    #: OpenBao naming inputs the agent reads from the SIGNED plan (never from
+    #: CP): `secrets_namespace` is the descriptor's `<product>` segment and
+    #: `secrets_environment` the target's namespace-env (`deployment_targets.
+    #: bao_environment`, fixed at registration). Required once there are roles.
+    secrets_namespace: str = ""
+    secrets_environment: str | None = None
     legacy: LegacyPlanBinding | None = None
     companion_order: str | None = None
 
@@ -122,6 +129,8 @@ class DeployPlanBinding:
             "active_binding_names": list(self.active_binding_names),
             "roles": [role.payload() for role in self.roles],
             "primary_service": self.primary_service,
+            "secrets_namespace": self.secrets_namespace,
+            "secrets_environment": self.secrets_environment,
             "legacy": None if self.legacy is None else self.legacy.payload(),
             "companion_order": self.companion_order,
         }
@@ -140,6 +149,8 @@ def build_deploy_binding(
     active_binding_names: Sequence[str] = (),
     roles: Sequence[PlanRole] = (),
     primary_service: str = "",
+    secrets_namespace: str = "",
+    secrets_environment: str | None = None,
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
@@ -174,6 +185,18 @@ def build_deploy_binding(
         )
     if primary_service not in services:
         raise DeployBindingRefusedError("the primary service is one of the images")
+    if roles:
+        if not secrets_namespace or not secrets_environment:
+            raise DeployBindingRefusedError(
+                "a plan with roles carries the OpenBao naming: secrets_namespace "
+                "and secrets_environment"
+            )
+    for label, value in (
+        ("secrets_namespace", secrets_namespace or None),
+        ("secrets_environment", secrets_environment),
+    ):
+        if value is not None and not _SEGMENT_NAME.fullmatch(value):
+            raise DeployBindingRefusedError(f"{label} is a lowercase segment")
     if len({r.role for r in roles}) != len(roles):
         raise DeployBindingRefusedError("a role appears once")
     if companion_order not in (None, COMPANION_ORDER):
@@ -187,6 +210,8 @@ def build_deploy_binding(
         active_binding_names=tuple(sorted(set(active_binding_names))),
         roles=tuple(sorted(roles, key=lambda r: r.role)),
         primary_service=primary_service,
+        secrets_namespace=secrets_namespace,
+        secrets_environment=secrets_environment,
         legacy=legacy,
         companion_order=companion_order,
     )
