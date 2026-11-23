@@ -68,7 +68,7 @@ def _setup(db, **plan_overrides):  # type: ignore[no-untyped-def]
 
 def _recover(db, view, expectation, **over):  # type: ignore[no-untyped-def]
     args = {
-        "command_id": expectation.dispatch_command_id,
+        "command_id": getattr(expectation, "dispatch_command_id", None),
         "rollout_id": view.id,
         "verifier": VERIFIER,
         "dispatch_signer": DISPATCH_SIGNER,
@@ -328,14 +328,14 @@ def plan_row(db, plan):  # type: ignore[no-untyped-def]
     return db.get(DeploymentPlan, plan.id)
 
 
-def _touch(db, view, plan, **changes):  # type: ignore[no-untyped-def]
+def _touch(db, view, plan_ref, **changes):  # type: ignore[no-untyped-def]
     """Mutate the stored rows the dispatch re-reads under its locks."""
     from dotmac_deployment_control.models import DeploymentTarget
 
     rollout = db.get(Rollout, view.id)
     rows = {
         "rollout": rollout,
-        "plan": plan_row(db, plan),
+        "plan": plan_row(db, plan_ref),
         "target": db.get(DeploymentTarget, rollout.target_id),
     }
     for which, values in changes.items():
@@ -417,7 +417,7 @@ def test_a_duplicate_dispatch_command_cannot_recover(db) -> None:  # type: ignor
         verifier=VERIFIER,
         dispatch_signer=DISPATCH_SIGNER,
     )
-    with pytest.raises(TransitionRefusedError):
+    with pytest.raises(TransitionRefusedError, match="duplicate dispatch command"):
         _recover(db, view, expectation)
 
 

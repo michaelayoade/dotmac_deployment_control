@@ -2119,7 +2119,8 @@ def test_every_input_path_carries_a_signed_sha256_and_an_output_none(
     assert job["inputs"] == [
         {"flag": "--manifest", "path": "/job/in/m.json", "sha256": _SHA}
     ]
-    assert job["output_dir"] is None  # no output argument in this run
+    # The job DECLARES an output argument, so its one output dir is /job/out.
+    assert job["output_dir"] == "/job/out"
     withheld = [
         (manifest, {}),  # an input without its digest
         ({}, {"--manifest": _SHA}),  # a digest for an argument not supplied
