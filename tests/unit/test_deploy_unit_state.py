@@ -1757,7 +1757,8 @@ def test_a_dispatch_plan_names_one_existing_job(db: Session) -> None:
     one = _propose(db, erp.id, source, _JOB)
     assert _binding_of(one)["dispatched_job"]["name"] == "import"
     # The plan digest covers the job: a serving plan is a different plan.
-    assert one.plan_digest != _propose(db, erp.id, source).plan_digest
+    serving = _propose(db, erp.id, source)
+    assert one.plan_digest != serving.plan_digest
     # The operation and the job agree: run_job names a job, nothing else does.
     with pytest.raises(PlanRefusedError, match="belong to a run_job"):
         _propose(db, erp.id, source, DeployPlanInputs(900, 5000, None, _ARGS))
@@ -1779,7 +1780,6 @@ def test_a_dispatch_plan_names_one_existing_job(db: Session) -> None:
             release_source=source,
         )
     # A job plan and a deploy plan do not supersede each other.
-    serving = _propose(db, erp.id, source)
     again = _propose(
         db,
         erp.id,
