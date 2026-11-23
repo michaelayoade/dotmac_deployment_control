@@ -1780,7 +1780,12 @@ def test_a_dispatch_plan_names_one_existing_job(db: Session) -> None:
         )
     # A job plan and a deploy plan do not supersede each other.
     serving = _propose(db, erp.id, source)
-    again = _propose(db, erp.id, source, _JOB)
+    again = _propose(
+        db,
+        erp.id,
+        source,
+        DeployPlanInputs(900, 5000, "import", {"--mode": "plan"}, _JP),
+    )
     assert db.get(svc.DeploymentPlan, serving.id).status == "proposed"
     assert db.get(svc.DeploymentPlan, one.id).status == "superseded"
     assert again.id != one.id

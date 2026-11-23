@@ -837,7 +837,7 @@ def test_job_arg_tables_are_validated_at_parse() -> None:
 
 
 def test_every_job_declares_its_timeout() -> None:
-    assert parse_deploy_unit(_IMPORT).jobs[0].timeout_seconds == 600
+    assert parse_deploy_unit(_IMPORT).jobs[0].run_limit_seconds == 600
     missing = _IMPORT.replace("timeout_seconds = 600\n", "", 1)
     with pytest.raises(DeployUnitError, match="timeout_seconds"):
         parse_deploy_unit(missing)
@@ -851,7 +851,7 @@ def test_every_job_declares_its_timeout() -> None:
             _IMPORT.replace("timeout_seconds = 600", "timeout_seconds = 3480", 1)
         )
         .jobs[0]
-        .timeout_seconds
+        .run_limit_seconds
         == 3480
     )
 
