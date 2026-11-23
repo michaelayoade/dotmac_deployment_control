@@ -207,7 +207,8 @@ def build_deploy_binding(
         and lease_ttl_seconds > MAX_JOB_ROLE_LEASE_TTL_SECONDS
     ):
         raise DeployBindingRefusedError(
-            f"a plan with a role job bounds the lease at {MAX_JOB_ROLE_LEASE_TTL_SECONDS} seconds"
+            "a plan with a role job bounds the lease at "
+            f"{MAX_JOB_ROLE_LEASE_TTL_SECONDS} seconds"
         )
     if not images:
         raise DeployBindingRefusedError("a deploy plan binds at least one image")
