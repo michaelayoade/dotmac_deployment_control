@@ -80,8 +80,8 @@ class _Approved:
 
 @pytest.fixture
 def approved_rollout(
-    migrated_scratch: tuple[str, str, str],  # noqa: F811
-    _module_audit_actions: None,  # noqa: F811
+    migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
 ) -> Iterator[_Approved]:
     """An APPROVED plan with its rollout REQUESTED and COMMITTED, dispatch withheld."""
     admin_url, _, _ = migrated_scratch
