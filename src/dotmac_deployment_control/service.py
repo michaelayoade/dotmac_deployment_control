@@ -142,6 +142,7 @@ from dotmac_deployment_control.digests import (
 )
 from dotmac_deployment_control.dispatch_envelope import (
     DispatchEnvelopeV1,
+    DispatchResumeExpectation,
     DispatchSigner,
     issue_dispatch_envelope,
 )
@@ -3219,12 +3220,33 @@ def request_rollout(
     command: RequestRolloutCommand,
     *,
     signer: AuthorizationSigner | None = None,
+    resume_expectation: DispatchResumeExpectation | None = None,
 ) -> facts.RolloutView:
     """Decide to converge a target on a plan. No transport happens here."""
 
     issued_at = _control_now()
+    if resume_expectation is not None:
+        if not isinstance(resume_expectation, DispatchResumeExpectation):
+            raise TransitionRefusedError("a typed recovery expectation is required")
+        original = resume_expectation.original_authorization.statement
+        if (
+            command.command_id != resume_expectation.rollout_command_id
+            or command.plan_id != resume_expectation.plan_id
+            or command.rollout_ref != resume_expectation.rollout_ref
+            or command.authorization_expires_at != original.expires_at
+            or command.actor_ref is not None
+            or command.reason is not None
+        ):
+            raise TransitionRefusedError(
+                "recovery request differs from the original command"
+            )
 
     def handler(session: Session) -> Mapping[str, object]:
+        if resume_expectation is not None:
+            raise TransitionRefusedError(
+                "recovery requires the original executed request; "
+                "new issuance is refused"
+            )
         existing = session.execute(
             select(Rollout).where(Rollout.rollout_ref == command.rollout_ref)
         ).scalar_one_or_none()
@@ -3398,6 +3420,13 @@ def request_rollout(
         command_type=SCOPE_REQUEST_ROLLOUT,
         handler=handler,
     )
+    if resume_expectation is not None:
+        if outcome.was_duplicate is not True or outcome.result != {
+            "id": str(resume_expectation.rollout_id)
+        }:
+            raise TransitionRefusedError(
+                "recovery requires an exact duplicate of the original request result"
+            )
     rollout = _load_rollout(db, UUID(str(outcome.result["id"])))
     if rollout.plan_id != command.plan_id:
         raise TransitionRefusedError(
@@ -3415,12 +3444,16 @@ def dispatch_attempt(
     actor_ref: str | None = None,
     verifier: AuthorizationVerifier | None = None,
     dispatch_signer: DispatchSigner,
+    resume_expectation: DispatchResumeExpectation | None = None,
 ) -> DeliveryIntent:
     """Open the next attempt and return the provider-neutral delivery intent.
 
     Returns the intent rather than sending it. Sending is the Integrator's, and a
     module that both decided and delivered would be the second transport
     authority ADR-0024 exists to prevent.
+
+    Recovery is restricted to approval-required plans with a currently granted,
+    unrevoked approval. Ordinary approval-exempt plans remain outside this profile.
 
     Retry and redrive are the same operation: calling this again on an open
     rollout opens attempt N+1. There is no separate `retry()` with different
@@ -3429,8 +3462,20 @@ def dispatch_attempt(
     """
 
     dispatched_at = _control_now()
+    if resume_expectation is not None:
+        if not isinstance(resume_expectation, DispatchResumeExpectation):
+            raise TransitionRefusedError("a typed recovery expectation is required")
+        if (
+            command_id != resume_expectation.dispatch_command_id
+            or rollout_id != resume_expectation.rollout_id
+            or actor_ref is not None
+        ):
+            raise TransitionRefusedError(
+                "recovery dispatch differs from original coordinates"
+            )
 
     def handler(session: Session) -> Mapping[str, object]:
+        nonlocal dispatched_at
         locator = session.execute(
             select(Rollout.target_id, Rollout.plan_id).where(Rollout.id == rollout_id)
         ).one_or_none()
@@ -3445,6 +3490,51 @@ def dispatch_attempt(
             .with_for_update()
             .execution_options(populate_existing=True)
         ).scalar_one()
+        if resume_expectation is not None:
+            # Capture time only after the serialization locks, never before a wait.
+            dispatched_at = _control_now()
+            if (
+                rollout.id != resume_expectation.rollout_id
+                or rollout.plan_id != resume_expectation.plan_id
+                or plan.id != resume_expectation.plan_id
+                or rollout.target_id != target.id
+                or plan.target_id != target.id
+                or rollout.rollout_ref != resume_expectation.rollout_ref
+                or rollout.execution_sequence != resume_expectation.execution_sequence
+                or rollout.status != RolloutStatus.REQUESTED.value
+                or rollout.record_version != 1
+                or rollout.completed_at is not None
+                or target.status != TargetStatus.ACTIVE.value
+                or plan.status != PlanStatus.APPROVED.value
+                or plan.superseded_by_id is not None
+            ):
+                raise TransitionRefusedError(
+                    "recovery requires the exact untouched requested rollout"
+                )
+            if (
+                plan.requires_approval is not True
+                or plan.approval_decision_status != ApprovalDecisionStatus.GRANTED.value
+                or plan.approval_revoked_at is not None
+            ):
+                raise ApprovalRefusedError(
+                    "recovery requires a currently granted, unrevoked approval "
+                    "on an approval-required plan"
+                )
+            stored = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+            if (
+                stored.canonical_bytes
+                != resume_expectation.original_authorization.canonical_bytes
+            ):
+                raise TransitionRefusedError(
+                    "recovery requires the exact original authorization bytes"
+                )
+            any_attempt = session.execute(
+                select(RolloutAttempt.id).where(RolloutAttempt.rollout_id == rollout.id)
+            ).first()
+            if any_attempt is not None:
+                raise TransitionRefusedError(
+                    "recovery requires zero attempts, including settled attempts"
+                )
         if rollout.status in TERMINAL_ROLLOUT_STATUSES:
             raise TransitionRefusedError(
                 f"rollout {rollout.rollout_ref} is {rollout.status!r}; a settled "
@@ -3539,6 +3629,10 @@ def dispatch_attempt(
     outcome = process_once_platform(
         db, command_id=command_id, command_type=SCOPE_DISPATCH, handler=handler
     )
+    if resume_expectation is not None and outcome.was_duplicate is not False:
+        raise TransitionRefusedError(
+            "a duplicate dispatch command cannot recover executable intent"
+        )
     rollout = _load_rollout(db, rollout_id)
     result_keys = set(outcome.result)
     if result_keys == {"attempt_no"}:

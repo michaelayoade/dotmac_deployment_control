@@ -19,6 +19,7 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 from dotmac_deployment_control.authorization import (
     AuthorizationEnvelopeV2,
@@ -123,6 +124,110 @@ class DispatchVerifier(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class DispatchResumeExpectation:
+    """Exact original coordinates for dispatch-only recovery; grants no authority."""
+
+    rollout_id: UUID
+    plan_id: UUID
+    rollout_ref: str
+    rollout_command_id: str
+    dispatch_command_id: str
+    execution_sequence: int
+    original_authorization: AuthorizationEnvelopeV2
+
+    def __post_init__(self) -> None:
+        for field in ("rollout_id", "plan_id"):
+            if not isinstance(getattr(self, field), UUID):
+                raise _refused(
+                    DispatchEnvelopeRefusalCode.MALFORMED, f"{field} must be a UUID"
+                )
+        for field in ("rollout_ref", "rollout_command_id", "dispatch_command_id"):
+            _bounded_text(getattr(self, field), field=field, maximum=200)
+        if self.rollout_command_id == self.dispatch_command_id:
+            raise _refused(
+                DispatchEnvelopeRefusalCode.MALFORMED,
+                "recovery command keys must be distinct",
+            )
+        if (
+            type(self.execution_sequence) is not int
+            or not 1 <= self.execution_sequence <= 2_147_483_647
+        ):
+            raise _refused(
+                DispatchEnvelopeRefusalCode.MALFORMED,
+                "execution_sequence must be a PostgreSQL positive integer",
+            )
+        envelope = AuthorizationEnvelopeV2.parse(self.original_authorization)
+        object.__setattr__(self, "original_authorization", envelope)
+        statement = envelope.statement
+        if (
+            statement.authorization_id != str(self.rollout_id)
+            or statement.plan_id != str(self.plan_id)
+            or statement.rollout_ref != self.rollout_ref
+            or statement.execution_sequence != self.execution_sequence
+        ):
+            raise _refused(
+                DispatchEnvelopeRefusalCode.AUTHORIZATION_MISMATCH,
+                "original authorization differs from recovery coordinates",
+            )
+
+    def as_mapping(self) -> dict[str, Any]:
+        return {
+            "rollout_id": str(self.rollout_id),
+            "plan_id": str(self.plan_id),
+            "rollout_ref": self.rollout_ref,
+            "rollout_command_id": self.rollout_command_id,
+            "dispatch_command_id": self.dispatch_command_id,
+            "execution_sequence": self.execution_sequence,
+            "original_authorization": self.original_authorization.as_mapping(),
+        }
+
+    @classmethod
+    def parse(cls, value: object) -> DispatchResumeExpectation:
+        if isinstance(value, cls):
+            return value
+        row = _exact_mapping(
+            value,
+            {
+                "rollout_id",
+                "plan_id",
+                "rollout_ref",
+                "rollout_command_id",
+                "dispatch_command_id",
+                "execution_sequence",
+                "original_authorization",
+            },
+            where="recovery expectation",
+        )
+        coordinates = {}
+        for field in ("rollout_id", "plan_id"):
+            text = _text(row, field)
+            try:
+                coordinate = UUID(text)
+            except ValueError as exc:
+                raise _refused(
+                    DispatchEnvelopeRefusalCode.MALFORMED,
+                    f"{field} must be a canonical UUID",
+                ) from exc
+            if str(coordinate) != text:
+                raise _refused(
+                    DispatchEnvelopeRefusalCode.MALFORMED,
+                    f"{field} must be a canonical UUID",
+                )
+            coordinates[field] = coordinate
+        return cls(
+            rollout_id=coordinates["rollout_id"],
+            plan_id=coordinates["plan_id"],
+            rollout_ref=_text(row, "rollout_ref"),
+            rollout_command_id=_text(row, "rollout_command_id"),
+            dispatch_command_id=_text(row, "dispatch_command_id"),
+            execution_sequence=row["execution_sequence"],
+            original_authorization=AuthorizationEnvelopeV2.parse(
+                row["original_authorization"]
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DispatchStatementV1:
     dispatch_id: str
     authorization_id: str
@@ -197,6 +302,13 @@ class DispatchStatementV1:
                 "authorized_images must be the canonical ordered image set",
             )
         _aware_utc(self.issued_at, field="issued_at")
+
+    @classmethod
+    def parse(cls, value: object) -> DispatchStatementV1:
+        """Parse a typed unsigned statement; this does not verify a signature."""
+        if isinstance(value, cls):
+            return value
+        return _parse_statement(value)
 
     def as_mapping(self) -> dict[str, Any]:
         return {
@@ -434,6 +546,92 @@ def verify_dispatch_envelope(
     return dispatch
 
 
+def validate_recovery_dispatch_statement(
+    value: object,
+    *,
+    expectation: DispatchResumeExpectation,
+    dispatch_identity: DispatchSignerIdentity,
+    control_version: str,
+    not_before: datetime,
+    deadline: datetime,
+    at: datetime,
+) -> DispatchStatementV1:
+    """Bind unsigned signing input to the original envelope; grants no authority."""
+    if not isinstance(expectation, DispatchResumeExpectation):
+        raise _refused(
+            DispatchEnvelopeRefusalCode.MALFORMED,
+            "a typed recovery expectation is required",
+        )
+    if not isinstance(dispatch_identity, DispatchSignerIdentity):
+        raise _refused(
+            DispatchEnvelopeRefusalCode.MALFORMED,
+            "a typed dispatch identity is required",
+        )
+    statement = DispatchStatementV1.parse(value)
+    original = expectation.original_authorization
+    if _authorization_projection(original) != _dispatch_authorization_projection(
+        statement
+    ):
+        raise _refused(
+            DispatchEnvelopeRefusalCode.AUTHORIZATION_MISMATCH,
+            "recovery dispatch differs from the original authorization",
+        )
+    try:
+        dispatch_id = UUID(statement.dispatch_id)
+    except ValueError as exc:
+        raise _refused(
+            DispatchEnvelopeRefusalCode.MALFORMED,
+            "recovery dispatch_id must be a canonical UUID4",
+        ) from exc
+    if dispatch_id.version != 4 or str(dispatch_id) != statement.dispatch_id:
+        raise _refused(
+            DispatchEnvelopeRefusalCode.MALFORMED,
+            "recovery dispatch_id must be a canonical UUID4",
+        )
+    if (
+        statement.attempt_no != 1
+        or statement.control_version
+        != _bounded_text(control_version, field="control_version")
+        or (
+            statement.key_id,
+            statement.algorithm,
+            statement.public_key_fingerprint,
+            statement.purpose,
+        )
+        != (
+            dispatch_identity.key_id,
+            dispatch_identity.algorithm,
+            dispatch_identity.public_key_fingerprint,
+            dispatch_identity.purpose,
+        )
+    ):
+        raise _refused(
+            DispatchEnvelopeRefusalCode.SIGNER_IDENTITY_MISMATCH,
+            "recovery requires attempt one and the exact signer and version",
+        )
+    if statement.public_key_fingerprint == original.statement.public_key_fingerprint:
+        raise _refused(
+            DispatchEnvelopeRefusalCode.SIGNER_PURPOSE_REUSED,
+            "authorization and dispatch keys must be separate",
+        )
+    lower = _aware_utc(not_before, field="not_before")
+    upper = _aware_utc(deadline, field="deadline")
+    now = _aware_utc(at, field="at")
+    if not (
+        original.statement.issued_at
+        <= lower
+        <= statement.issued_at
+        <= now
+        < upper
+        < original.statement.expires_at
+    ):
+        raise _refused(
+            DispatchEnvelopeRefusalCode.AUTHORIZATION_MISMATCH,
+            "recovery dispatch falls outside the bounded original lifetime",
+        )
+    return statement
+
+
 def _authorization_projection(envelope: AuthorizationEnvelopeV2) -> tuple[object, ...]:
     statement = envelope.statement
     return (
@@ -637,7 +835,11 @@ def _timestamp(value: datetime) -> str:
 
 
 def _aware_utc(value: datetime, *, field: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
         raise _refused(
             DispatchEnvelopeRefusalCode.MALFORMED,
             f"{field} must carry a timezone",
@@ -684,11 +886,13 @@ __all__ = [
     "DispatchEnvelopeRefusalCode",
     "DispatchEnvelopeRefusedError",
     "DispatchEnvelopeV1",
+    "DispatchResumeExpectation",
     "DispatchSignature",
     "DispatchSigner",
     "DispatchSignerIdentity",
     "DispatchStatementV1",
     "DispatchVerifier",
     "issue_dispatch_envelope",
+    "validate_recovery_dispatch_statement",
     "verify_dispatch_envelope",
 ]
