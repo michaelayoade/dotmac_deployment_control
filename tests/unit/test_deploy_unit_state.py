@@ -230,7 +230,7 @@ def _descriptor_text(
             '[[bindings]]\nname = "LEGACY_DATABASE_URL"\n'
             f'{state}kind = "pg_login_dsn"\n'
             'roles = ["import"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
-            "single_use = false\n"
+            "single_use = true\n"
             '[[jobs]]\nname = "import"\nrole = "import"\n'
             'command = ["run", "import"]\ntrigger = "operator"\n'
             'materials = ["MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL", '
@@ -1521,7 +1521,7 @@ def test_a_job_role_is_derived_for_the_job_only_and_its_params_are_scoped(
     (job,) = binding["jobs"]
     assert job["name"] == "import"
     assert job["role"] == "import"
-    assert job["single_use"] is True  # provisional: the stricter of its bindings
+    assert job["single_use"] is True  # P-SEC rev4: one secret_id per dispatched run
     assert job["materials"] == [
         "ERP_IMPORT_APPROVED",
         "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF",

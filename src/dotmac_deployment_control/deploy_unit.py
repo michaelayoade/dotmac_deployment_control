@@ -292,15 +292,15 @@ class DeployUnit:
 
         Derived from the verified descriptor and bound into the plan; the agent
         mints one secret_id per role from THIS, never from a CP-supplied list.
-        A role has ONE secret_id, so its mode is the STRICTER of its bindings:
-        single-use if ANY binding in the role is single-use.
+        A role has ONE secret_id, so one mode. Parse REFUSES a role whose bindings
+        disagree (no coercion either way): split the binding instead.
         """
         found: dict[str, bool] = {}
         for binding in self.bindings:
             if binding.state != BINDING_ACTIVE:
                 continue
             for role in binding.roles:
-                found[role] = found.get(role, False) or binding.single_use
+                found[role] = binding.single_use
         return tuple(sorted(found.items()))
 
     def deploy_role_bindings(self) -> tuple[tuple[str, bool], ...]:
@@ -964,10 +964,16 @@ def parse_deploy_unit(
     bindings = tuple(_parse_binding(i, t, product) for i, t in enumerate(raw_bindings))
     if len({b.name for b in bindings}) != len(bindings):
         raise DeployUnitError("two bindings share a name")
+    role_modes: dict[str, bool] = {}
     for binding in bindings:
         for role in binding.roles:
             if not _SEGMENT.fullmatch(role):
                 raise DeployUnitError(f"role {role!r} is not a lowercase segment")
+            if role_modes.setdefault(role, binding.single_use) != binding.single_use:
+                raise DeployUnitError(
+                    f"role {role!r} mixes single-use and reusable bindings; a "
+                    "role has one secret_id and so one mode (split the binding)"
+                )
 
     raw_companions = document.get("companions", [])
     if not isinstance(raw_companions, list):

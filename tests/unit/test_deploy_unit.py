@@ -501,9 +501,10 @@ def test_a_role_has_one_mode_and_roles_are_derived_sorted() -> None:
         'roles = ["migrate"]\nwriter = "ceremony"\nrotation = "copy_only"\n',
         1,
     )
-    # A role has ONE secret_id: its mode is the STRICTER of its bindings
-    # (single-use if ANY binding in the role is single-use).
-    assert parse_deploy_unit(mixed).role_bindings() == (("migrate", True),)
+    # A role has ONE secret_id and so one mode: a mix is REFUSED, never coerced
+    # to either value (P-SEC rev4).
+    with pytest.raises(DeployUnitError, match="mixes single-use"):
+        parse_deploy_unit(mixed)
     bad_role = text.replace('roles = ["app"]', 'roles = ["App"]', 1)
     with pytest.raises(DeployUnitError, match="lowercase segment"):
         parse_deploy_unit(bad_role)
@@ -566,7 +567,7 @@ kind = "pg_login_dsn"
 roles = ["import"]
 writer = "ceremony"
 rotation = "copy_only"
-single_use = false
+single_use = true
 
 [[jobs]]
 name = "import"
@@ -677,3 +678,15 @@ def test_job_scope_and_role_references_must_exist() -> None:
                 '"ERP_IMPORT_APPROVED",\n', ""
             )
         )
+
+
+def test_the_import_role_refuses_a_mixed_secret_id_mode() -> None:
+    """P-SEC rev4: both import bindings are single-use. A mix is refused."""
+    mixed = _IMPORT.replace(
+        "single_use = true\n\n[[jobs]]", "single_use = false\n\n[[jobs]]"
+    )
+    assert mixed != _IMPORT
+    with pytest.raises(DeployUnitError, match="mixes single-use"):
+        parse_deploy_unit(mixed)
+    unit = parse_deploy_unit(_IMPORT)
+    assert dict(unit.role_bindings())["import"] is True
