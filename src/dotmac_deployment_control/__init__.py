@@ -77,6 +77,12 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
+from dotmac_deployment_control.agent_observation import (
+    AgentObservationEnvelopeV2,
+    AgentObservationStatementV2,
+    issue_agent_observation_envelope,
+    verify_agent_observation_envelope,
+)
 from dotmac_deployment_control.approvals import (
     APPROVAL_DECISION_STATUSES,
     ApprovalDecisionStatus,
@@ -92,6 +98,12 @@ from dotmac_deployment_control.attestation_binding import (
     AttestationRootRefusal,
     resolve_attestation_binding,
     resolve_fingerprint_standing,
+)
+from dotmac_deployment_control.attestation_pair import (
+    AttestationPairEvidenceV1,
+    AttestationPairRefusedError,
+    PresentedAttestationPairV1,
+    verify_attestation_pair,
 )
 from dotmac_deployment_control.authorization import (
     AUTHORIZATION_PURPOSE,
@@ -573,6 +585,14 @@ except PackageNotFoundError:  # pragma: no cover
 __all__ = [
     "CloseRoleJobWindowCommand",
     "OpenRoleJobWindowCommand",
+    "AgentObservationEnvelopeV2",
+    "AgentObservationStatementV2",
+    "AttestationPairEvidenceV1",
+    "AttestationPairRefusedError",
+    "PresentedAttestationPairV1",
+    "issue_agent_observation_envelope",
+    "verify_agent_observation_envelope",
+    "verify_attestation_pair",
     "SetBaoEnvironmentCommand",
     "cancel_run_job_plans_before_executor_support",
     "close_role_job_window",

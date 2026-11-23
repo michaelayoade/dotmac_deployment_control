@@ -250,22 +250,29 @@ class LeaseLedger:
 
 # ── Observation kinds ───────────────────────────────────────────────────────
 
-OBSERVATION_KINDS: Final = ("deploy", "job")
+OBSERVATION_KINDS: Final = ("deploy", "reconcile", "job")
 JOB_OPERATION: Final = "run_job"
 DEPLOY_OPERATIONS: Final = ("deploy", "rollback")
 
 
 def check_observation_kind(kind: object, operation: object) -> None:
-    """Kind `job` is the observation of a `run_job` plan, and only of one."""
+    """Kind `job` is the observation of a `run_job` plan, and only of one; kind
+    `deploy` of a deploy/rollback plan; `reconcile` settles an expired lease and
+    names the dispatch it belonged to, of any executable operation."""
     if kind not in OBSERVATION_KINDS:
         raise TargetApiError("unknown observation kind", "observation_kind_unknown")
-    if (kind == "job") != (operation == JOB_OPERATION):
+    executable = (*DEPLOY_OPERATIONS, JOB_OPERATION)
+    if operation not in executable:
+        raise TargetApiError(
+            "the operation is not one an agent observes", "observation_kind_mismatch"
+        )
+    if kind == "job" and operation != JOB_OPERATION:
         raise TargetApiError(
             "observation kind and operation disagree", "observation_kind_mismatch"
         )
     if kind == "deploy" and operation not in DEPLOY_OPERATIONS:
         raise TargetApiError(
-            "a deploy observation is of deploy/rollback", "observation_kind_mismatch"
+            "observation kind and operation disagree", "observation_kind_mismatch"
         )
 
 
@@ -313,10 +320,12 @@ def check_deploy_binding(binding: Mapping[str, Any], *, operation: str) -> None:
             "a binding with roles carries secrets_namespace and secrets_environment",
             "naming_required",
         )
-    ttl, maximum = binding.get("lease_ttl_seconds"), binding.get("lease_max_seconds")
-    for value in (ttl, maximum):
+    raw_ttl = binding.get("lease_ttl_seconds")
+    raw_max = binding.get("lease_max_seconds")
+    for value in (raw_ttl, raw_max):
         if isinstance(value, bool) or not isinstance(value, int):
             raise _bad("the lease values are integers", "lease_split")
+    ttl, maximum = int(str(raw_ttl)), int(str(raw_max))
     if job is None:
         if (
             not MIN_LEASE_TTL <= ttl <= MAX_LEASE_TTL
@@ -364,3 +373,42 @@ def check_deploy_binding(binding: Mapping[str, Any], *, operation: str) -> None:
     images = binding.get("images") or []
     if not images or any(i.get("source") != "present" for i in images):
         raise _bad("a job plan runs the image already present", "job_image_source")
+
+
+# ── Domain separation: a request message and an observation envelope ────────
+
+#: The PoP key signs BOTH a target request and an agent observation envelope. The
+#: byte domains are disjoint by construction: a request is LF-joined text whose
+#: first line is `dotmac.target_request.v1`; an observation envelope is the
+#: canonical JSON of a statement carrying its own schema string
+#: (`dotmac.agent-observation/2`) and begins with `{`. Neither parses as the other.
+REQUEST_FIELD_COUNT: Final = 8
+
+
+def parse_request_message(message: bytes) -> dict[str, str]:
+    """Parse the LF-joined signed text of a target request, or refuse it."""
+    from dotmac_deployment_control.target_api import REQUEST_PURPOSE
+
+    try:
+        lines = message.decode("utf-8").split("\n")
+    except (UnicodeDecodeError, AttributeError):
+        raise TargetApiError(
+            "a request message is UTF-8 text", "not_a_request"
+        ) from None
+    if len(lines) != REQUEST_FIELD_COUNT or lines[0] != REQUEST_PURPOSE:
+        raise TargetApiError(
+            f"a request message is {REQUEST_FIELD_COUNT} LF-joined lines starting "
+            f"{REQUEST_PURPOSE!r}",
+            "not_a_request",
+        )
+    keys = (
+        "purpose",
+        "method",
+        "path",
+        "body_sha256",
+        "credential_id",
+        "target_ref",
+        "issued_at",
+        "nonce",
+    )
+    return dict(zip(keys, lines, strict=True))

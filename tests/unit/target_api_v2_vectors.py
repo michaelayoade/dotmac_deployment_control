@@ -9,15 +9,24 @@ expected value is produced by Control's own functions (`target_api_v2`,
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import sys
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from dotmac_deployment_control import attestation_pair as ap
 from dotmac_deployment_control import target_api as api
 from dotmac_deployment_control import target_api_v2 as v2
+from dotmac_deployment_control.agent_observation import (
+    KIND_OUTCOMES,
+    AgentObservationEnvelopeV2,
+    issue_agent_observation_envelope,
+    verify_agent_observation_envelope,
+)
 from dotmac_deployment_control.deploy_binding import (
     PlanJob,
     PlanJobDefinition,
@@ -27,7 +36,20 @@ from dotmac_deployment_control.deploy_binding import (
     build_deploy_binding,
 )
 from dotmac_deployment_control.deploy_unit import params_env_digest
+from dotmac_deployment_control.digests import (
+    AttestationDigestV1,
+    AttestationKeyFingerprintV1,
+    PublicKeyFingerprintV1,
+    canonical_json,
+)
+from dotmac_deployment_control.execution_observation import (
+    EXECUTION_OBSERVATION_PURPOSE,
+    ExecutionObservationRefusedError,
+    ExecutionObservationVerificationKey,
+)
 from dotmac_deployment_control.image_policy import PullAllowlist
+from tests.unit import ed25519_reference as ed
+from tests.unit import target_api_vectors as v1_builder
 
 VECTOR_PATH = (
     Path(__file__).resolve().parents[2]
@@ -486,7 +508,13 @@ def _scenarios() -> list[dict[str, Any]]:
 
 
 def _observation_vectors() -> dict[str, Any]:
-    ok = [("deploy", "deploy"), ("deploy", "rollback"), ("job", "run_job")]
+    ok = [
+        ("deploy", "deploy"),
+        ("deploy", "rollback"),
+        ("reconcile", "deploy"),
+        ("reconcile", "run_job"),
+        ("job", "run_job"),
+    ]
     refused = [
         ("job", "deploy"),
         ("job", "rollback"),
@@ -546,6 +574,623 @@ def _renew_grant_vectors() -> list[dict[str, Any]]:
     return out
 
 
+# ── The agent observation envelope (N-1) ────────────────────────────────────
+
+_OBS_SEED = v1_builder._REQUEST_SEED
+_OBS_KEY_ID = "cred-0001"
+_DISPATCH = "00000000-0000-4000-8000-000000000001"
+
+
+class _EdVerifier:
+    """The injected primitive: the vectors verify with the public reference."""
+
+    def verify_execution_observation(
+        self,
+        *,
+        key_id: str,
+        algorithm: str,
+        purpose: str,
+        public_key_b64: str,
+        public_key_fingerprint: str,
+        canonical_bytes: bytes,
+        signature: str,
+    ) -> bool:
+        return ed.verify(
+            api.b64u_decode(public_key_b64),
+            canonical_bytes,
+            api.b64u_decode(signature),
+        )
+
+
+def _obs_key() -> ExecutionObservationVerificationKey:
+    public = api.b64u_encode(ed.public_key(_OBS_SEED))
+    return ExecutionObservationVerificationKey(
+        key_id=_OBS_KEY_ID,
+        algorithm="ed25519",
+        public_key_b64=public,
+        public_key_fingerprint=PublicKeyFingerprintV1.from_public_key_b64(
+            public
+        ).canonical,
+        purpose=EXECUTION_OBSERVATION_PURPOSE,
+    )
+
+
+def _issue(**fields: Any) -> AgentObservationEnvelopeV2:
+    base = {
+        "kind": "deploy",
+        "dispatch_id": _DISPATCH,
+        "target_ref": _REF,
+        "key_id": _OBS_KEY_ID,
+        "outcome": "succeeded",
+        "reason": "",
+        "details": {},
+        "observed_at": "2026-12-01T10:05:00Z",
+    }
+    base.update(fields)
+    return issue_agent_observation_envelope(
+        base, sign=lambda raw: api.b64u_encode(ed.sign(_OBS_SEED, raw))
+    )
+
+
+def _agent_observation_vectors() -> dict[str, Any]:
+    ok_cases = [
+        {},
+        {"kind": "reconcile", "outcome": "reconciled", "reason": "lease expired"},
+        {
+            "kind": "job",
+            "outcome": "failed",
+            "reason": "exit 1",
+            "details": {"exit_code": 1, "accessor_prefix": "abcd1234"},
+        },
+    ]
+    ok = []
+    for fields in ok_cases:
+        envelope = _issue(**fields)
+        wire = canonical_json(envelope.as_mapping())
+        parsed = AgentObservationEnvelopeV2.parse_bytes(wire)
+        verify_agent_observation_envelope(
+            parsed, verifier=_EdVerifier(), verification_key=_obs_key()
+        )
+        ok.append(
+            {
+                "statement": envelope.statement.as_mapping(),
+                "report_id": envelope.statement.report_id,
+                "signed_bytes_hex": envelope.statement.canonical_bytes.hex(),
+                "signature_b64u": envelope.signature,
+                "wire_utf8": wire.decode("ascii"),
+            }
+        )
+    good = _issue()
+    mapping = good.as_mapping()
+
+    def with_statement(**changes: Any) -> bytes:
+        doc = copy.deepcopy(mapping)
+        doc["statement"].update(changes)
+        return json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+
+    bodies = {
+        "duplicate key": b'{"statement":{},"signature":"x","signature":"y"}',
+        "not json": b"not json",
+        "wrong schema": with_statement(schema="dotmac.agent-observation/1"),
+        "unknown kind": with_statement(kind="upgrade"),
+        "outcome not for the kind": with_statement(kind="job", outcome="reconciled"),
+        "a float in details": with_statement(details={"x": 1.5}),
+        "an extra statement key": with_statement(extra=1),
+        "details too deep": with_statement(
+            details={"a": {"b": {"c": {"d": {"e": 1}}}}}
+        ),
+        "bad observed_at": with_statement(observed_at="2026-12-01 10:05:00"),
+        "empty dispatch id": with_statement(dispatch_id=""),
+        "missing signature": json.dumps({"statement": mapping["statement"]}).encode(),
+        "oversize": b"{" + b" " * 70000 + b"}",
+    }
+    refused_parse = []
+    for name, body in bodies.items():
+        try:
+            AgentObservationEnvelopeV2.parse_bytes(body)
+        except ExecutionObservationRefusedError as exc:
+            refused_parse.append(
+                {
+                    "name": name,
+                    "body_hex": body.hex() if len(body) < 4096 else "",
+                    "code": exc.code.value,
+                }
+            )
+        else:  # pragma: no cover
+            raise AssertionError(name)
+    tampered = copy.deepcopy(mapping)
+    tampered["statement"]["outcome"] = "failed"
+    wrong_key = _issue(key_id="cred-9999").as_mapping()
+    refused_verify = []
+    for name, doc in (
+        ("a statement changed after signing", tampered),
+        ("a different key id", wrong_key),
+    ):
+        try:
+            verify_agent_observation_envelope(
+                doc, verifier=_EdVerifier(), verification_key=_obs_key()
+            )
+        except ExecutionObservationRefusedError as exc:
+            refused_verify.append(
+                {
+                    "name": name,
+                    "wire_utf8": json.dumps(doc, sort_keys=True, separators=(",", ":")),
+                    "code": exc.code.value,
+                }
+            )
+        else:  # pragma: no cover
+            raise AssertionError(name)
+    rules = []
+    for case, kind, op in (
+        ("a deploy report of a deploy plan", "deploy", "deploy"),
+        ("a deploy report of a rollback plan", "deploy", "rollback"),
+        ("a job report of a run_job plan", "job", "run_job"),
+        ("a reconcile of a deploy plan", "reconcile", "deploy"),
+        ("a reconcile of a run_job plan", "reconcile", "run_job"),
+        ("a job report of a deploy plan", "job", "deploy"),
+        ("a deploy report of a run_job plan", "deploy", "run_job"),
+        ("a reconcile of a recover plan", "reconcile", "recover"),
+    ):
+        try:
+            v2.check_observation_kind(kind, op)
+            disposition = "accepted"
+        except api.TargetApiError:
+            disposition = "operation_mismatch"
+        rules.append(
+            {
+                "case": case,
+                "kind": kind,
+                "plan_operation": op,
+                "disposition": disposition,
+            }
+        )
+    rules += [
+        {
+            "case": "the statement names another target than the credential's",
+            "disposition": "target_mismatch",
+        },
+        {
+            "case": "the dispatch id is not a dispatch of this target",
+            "disposition": "unbound_report",
+        },
+        {"case": "an unknown key id", "disposition": "unknown_key"},
+        {"case": "a bad signature", "disposition": "bad_signature"},
+        {"case": "the same bytes again", "disposition": "idempotent_replay"},
+        {"case": "the same report id with different bytes", "disposition": "conflict"},
+        {"case": "an unparseable body", "disposition": "malformed"},
+    ]
+    return {
+        "rule": (
+            "One ingestion path, owned by Control: `record_observation` parses the "
+            "envelope, selects the ENROLLED credential by statement.key_id, verifies "
+            "the Ed25519 signature over the statement's canonical JSON bytes under "
+            "that credential's key, and requires statement.target_ref to equal the "
+            "credential's target. The statement is {schema, kind, dispatch_id, "
+            "target_ref, key_id, outcome, reason, details, observed_at}; the report "
+            "id is `agent:<kind>:<dispatch_id>`. Kind deploy|reconcile|job must agree "
+            "with the dispatch's plan operation (job <=> run_job; deploy <=> "
+            "deploy/rollback; reconcile settles an expired lease of any). An accepted "
+            "observation changes no desired or observed state: it is attributable "
+            "evidence."
+        ),
+        "schema": "dotmac.agent-observation/2",
+        "kind_outcomes": {k: list(v) for k, v in KIND_OUTCOMES.items()},
+        "limits": {
+            "max_envelope_bytes": 65536,
+            "max_details_bytes": 16384,
+            "max_details_depth": 4,
+        },
+        "key": {
+            "key_id": _OBS_KEY_ID,
+            "seed_b64u": api.b64u_encode(_OBS_SEED),
+            "public_b64u": api.b64u_encode(ed.public_key(_OBS_SEED)),
+            "algorithm": "ed25519",
+            "purpose": EXECUTION_OBSERVATION_PURPOSE,
+        },
+        "ok": ok,
+        "refused_parse": refused_parse,
+        "refused_verify": refused_verify,
+        "ingestion_rules": rules,
+    }
+
+
+def _domain_separation_vectors() -> dict[str, Any]:
+    message = api.request_message(
+        method="POST",
+        path=api.target_path(_REF, "observations"),
+        body=b"{}",
+        credential_id=_OBS_KEY_ID,
+        target_ref=_REF,
+        issued_at="2026-11-22T10:00:00Z",
+        nonce=v1_builder._nonce(1),
+    )
+    envelope = _issue()
+    statement_bytes = envelope.statement.canonical_bytes
+    wire = canonical_json(envelope.as_mapping())
+    public = ed.public_key(_OBS_SEED)
+    request_sig = ed.sign(_OBS_SEED, message)
+    statement_sig = ed.sign(_OBS_SEED, statement_bytes)
+    return {
+        "rule": (
+            "The PoP key signs both a target request and an agent observation. The "
+            "byte domains are disjoint: a request message is 8 LF-joined lines whose "
+            "first is `dotmac.target_request.v1`; an observation's signed bytes are "
+            "canonical JSON containing the schema `dotmac.agent-observation/2` and "
+            "begin with `{`. Neither parses as the other, and a signature over one "
+            "never verifies as a signature over the other."
+        ),
+        "request_message_utf8": message.decode("utf-8"),
+        "observation_signed_bytes_utf8": statement_bytes.decode("ascii"),
+        "observation_wire_utf8": wire.decode("ascii"),
+        "request_parses_as_request": v2.parse_request_message(message),
+        "request_as_observation_code": _code(lambda: _obs_parse(message)),
+        "observation_as_request_code": _code(
+            lambda: v2.parse_request_message(statement_bytes)
+        ),
+        "wire_as_request_code": _code(lambda: v2.parse_request_message(wire)),
+        "request_signature_verifies_over_request": ed.verify(
+            public, message, request_sig
+        ),
+        "request_signature_verifies_over_observation": ed.verify(
+            public, statement_bytes, request_sig
+        ),
+        "observation_signature_verifies_over_observation": ed.verify(
+            public, statement_bytes, statement_sig
+        ),
+        "observation_signature_verifies_over_request": ed.verify(
+            public, message, statement_sig
+        ),
+    }
+
+
+def _obs_parse(raw: bytes) -> None:
+    try:
+        AgentObservationEnvelopeV2.parse_bytes(raw)
+    except ExecutionObservationRefusedError as exc:
+        raise api.TargetApiError(str(exc), exc.code.value) from None
+
+
+# ── The attestation pair (Ruling 1) ─────────────────────────────────────────
+
+_CAND_SEED = bytes(range(64, 96))
+_HOST_SEED = bytes(range(96, 128))
+_ATT_NOW = datetime(2026, 12, 1, 10, 0, 0, tzinfo=UTC)
+_ATT_HOST = "host-a"
+_ATT_PACKAGE = "dotmac-deployment-foundation"
+_ATT_DISPATCH = "00000000-0000-4000-8000-0000000000aa"
+
+
+@dataclass(frozen=True)
+class _Root:
+    custody_domain: str
+    subject: str
+    issuer: str
+    key_id: str
+    purpose: str
+    root_version: str
+    not_before: datetime
+    not_after: datetime
+    algorithm: str
+    public_key_base64: str
+    public_key_fingerprint: str
+    standing: str = "active"
+    revoked: bool = False
+
+
+@dataclass(frozen=True)
+class _Ctx:
+    """Duck-typed `HostAdmissionVerificationContextV1`: the attributes read."""
+
+    candidate_root: _Root
+    installed_root: _Root
+    candidate_audience: str
+    installed_audience: str
+    expected_foundation_package: str
+    host_id: str
+    dispatch_id: str
+    context_digest: str
+
+
+class _AttVerifier:
+    def verify(
+        self, *, public_key: bytes, algorithm: str, message: bytes, signature: str
+    ) -> bool:
+        return ed.verify(
+            public_key, message, base64.b64decode(signature, validate=True)
+        )
+
+
+def _std(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _root(role: str, seed: bytes) -> _Root:
+    public = _std(ed.public_key(seed))
+    return _Root(
+        custody_domain="candidate_release_signer"
+        if role == "candidate"
+        else "host_attester",
+        subject="release-signer" if role == "candidate" else _ATT_HOST,
+        issuer=f"{role}-issuer",
+        key_id=f"key-{role}",
+        purpose=ap.CANDIDATE_PURPOSE if role == "candidate" else ap.INSTALLED_PURPOSE,
+        root_version="1",
+        not_before=datetime(2026, 11, 1, tzinfo=UTC),
+        not_after=datetime(2027, 11, 1, tzinfo=UTC),
+        algorithm="ed25519",
+        public_key_base64=public,
+        public_key_fingerprint=AttestationKeyFingerprintV1.from_standard_base64(
+            public
+        ).canonical,
+    )
+
+
+def _root_doc(root: _Root) -> dict[str, Any]:
+    return {
+        "custody_domain": root.custody_domain,
+        "subject": root.subject,
+        "issuer": root.issuer,
+        "key_id": root.key_id,
+        "purpose": root.purpose,
+        "root_version": root.root_version,
+        "not_before": _stamp(root.not_before),
+        "not_after": _stamp(root.not_after),
+        "algorithm": root.algorithm,
+        "public_key_base64": root.public_key_base64,
+        "public_key_fingerprint": root.public_key_fingerprint,
+        "standing": root.standing,
+        "revoked": root.revoked,
+    }
+
+
+def _envelope(
+    root: _Root, seed: bytes, aud: str, subject: dict[str, Any], **over: Any
+) -> dict[str, Any]:
+    doc: dict[str, Any] = {
+        "schema": ap.ATTESTATION_SCHEMA,
+        "purpose": root.purpose,
+        "issuer": root.issuer,
+        "key_id": root.key_id,
+        "algorithm": root.algorithm,
+        "public_key_fingerprint": root.public_key_fingerprint,
+        "custody_domain": root.custody_domain,
+        "trust_root_version": root.root_version,
+        "issued_at": "2026-12-01T09:00:00Z",
+        "expires_at": "2026-12-01T11:00:00Z",
+        "audience": aud,
+        "observation_id": _ATT_DISPATCH,
+        "subject": subject,
+    }
+    doc.update(over)
+    doc["signature"] = _std(
+        ed.sign(
+            seed, canonical_json({k: v for k, v in doc.items() if k != "signature"})
+        )
+    )
+    return doc
+
+
+def _candidate_subject(**over: Any) -> dict[str, Any]:
+    subject = {
+        "package": _ATT_PACKAGE,
+        "version": "0.4.0a1",
+        "wheel_sha256": "sha256:" + "c" * 64,
+        "source_revision": "a" * 40,
+        "repository": "example/repository",
+        "run_id": "100",
+        "artifact_id": "200",
+    }
+    subject.update(over)
+    return subject
+
+
+def _installed_subject(candidate: dict[str, Any], **over: Any) -> dict[str, Any]:
+    subject = {
+        "host_identity": _ATT_HOST,
+        "package": candidate["package"],
+        "version": candidate["version"],
+        "wheel_sha256": candidate["wheel_sha256"],
+        "candidate_subject_digest": AttestationDigestV1.over_document(
+            candidate
+        ).canonical,
+    }
+    subject.update(over)
+    return subject
+
+
+def _attestation_pair_vectors() -> dict[str, Any]:
+    cand_root, host_root = (
+        _root("candidate", _CAND_SEED),
+        _root("installed", _HOST_SEED),
+    )
+
+    def build(
+        *,
+        cand_subject: dict[str, Any] | None = None,
+        inst_subject: dict[str, Any] | None = None,
+        cand_over: dict[str, Any] | None = None,
+        inst_over: dict[str, Any] | None = None,
+        cand_root_: _Root = cand_root,
+        host_root_: _Root = host_root,
+        ctx: dict[str, Any] | None = None,
+        now: datetime = _ATT_NOW,
+        candidate_absent: bool = False,
+        tamper: bool = False,
+    ) -> dict[str, Any]:
+        cs = cand_subject if cand_subject is not None else _candidate_subject()
+        candidate = _envelope(
+            cand_root, _CAND_SEED, "dotmac.foundation", cs, **(cand_over or {})
+        )
+        is_ = inst_subject if inst_subject is not None else _installed_subject(cs)
+        installed = _envelope(
+            host_root, _HOST_SEED, _ATT_HOST, is_, **(inst_over or {})
+        )
+        if tamper:
+            candidate["subject"] = {**candidate["subject"], "version": "9.9.9"}
+        context = {
+            "candidate_root": cand_root_,
+            "installed_root": host_root_,
+            "candidate_audience": "dotmac.foundation",
+            "installed_audience": _ATT_HOST,
+            "expected_foundation_package": _ATT_PACKAGE,
+            "host_id": _ATT_HOST,
+            "dispatch_id": _ATT_DISPATCH,
+            "context_digest": "sha256:" + "d" * 64,
+        }
+        context.update(ctx or {})
+        return {
+            "resolution": {
+                "candidate_root": _root_doc(context["candidate_root"]),
+                "installed_root": _root_doc(context["installed_root"]),
+                **{
+                    k: v
+                    for k, v in context.items()
+                    if k not in {"candidate_root", "installed_root"}
+                },
+            },
+            "presented": {
+                "candidate": None if candidate_absent else candidate,
+                "installed": installed,
+            },
+            "now": _stamp(now),
+            "_ctx": _Ctx(**context),
+            "_now": now,
+        }
+
+    def run(case: dict[str, Any]) -> dict[str, Any]:
+        presented = ap.PresentedAttestationPairV1(
+            candidate=case["presented"]["candidate"],
+            installed=case["presented"]["installed"],
+        )
+        try:
+            evidence = ap.verify_attestation_pair(
+                case["_ctx"], presented, verifier=_AttVerifier(), now=case["_now"]
+            )
+        except ap.AttestationPairRefusedError as exc:
+            return {"code": exc.code}
+        return {"evidence": asdict(evidence)}
+
+    good = build()
+    ok = {k: v for k, v in good.items() if not k.startswith("_")}
+    ok["expected"] = run(good)
+    assert "evidence" in ok["expected"], ok["expected"]
+    cs = _candidate_subject()
+    mutations: list[tuple[str, dict[str, Any]]] = [
+        ("the candidate is absent", {"candidate_absent": True}),
+        (
+            "a widened candidate subject",
+            {"cand_subject": _candidate_subject(extra="x")},
+        ),
+        (
+            "the two roles share a custody domain (roots not distinct)",
+            {
+                "host_root_": _Root(
+                    **{**host_root.__dict__, "custody_domain": cand_root.custody_domain}
+                )
+            },
+        ),
+        (
+            "one key signed both",
+            {"inst_over": {"public_key_fingerprint": cand_root.public_key_fingerprint}},
+        ),
+        (
+            "an unknown key",
+            {"inst_over": {"public_key_fingerprint": "sha256:" + "9" * 64}},
+        ),
+        (
+            "a revoked root",
+            {"host_root_": _Root(**{**host_root.__dict__, "revoked": True})},
+        ),
+        ("a root not yet valid", {"now": datetime(2026, 10, 1, tzinfo=UTC)}),
+        (
+            "an attestation of the wrong purpose",
+            {"inst_over": {"purpose": ap.CANDIDATE_PURPOSE}},
+        ),
+        (
+            "an attestation whose issuer differs from the root",
+            {"cand_over": {"issuer": "someone-else"}},
+        ),
+        ("a candidate audience that differs", {"cand_over": {"audience": "elsewhere"}}),
+        (
+            "an installed audience that is not the host",
+            {"ctx": {"installed_audience": "host-b"}},
+        ),
+        ("a stale attestation", {"now": datetime(2026, 12, 1, 12, 0, 0, tzinfo=UTC)}),
+        (
+            "an attestation issued in the future",
+            {
+                "cand_over": {
+                    "issued_at": "2026-12-01T10:30:00Z",
+                    "expires_at": "2026-12-01T11:30:00Z",
+                }
+            },
+        ),
+        ("a tampered subject", {"tamper": True}),
+        (
+            "an installed observation id that is not the dispatch",
+            {"ctx": {"dispatch_id": "00000000-0000-4000-8000-0000000000bb"}},
+        ),
+        (
+            "a different expected package",
+            {"ctx": {"expected_foundation_package": "another-package"}},
+        ),
+        (
+            "an installed subject that does not bind the candidate",
+            {
+                "inst_subject": _installed_subject(
+                    cs, candidate_subject_digest="sha256:" + "e" * 64
+                )
+            },
+        ),
+        (
+            "an installed subject for another host",
+            {"inst_subject": _installed_subject(cs, host_identity="host-b")},
+        ),
+        (
+            "the host attests different bytes",
+            {"inst_subject": _installed_subject(cs, wheel_sha256="sha256:" + "f" * 64)},
+        ),
+    ]
+    refused = []
+    for name, kwargs in mutations:
+        case = build(**kwargs)
+        result = run(case)
+        assert "code" in result, name
+        refused.append(
+            {
+                "name": name,
+                **{k: v for k, v in case.items() if not k.startswith("_")},
+                "expected": result,
+            }
+        )
+    return {
+        "rule": (
+            "verify_attestation_pair(resolution, presented, verifier, now): Control's "
+            "resolved roots and context verify the pair a target presented, in "
+            "process, with an injected Ed25519 verifier and no Foundation dependency. "
+            "The format is Foundation's TrustedHostAttestation.v2: the signature is "
+            "standard base64 over the canonical JSON (sorted keys, no spaces) of the "
+            "envelope without its `signature`; the root fingerprint is sha256 over the "
+            "raw public key; the installed subject binds the candidate by "
+            "sha256(canonical JSON of the candidate subject). Refusal codes are "
+            "Foundation's. These vectors are generated from the format read in "
+            "Foundation's trusted_host_source.py and are to be confirmed by "
+            "Foundation's own published vectors."
+        ),
+        "codes": sorted({r["expected"]["code"] for r in refused}),
+        "keys": {
+            "candidate_seed_b64u": api.b64u_encode(_CAND_SEED),
+            "installed_seed_b64u": api.b64u_encode(_HOST_SEED),
+        },
+        "ok": ok,
+        "refused": refused,
+    }
+
+
 def build_vectors() -> dict[str, Any]:
     return {
         "contract": v2.CONTRACT_NAME_V2,
@@ -570,7 +1215,7 @@ def build_vectors() -> dict[str, Any]:
             "lease_max_limit": v2.MAX_LEASE_MAX,
             "lease_margin_seconds": v2.LEASE_MARGIN,
             "lease_bodies": {
-                r: {d: dict(s) for d, s in b.items()}
+                r: {d: dict(spec) for d, spec in b.items()}
                 for r, b in v2.LEASE_BODIES.items()
             },
         },
@@ -579,6 +1224,9 @@ def build_vectors() -> dict[str, Any]:
         "lease_scenarios": _scenarios(),
         "observation_vectors": _observation_vectors(),
         "binding": _binding_vectors(),
+        "agent_observation": _agent_observation_vectors(),
+        "domain_separation": _domain_separation_vectors(),
+        "attestation_pair": _attestation_pair_vectors(),
     }
 
 

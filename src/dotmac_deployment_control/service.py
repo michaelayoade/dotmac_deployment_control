@@ -73,6 +73,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
+from dotmac_deployment_control.agent_observation import (
+    AgentObservationEnvelopeV2,
+    verify_agent_observation_envelope,
+)
 from dotmac_deployment_control.approvals import (
     ApprovalDecisionStatus,
     require_decision_status,
@@ -258,6 +262,7 @@ from dotmac_deployment_control.target_api import (
     default_secrets_environment,
     is_denied_public_key,
 )
+from dotmac_deployment_control.target_api_v2 import check_observation_kind
 
 #: The audit actions this module declares and writes. Four, split by SUBJECT
 #: rather than by verb: a target's own standing, a credential's standing, a plan
@@ -3890,6 +3895,7 @@ def record_observation(
     )
 
     parsed_observation: ExecutionObservationEnvelopeV1 | None = None
+    parsed_agent: AgentObservationEnvelopeV2 | None = None
     try:
         # `parse_bytes`, never `parse`: the thing parsed is the thing stored,
         # byte for byte. An oversize body is refused here (and recorded as a
@@ -3902,7 +3908,13 @@ def record_observation(
         # The exact inbound bytes still become an attempt below. Parsing before
         # the handler is only a bounded syntax operation; trust begins after
         # Control selects the enrolled verification identity inside it.
-        pass
+        #
+        # Not a v1 execution observation: it may be the agent's own envelope
+        # (target_api v2), the SAME ingestion path with its own strict parser.
+        try:
+            parsed_agent = AgentObservationEnvelopeV2.parse_bytes(wire)
+        except ExecutionObservationRefusedError:
+            pass
 
     def handler(session: Session) -> Mapping[str, object]:
         attempt = ObservationAttempt(
@@ -3921,6 +3933,16 @@ def record_observation(
             disposition=ObservationDisposition.MALFORMED.value,
         )
 
+        if parsed_observation is None and parsed_agent is not None:
+            return _record_agent_observation(
+                session,
+                attempt,
+                command,
+                parsed_agent,
+                observation_verifier=observation_verifier,
+                received_at=received_at,
+                raw_digest=raw_body_digest,
+            )
         if parsed_observation is None:
             attempt.disposition = ObservationDisposition.MALFORMED.value
             session.add(attempt)
@@ -4438,6 +4460,144 @@ def _replay_observation(
     )
 
 
+def _dispatch_operation(
+    session: Session, target: DeploymentTarget, dispatch_id: str
+) -> str | None:
+    """The operation of the plan a dispatch id belongs to, on THIS target."""
+    try:
+        attempt_id = UUID(dispatch_id)
+    except ValueError:
+        return None
+    row = session.execute(
+        select(
+            DeploymentPlan.operation,
+            DeploymentPlan.authorized_operation,
+            DeploymentPlan.target_id,
+        )
+        .join(Rollout, Rollout.plan_id == DeploymentPlan.id)
+        .join(RolloutAttempt, RolloutAttempt.rollout_id == Rollout.id)
+        .where(RolloutAttempt.id == attempt_id)
+    ).one_or_none()
+    if row is None or row.target_id != target.id:
+        return None
+    return str(row.authorized_operation or row.operation or "")
+
+
+def _record_agent_observation(
+    session: Session,
+    attempt: ObservationAttempt,
+    command: RecordObservationCommand,
+    envelope: AgentObservationEnvelopeV2,
+    *,
+    observation_verifier: ExecutionObservationVerifier | None,
+    received_at: datetime,
+    raw_digest: str,
+) -> Mapping[str, object]:
+    """Ingest the agent's PoP-signed observation (target_api v2).
+
+    The same discipline as the v1 path: an attempt for every arrival, the
+    signature verified against the credential Control SELECTS by `key_id`, the
+    statement's `target_ref` compared with the credential's target. It changes no
+    desired or observed state: it is attributable evidence (a reconcile
+    observation is what a later reconcile marker is issued from). A kind that
+    does not agree with the plan's operation is `operation_mismatch`.
+    """
+    statement = envelope.statement
+    attempt.key_id = statement.key_id
+    attempt.claimed_target_ref = statement.target_ref
+    attempt.report_id = statement.report_id
+    extra = {"agent_kind": statement.kind, "agent_outcome": statement.outcome}
+
+    def finish(disposition: str) -> Mapping[str, object]:
+        attempt.disposition = disposition
+        session.add(attempt)
+        session.flush()
+        return _observation_result(
+            session, attempt, command, changed=False, extra_details=extra
+        )
+
+    credential_target_id = session.execute(
+        select(TargetCredential.target_id).where(
+            TargetCredential.key_id == statement.key_id
+        )
+    ).scalar_one_or_none()
+    if credential_target_id is None:
+        return finish(ObservationDisposition.UNKNOWN_KEY.value)
+    target = _load_target_for_update(session, credential_target_id)
+    credential = session.execute(
+        select(TargetCredential)
+        .where(TargetCredential.key_id == statement.key_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if credential is None:
+        return finish(ObservationDisposition.UNKNOWN_KEY.value)
+    if observation_verifier is None:
+        attempt.signature_status = SignatureStatus.INVALID.value
+        return finish(ObservationDisposition.BAD_SIGNATURE.value)
+    try:
+        verify_agent_observation_envelope(
+            envelope,
+            verifier=observation_verifier,
+            verification_key=ExecutionObservationVerificationKey(
+                key_id=credential.key_id,
+                algorithm=credential.algorithm or "",
+                purpose=credential.purpose or "",
+                public_key_b64=credential.public_key_b64,
+                public_key_fingerprint=credential.public_key_fingerprint,
+            ),
+        )
+    except ExecutionObservationRefusedError:
+        attempt.signature_status = SignatureStatus.INVALID.value
+        return finish(ObservationDisposition.BAD_SIGNATURE.value)
+    attempt.signature_status = SignatureStatus.VALID.value
+    attempt.authenticated_target_ref = target.target_ref
+    eligible = _credential_row_is_eligible(credential, at=received_at)
+    attempt.eligibility_at_receipt = (
+        EligibilityAtReceipt.ELIGIBLE.value
+        if eligible
+        else EligibilityAtReceipt.NOT_ELIGIBLE.value
+    )
+    # A repeat of an already-judged report is a replay (same bytes) or a conflict
+    # (different bytes); its first verdict stands.
+    prior = session.execute(
+        select(ObservationAttempt)
+        .where(
+            ObservationAttempt.authenticated_target_ref == target.target_ref,
+            ObservationAttempt.report_id == statement.report_id,
+            ObservationAttempt.signature_status == SignatureStatus.VALID.value,
+            ObservationAttempt.disposition.in_(
+                (
+                    ObservationDisposition.ACCEPTED.value,
+                    ObservationDisposition.OPERATION_MISMATCH.value,
+                    ObservationDisposition.UNBOUND_REPORT.value,
+                    ObservationDisposition.TARGET_MISMATCH.value,
+                )
+            ),
+        )
+        .order_by(ObservationAttempt.received_at)
+        .limit(1)
+    ).scalar_one_or_none()
+    if prior is not None:
+        return finish(
+            ObservationDisposition.IDEMPOTENT_REPLAY.value
+            if prior.raw_body_digest == raw_digest
+            else ObservationDisposition.CONFLICT.value
+        )
+    if not eligible:
+        return finish(ObservationDisposition.NOT_ELIGIBLE.value)
+    if statement.target_ref != target.target_ref:
+        return finish(ObservationDisposition.TARGET_MISMATCH.value)
+    operation = _dispatch_operation(session, target, statement.dispatch_id)
+    if operation is None:
+        return finish(ObservationDisposition.UNBOUND_REPORT.value)
+    try:
+        check_observation_kind(statement.kind, operation)
+    except TargetApiError:
+        return finish(ObservationDisposition.OPERATION_MISMATCH.value)
+    return finish(ObservationDisposition.ACCEPTED.value)
+
+
 def _observation_result(
     session: Session,
     attempt: ObservationAttempt,
@@ -4447,6 +4607,7 @@ def _observation_result(
     statement: ExecutionObservationStatementV1 | None = None,
     verdict: str | None = None,
     target: DeploymentTarget | None = None,
+    extra_details: Mapping[str, Any] | None = None,
 ) -> Mapping[str, object]:
     """Audit, emit, and shape the handler's return value.
 
@@ -4476,6 +4637,7 @@ def _observation_result(
         "reported_execution_plan_digest": (
             statement.execution_plan_digest if statement is not None else None
         ),
+        **(extra_details or {}),
     }
     _audit_and_emit(
         session,

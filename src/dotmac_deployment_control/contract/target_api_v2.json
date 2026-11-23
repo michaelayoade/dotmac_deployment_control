@@ -1,4 +1,2137 @@
 {
+  "agent_observation": {
+    "ingestion_rules": [
+      {
+        "case": "a deploy report of a deploy plan",
+        "disposition": "accepted",
+        "kind": "deploy",
+        "plan_operation": "deploy"
+      },
+      {
+        "case": "a deploy report of a rollback plan",
+        "disposition": "accepted",
+        "kind": "deploy",
+        "plan_operation": "rollback"
+      },
+      {
+        "case": "a job report of a run_job plan",
+        "disposition": "accepted",
+        "kind": "job",
+        "plan_operation": "run_job"
+      },
+      {
+        "case": "a reconcile of a deploy plan",
+        "disposition": "accepted",
+        "kind": "reconcile",
+        "plan_operation": "deploy"
+      },
+      {
+        "case": "a reconcile of a run_job plan",
+        "disposition": "accepted",
+        "kind": "reconcile",
+        "plan_operation": "run_job"
+      },
+      {
+        "case": "a job report of a deploy plan",
+        "disposition": "operation_mismatch",
+        "kind": "job",
+        "plan_operation": "deploy"
+      },
+      {
+        "case": "a deploy report of a run_job plan",
+        "disposition": "operation_mismatch",
+        "kind": "deploy",
+        "plan_operation": "run_job"
+      },
+      {
+        "case": "a reconcile of a recover plan",
+        "disposition": "operation_mismatch",
+        "kind": "reconcile",
+        "plan_operation": "recover"
+      },
+      {
+        "case": "the statement names another target than the credential's",
+        "disposition": "target_mismatch"
+      },
+      {
+        "case": "the dispatch id is not a dispatch of this target",
+        "disposition": "unbound_report"
+      },
+      {
+        "case": "an unknown key id",
+        "disposition": "unknown_key"
+      },
+      {
+        "case": "a bad signature",
+        "disposition": "bad_signature"
+      },
+      {
+        "case": "the same bytes again",
+        "disposition": "idempotent_replay"
+      },
+      {
+        "case": "the same report id with different bytes",
+        "disposition": "conflict"
+      },
+      {
+        "case": "an unparseable body",
+        "disposition": "malformed"
+      }
+    ],
+    "key": {
+      "algorithm": "ed25519",
+      "key_id": "cred-0001",
+      "public_b64u": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "purpose": "target_execution_observation",
+      "seed_b64u": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    "kind_outcomes": {
+      "deploy": [
+        "succeeded",
+        "failed",
+        "refused"
+      ],
+      "job": [
+        "succeeded",
+        "failed",
+        "refused"
+      ],
+      "reconcile": [
+        "reconciled",
+        "failed",
+        "not_needed"
+      ]
+    },
+    "limits": {
+      "max_details_bytes": 16384,
+      "max_details_depth": 4,
+      "max_envelope_bytes": 65536
+    },
+    "ok": [
+      {
+        "report_id": "agent:deploy:00000000-0000-4000-8000-000000000001",
+        "signature_b64u": "bAEuHTh5zyBLScMfoqGK2pjxtQXZllgTviir9NSp_W8VwZPIQCO7dGz5CZl1Q-FUjPukaNVObMbYKQS9vgvgBQ",
+        "signed_bytes_hex": "7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d",
+        "statement": {
+          "details": {},
+          "dispatch_id": "00000000-0000-4000-8000-000000000001",
+          "key_id": "cred-0001",
+          "kind": "deploy",
+          "observed_at": "2026-12-01T10:05:00Z",
+          "outcome": "succeeded",
+          "reason": "",
+          "schema": "dotmac.agent-observation/2",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "wire_utf8": "{\"signature\":\"bAEuHTh5zyBLScMfoqGK2pjxtQXZllgTviir9NSp_W8VwZPIQCO7dGz5CZl1Q-FUjPukaNVObMbYKQS9vgvgBQ\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"succeeded\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
+      },
+      {
+        "report_id": "agent:reconcile:00000000-0000-4000-8000-000000000001",
+        "signature_b64u": "-nTOsopB8MxuKMr22yC_bnKbPi30QbWqq_RWtHyDTPCHZtvfF3iFQIh9njWiLdZYrDPNghiLA1f8VYV_zPrwDA",
+        "signed_bytes_hex": "7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a227265636f6e63696c65222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a227265636f6e63696c6564222c22726561736f6e223a226c656173652065787069726564222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d",
+        "statement": {
+          "details": {},
+          "dispatch_id": "00000000-0000-4000-8000-000000000001",
+          "key_id": "cred-0001",
+          "kind": "reconcile",
+          "observed_at": "2026-12-01T10:05:00Z",
+          "outcome": "reconciled",
+          "reason": "lease expired",
+          "schema": "dotmac.agent-observation/2",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "wire_utf8": "{\"signature\":\"-nTOsopB8MxuKMr22yC_bnKbPi30QbWqq_RWtHyDTPCHZtvfF3iFQIh9njWiLdZYrDPNghiLA1f8VYV_zPrwDA\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"reconcile\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"reconciled\",\"reason\":\"lease expired\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
+      },
+      {
+        "report_id": "agent:job:00000000-0000-4000-8000-000000000001",
+        "signature_b64u": "RPiuCoXVeX8NseZ4E-amb1aDXpST4x_wAvU3tI-Gt9RwH7KF5g7BJUuXqRaNF4W3ybVkWY9s0n1ef11poP4XAg",
+        "signed_bytes_hex": "7b2264657461696c73223a7b226163636573736f725f707265666978223a226162636431323334222c22657869745f636f6465223a317d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226a6f62222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a226661696c6564222c22726561736f6e223a22657869742031222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d",
+        "statement": {
+          "details": {
+            "accessor_prefix": "abcd1234",
+            "exit_code": 1
+          },
+          "dispatch_id": "00000000-0000-4000-8000-000000000001",
+          "key_id": "cred-0001",
+          "kind": "job",
+          "observed_at": "2026-12-01T10:05:00Z",
+          "outcome": "failed",
+          "reason": "exit 1",
+          "schema": "dotmac.agent-observation/2",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "wire_utf8": "{\"signature\":\"RPiuCoXVeX8NseZ4E-amb1aDXpST4x_wAvU3tI-Gt9RwH7KF5g7BJUuXqRaNF4W3ybVkWY9s0n1ef11poP4XAg\",\"statement\":{\"details\":{\"accessor_prefix\":\"abcd1234\",\"exit_code\":1},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"job\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"failed\",\"reason\":\"exit 1\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
+      }
+    ],
+    "refused_parse": [
+      {
+        "body_hex": "7b2273746174656d656e74223a7b7d2c227369676e6174757265223a2278222c227369676e6174757265223a2279227d",
+        "code": "execution_observation_malformed",
+        "name": "duplicate key"
+      },
+      {
+        "body_hex": "6e6f74206a736f6e",
+        "code": "execution_observation_malformed",
+        "name": "not json"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f31222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_unsupported_version",
+        "name": "wrong schema"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a2275706772616465222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "unknown kind"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226a6f62222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a227265636f6e63696c6564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "outcome not for the kind"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b2278223a312e357d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "a float in details"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226578747261223a312c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "an extra statement key"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b2261223a7b2262223a7b2263223a7b2264223a7b2265223a317d7d7d7d7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "details too deep"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30312031303a30353a3030222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "bad observed_at"
+      },
+      {
+        "body_hex": "7b227369676e6174757265223a2262414575485468357a79424c53634d666f71474b32706a787451585a6c6c675476696972394e53705f573856775a504951434f3764477a35435a6c31512d46556a50756b614e564f624d62594b515339766776674251222c2273746174656d656e74223a7b2264657461696c73223a7b7d2c2264697370617463685f6964223a22222c226b65795f6964223a22637265642d30303031222c226b696e64223a226465706c6f79222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a22737563636565646564222c22726561736f6e223a22222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d7d",
+        "code": "execution_observation_malformed",
+        "name": "empty dispatch id"
+      },
+      {
+        "body_hex": "7b2273746174656d656e74223a207b22736368656d61223a2022646f746d61632e6167656e742d6f62736572766174696f6e2f32222c20226b696e64223a20226465706c6f79222c202264697370617463685f6964223a202230303030303030302d303030302d343030302d383030302d303030303030303030303031222c20227461726765745f726566223a2022646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61222c20226b65795f6964223a2022637265642d30303031222c20226f7574636f6d65223a2022737563636565646564222c2022726561736f6e223a2022222c202264657461696c73223a207b7d2c20226f627365727665645f6174223a2022323032362d31322d30315431303a30353a30305a227d7d",
+        "code": "execution_observation_malformed",
+        "name": "missing signature"
+      },
+      {
+        "body_hex": "",
+        "code": "execution_observation_malformed",
+        "name": "oversize"
+      }
+    ],
+    "refused_verify": [
+      {
+        "code": "execution_observation_signature_invalid",
+        "name": "a statement changed after signing",
+        "wire_utf8": "{\"signature\":\"bAEuHTh5zyBLScMfoqGK2pjxtQXZllgTviir9NSp_W8VwZPIQCO7dGz5CZl1Q-FUjPukaNVObMbYKQS9vgvgBQ\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"failed\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
+      },
+      {
+        "code": "execution_observation_signature_invalid",
+        "name": "a different key id",
+        "wire_utf8": "{\"signature\":\"X3HIPq39X-ATbESadYdPg7XqWtWdomCJIzZ7uqTAQeDFyRe7P8avPmQQnan2hhwjDGr95Z0w7LMdzuXOr0jcBw\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-9999\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"succeeded\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
+      }
+    ],
+    "rule": "One ingestion path, owned by Control: `record_observation` parses the envelope, selects the ENROLLED credential by statement.key_id, verifies the Ed25519 signature over the statement's canonical JSON bytes under that credential's key, and requires statement.target_ref to equal the credential's target. The statement is {schema, kind, dispatch_id, target_ref, key_id, outcome, reason, details, observed_at}; the report id is `agent:<kind>:<dispatch_id>`. Kind deploy|reconcile|job must agree with the dispatch's plan operation (job <=> run_job; deploy <=> deploy/rollback; reconcile settles an expired lease of any). An accepted observation changes no desired or observed state: it is attributable evidence.",
+    "schema": "dotmac.agent-observation/2"
+  },
+  "attestation_pair": {
+    "codes": [
+      "trusted-host-source-attestation-absent",
+      "trusted-host-source-attestation-malformed",
+      "trusted-host-source-attestations-disagree",
+      "trusted-host-source-audience-mismatch",
+      "trusted-host-source-future",
+      "trusted-host-source-key-not-trusted",
+      "trusted-host-source-observation-id-mismatch",
+      "trusted-host-source-package-mismatch",
+      "trusted-host-source-root-binding-mismatch",
+      "trusted-host-source-root-not-valid",
+      "trusted-host-source-root-purpose-mismatch",
+      "trusted-host-source-root-revoked",
+      "trusted-host-source-same-key-signed-both",
+      "trusted-host-source-signature-invalid",
+      "trusted-host-source-stale",
+      "trusted-host-source-subject-mismatch",
+      "trusted-host-source-trust-roots-not-distinct"
+    ],
+    "keys": {
+      "candidate_seed_b64u": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+      "installed_seed_b64u": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8"
+    },
+    "ok": {
+      "expected": {
+        "evidence": {
+          "candidate_attestation_envelope_digest": "sha256:c462b7852dd118ed9495c4244669532e16d50b6b69e9bee752cfa61ff1d7a4c5",
+          "installed_attestation_envelope_digest": "sha256:ddd5c8af1f9c43779730e357ad7289d4eecc9246f3e4e082ef498182560f08de",
+          "verification_context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "verified_candidate_audience": "dotmac.foundation",
+          "verified_candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "root_version": "1"
+          },
+          "verified_host_identity": "host-a",
+          "verified_installed_audience": "host-a",
+          "verified_installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "root_version": "1"
+          },
+          "verified_observation_id": "00000000-0000-4000-8000-0000000000aa",
+          "verified_package": "dotmac-deployment-foundation"
+        }
+      },
+      "now": "2026-12-01T10:00:00Z",
+      "presented": {
+        "candidate": {
+          "algorithm": "ed25519",
+          "audience": "dotmac.foundation",
+          "custody_domain": "candidate_release_signer",
+          "expires_at": "2026-12-01T11:00:00Z",
+          "issued_at": "2026-12-01T09:00:00Z",
+          "issuer": "candidate-issuer",
+          "key_id": "key-candidate",
+          "observation_id": "00000000-0000-4000-8000-0000000000aa",
+          "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+          "purpose": "dotmac.foundation.candidate-artifact.v2",
+          "schema": "TrustedHostAttestation.v2",
+          "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+          "subject": {
+            "artifact_id": "200",
+            "package": "dotmac-deployment-foundation",
+            "repository": "example/repository",
+            "run_id": "100",
+            "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "version": "0.4.0a1",
+            "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "trust_root_version": "1"
+        },
+        "installed": {
+          "algorithm": "ed25519",
+          "audience": "host-a",
+          "custody_domain": "host_attester",
+          "expires_at": "2026-12-01T11:00:00Z",
+          "issued_at": "2026-12-01T09:00:00Z",
+          "issuer": "installed-issuer",
+          "key_id": "key-installed",
+          "observation_id": "00000000-0000-4000-8000-0000000000aa",
+          "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+          "purpose": "dotmac.foundation.installed-host.v2",
+          "schema": "TrustedHostAttestation.v2",
+          "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+          "subject": {
+            "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+            "host_identity": "host-a",
+            "package": "dotmac-deployment-foundation",
+            "version": "0.4.0a1",
+            "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "trust_root_version": "1"
+        }
+      },
+      "resolution": {
+        "candidate_audience": "dotmac.foundation",
+        "candidate_root": {
+          "algorithm": "ed25519",
+          "custody_domain": "candidate_release_signer",
+          "issuer": "candidate-issuer",
+          "key_id": "key-candidate",
+          "not_after": "2027-11-01T00:00:00Z",
+          "not_before": "2026-11-01T00:00:00Z",
+          "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+          "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+          "purpose": "dotmac.foundation.candidate-artifact.v2",
+          "revoked": false,
+          "root_version": "1",
+          "standing": "active",
+          "subject": "release-signer"
+        },
+        "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+        "expected_foundation_package": "dotmac-deployment-foundation",
+        "host_id": "host-a",
+        "installed_audience": "host-a",
+        "installed_root": {
+          "algorithm": "ed25519",
+          "custody_domain": "host_attester",
+          "issuer": "installed-issuer",
+          "key_id": "key-installed",
+          "not_after": "2027-11-01T00:00:00Z",
+          "not_before": "2026-11-01T00:00:00Z",
+          "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+          "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+          "purpose": "dotmac.foundation.installed-host.v2",
+          "revoked": false,
+          "root_version": "1",
+          "standing": "active",
+          "subject": "host-a"
+        }
+      }
+    },
+    "refused": [
+      {
+        "expected": {
+          "code": "trusted-host-source-attestation-absent"
+        },
+        "name": "the candidate is absent",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": null,
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-attestation-malformed"
+        },
+        "name": "a widened candidate subject",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "1herCRjz+I7PN1VR8yRFcbCoN7HAv6uTktTJxlrqmNqS+Y6cv3jttOo2cZl/UtsT0iUnzao5boRjsc+r4E3xBA==",
+            "subject": {
+              "artifact_id": "200",
+              "extra": "x",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "kWllwjpZJukboqpkERf3xW54apMeyz4PAJyJiJQZl87Gr2ZeEIYv07ifseRU2DNEUnt34mifS4rSXoO81c+2BQ==",
+            "subject": {
+              "candidate_subject_digest": "sha256:700b18415f24271ed7d857e7016103a72eef8e0a4b48d004032834b3bbed5e8c",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-trust-roots-not-distinct"
+        },
+        "name": "the two roles share a custody domain (roots not distinct)",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-same-key-signed-both"
+        },
+        "name": "one key signed both",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "jlWmBPNMqBuJFZZ7sc+bomdte38B4eeXWhb0vxsdlXGgqfRclr7NL4NiOByhSwvDDoPi97NxG3Ovz7sxaFnSDg==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-key-not-trusted"
+        },
+        "name": "an unknown key",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "1gXc/CT2vs+bKkY9Zt7FOJLPsYvfxOKuxUYKnypHPWwBcIbKFb2LmZYTTaq3GA5cK0r44yuuKQru8GjvAQcFCA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-root-revoked"
+        },
+        "name": "a revoked root",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": true,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-root-not-valid"
+        },
+        "name": "a root not yet valid",
+        "now": "2026-10-01T00:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-root-purpose-mismatch"
+        },
+        "name": "an attestation of the wrong purpose",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Xj/gtL3sxTZJ/36e3EQ7aFbiMaws7hBbiUkyJsVqis4DOczy7pYYN8oXJwod0naHEURk8lcnI303zXhqyl/cBA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-root-binding-mismatch"
+        },
+        "name": "an attestation whose issuer differs from the root",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "someone-else",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "SpmCzyBtlAjBi7vMdg0pPJwWy3/VQHwl0JlyGQKdt9272HzCsn361/pfDqTUKrh8arJ53gVMpFMyxdI0JYXsDA==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-audience-mismatch"
+        },
+        "name": "a candidate audience that differs",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "elsewhere",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "pGpCk1oaFcMf4iqKc60ctLi6F5O4I7tV+DX38gz7Ovkj5p/KdU+Z9cMt456xUFH9BT01xu5ia1JppSWBbkfCDA==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-audience-mismatch"
+        },
+        "name": "an installed audience that is not the host",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-b",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-stale"
+        },
+        "name": "a stale attestation",
+        "now": "2026-12-01T12:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-future"
+        },
+        "name": "an attestation issued in the future",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:30:00Z",
+            "issued_at": "2026-12-01T10:30:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "iHsgApmARR7oCNQ6W2Pob3te+1NJehOdcvb7lhCkxOhBhnIdjFiG1OqE0Bteu6zultH6IYwwzec7Uk82S1efCg==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-signature-invalid"
+        },
+        "name": "a tampered subject",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "9.9.9",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-observation-id-mismatch"
+        },
+        "name": "an installed observation id that is not the dispatch",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000bb",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-package-mismatch"
+        },
+        "name": "a different expected package",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "cUH1kvUjJlNT6vi+2J4DxaRRSWj0BmnhwbNBz5gSqVcAOMauSb2QOonz+PltpPgCzc8GXBgWnSTXRo2PDQ0bDA==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "another-package",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-subject-mismatch"
+        },
+        "name": "an installed subject that does not bind the candidate",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "DN9Fi3/Dh2sTvmL7ExWT+8dSsOrvpAKFXz4mLqa/jweLA5ff0Nx0rCuHjkhoYGSJWiQDWoyGp1oFOCMwJaoDCQ==",
+            "subject": {
+              "candidate_subject_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-subject-mismatch"
+        },
+        "name": "an installed subject for another host",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Ql7V2q3cFaK0JlAuu1Orgj40zdDlXoCOJrRBSab2sXpOD0JADixzkBMWWNJi5T1lgO7lGFtAJxSgVWPJv/7WAg==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-b",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      },
+      {
+        "expected": {
+          "code": "trusted-host-source-attestations-disagree"
+        },
+        "name": "the host attests different bytes",
+        "now": "2026-12-01T10:00:00Z",
+        "presented": {
+          "candidate": {
+            "algorithm": "ed25519",
+            "audience": "dotmac.foundation",
+            "custody_domain": "candidate_release_signer",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "Cq4xQ62E4GQvT9ZgvZba8ZSF0TkpJrmiDTUrxQ6yZP5QjpG0C5GZD1G5qSbk4h6GtId9PqzAJqJYGWrBxH6TAQ==",
+            "subject": {
+              "artifact_id": "200",
+              "package": "dotmac-deployment-foundation",
+              "repository": "example/repository",
+              "run_id": "100",
+              "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            },
+            "trust_root_version": "1"
+          },
+          "installed": {
+            "algorithm": "ed25519",
+            "audience": "host-a",
+            "custody_domain": "host_attester",
+            "expires_at": "2026-12-01T11:00:00Z",
+            "issued_at": "2026-12-01T09:00:00Z",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "observation_id": "00000000-0000-4000-8000-0000000000aa",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "schema": "TrustedHostAttestation.v2",
+            "signature": "2XMyUR5mfOPRskuxJ1FBHNFW9yHYx5gaK7S9/H2HCMoUu9SGLYaAhw52s5gTymtvq4LsPKR+uIjv7p5XEJHmDQ==",
+            "subject": {
+              "candidate_subject_digest": "sha256:82aa55abac6b81713a7124827090376eabdfc0711bc69dd1f70b37939206cfb9",
+              "host_identity": "host-a",
+              "package": "dotmac-deployment-foundation",
+              "version": "0.4.0a1",
+              "wheel_sha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            },
+            "trust_root_version": "1"
+          }
+        },
+        "resolution": {
+          "candidate_audience": "dotmac.foundation",
+          "candidate_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "candidate_release_signer",
+            "issuer": "candidate-issuer",
+            "key_id": "key-candidate",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "public_key_fingerprint": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "purpose": "dotmac.foundation.candidate-artifact.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "release-signer"
+          },
+          "context_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "dispatch_id": "00000000-0000-4000-8000-0000000000aa",
+          "expected_foundation_package": "dotmac-deployment-foundation",
+          "host_id": "host-a",
+          "installed_audience": "host-a",
+          "installed_root": {
+            "algorithm": "ed25519",
+            "custody_domain": "host_attester",
+            "issuer": "installed-issuer",
+            "key_id": "key-installed",
+            "not_after": "2027-11-01T00:00:00Z",
+            "not_before": "2026-11-01T00:00:00Z",
+            "public_key_base64": "F0VTtFbd38aQjsqxwQH+arIeK6oGF3lbfUOmNIKZP9U=",
+            "public_key_fingerprint": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+            "purpose": "dotmac.foundation.installed-host.v2",
+            "revoked": false,
+            "root_version": "1",
+            "standing": "active",
+            "subject": "host-a"
+          }
+        }
+      }
+    ],
+    "rule": "verify_attestation_pair(resolution, presented, verifier, now): Control's resolved roots and context verify the pair a target presented, in process, with an injected Ed25519 verifier and no Foundation dependency. The format is Foundation's TrustedHostAttestation.v2: the signature is standard base64 over the canonical JSON (sorted keys, no spaces) of the envelope without its `signature`; the root fingerprint is sha256 over the raw public key; the installed subject binds the candidate by sha256(canonical JSON of the candidate subject). Refusal codes are Foundation's. These vectors are generated from the format read in Foundation's trusted_host_source.py and are to be confirmed by Foundation's own published vectors."
+  },
   "binding": {
     "job": {
       "operation": "run_job",
@@ -2048,6 +4181,7 @@
     ],
     "observation_kinds": [
       "deploy",
+      "reconcile",
       "job"
     ],
     "retry_idempotency_added": {
@@ -2060,6 +4194,29 @@
     ]
   },
   "contract": "dotmac.target_api/2",
+  "domain_separation": {
+    "observation_as_request_code": "not_a_request",
+    "observation_signature_verifies_over_observation": true,
+    "observation_signature_verifies_over_request": false,
+    "observation_signed_bytes_utf8": "{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"succeeded\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}",
+    "observation_wire_utf8": "{\"signature\":\"bAEuHTh5zyBLScMfoqGK2pjxtQXZllgTviir9NSp_W8VwZPIQCO7dGz5CZl1Q-FUjPukaNVObMbYKQS9vgvgBQ\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"succeeded\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}",
+    "request_as_observation_code": "execution_observation_malformed",
+    "request_message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a6",
+    "request_parses_as_request": {
+      "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "credential_id": "cred-0001",
+      "issued_at": "2026-11-22T10:00:00Z",
+      "method": "POST",
+      "nonce": "000000000000000000000000a5a5a5a6",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations",
+      "purpose": "dotmac.target_request.v1",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    },
+    "request_signature_verifies_over_observation": false,
+    "request_signature_verifies_over_request": true,
+    "rule": "The PoP key signs both a target request and an agent observation. The byte domains are disjoint: a request message is 8 LF-joined lines whose first is `dotmac.target_request.v1`; an observation's signed bytes are canonical JSON containing the schema `dotmac.agent-observation/2` and begin with `{`. Neither parses as the other, and a signature over one never verifies as a signature over the other.",
+    "wire_as_request_code": "not_a_request"
+  },
   "extends": {
     "contract": "dotmac.target_api/1",
     "file": "target_api_v1.json",
@@ -2632,6 +4789,7 @@
   "observation_vectors": {
     "kinds": [
       "deploy",
+      "reconcile",
       "job"
     ],
     "ok": [
@@ -2642,6 +4800,14 @@
       {
         "kind": "deploy",
         "operation": "rollback"
+      },
+      {
+        "kind": "reconcile",
+        "operation": "deploy"
+      },
+      {
+        "kind": "reconcile",
+        "operation": "run_job"
       },
       {
         "kind": "job",

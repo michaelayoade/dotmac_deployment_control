@@ -286,8 +286,8 @@ def build_deploy_binding(
     if not is_canonical_digest(params_env_digest):
         raise DeployBindingRefusedError("params_env_digest must be sha256:<64 hex>")
     lease_max = lease_ttl_seconds if lease_max_seconds is None else lease_max_seconds
-    for label, value in (("TTL", lease_ttl_seconds), ("maximum", lease_max)):
-        if isinstance(value, bool) or not isinstance(value, int):
+    for label, lease_value in (("TTL", lease_ttl_seconds), ("maximum", lease_max)):
+        if isinstance(lease_value, bool) or not isinstance(lease_value, int):
             raise DeployBindingRefusedError(f"the lease {label} is an integer")
     if dispatched_job is None and not (
         MIN_LEASE_TTL_SECONDS <= lease_ttl_seconds <= MAX_LEASE_TTL_SECONDS

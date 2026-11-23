@@ -871,6 +871,36 @@ class RequestBodyDigestV1(_Sha256Digest):
 
 
 @dataclass(frozen=True, slots=True)
+class AttestationDigestV1(_ReceivedSha256Digest):
+    """The identity of an attestation envelope or subject DOCUMENT (Foundation's
+    `TrustedHostAttestation.v2` format): sha256 over its canonical JSON."""
+
+    @classmethod
+    def over_document(cls, document: Mapping[str, Any]) -> AttestationDigestV1:
+        if not isinstance(document, Mapping):
+            raise _refuse(cls.__name__, document, "the document must be a mapping")
+        return cls(ALGORITHM, hashlib.sha256(canonical_json(document)).digest())
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationKeyFingerprintV1(_ReceivedSha256Digest):
+    """Fingerprint of an attestation root's public key, given in STANDARD base64
+    (the attestation format's encoding; credentials use unpadded base64url)."""
+
+    @classmethod
+    def from_standard_base64(cls, value: object) -> AttestationKeyFingerprintV1:
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise _refuse(cls.__name__, value, "the public key is exact base64 text")
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise _refuse(cls.__name__, value, "the public key is not base64") from exc
+        if not raw:
+            raise _refuse(cls.__name__, value, "the decoded public key is empty")
+        return cls(ALGORITHM, hashlib.sha256(raw).digest())
+
+
+@dataclass(frozen=True, slots=True)
 class DeploymentSetDigestV1(_Sha256Digest):
     """The identity of a deployment set: a primary plan and its companion."""
 
