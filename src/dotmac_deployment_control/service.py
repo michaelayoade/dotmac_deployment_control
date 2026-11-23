@@ -96,6 +96,7 @@ from dotmac_deployment_control.deploy_binding import (
     MAX_LEASE_TTL_SECONDS,
     SERVING_RUN_SECONDS,
     SERVING_TRANSFER_SECONDS,
+    DeployBindingRefusedError,
     DeploymentSet,
     DeployPlanBinding,
     DeployPlanInputs,
@@ -6278,6 +6279,14 @@ def _derive_deploy_binding(
                 f"{SERVING_RUN_SECONDS}s + hold timeouts {sum(holds)}s + "
                 f"{JOB_LEASE_MARGIN_SECONDS}s), over the {MAX_LEASE_TTL_SECONDS}s "
                 "maximum; shorten the hold timeouts"
+            )
+        if (
+            isinstance(lease, bool)
+            or not isinstance(lease, int)
+            or not 1 <= lease <= MAX_LEASE_TTL_SECONDS
+        ):
+            raise DeployBindingRefusedError(
+                f"the lease TTL must be 1..{MAX_LEASE_TTL_SECONDS} seconds"
             )
         lease = max(lease, needed)
     ceiling = settings.role_job_lease_ceiling(target.target_ref)
