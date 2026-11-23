@@ -38,6 +38,8 @@ from dotmac_deployment_control.image_policy import (
 from dotmac_deployment_control.legacy_policy import LegacyPlanBinding
 
 MAX_LEASE_TTL_SECONDS: Final = 3600
+#: A plan that dispatches a role job (import-only OpenBao) bounds its lease at 15 min.
+MAX_JOB_ROLE_LEASE_TTL_SECONDS: Final = 900
 COMPANION_ORDER: Final = "after_primary_ready"
 _SEGMENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _SERVICE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
@@ -199,6 +201,13 @@ def build_deploy_binding(
     ):
         raise DeployBindingRefusedError(
             f"the lease TTL must be 1..{MAX_LEASE_TTL_SECONDS} seconds"
+        )
+    if (
+        any(job.role for job in jobs)
+        and lease_ttl_seconds > MAX_JOB_ROLE_LEASE_TTL_SECONDS
+    ):
+        raise DeployBindingRefusedError(
+            f"a plan with a role job bounds the lease at {MAX_JOB_ROLE_LEASE_TTL_SECONDS} seconds"
         )
     if not images:
         raise DeployBindingRefusedError("a deploy plan binds at least one image")

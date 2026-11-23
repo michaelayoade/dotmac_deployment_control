@@ -1616,3 +1616,12 @@ def test_a_job_role_needs_the_targets_namespace_env(db: Session) -> None:
     db.flush()
     with pytest.raises(PlanRefusedError, match="namespace-env"):
         _propose(db, erp.id, source)
+
+
+def test_a_plan_with_a_role_job_bounds_the_lease_at_900_seconds(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    with pytest.raises(DeployBindingRefusedError, match="900"):
+        _propose(db, erp.id, source, DeployPlanInputs(901, 5000))
+    plan = _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
+    assert _binding_of(plan)["lease_ttl_seconds"] == 900
