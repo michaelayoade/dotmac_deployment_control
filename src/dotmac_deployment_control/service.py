@@ -95,6 +95,7 @@ from dotmac_deployment_control.deploy_binding import (
     DeploymentSet,
     DeployPlanBinding,
     DeployPlanInputs,
+    PlanJob,
     PlannedImage,
     PlanRole,
     build_deploy_binding,
@@ -106,9 +107,11 @@ from dotmac_deployment_control.deploy_settings import (
     settings_from_rows,
 )
 from dotmac_deployment_control.deploy_unit import (
+    canonical_job_render,
     canonical_render,
     is_companion_descriptor_path,
     params_env_digest,
+    scoped_param_names,
 )
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
@@ -5890,19 +5893,53 @@ def _derive_deploy_binding(
         )
         refuse_activation_of_legacy_names(active, policy.names)
         legacy = bind_to_plan(fleet, target_ref=target.target_ref, now=_control_now())
-    supplied = (
-        set(materials)
-        | set(active)
-        | (set(legacy.names) if legacy is not None else set())
-    )
+    jobs: list[PlanJob] = []
     for job in unit.jobs:
+        scoped_names = scoped_param_names(unit, job.name)
+        scoped = {str(unit.params[n].material) for n in scoped_names}
+        if job.role is not None:
+            # A dispatched job with a role gets its secrets ONLY from that
+            # role's mint (and its own scoped params): never from the serving
+            # app's params, never from a legacy file or any boot fallback.
+            role_names = {
+                b.name
+                for b in unit.bindings
+                if b.state == "active" and job.role in b.roles
+            }
+            if not role_names:
+                raise PlanMaterialUnsuppliedError(
+                    f"job {job.name!r} logs in as role {job.role!r} but no ACTIVE "
+                    "binding has that role, so no secret_id would carry anything"
+                )
+            supplied = scoped | role_names
+        else:
+            supplied = (
+                set(materials)
+                | set(active)
+                | (set(legacy.names) if legacy is not None else set())
+            )
         missing = sorted(set(job.materials) - supplied)
         if missing:
             raise PlanMaterialUnsuppliedError(
-                f"job {job.name!r} needs {', '.join(missing)}, which no param, "
-                "active binding or legacy name in this plan supplies"
+                f"job {job.name!r} needs {', '.join(missing)}, which no scoped "
+                "param, role binding, param or active binding in this plan supplies"
             )
-    if unit.role_bindings() and target.bao_environment is None:
+        jobs.append(
+            PlanJob(
+                name=job.name,
+                role=job.role,
+                single_use=unit.job_role_single_use(job),
+                materials=tuple(sorted(job.materials)),
+                params=scoped_names,
+                params_env_digest=params_env_digest(
+                    canonical_job_render(
+                        unit, values, job_name=job.name, environment=target.environment
+                    )
+                ),
+            )
+        )
+    deploy_roles = unit.deploy_role_bindings()
+    if (deploy_roles or unit.job_roles()) and target.bao_environment is None:
         raise PlanRefusedError(
             f"target {target.target_ref} has roles to mint secret_ids for but no "
             "OpenBao namespace-env; set it once (set_bao_environment) before planning"
@@ -5926,10 +5963,11 @@ def _derive_deploy_binding(
         legacy=legacy,
         companion_order="after_primary_ready" if unit.companions else None,
         active_binding_names=active,
-        roles=[PlanRole(role, single) for role, single in unit.role_bindings()],
+        roles=[PlanRole(role, single) for role, single in deploy_roles],
         primary_service=unit.product,
         secrets_namespace=unit.secrets_namespace,
         secrets_environment=target.bao_environment,
+        jobs=jobs,
     )
 
 

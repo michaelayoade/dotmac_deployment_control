@@ -352,3 +352,9 @@ def test_activating_a_binding_still_in_the_legacy_names_is_refused() -> None:
     refuse_activation_of_legacy_names(
         set(_NAMES), retired.policies["erp/prod/host-a"].names
     )
+
+
+def test_a_dispatched_jobs_credentials_are_never_legacy_names() -> None:
+    for name in ("MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL"):
+        with pytest.raises(LegacyPolicyRefusedError, match="never legacy names"):
+            _enable(_fleet(), names=(name,), secret_names={name})

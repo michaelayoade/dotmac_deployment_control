@@ -93,6 +93,35 @@ class PlanRole:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanJob:
+    """One dispatchable job, as the plan binds it.
+
+    `role` (if any) is the OpenBao role whose secret_id is minted ONLY when this
+    job is dispatched; `single_use` is that role's mode (provisional, from the
+    descriptor's bindings). `params` are the param names scoped to this job and
+    `params_env_digest` the digest of their canonical render: they reach this
+    job's env and never the serving app's params.env.
+    """
+
+    name: str
+    role: str | None
+    single_use: bool | None
+    materials: tuple[str, ...]
+    params: tuple[str, ...]
+    params_env_digest: str
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "role": self.role,
+            "single_use": self.single_use,
+            "materials": list(self.materials),
+            "params": list(self.params),
+            "params_env_digest": self.params_env_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DeployPlanBinding:
     #: Computed by Control over the descriptor bytes (`DeployUnit.digest`).
     deploy_unit_digest: str
@@ -115,6 +144,8 @@ class DeployPlanBinding:
     #: bao_environment`, fixed at registration). Required once there are roles.
     secrets_namespace: str = ""
     secrets_environment: str | None = None
+    #: Every job of the descriptor with its role, materials and scoped params.
+    jobs: tuple[PlanJob, ...] = ()
     legacy: LegacyPlanBinding | None = None
     companion_order: str | None = None
 
@@ -131,6 +162,7 @@ class DeployPlanBinding:
             "primary_service": self.primary_service,
             "secrets_namespace": self.secrets_namespace,
             "secrets_environment": self.secrets_environment,
+            "jobs": [job.payload() for job in self.jobs],
             "legacy": None if self.legacy is None else self.legacy.payload(),
             "companion_order": self.companion_order,
         }
@@ -151,6 +183,7 @@ def build_deploy_binding(
     primary_service: str = "",
     secrets_namespace: str = "",
     secrets_environment: str | None = None,
+    jobs: Sequence[PlanJob] = (),
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
@@ -185,7 +218,13 @@ def build_deploy_binding(
         )
     if primary_service not in services:
         raise DeployBindingRefusedError("the primary service is one of the images")
-    if roles:
+    for job in jobs:
+        if not is_canonical_digest(job.params_env_digest):
+            raise DeployBindingRefusedError("a job params digest is sha256:<64 hex>")
+    if len({job.name for job in jobs}) != len(jobs):
+        raise DeployBindingRefusedError("a job appears once")
+    needs_naming = bool(roles) or any(job.role for job in jobs)
+    if needs_naming:
         if not secrets_namespace or not secrets_environment:
             raise DeployBindingRefusedError(
                 "a plan with roles carries the OpenBao naming: secrets_namespace "
@@ -212,6 +251,7 @@ def build_deploy_binding(
         primary_service=primary_service,
         secrets_namespace=secrets_namespace,
         secrets_environment=secrets_environment,
+        jobs=tuple(sorted(jobs, key=lambda job: job.name)),
         legacy=legacy,
         companion_order=companion_order,
     )

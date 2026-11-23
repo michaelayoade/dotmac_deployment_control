@@ -38,6 +38,7 @@ from typing import Final
 
 from dotmac_deployment_control.deploy_unit import (
     APP_IMAGE_MATERIAL,
+    JOB_ONLY_MATERIALS,
     DeployUnitError,
 )
 from dotmac_deployment_control.digests import is_canonical_digest
@@ -147,6 +148,12 @@ def _check_names(
     for name in ordered:
         if not _MATERIAL.fullmatch(name):
             raise LegacyPolicyRefusedError(f"{name!r} is not a material name")
+    job_only = sorted(set(ordered) & JOB_ONLY_MATERIALS)
+    if job_only:
+        raise LegacyPolicyRefusedError(
+            "a dispatched job's credentials are never legacy names: "
+            f"{', '.join(job_only)}"
+        )
     nonsecret = sorted(set(ordered) - set(secret_names))
     if nonsecret:
         raise LegacyPolicyRefusedError(

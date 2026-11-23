@@ -12,10 +12,12 @@ from dotmac_deployment_control.deploy_unit import (
     DeployUnitError,
     ParamRefusedError,
     ParamSpec,
+    canonical_job_render,
     canonical_render,
     params_env_digest,
     parse_deploy_unit,
     parse_secret_ref,
+    scoped_param_names,
     validate_param_value,
     validate_params,
 )
@@ -499,8 +501,9 @@ def test_a_role_has_one_mode_and_roles_are_derived_sorted() -> None:
         'roles = ["migrate"]\nwriter = "ceremony"\nrotation = "copy_only"\n',
         1,
     )
-    with pytest.raises(DeployUnitError, match="mixes single-use"):
-        parse_deploy_unit(mixed)
+    # A role has ONE secret_id: its mode is the STRICTER of its bindings
+    # (single-use if ANY binding in the role is single-use).
+    assert parse_deploy_unit(mixed).role_bindings() == (("migrate", True),)
     bad_role = text.replace('roles = ["app"]', 'roles = ["App"]', 1)
     with pytest.raises(DeployUnitError, match="lowercase segment"):
         parse_deploy_unit(bad_role)
@@ -521,3 +524,156 @@ def test_secrets_namespace_is_required_and_a_lowercase_segment() -> None:
     assert unit.secrets_namespace == "erp-integrator"
     # It is NOT the product code: the two are independent facts.
     assert unit.product == "dotmac-erp-v2"
+
+
+# ── Import-only OpenBao: job roles, job-scoped params ───────────────────────
+
+_IMPORT = """
+schema = "dotmac.deploy_unit/1"
+product = "dotmac-erp-v2"
+spec = "deploy/product.toml"
+secrets_namespace = "erp"
+
+[params.workers]
+type = "int"
+material = "WORKERS"
+default = 2
+
+[params.import_approved]
+type = "bool"
+material = "ERP_IMPORT_APPROVED"
+default = false
+jobs = ["import"]
+
+[params.import_payable]
+type = "string"
+material = "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF"
+pattern = "^[A-Za-z0-9._:-]+$"
+max_length = 64
+jobs = ["import"]
+
+[[bindings]]
+name = "MIGRATION_DATABASE_URL"
+kind = "pg_login_dsn"
+roles = ["migrate", "import"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = true
+
+[[bindings]]
+name = "LEGACY_DATABASE_URL"
+kind = "pg_login_dsn"
+roles = ["import"]
+writer = "ceremony"
+rotation = "copy_only"
+single_use = false
+
+[[jobs]]
+name = "import"
+role = "import"
+command = ["python", "-m", "erp_v2.importer", "execute"]
+trigger = "operator"
+materials = [
+  "MIGRATION_DATABASE_URL",
+  "LEGACY_DATABASE_URL",
+  "ERP_IMPORT_APPROVED",
+  "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF",
+]
+runbook = "docs/rehearsal.md"
+"""
+
+
+def test_a_job_declares_its_role_and_params_are_scoped_to_jobs() -> None:
+    unit = parse_deploy_unit(_IMPORT)
+    job = unit.jobs[0]
+    assert (job.name, job.role) == ("import", "import")
+    assert unit.params["import_approved"].jobs == ("import",)
+    assert unit.params["workers"].jobs == ()
+    assert unit.job_roles() == frozenset({"import"})
+    # The job role is minted for the job only: the serving deploy has `migrate`.
+    assert unit.role_bindings() == (("import", True), ("migrate", True))
+    assert unit.deploy_role_bindings() == (("migrate", True),)
+    assert unit.job_role_single_use(job) is True
+
+
+def test_a_binding_with_several_roles_gets_its_own_ref_per_role() -> None:
+    unit = parse_deploy_unit(_IMPORT)
+    refs = unit.secret_refs("prod")
+    assert refs[("migrate", "MIGRATION_DATABASE_URL")] == (
+        "bao://prod/erp/kv/migrate/migration_database_url"
+    )
+    assert refs[("import", "MIGRATION_DATABASE_URL")] == (
+        "bao://prod/erp/kv/import/migration_database_url"
+    )
+    assert refs[("import", "LEGACY_DATABASE_URL")] == (
+        "bao://prod/erp/kv/import/legacy_database_url"
+    )
+    assert len(refs) == 3
+
+
+def test_scoped_params_reach_only_their_job_never_the_app_render() -> None:
+    unit = parse_deploy_unit(_IMPORT)
+    values = {"import_approved": "true", "import_payable": "acct.net-payable"}
+    image = "127.0.0.1:5000/team/app@sha256:" + "1" * 64
+    app = canonical_render(unit, values, app_image=image, environment="production")
+    assert app == f"APP_IMAGE={image}\nWORKERS=2\n".encode()
+    assert b"ERP_IMPORT" not in app
+    assert b"PAYABLE" not in app
+    job = canonical_job_render(
+        unit, values, job_name="import", environment="production"
+    )
+    assert job == (
+        b"ERP_IMPORT_APPROVED=true\n"
+        b"ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF=acct.net-payable\n"
+    )
+    assert scoped_param_names(unit, "import") == ("import_approved", "import_payable")
+    # The scope changes the app digest: unscoped, the same param would be in it.
+    unscoped = _IMPORT.replace('jobs = ["import"]\n', "")
+    flat = parse_deploy_unit(unscoped)
+    assert params_env_digest(
+        canonical_render(flat, values, app_image=image, environment="production")
+    ) != params_env_digest(app)
+
+
+def test_job_credentials_are_never_legacy_names_or_app_materials() -> None:
+    legacy = _IMPORT + (
+        '\n[legacy_env_file]\nnames = ["MIGRATION_DATABASE_URL"]\n'
+        'path_param = "legacy_path"\n[params.legacy_path]\ntype = "path"\n'
+    )
+    # Legacy table must come before tables it does not belong to in TOML order;
+    # the refusal is the same whichever name is listed.
+    for name in ("MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL"):
+        text = legacy.replace(
+            'names = ["MIGRATION_DATABASE_URL"]', f'names = ["{name}"]'
+        )
+        with pytest.raises(DeployUnitError, match="never include a dispatched job"):
+            parse_deploy_unit(text, legacy_allowed=True)
+    # An UNSCOPED param may not carry one of them as an app material...
+    app_material = _IMPORT.replace(
+        '[params.workers]\ntype = "int"\nmaterial = "WORKERS"',
+        '[params.workers]\ntype = "string"\nmaterial = "LEGACY_DATABASE_URL"',
+    )
+    with pytest.raises(DeployUnitError, match="may not be an app material"):
+        parse_deploy_unit(app_material)
+    # ...but a param scoped to the job may (it is the job's, not the app's).
+    scoped = _IMPORT.replace(
+        "[params.import_payable]",
+        '[params.dsn_path]\ntype = "path"\nmaterial = "MIGRATION_DATABASE_URL"\n'
+        'jobs = ["import"]\n\n[params.import_payable]',
+    )
+    assert parse_deploy_unit(scoped).params["dsn_path"].jobs == ("import",)
+
+
+def test_job_scope_and_role_references_must_exist() -> None:
+    with pytest.raises(DeployUnitError, match="unknown jobs"):
+        parse_deploy_unit(_IMPORT.replace('jobs = ["import"]', 'jobs = ["nope"]', 1))
+    with pytest.raises(DeployUnitError, match="no binding has"):
+        parse_deploy_unit(_IMPORT.replace('role = "import"', 'role = "ghost"', 1))
+    with pytest.raises(DeployUnitError, match="lowercase segment"):
+        parse_deploy_unit(_IMPORT.replace('role = "import"', 'role = "Import"', 1))
+    with pytest.raises(DeployUnitError, match="needs a material"):
+        parse_deploy_unit(
+            _IMPORT.replace('material = "ERP_IMPORT_APPROVED"\n', "", 1).replace(
+                '"ERP_IMPORT_APPROVED",\n', ""
+            )
+        )

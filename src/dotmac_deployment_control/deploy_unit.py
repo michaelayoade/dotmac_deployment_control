@@ -128,6 +128,12 @@ _SECRET_SHAPES: Final = (
     re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
     re.compile(r"://[^/\s:@]*:[^/\s@]+@"),
 )
+#: Credentials that belong to a DISPATCHED job and to nothing else: never a
+#: `[legacy_env_file]` name, never a material of the serving app (an unscoped
+#: param). They reach a job only through its role's OpenBao mint, never through
+#: a boot, sealed or legacy fallback.
+JOB_ONLY_MATERIALS: Final = frozenset({"MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL"})
+
 #: A material whose NAME says it is a secret may only point at a FILE (a `path`
 #: param), never carry a value. Enforced here, at descriptor parse (so product
 #: CI refuses it) and again, as a vector-pinned duplicate, by the agent.
@@ -196,6 +202,10 @@ class ParamSpec:
     default: str | None = None
     #: A full-match regular expression (string, hostname, url and path only).
     pattern: str | None = None
+    #: Jobs this param is SCOPED to. A scoped param is rendered only into those
+    #: jobs' env, never into the serving app's params.env; the scope is bound
+    #: into the plan digest through the plan binding's `jobs`.
+    jobs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +230,9 @@ class JobSpec:
     trigger: str
     materials: tuple[str, ...]
     runbook: str
+    #: The OpenBao role a DISPATCHED job logs in as (e.g. `import`). Its secret_id
+    #: is minted only when the job is dispatched, never for the serving app.
+    role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,21 +283,36 @@ class DeployUnit:
     hold_points: tuple[HoldPointSpec, ...]
     legacy_env_file: LegacyEnvFileSpec | None
 
+    def job_roles(self) -> frozenset[str]:
+        """Roles claimed by a dispatched job: minted for that job only."""
+        return frozenset(job.role for job in self.jobs if job.role)
+
     def role_bindings(self) -> tuple[tuple[str, bool], ...]:
         """`(role, single_use)` for every role of an ACTIVE binding, sorted.
 
         Derived from the verified descriptor and bound into the plan; the agent
         mints one secret_id per role from THIS, never from a CP-supplied list.
-        Parse refuses a role that mixes single-use and reusable bindings, so a
-        role has exactly one answer.
+        A role has ONE secret_id, so its mode is the STRICTER of its bindings:
+        single-use if ANY binding in the role is single-use.
         """
         found: dict[str, bool] = {}
         for binding in self.bindings:
             if binding.state != BINDING_ACTIVE:
                 continue
             for role in binding.roles:
-                found[role] = binding.single_use
+                found[role] = found.get(role, False) or binding.single_use
         return tuple(sorted(found.items()))
+
+    def deploy_role_bindings(self) -> tuple[tuple[str, bool], ...]:
+        """The roles minted for the SERVING deploy: job roles are excluded."""
+        job_roles = self.job_roles()
+        return tuple((r, s) for r, s in self.role_bindings() if r not in job_roles)
+
+    def job_role_single_use(self, job: JobSpec) -> bool | None:
+        """Whether the job's role secret_id is single-use (None: no role)."""
+        if job.role is None:
+            return None
+        return dict(self.role_bindings()).get(job.role)
 
     def secret_refs(self, secrets_environment: str) -> dict[tuple[str, str], str]:
         """`(role, binding name) -> secret_ref` for every ACTIVE binding.
@@ -570,12 +598,35 @@ def canonical_render(
     lines: dict[str, str] = {}
     for name, text in rendered.items():
         material = unit.params[name].material
-        if material is None:
-            continue
+        if material is None or unit.params[name].jobs:
+            continue  # job-scoped params never reach the serving app's env
         if material in lines or material == APP_IMAGE_MATERIAL:
             raise ParamRefusedError(f"material {material!r} is claimed twice")
         lines[material] = text
     lines[APP_IMAGE_MATERIAL] = app_image
+    return "".join(f"{key}={lines[key]}\n" for key in sorted(lines)).encode()
+
+
+def scoped_param_names(unit: DeployUnit, job_name: str) -> tuple[str, ...]:
+    """Names of the params scoped to `job_name` that carry a material, sorted."""
+    return tuple(
+        sorted(
+            name
+            for name, spec in unit.params.items()
+            if job_name in spec.jobs and spec.material is not None
+        )
+    )
+
+
+def canonical_job_render(
+    unit: DeployUnit, values: Mapping[str, object], *, job_name: str, environment: str
+) -> bytes:
+    """`MATERIAL=value` lines for ONE job's scoped params, sorted (no APP_IMAGE)."""
+    rendered = validate_params(unit, values, environment=environment)
+    lines: dict[str, str] = {}
+    for name in scoped_param_names(unit, job_name):
+        if name in rendered:
+            lines[str(unit.params[name].material)] = rendered[name]
     return "".join(f"{key}={lines[key]}\n" for key in sorted(lines)).encode()
 
 
@@ -614,12 +665,13 @@ _PARAM_KEYS = frozenset(
         "choices",
         "default",
         "pattern",
+        "jobs",
     }
 )
 _BINDING_KEYS = frozenset(
     {"name", "kind", "roles", "writer", "rotation", "single_use", "state"}
 )
-_JOB_KEYS = frozenset({"name", "command", "trigger", "materials", "runbook"})
+_JOB_KEYS = frozenset({"name", "command", "trigger", "materials", "runbook", "role"})
 _HOLD_KEYS = frozenset(
     {"name", "member", "before", "timeout_param", "on_timeout", "released_by"}
 )
@@ -717,7 +769,10 @@ def _parse_param(name: str, table: object) -> ParamSpec:
         min_length=_opt_int(where, table, "min_length"),
         max_length=_opt_int(where, table, "max_length"),
         pattern=pattern,
+        jobs=_string_list(f"{where}.jobs", table.get("jobs", [])),
     )
+    if len(set(base.jobs)) != len(base.jobs):
+        raise DeployUnitError(f"{where}.jobs lists a job twice")
     try:
         choices = tuple(_validate_typed(base, c) for c in raw_choices)
         spec = replace(base, choices=choices)
@@ -792,12 +847,16 @@ def _parse_job(index: int, table: object) -> JobSpec:
         or ".." in runbook.split("/")
     ):
         raise DeployUnitError(f"{where}.runbook must be a repository-relative path")
+    role = table.get("role")
+    if role is not None and (not isinstance(role, str) or not _SEGMENT.fullmatch(role)):
+        raise DeployUnitError(f"{where}.role is a lowercase segment")
     return JobSpec(
         name=name,
         command=command,
         trigger=str(table["trigger"]),
         materials=materials,
         runbook=runbook,
+        role=role,
     )
 
 
@@ -905,16 +964,10 @@ def parse_deploy_unit(
     bindings = tuple(_parse_binding(i, t, product) for i, t in enumerate(raw_bindings))
     if len({b.name for b in bindings}) != len(bindings):
         raise DeployUnitError("two bindings share a name")
-    role_modes: dict[str, bool] = {}
     for binding in bindings:
         for role in binding.roles:
             if not _SEGMENT.fullmatch(role):
                 raise DeployUnitError(f"role {role!r} is not a lowercase segment")
-            if role_modes.setdefault(role, binding.single_use) != binding.single_use:
-                raise DeployUnitError(
-                    f"role {role!r} mixes single-use and reusable bindings; a "
-                    "role has one secret_id and so one mode"
-                )
 
     raw_companions = document.get("companions", [])
     if not isinstance(raw_companions, list):
@@ -945,6 +998,28 @@ def parse_deploy_unit(
     jobs = tuple(_parse_job(i, t) for i, t in enumerate(raw_jobs))
     if len({j.name for j in jobs}) != len(jobs):
         raise DeployUnitError("two jobs share a name")
+    job_names = {j.name for j in jobs}
+    for pname, pspec in params.items():
+        unknown_jobs = sorted(set(pspec.jobs) - job_names)
+        if unknown_jobs:
+            raise DeployUnitError(
+                f"params.{pname}.jobs names unknown jobs: {', '.join(unknown_jobs)}"
+            )
+        if pspec.jobs and pspec.material is None:
+            raise DeployUnitError(
+                f"params.{pname} is job-scoped and needs a material to render"
+            )
+        if pspec.material in JOB_ONLY_MATERIALS and not pspec.jobs:
+            raise DeployUnitError(
+                f"params.{pname}: {pspec.material} belongs to a dispatched job "
+                "and may not be an app material; scope the param to its job"
+            )
+    binding_roles = {role for b in bindings for role in b.roles}
+    for job in jobs:
+        if job.role is not None and job.role not in binding_roles:
+            raise DeployUnitError(
+                f"job {job.name!r} logs in as role {job.role!r}, which no binding has"
+            )
     known = {p.material for p in params.values() if p.material} | {
         b.name for b in bindings
     }
@@ -1040,6 +1115,12 @@ def _parse_legacy(
         b.name for b in bindings if b.state == BINDING_ACTIVE
     }
     taken.add(APP_IMAGE_MATERIAL)
+    job_only = sorted(set(names) & JOB_ONLY_MATERIALS)
+    if job_only:
+        raise DeployUnitError(
+            "legacy_env_file names may never include a dispatched job's "
+            f"credentials: {', '.join(job_only)}"
+        )
     collisions = sorted(set(names) & taken)
     if collisions:
         raise DeployUnitError(

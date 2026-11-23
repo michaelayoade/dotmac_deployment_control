@@ -159,6 +159,10 @@ def _descriptor_text(
     workers: bool = True,
     job_materials: tuple[str, ...] = (),
     omit_bindings: tuple[str, ...] = (),
+    import_job: bool = False,
+    import_active: bool = True,
+    import_scoped: bool = True,
+    import_extra_material: str | None = None,
 ) -> str:
     spec = (
         "deploy/companion/product.toml"
@@ -208,6 +212,30 @@ def _descriptor_text(
             'order = "after_primary_ready"\n'
             f"required_at_switch = {str(companion_required).lower()}\n"
             'host = "same"\n'
+        )
+    if import_job:
+        state = "" if import_active else 'state = "pre_staged"\n'
+        scope = 'jobs = ["import"]\n' if import_scoped else ""
+        extra = f', "{import_extra_material}"' if import_extra_material else ""
+        out += (
+            '[params.import_approved]\ntype = "bool"\ndefault = false\n'
+            f'material = "ERP_IMPORT_APPROVED"\n{scope}'
+            '[params.import_payable]\ntype = "string"\n'
+            'material = "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF"\n'
+            f'pattern = "^[A-Za-z0-9._:-]+$"\nmax_length = 64\n{scope}'
+            '[[bindings]]\nname = "MIGRATION_DATABASE_URL"\n'
+            f'{state}kind = "pg_login_dsn"\n'
+            'roles = ["migrate", "import"]\nwriter = "ceremony"\n'
+            'rotation = "copy_only"\nsingle_use = true\n'
+            '[[bindings]]\nname = "LEGACY_DATABASE_URL"\n'
+            f'{state}kind = "pg_login_dsn"\n'
+            'roles = ["import"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
+            "single_use = false\n"
+            '[[jobs]]\nname = "import"\nrole = "import"\n'
+            'command = ["run", "import"]\ntrigger = "operator"\n'
+            'materials = ["MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL", '
+            f'"ERP_IMPORT_APPROVED", "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF"{extra}]\n'
+            'runbook = "docs/rehearsal.md"\n'
         )
     return out
 
@@ -1455,3 +1483,136 @@ def test_a_plan_with_roles_needs_the_targets_namespace_env(db: Session) -> None:
     assert binding["roles"] == []
     assert binding["secrets_namespace"] == "erp"
     assert binding["secrets_environment"] is None
+
+
+# ── Import-only OpenBao ─────────────────────────────────────────────────────
+
+
+def _import_params(**extra: str) -> dict[str, str]:
+    return {
+        "image_repository": _LOOP,
+        "import_approved": "true",
+        "import_payable": "acct.net-payable",
+        **extra,
+    }
+
+
+def _import_target(db: Session, source: FakeSource, ref: str = _E + "host-i"):  # type: ignore[no-untyped-def]
+    target = _register(db, ref)
+    _desired(db, target.id, source, params=_import_params())
+    return target
+
+
+def test_a_job_role_is_derived_for_the_job_only_and_its_params_are_scoped(
+    db: Session,
+) -> None:
+    from dotmac_deployment_control.deploy_unit import (
+        canonical_job_render,
+        canonical_render,
+        params_env_digest,
+        parse_deploy_unit,
+    )
+
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    binding = _binding_of(_propose(db, erp.id, source))
+    # The serving deploy mints `migrate` only; `import` belongs to the job.
+    assert binding["roles"] == [{"role": "migrate", "single_use": True}]
+    (job,) = binding["jobs"]
+    assert job["name"] == "import"
+    assert job["role"] == "import"
+    assert job["single_use"] is True  # provisional: the stricter of its bindings
+    assert job["materials"] == [
+        "ERP_IMPORT_APPROVED",
+        "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF",
+        "LEGACY_DATABASE_URL",
+        "MIGRATION_DATABASE_URL",
+    ]
+    assert job["params"] == ["import_approved", "import_payable"]
+    unit = parse_deploy_unit(source.text)
+    params = get_target(db, erp.id).desired_spec["deploy_unit"]["params"]
+    image = f"{_LOOP}@{_D1}"
+    app = canonical_render(unit, params, app_image=image, environment="production")
+    assert app == f"APP_IMAGE={image}\nWORKERS=2\n".encode()
+    assert binding["params_env_digest"] == params_env_digest(app)
+    job_render = canonical_job_render(
+        unit, params, job_name="import", environment="production"
+    )
+    assert job_render == (
+        b"ERP_IMPORT_APPROVED=true\n"
+        b"ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF=acct.net-payable\n"
+    )
+    assert job["params_env_digest"] == params_env_digest(job_render)
+    assert binding["secrets_environment"] == "prod"
+
+
+def test_job_scoped_values_move_the_job_digest_and_the_plan_not_the_app_digest(
+    db: Session,
+) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    first = _propose(db, erp.id, source)
+    _desired(db, erp.id, source, params=_import_params(import_payable="other-acct"))
+    second = _propose(db, erp.id, source)
+    a, b = _binding_of(first), _binding_of(second)
+    assert a["params_env_digest"] == b["params_env_digest"]
+    assert a["jobs"][0]["params_env_digest"] != b["jobs"][0]["params_env_digest"]
+    assert first.plan_digest != second.plan_digest
+
+
+def test_the_job_scope_is_covered_by_the_plan_digest(db: Session) -> None:
+    scoped = FakeSource(import_job=True, import_scoped=True)
+    one = _import_target(db, scoped, _E + "host-s1")
+    binding = _binding_of(_propose(db, one.id, scoped))
+    assert binding["jobs"][0]["params"] == ["import_approved", "import_payable"]
+    assert binding["jobs"][0]["materials"]
+    # Unscoped, the same params would be APP materials and so could not supply
+    # the role job: the plan is refused rather than leaking them into the app.
+    unscoped = FakeSource(import_job=True, import_scoped=False)
+    two = _import_target(db, unscoped, _E + "host-s2")
+    with pytest.raises(PlanMaterialUnsuppliedError, match="ERP_IMPORT_APPROVED"):
+        _propose(db, two.id, unscoped)
+
+
+def test_a_role_job_needs_an_active_role_binding_and_scoped_params(
+    db: Session,
+) -> None:
+    pre = FakeSource(import_job=True, import_active=False)
+    erp = _import_target(db, pre)
+    with pytest.raises(PlanMaterialUnsuppliedError, match="no ACTIVE binding"):
+        _propose(db, erp.id, pre)
+    # A material of the role job that nothing supplies is still refused (C-3).
+    loose = FakeSource(import_job=True, import_extra_material="WORKERS")
+    other = _import_target(db, loose, _E + "host-l")
+    with pytest.raises(PlanMaterialUnsuppliedError, match="WORKERS"):
+        _propose(db, other.id, loose)
+
+
+def test_no_boot_or_legacy_fallback_supplies_a_job_credential(db: Session) -> None:
+    """A job's credentials come only from its role's mint: a legacy name, an
+    app param or an active binding of ANOTHER role never supply them."""
+    source = FakeSource(
+        legacy=True,
+        import_job=True,
+        import_active=True,
+    )
+    _set(db, "legacy_env_file_allowed_targets", [_E + "host-f"])
+    _set(db, "legacy_env_file_ceiling", 1)
+    erp = _register(db, _E + "host-f")
+    _desired(db, erp.id, source, params=_import_params())
+    _enable(db, erp.id, source)
+    plan = _binding_of(_propose(db, erp.id, source))
+    # The policy's names are the legacy file's; none is a job credential.
+    assert plan["legacy"]["names"] == ["API_SECRET", "DB_PASSWORD"]
+    assert not {"MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL"} & set(
+        plan["legacy"]["names"]
+    )
+
+
+def test_a_job_role_needs_the_targets_namespace_env(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    db.get(DeploymentTarget, erp.id).bao_environment = None
+    db.flush()
+    with pytest.raises(PlanRefusedError, match="namespace-env"):
+        _propose(db, erp.id, source)
