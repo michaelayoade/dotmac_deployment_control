@@ -4581,7 +4581,8 @@ def _record_agent_observation(
     if prior is not None:
         return finish(
             ObservationDisposition.IDEMPOTENT_REPLAY.value
-            if prior.raw_body_digest == raw_digest
+            if ObservationEnvelopeDigestV1.parse(prior.raw_body_digest)
+            == ObservationEnvelopeDigestV1.parse(raw_digest)
             else ObservationDisposition.CONFLICT.value
         )
     if not eligible:

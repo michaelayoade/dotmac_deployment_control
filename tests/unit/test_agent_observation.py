@@ -38,6 +38,7 @@ from tests.unit import test_deployment_control_observations as _obs
 db = _obs.db
 enrolled = _obs.enrolled
 _installed_module_audit_actions = _obs._installed_module_audit_actions
+_fixed_control_clock = _obs._fixed_control_clock
 _NOW = _obs._NOW
 _bound_rollout_ref = _obs._bound_rollout_ref
 _cmd = _obs._cmd
