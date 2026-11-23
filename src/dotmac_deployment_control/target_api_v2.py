@@ -81,7 +81,9 @@ LEASE_BODIES: Final = {
     },
     "lease/standing": {
         "request": {},
-        "response": {"standing": "str"},
+        # `dispatch_run` is the EXPIRED dispatch when standing is
+        # `expired_unreleased` (what the reconcile must settle), else null.
+        "response": {"standing": "str", "dispatch_run": "optstr"},
     },
 }
 STANDING_VALUES: Final = ("free", "held", "expired_unreleased")
@@ -99,7 +101,7 @@ LEASE_ERRORS: Final = {
     "reconcile_marker_required": 409,
 }
 
-_TYPES: Final = {"str": str, "int": int, "bool": bool}
+_TYPES: Final = {"str": str, "int": int, "bool": bool, "optstr": (str, type(None))}
 
 
 def check_lease_body(route: str, direction: str, body: object) -> None:
@@ -125,6 +127,12 @@ def check_lease_body(route: str, direction: str, body: object) -> None:
     if route == "lease/standing" and direction == "response":
         if body["standing"] not in STANDING_VALUES:
             raise TargetApiError("unknown standing", "body_value")
+        if (body["standing"] == "expired_unreleased") != (
+            body["dispatch_run"] is not None
+        ):
+            raise TargetApiError(
+                "dispatch_run is the expired dispatch, and only then", "body_value"
+            )
 
 
 # ── The reference lease ledger ──────────────────────────────────────────────
@@ -138,27 +146,50 @@ def renew_grant(*, ttl_seconds: int, lease_max_seconds: int, held_seconds: int) 
     return min(ttl_seconds, remaining)
 
 
-@dataclass(slots=True)
-class _Lease:
+@dataclass(frozen=True, slots=True)
+class LeaseRow:
+    """One immutable lease row. A lease is its rows: `acquired`, then any number of
+    `renewed`, then maybe `released`. Rows are only ever APPENDED; a later row
+    supersedes an earlier one for the same lease and nothing is edited or deleted."""
+
     lease_id: str
     dispatch_run: str
-    acquired_at: datetime
+    event: str  # acquired | renewed | released
+    at: datetime
     expires_at: datetime
-    max_seconds: int
     ttl_seconds: int
-    released: bool = False
+    max_seconds: int
+    acquired_at: datetime
+    host_mutated: bool = False
 
 
 class LeaseLedger:
     """What CP's lease endpoints must do, as a reference the vectors replay.
 
-    One lease per host. Every call is given its own clock reading, so a replay is
-    deterministic. The wire statuses are `LEASE_ERRORS`.
+    One lease per host, kept as an APPEND-ONLY list of `LeaseRow`s. Every call is
+    given its own clock reading, so a replay is deterministic. The wire statuses are
+    `LEASE_ERRORS`. A reconcile marker is required only when the host's latest lease
+    row is EXPIRED_UNRELEASED; a host that was never leased, or whose last lease was
+    released, acquires without one.
     """
 
     def __init__(self) -> None:
-        self._lease: _Lease | None = None
+        self.rows: list[LeaseRow] = []
         self._serial = 0
+
+    def _latest(self) -> LeaseRow | None:
+        return self.rows[-1] if self.rows else None
+
+    def standing(self, *, now: datetime) -> dict[str, object]:
+        latest = self._latest()
+        if latest is None or latest.event == "released":
+            return {"standing": "free", "dispatch_run": None}
+        if now >= latest.expires_at:
+            return {
+                "standing": "expired_unreleased",
+                "dispatch_run": latest.dispatch_run,
+            }
+        return {"standing": "held", "dispatch_run": None}
 
     def acquire(
         self,
@@ -167,58 +198,58 @@ class LeaseLedger:
         dispatch_run: str,
         ttl_seconds: int,
         lease_max_seconds: int,
-        reconciled: bool,
+        marker_present: bool,
     ) -> dict[str, object]:
-        """A missing reconcile marker is refused BEFORE anything else."""
-        if not reconciled:
+        standing = self.standing(now=now)["standing"]
+        if standing == "expired_unreleased" and not marker_present:
             raise TargetApiError(
                 "an expired, unreleased lease needs its reconcile marker",
                 "reconcile_marker_required",
             )
-        held = self._lease
-        if held is not None and not held.released:
-            if held.dispatch_run == dispatch_run:
-                return {"lease_id": held.lease_id, "ttl_seconds": held.ttl_seconds}
-            if now < held.expires_at:
-                raise TargetApiError("another run holds the host", "lease_held")
+        latest = self._latest()
+        if standing == "held" and latest is not None:
+            if latest.dispatch_run == dispatch_run:
+                # A replay by the same run returns what REMAINS of the grant.
+                remaining = int((latest.expires_at - now).total_seconds())
+                return {"lease_id": latest.lease_id, "ttl_seconds": remaining}
+            raise TargetApiError("another run holds the host", "lease_held")
         self._serial += 1
-        lease = _Lease(
+        grant = min(ttl_seconds, lease_max_seconds)
+        row = LeaseRow(
             lease_id=f"lease-{self._serial:04d}",
             dispatch_run=dispatch_run,
-            acquired_at=now,
-            expires_at=now + timedelta(seconds=min(ttl_seconds, lease_max_seconds)),
-            max_seconds=lease_max_seconds,
+            event="acquired",
+            at=now,
+            expires_at=now + timedelta(seconds=grant),
             ttl_seconds=ttl_seconds,
+            max_seconds=lease_max_seconds,
+            acquired_at=now,
         )
-        self._lease = lease
-        return {
-            "lease_id": lease.lease_id,
-            "ttl_seconds": min(ttl_seconds, lease_max_seconds),
-        }
+        self.rows.append(row)
+        return {"lease_id": row.lease_id, "ttl_seconds": grant}
+
+    def _live(self, lease_id: str, dispatch_run: str | None) -> LeaseRow | None:
+        latest = self._latest()
+        if (
+            latest is None
+            or latest.event == "released"
+            or latest.lease_id != lease_id
+            or (dispatch_run is not None and latest.dispatch_run != dispatch_run)
+        ):
+            return None
+        return latest
 
     def covers(
         self, *, now: datetime, lease_id: str, dispatch_run: str
     ) -> dict[str, object]:
-        held = self._lease
-        covers = (
-            held is not None
-            and not held.released
-            and held.lease_id == lease_id
-            and held.dispatch_run == dispatch_run
-            and now < held.expires_at
-        )
-        return {"covers": bool(covers)}
+        held = self._live(lease_id, dispatch_run)
+        return {"covers": bool(held is not None and now < held.expires_at)}
 
     def renew(
         self, *, now: datetime, lease_id: str, dispatch_run: str
     ) -> dict[str, object]:
-        held = self._lease
-        if (
-            held is None
-            or held.released
-            or held.lease_id != lease_id
-            or held.dispatch_run != dispatch_run
-        ):
+        held = self._live(lease_id, dispatch_run)
+        if held is None:
             raise TargetApiError("no such lease is held by this run", "lease_not_held")
         if now >= held.expires_at:
             raise TargetApiError("the lease expired", "lease_expired")
@@ -227,25 +258,42 @@ class LeaseLedger:
             lease_max_seconds=held.max_seconds,
             held_seconds=int((now - held.acquired_at).total_seconds()),
         )
-        held.expires_at = now + timedelta(seconds=grant)
+        self.rows.append(
+            LeaseRow(
+                lease_id=held.lease_id,
+                dispatch_run=held.dispatch_run,
+                event="renewed",
+                at=now,
+                expires_at=now + timedelta(seconds=grant),
+                ttl_seconds=held.ttl_seconds,
+                max_seconds=held.max_seconds,
+                acquired_at=held.acquired_at,
+            )
+        )
         return {"lease_id": held.lease_id, "ttl_seconds": grant}
 
-    def release(self, *, lease_id: str, host_mutated: bool) -> dict[str, object]:
-        held = self._lease
-        if held is None or held.lease_id != lease_id:
+    def release(
+        self, *, lease_id: str, host_mutated: bool, now: datetime
+    ) -> dict[str, object]:
+        latest = self._latest()
+        if latest is None or latest.lease_id != lease_id:
             raise TargetApiError("no such lease", "lease_not_held")
-        if held.released:
+        if latest.event == "released":
             return {"released": True, "replay": True}
-        held.released = True
+        self.rows.append(
+            LeaseRow(
+                lease_id=latest.lease_id,
+                dispatch_run=latest.dispatch_run,
+                event="released",
+                at=now,
+                expires_at=latest.expires_at,
+                ttl_seconds=latest.ttl_seconds,
+                max_seconds=latest.max_seconds,
+                acquired_at=latest.acquired_at,
+                host_mutated=host_mutated,
+            )
+        )
         return {"released": True, "replay": False}
-
-    def standing(self, *, now: datetime) -> dict[str, object]:
-        held = self._lease
-        if held is None or held.released:
-            return {"standing": "free"}
-        if now >= held.expires_at:
-            return {"standing": "expired_unreleased"}
-        return {"standing": "held"}
 
 
 # ── Observation kinds ───────────────────────────────────────────────────────

@@ -26,7 +26,7 @@ from dotmac_deployment_control.agent_observation import (
     AgentObservationEnvelopeV2,
     issue_agent_observation_envelope,
 )
-from dotmac_deployment_control.models import Rollout, RolloutAttempt
+from dotmac_deployment_control.models import DeploymentPlan, Rollout, RolloutAttempt
 from tests.authorization_support import VERIFIER
 from tests.execution_observation_support import (
     OBSERVATION_VERIFIER,
@@ -44,6 +44,11 @@ _bound_rollout_ref = _obs._bound_rollout_ref
 _cmd = _obs._cmd
 
 
+_D_EXPIRED = "sha256:" + "1" * 64
+_D_COMMITTED = "sha256:" + "3" * 64
+_D_OTHER = "sha256:" + "2" * 64
+
+
 def _dispatch_id(db) -> str:  # type: ignore[no-untyped-def]
     ref = _bound_rollout_ref(db, "tgt-acme-1")
     rollout = db.execute(select(Rollout).where(Rollout.rollout_ref == ref)).scalar_one()
@@ -51,6 +56,23 @@ def _dispatch_id(db) -> str:  # type: ignore[no-untyped-def]
         select(RolloutAttempt).where(RolloutAttempt.rollout_id == rollout.id)
     ).scalar_one()
     return str(attempt.id)
+
+
+def _details(dispatch_id: str, *running: tuple[str, str], configured=("app",)) -> dict:  # type: ignore[no-untyped-def]
+    containers = [
+        {
+            "name": name,
+            "image_ref": f"127.0.0.1:5000/team/app@{digest}",
+            "image_id": digest,
+            "repo_digests": [f"127.0.0.1:5000/team/app@{digest}"],
+        }
+        for name, digest in (running or (("app", _D_EXPIRED),))
+    ]
+    return {
+        "expired_dispatch_id": dispatch_id,
+        "configured": list(configured),
+        "containers": containers,
+    }
 
 
 def _wire(dispatch_id: str, **over: object) -> bytes:
@@ -104,9 +126,13 @@ def test_a_valid_agent_observation_is_accepted_and_changes_no_state(
 
 def test_every_kind_the_plan_allows_is_accepted(db, enrolled) -> None:  # type: ignore[no-untyped-def]
     dispatch = _dispatch_id(db)
-    for kind, outcome in (("reconcile", "reconciled"), ("deploy", "failed")):
-        verdict = _send(db, _wire(dispatch, kind=kind, outcome=outcome))
-        assert verdict.disposition == ObservationDisposition.ACCEPTED.value, kind
+    for fields in (
+        {"kind": "reconcile", "outcome": "reconciled", "details": _details(dispatch)},
+        {"kind": "reconcile", "outcome": "failed", "reason": "docker down"},
+        {"kind": "deploy", "outcome": "failed"},
+    ):
+        verdict = _send(db, _wire(dispatch, **fields))
+        assert verdict.disposition == ObservationDisposition.ACCEPTED.value, fields
 
 
 def test_a_kind_that_disagrees_with_the_plan_operation_is_a_mismatch(
@@ -168,54 +194,138 @@ def test_garbage_is_still_recorded_as_malformed(db, enrolled) -> None:  # type: 
     assert len(observation_attempts(db)) == before + 1
 
 
-# ── The reconcile marker (the port CP 5c reads) ─────────────────────────────
+# ── The reconcile marker: Control decides from the agent's facts ────────────
 
 
-def test_an_accepted_reconcile_observation_leaves_the_marker_for_that_dispatch(
-    db, enrolled
-) -> None:  # type: ignore[no-untyped-def]
+def _set_plan_images(db, dispatch_id: str, digest: str):  # type: ignore[no-untyped-def]
+    """Give the dispatch's plan a bound image (test plans are not descriptor-backed)."""
+    attempt = db.get(RolloutAttempt, uuid.UUID(dispatch_id))
+    rollout = db.get(Rollout, attempt.rollout_id)
+    plan = db.get(DeploymentPlan, rollout.plan_id)
+    snapshot = dict(plan.snapshot or {})
+    snapshot["deploy_binding"] = {"images": [{"planned_digest": digest}]}
+    plan.snapshot = snapshot
+    db.flush()
+    return plan, rollout
+
+
+def _marker(db, dispatch: str, *, consumed: bool = False):  # type: ignore[no-untyped-def]
     from dotmac_deployment_control import reconcile_marker
 
+    return reconcile_marker(
+        db,
+        target_ref="tgt-acme-1",
+        dispatch_id=dispatch,
+        expired_dispatch_consumed=consumed,
+    )
+
+
+def test_every_container_on_the_expired_plans_digest_issues_a_reconciled_marker(
+    db, enrolled
+) -> None:  # type: ignore[no-untyped-def]
     dispatch = _dispatch_id(db)
-    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch) is None
-    verdict = _send(db, _wire(dispatch, kind="reconcile", outcome="reconciled"))
+    _set_plan_images(db, dispatch, _D_EXPIRED)
+    assert _marker(db, dispatch) is None  # nothing observed yet
+    verdict = _send(
+        db,
+        _wire(
+            dispatch, kind="reconcile", outcome="reconciled", details=_details(dispatch)
+        ),
+    )
     assert verdict.disposition == ObservationDisposition.ACCEPTED.value
-    marker = reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch)
+    marker = _marker(db, dispatch)
     assert marker is not None
     assert (marker.dispatch_id, marker.outcome) == (dispatch, "reconciled")
     assert marker.attempt_id == observation_attempts(db)[-1].id
     # A replay does not make a second marker; the first stands.
-    _send(db, _wire(dispatch, kind="reconcile", outcome="reconciled"))
-    again = reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch)
+    _send(
+        db,
+        _wire(
+            dispatch, kind="reconcile", outcome="reconciled", details=_details(dispatch)
+        ),
+    )
+    again = _marker(db, dispatch)
     assert again is not None and again.attempt_id == marker.attempt_id
 
 
-def test_only_a_settled_reconcile_of_the_named_dispatch_and_target_is_a_marker(
+def test_a_host_on_the_last_committed_digest_is_not_needed_unless_consumed(
     db, enrolled
 ) -> None:  # type: ignore[no-untyped-def]
+    dispatch = _dispatch_id(db)
+    plan, rollout = _set_plan_images(db, dispatch, _D_EXPIRED)
+    # An earlier, SUCCEEDED rollout of another plan is the last committed release.
+    committed = DeploymentPlan(
+        target_id=plan.target_id,
+        sequence=plan.sequence + 1,
+        status="approved",
+        snapshot={"deploy_binding": {"images": [{"planned_digest": _D_COMMITTED}]}},
+        desired_revision=plan.desired_revision,
+        plan_digest="sha256:" + "5" * 64,
+        purpose=plan.purpose,
+        operation="deploy",
+        execution_plan_digest=plan.execution_plan_digest,
+        requires_approval=False,
+        approval_policy_code=plan.approval_policy_code,
+        approval_policy_version=plan.approval_policy_version,
+        record_version=1,
+    )
+    db.add(committed)
+    db.flush()
+    db.add(
+        Rollout(
+            rollout_ref="rol-committed",
+            plan_id=committed.id,
+            target_id=plan.target_id,
+            status="succeeded",
+            record_version=1,
+        )
+    )
+    db.flush()
+    on_committed = _details(dispatch, ("app", _D_COMMITTED))
+    _send(
+        db,
+        _wire(dispatch, kind="reconcile", outcome="reconciled", details=on_committed),
+    )
+    marker = _marker(db, dispatch)
+    assert marker is not None and marker.outcome == "not_needed"
+    # The dispatch WAS consumed: the host is on a digest nobody says it should be.
+    assert _marker(db, dispatch, consumed=True) is None
+
+
+def test_anything_else_leaves_no_marker(db, enrolled) -> None:  # type: ignore[no-untyped-def]
+    dispatch = _dispatch_id(db)
+    _set_plan_images(db, dispatch, _D_EXPIRED)
+    cases = (
+        # A digest from neither the expired plan nor the last committed release.
+        {"details": _details(dispatch, ("app", _D_OTHER))},
+        # A configured container the agent did not observe.
+        {"details": _details(dispatch, configured=("app", "worker"))},
+        # Details about another dispatch.
+        {"details": _details("some-other-dispatch")},
+        # The agent could not observe: a failed reconcile settles nothing.
+        {"outcome": "failed", "reason": "busy", "details": {}},
+    )
+    for index, fields in enumerate(cases):
+        wire = _wire(
+            dispatch,
+            kind="reconcile",
+            outcome=fields.pop("outcome", "reconciled"),  # type: ignore[arg-type]
+            observed_at=f"2026-09-01T12:0{index}:00Z",
+            **fields,
+        )
+        assert _send(db, wire).disposition == ObservationDisposition.ACCEPTED.value
+    assert _marker(db, dispatch) is None
+    # A deploy report is not a reconcile, and another target has no marker.
+    _send(db, _wire(dispatch, kind="deploy", outcome="succeeded"))
+    assert _marker(db, dispatch) is None
     from dotmac_deployment_control import reconcile_marker
 
-    dispatch = _dispatch_id(db)
-    # A failed reconcile settles nothing; a deploy report is not a reconcile.
-    _send(db, _wire(dispatch, kind="reconcile", outcome="failed", reason="busy"))
-    _send(db, _wire(dispatch, kind="deploy", outcome="succeeded"))
-    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch) is None
-    # Refused arrivals leave nothing: a mismatched target, an unbound dispatch.
-    _send(
-        db, _wire(dispatch, kind="reconcile", outcome="reconciled", target_ref="tgt-x")
+    assert (
+        reconcile_marker(
+            db,
+            target_ref="tgt-other",
+            dispatch_id=dispatch,
+            expired_dispatch_consumed=False,
+        )
+        is None
     )
-    other = str(uuid.uuid4())
-    _send(db, _wire(other, kind="reconcile", outcome="reconciled"))
-    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch) is None
-    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=other) is None
-    # `not_needed` settles it, and the marker is per target and per dispatch.
-    # A retry carries its own observed_at, so the failed one does not block it.
-    retry = _wire(
-        dispatch,
-        kind="reconcile",
-        outcome="not_needed",
-        observed_at="2026-09-01T12:05:00Z",
-    )
-    assert _send(db, retry).disposition == ObservationDisposition.ACCEPTED.value
-    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch)
-    assert reconcile_marker(db, target_ref="tgt-other", dispatch_id=dispatch) is None

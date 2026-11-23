@@ -46,11 +46,14 @@ MAX_AGENT_OBSERVATION_BYTES: Final = 65_536
 MAX_DETAILS_BYTES: Final = 16_384
 MAX_DETAILS_DEPTH: Final = 4
 #: `kind -> the outcomes it may report`. A deploy and a job report the same three;
-#: a reconcile reports how the expired, unreleased lease was settled.
+#: a reconcile reports whether the agent managed to observe the host.
 KIND_OUTCOMES: Final = {
     "deploy": ("succeeded", "failed", "refused"),
     "job": ("succeeded", "failed", "refused"),
-    "reconcile": ("reconciled", "failed", "not_needed"),
+    # The agent REPORTS FACTS: `reconciled` means it observed the host completely,
+    # `failed` that it could not. It never says `not_needed`: whether the observed
+    # state clears the host is Control's decision (`reconcile_decision`).
+    "reconcile": ("reconciled", "failed"),
 }
 _STATEMENT_KEYS: Final = frozenset(
     {
@@ -68,6 +71,78 @@ _STATEMENT_KEYS: Final = frozenset(
 _STAMP: Final = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 
+MAX_CONTAINERS: Final = 64
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileContainerV2:
+    name: str
+    image_ref: str
+    image_id: str
+    repo_digests: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileDetailsV2:
+    """What a completed reconcile observation reports: facts about the host."""
+
+    expired_dispatch_id: str
+    configured: tuple[str, ...]
+    containers: tuple[ReconcileContainerV2, ...]
+
+
+def parse_reconcile_details(details: Mapping[str, Any]) -> ReconcileDetailsV2:
+    """The pinned shape of `details` for a `reconciled` reconcile: exactly
+    `expired_dispatch_id`, `configured[]` and `containers[{name, image_ref,
+    image_id, repo_digests}]`."""
+    row = _exact_mapping(
+        details, {"expired_dispatch_id", "configured", "containers"}, where="details"
+    )
+    configured = row["configured"]
+    containers = row["containers"]
+    if (
+        not isinstance(configured, list)
+        or not isinstance(containers, list)
+        or len(configured) > MAX_CONTAINERS
+        or len(containers) > MAX_CONTAINERS
+    ):
+        raise _refused(
+            ExecutionObservationRefusalCode.MALFORMED,
+            f"configured and containers are lists of at most {MAX_CONTAINERS}",
+        )
+    names = tuple(_bounded_text(n, field="configured", maximum=200) for n in configured)
+    parsed = []
+    for item in containers:
+        c = _exact_mapping(
+            item,
+            {"name", "image_ref", "image_id", "repo_digests"},
+            where="container",
+        )
+        digests = c["repo_digests"]
+        if not isinstance(digests, list) or len(digests) > MAX_CONTAINERS:
+            raise _refused(
+                ExecutionObservationRefusalCode.MALFORMED,
+                "repo_digests is a list of strings",
+            )
+        parsed.append(
+            ReconcileContainerV2(
+                name=_bounded_text(c["name"], field="name", maximum=200),
+                image_ref=_bounded_text(c["image_ref"], field="image_ref", maximum=500),
+                image_id=_bounded_text(c["image_id"], field="image_id", maximum=200),
+                repo_digests=tuple(
+                    _bounded_text(d, field="repo_digests", maximum=500) for d in digests
+                ),
+            )
+        )
+    return ReconcileDetailsV2(
+        expired_dispatch_id=_bounded_text(
+            row["expired_dispatch_id"], field="expired_dispatch_id", maximum=200
+        ),
+        configured=names,
+        containers=tuple(parsed),
+    )
+
+
 def _stamp(value: datetime) -> str:
     if value.tzinfo is None:
         raise _refused(
@@ -77,13 +152,13 @@ def _stamp(value: datetime) -> str:
 
 
 def _json_safe(value: object, depth: int) -> None:
+    if value is None or isinstance(value, bool | int | str):
+        return
     if depth > MAX_DETAILS_DEPTH:
         raise _refused(
             ExecutionObservationRefusalCode.MALFORMED,
             f"details nest deeper than {MAX_DETAILS_DEPTH}",
         )
-    if value is None or isinstance(value, bool | int | str):
-        return
     if isinstance(value, list):
         for item in value:
             _json_safe(item, depth + 1)
@@ -142,6 +217,8 @@ class AgentObservationStatementV2:
                 ExecutionObservationRefusalCode.MALFORMED, "details is an object"
             )
         _json_safe(self.details, 1)
+        if self.kind == "reconcile" and self.outcome == "reconciled":
+            parse_reconcile_details(self.details)
         if len(canonical_json(self.details)) > MAX_DETAILS_BYTES:
             raise _refused(
                 ExecutionObservationRefusalCode.MALFORMED,
@@ -321,6 +398,9 @@ def verify_agent_observation_envelope(
 __all__ = [
     "AGENT_OBSERVATION_SCHEMA",
     "KIND_OUTCOMES",
+    "ReconcileContainerV2",
+    "ReconcileDetailsV2",
+    "parse_reconcile_details",
     "AgentObservationEnvelopeV2",
     "AgentObservationStatementV2",
     "ExecutionObservationRefusedError",

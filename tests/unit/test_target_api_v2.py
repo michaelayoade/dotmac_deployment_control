@@ -106,7 +106,7 @@ def test_every_lease_scenario_replays_on_a_fresh_ledger() -> None:
                         dispatch_run=a["dispatch_run"],
                         ttl_seconds=a["ttl_seconds"],
                         lease_max_seconds=a["lease_max_seconds"],
-                        reconciled=a["reconcile_marker"],
+                        marker_present=a["marker_present"],
                     )
                 elif step["call"] == "covers":
                     body = ledger.covers(
@@ -118,7 +118,7 @@ def test_every_lease_scenario_replays_on_a_fresh_ledger() -> None:
                     )
                 elif step["call"] == "release":
                     body = ledger.release(
-                        lease_id=a["lease_id"], host_mutated=a["host_mutated"]
+                        lease_id=a["lease_id"], host_mutated=a["host_mutated"], now=now
                     )
                 else:
                     body = ledger.standing(now=now)
@@ -138,18 +138,90 @@ def test_every_lease_scenario_replays_on_a_fresh_ledger() -> None:
     } <= seen_errors
 
 
-def test_a_missing_reconcile_marker_is_refused_before_anything_else() -> None:
+def _t(seconds: int = 0) -> datetime:
+    return datetime(2026, 12, 1, tzinfo=UTC) + timedelta(seconds=seconds)
+
+
+def test_a_marker_is_required_only_after_an_expiry_never_for_a_fresh_host() -> None:
     ledger = v2.LeaseLedger()
+    kw = {"ttl_seconds": 600, "lease_max_seconds": 3120}
+    # A never-leased host acquires without a marker (200).
+    first = ledger.acquire(now=_t(), dispatch_run="r1", marker_present=False, **kw)
+    assert first["lease_id"] == "lease-0001"
+    # Its lease expires unreleased: now the marker is required, before anything else.
+    assert ledger.standing(now=_t(700)) == {
+        "standing": "expired_unreleased",
+        "dispatch_run": "r1",
+    }
     with pytest.raises(api.TargetApiError) as refused:
-        ledger.acquire(
-            now=datetime(2026, 12, 1, tzinfo=UTC),
-            dispatch_run="r",
-            ttl_seconds=600,
-            lease_max_seconds=3120,
-            reconciled=False,
-        )
+        ledger.acquire(now=_t(700), dispatch_run="r2", marker_present=False, **kw)
     assert refused.value.code == "reconcile_marker_required"
     assert v2.LEASE_ERRORS["reconcile_marker_required"] == 409
+    assert ledger.acquire(now=_t(700), dispatch_run="r2", marker_present=True, **kw)
+
+
+def test_lease_rows_are_append_only() -> None:
+    """Rows are only ever appended; no row is edited or removed, and a lease's
+    state is whatever its latest row says."""
+    ledger = v2.LeaseLedger()
+    kw = {"ttl_seconds": 600, "lease_max_seconds": 3120}
+    seen: list[v2.LeaseRow] = []
+
+    def check() -> None:
+        assert ledger.rows[: len(seen)] == seen  # nothing earlier changed
+        seen[:] = list(ledger.rows)
+
+    ledger.acquire(now=_t(), dispatch_run="r1", marker_present=False, **kw)
+    check()
+    ledger.renew(now=_t(300), lease_id="lease-0001", dispatch_run="r1")
+    check()
+    ledger.release(lease_id="lease-0001", host_mutated=True, now=_t(400))
+    check()
+    ledger.acquire(now=_t(500), dispatch_run="r2", marker_present=False, **kw)
+    check()
+    assert [r.event for r in ledger.rows] == [
+        "acquired",
+        "renewed",
+        "released",
+        "acquired",
+    ]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ledger.rows[0].event = "released"  # type: ignore[misc]
+
+
+def test_a_replayed_acquire_returns_the_remaining_ttl() -> None:
+    ledger = v2.LeaseLedger()
+    kw = {
+        "dispatch_run": "r1",
+        "ttl_seconds": 600,
+        "lease_max_seconds": 1500,
+        "marker_present": False,
+    }
+    assert ledger.acquire(now=_t(), **kw)["ttl_seconds"] == 600
+    assert ledger.acquire(now=_t(10), **kw) == {
+        "lease_id": "lease-0001",
+        "ttl_seconds": 590,
+    }
+    scenario = next(s for s in _V["lease_scenarios"] if "REMAINING" in s["name"])
+    assert scenario["steps"][1]["body"]["ttl_seconds"] == 590
+
+
+def test_reconcile_decision_vectors_replay() -> None:
+    from dotmac_deployment_control.reconcile_decision import decide_reconcile
+
+    decisions = _OBS["reconcile_decisions"]["cases"]
+    for case in decisions:
+        got = decide_reconcile(
+            case["details"],
+            expired_dispatch_id=case["expired_dispatch_id"],
+            expired_plan_digests=case["expired_plan_digests"],
+            last_committed_digests=case["last_committed_digests"],
+            expired_dispatch_consumed=case["expired_dispatch_consumed"],
+        )
+        assert got == case["decision"], case["name"]
+    assert {c["decision"] for c in decisions} == {"reconciled", "not_needed", None}
+    # The agent reports facts: `not_needed` is never an agent outcome.
+    assert _OBS["kind_outcomes"]["reconcile"] == ["reconciled", "failed"]
 
 
 def test_a_double_release_is_a_replay_not_an_error() -> None:
@@ -160,10 +232,10 @@ def test_a_double_release_is_a_replay_not_an_error() -> None:
         dispatch_run="r",
         ttl_seconds=600,
         lease_max_seconds=3120,
-        reconciled=True,
+        marker_present=False,
     )
-    first = ledger.release(lease_id=str(got["lease_id"]), host_mutated=False)
-    again = ledger.release(lease_id=str(got["lease_id"]), host_mutated=False)
+    first = ledger.release(lease_id=str(got["lease_id"]), host_mutated=False, now=now)
+    again = ledger.release(lease_id=str(got["lease_id"]), host_mutated=False, now=now)
     assert (first, again) == (
         {"released": True, "replay": False},
         {"released": True, "replay": True},

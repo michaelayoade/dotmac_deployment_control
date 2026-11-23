@@ -233,6 +233,7 @@ from dotmac_deployment_control.ports import (
     ReleaseDescriptorUnavailableError,
     TransitionRefusedError,
 )
+from dotmac_deployment_control.reconcile_decision import decide_reconcile
 from dotmac_deployment_control.recovery_grant import (
     RecoveryGrantV1,
     RecoveryGrantVerifier,
@@ -4460,27 +4461,33 @@ def _replay_observation(
     )
 
 
-def _dispatch_operation(
+def _dispatch_plan(
     session: Session, target: DeploymentTarget, dispatch_id: str
-) -> str | None:
-    """The operation of the plan a dispatch id belongs to, on THIS target."""
+) -> DeploymentPlan | None:
+    """The plan a dispatch id belongs to, on THIS target (else None)."""
     try:
         attempt_id = UUID(dispatch_id)
     except ValueError:
         return None
-    row = session.execute(
-        select(
-            DeploymentPlan.operation,
-            DeploymentPlan.authorized_operation,
-            DeploymentPlan.target_id,
-        )
+    plan = session.execute(
+        select(DeploymentPlan)
         .join(Rollout, Rollout.plan_id == DeploymentPlan.id)
         .join(RolloutAttempt, RolloutAttempt.rollout_id == Rollout.id)
         .where(RolloutAttempt.id == attempt_id)
-    ).one_or_none()
-    if row is None or row.target_id != target.id:
+    ).scalar_one_or_none()
+    if plan is None or plan.target_id != target.id:
         return None
-    return str(row.authorized_operation or row.operation or "")
+    return plan
+
+
+def _dispatch_operation(
+    session: Session, target: DeploymentTarget, dispatch_id: str
+) -> str | None:
+    """The operation of the plan a dispatch id belongs to, on THIS target."""
+    plan = _dispatch_plan(session, target, dispatch_id)
+    if plan is None:
+        return None
+    return str(plan.authorized_operation or plan.operation or "")
 
 
 def _record_agent_observation(
@@ -5507,19 +5514,45 @@ def observation_attempts(
     return tuple(db.execute(statement).scalars().all())
 
 
-def reconcile_marker(
-    db: Session, *, target_ref: str, dispatch_id: str
-) -> facts.ReconcileMarkerView | None:
-    """The reconcile marker for the EXPIRED dispatch `dispatch_id` of a target.
+def _plan_image_digests(plan: DeploymentPlan | None) -> set[str]:
+    images = (
+        ((plan.snapshot if plan else None) or {}).get("deploy_binding") or {}
+    ).get("images") or []
+    return {
+        str(image[key])
+        for image in images
+        for key in ("planned_digest", "release_digest")
+        if image.get(key)
+    }
 
-    The port CP 5c reads when a lease is EXPIRED_UNRELEASED: it exists iff Control
-    ACCEPTED a v2 `reconcile` observation (verified signature, eligible credential,
-    statement target equal to the credential's, dispatch bound to this target)
-    naming that dispatch with outcome `reconciled` or `not_needed`. A `failed`
-    reconcile, any other kind, another target's observation and an arrival that was
-    refused (bad signature, mismatch, unbound) leave no marker. The dispatch id is
-    part of the key, so a marker clears only the acquire that follows its expiry.
+
+def reconcile_marker(
+    db: Session,
+    *,
+    target_ref: str,
+    dispatch_id: str,
+    expired_dispatch_consumed: bool,
+) -> facts.ReconcileMarkerView | None:
+    """Control's DECISION on the reconcile of an EXPIRED dispatch: the marker, or None.
+
+    The port CP 5c reads when a target's latest lease row is EXPIRED_UNRELEASED (CP
+    owns the lease rows and whether the dispatch was consumed, so it passes
+    `expired_dispatch_consumed`). The agent reports facts only: a v2 `reconcile`
+    observation, ACCEPTED by Control, whose outcome is `reconciled` (it observed the
+    host completely) and whose `details` name this dispatch. `decide_reconcile` then
+    judges those facts against the expired plan's image digests and the last
+    committed release's: `reconciled` if every configured container runs the expired
+    plan's digest; `not_needed` if all run the last committed digest and the
+    dispatch was never consumed; otherwise None, and the target goes to attended
+    restore-and-fix-forward. A `failed` reconcile, another kind, a refused arrival or
+    another target's observation leave no marker. Derived on read from the stored
+    accepted observation and Control's plan records.
     """
+    target = db.execute(
+        select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)
+    ).scalar_one_or_none()
+    if target is None:
+        return None
     attempts = db.execute(
         select(ObservationAttempt)
         .where(
@@ -5530,6 +5563,19 @@ def reconcile_marker(
         )
         .order_by(ObservationAttempt.received_at)
     ).scalars()
+    expired_plan = _dispatch_plan(db, target, dispatch_id)
+    last_committed = db.execute(
+        select(DeploymentPlan)
+        .join(Rollout, Rollout.plan_id == DeploymentPlan.id)
+        .where(
+            DeploymentPlan.target_id == target.id,
+            DeploymentPlan.operation != DeploymentOperation.RUN_JOB.value,
+            Rollout.status == RolloutStatus.SUCCEEDED.value,
+            *([DeploymentPlan.id != expired_plan.id] if expired_plan else []),
+        )
+        .order_by(DeploymentPlan.sequence.desc())
+        .limit(1)
+    ).scalar_one_or_none()
     for attempt in attempts:
         try:
             statement = AgentObservationEnvelopeV2.parse_bytes(
@@ -5537,11 +5583,20 @@ def reconcile_marker(
             ).statement
         except ExecutionObservationRefusedError:  # pragma: no cover - stored valid
             continue
-        if statement.outcome in {"reconciled", "not_needed"}:
+        if statement.outcome != "reconciled":
+            continue
+        decision = decide_reconcile(
+            statement.details,
+            expired_dispatch_id=dispatch_id,
+            expired_plan_digests=_plan_image_digests(expired_plan),
+            last_committed_digests=_plan_image_digests(last_committed),
+            expired_dispatch_consumed=expired_dispatch_consumed,
+        )
+        if decision is not None:
             return facts.ReconcileMarkerView(
                 target_ref=target_ref,
                 dispatch_id=dispatch_id,
-                outcome=statement.outcome,
+                outcome=decision,
                 attempt_id=attempt.id,
                 recorded_at=_as_utc(attempt.received_at),
             )

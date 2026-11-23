@@ -48,6 +48,7 @@ from dotmac_deployment_control.execution_observation import (
     ExecutionObservationVerificationKey,
 )
 from dotmac_deployment_control.image_policy import PullAllowlist
+from dotmac_deployment_control.reconcile_decision import decide_reconcile
 from tests.unit import ed25519_reference as ed
 from tests.unit import target_api_vectors as v1_builder
 
@@ -351,7 +352,10 @@ def _lease_body_vectors() -> dict[str, Any]:
             "request": {"lease_id": "lease-0001", "host_mutated": False},
             "response": {"released": True, "replay": False},
         },
-        "lease/standing": {"request": {}, "response": {"standing": "held"}},
+        "lease/standing": {
+            "request": {},
+            "response": {"standing": "held", "dispatch_run": None},
+        },
     }
     refused = [
         ("lease/renew", "request", {"lease_id": "lease-0001"}),
@@ -361,7 +365,14 @@ def _lease_body_vectors() -> dict[str, Any]:
         ("lease/release", "request", {"lease_id": "l", "host_mutated": "no"}),
         ("lease/release", "response", {"released": True}),
         ("lease/covers", "response", {"covers": 1}),
-        ("lease/standing", "response", {"standing": "maybe"}),
+        ("lease/standing", "response", {"standing": "maybe", "dispatch_run": None}),
+        (
+            "lease/standing",
+            "response",
+            {"standing": "expired_unreleased", "dispatch_run": None},
+        ),
+        ("lease/standing", "response", {"standing": "held", "dispatch_run": "run-1"}),
+        ("lease/standing", "response", {"standing": "free"}),
         ("lease/renew", "response", {"lease_id": "l", "ttl_seconds": 0}),
         ("lease/lock", "request", {}),
     ]
@@ -396,7 +407,7 @@ def _step(ledger: v2.LeaseLedger, at: int, call: str, **args: Any) -> dict[str, 
                 dispatch_run=args["dispatch_run"],
                 ttl_seconds=args["ttl_seconds"],
                 lease_max_seconds=args["lease_max_seconds"],
-                reconciled=args["reconcile_marker"],
+                marker_present=args["marker_present"],
             )
         elif call == "covers":
             body = ledger.covers(
@@ -408,7 +419,7 @@ def _step(ledger: v2.LeaseLedger, at: int, call: str, **args: Any) -> dict[str, 
             )
         elif call == "release":
             body = ledger.release(
-                lease_id=args["lease_id"], host_mutated=args["host_mutated"]
+                lease_id=args["lease_id"], host_mutated=args["host_mutated"], now=now
             )
         else:
             body = ledger.standing(now=now)
@@ -424,8 +435,9 @@ def _scenarios() -> list[dict[str, Any]]:
         "dispatch_run": "run-1",
         "ttl_seconds": 600,
         "lease_max_seconds": 1500,
-        "reconcile_marker": True,
+        "marker_present": True,
     }
+    bare = {**acquire, "marker_present": False}
     held = {"lease_id": "lease-0001", "dispatch_run": "run-1"}
     plans: list[tuple[str, list[tuple[int, str, dict[str, Any]]]]] = [
         (
@@ -452,12 +464,33 @@ def _scenarios() -> list[dict[str, Any]]:
             ],
         ),
         (
-            "acquire without the reconcile marker is a signed 409",
-            [(0, "acquire", {**acquire, "reconcile_marker": False})],
+            "a never-leased host acquires without a marker",
+            [(0, "standing", {}), (1, "acquire", bare)],
         ),
         (
-            "re-acquiring by the same run returns its lease",
-            [(0, "acquire", acquire), (10, "acquire", acquire), (20, "covers", held)],
+            "after an expiry the acquire needs the marker (a signed 409 without it)",
+            [
+                (0, "acquire", acquire),
+                (700, "standing", {}),
+                (710, "acquire", {**bare, "dispatch_run": "run-2"}),
+                (720, "acquire", {**acquire, "dispatch_run": "run-2"}),
+            ],
+        ),
+        (
+            "after a clean release the next acquire needs no marker",
+            [
+                (0, "acquire", acquire),
+                (50, "release", {"lease_id": "lease-0001", "host_mutated": False}),
+                (60, "acquire", {**bare, "dispatch_run": "run-2"}),
+            ],
+        ),
+        (
+            "a replayed acquire by the same run returns the REMAINING ttl",
+            [
+                (0, "acquire", acquire),
+                (10, "acquire", acquire),
+                (20, "covers", held),
+            ],
         ),
         (
             "another run cannot acquire a held host",
@@ -632,10 +665,142 @@ def _issue(**fields: Any) -> AgentObservationEnvelopeV2:
     )
 
 
+_D_OLD = "sha256:" + "1" * 64
+_D_NEW = "sha256:" + "2" * 64
+_D_COMMITTED = "sha256:" + "3" * 64
+_EXPIRED_DISPATCH = "00000000-0000-4000-8000-0000000000e1"
+
+
+def _reconcile_details(
+    configured: list[str], running: list[tuple[str, str]]
+) -> dict[str, Any]:
+    return {
+        "expired_dispatch_id": _EXPIRED_DISPATCH,
+        "configured": configured,
+        "containers": [
+            {
+                "name": name,
+                "image_ref": f"127.0.0.1:5000/team/app@{digest}",
+                "image_id": digest,
+                "repo_digests": [f"127.0.0.1:5000/team/app@{digest}"],
+            }
+            for name, digest in running
+        ],
+    }
+
+
+def _decision_vectors() -> dict[str, Any]:
+    """Control decides; the agent only reports facts."""
+    expired, committed = [_D_OLD], [_D_COMMITTED]
+    cases = [
+        (
+            "every configured container runs the expired plan's digest",
+            ["app", "worker"],
+            [("app", _D_OLD), ("worker", _D_OLD)],
+            False,
+        ),
+        (
+            "the expired plan's digest wins even if the dispatch was consumed",
+            ["app"],
+            [("app", _D_OLD)],
+            True,
+        ),
+        (
+            "all run the last committed digest and the dispatch was never consumed",
+            ["app", "worker"],
+            [("app", _D_COMMITTED), ("worker", _D_COMMITTED)],
+            False,
+        ),
+        (
+            "all run the last committed digest but the dispatch WAS consumed",
+            ["app"],
+            [("app", _D_COMMITTED)],
+            True,
+        ),
+        (
+            "one container runs a digest from neither",
+            ["app", "worker"],
+            [("app", _D_OLD), ("worker", _D_NEW)],
+            False,
+        ),
+        (
+            "a mix of expired and committed digests",
+            ["app", "worker"],
+            [("app", _D_OLD), ("worker", _D_COMMITTED)],
+            False,
+        ),
+        (
+            "a configured container the agent did not observe",
+            ["app", "worker"],
+            [("app", _D_OLD)],
+            False,
+        ),
+        ("nothing is configured", [], [], False),
+    ]
+    out = []
+    for name, configured, running, consumed in cases:
+        details = _reconcile_details(configured, running)
+        out.append(
+            {
+                "name": name,
+                "details": details,
+                "expired_dispatch_id": _EXPIRED_DISPATCH,
+                "expired_plan_digests": expired,
+                "last_committed_digests": committed,
+                "expired_dispatch_consumed": consumed,
+                "decision": decide_reconcile(
+                    details,
+                    expired_dispatch_id=_EXPIRED_DISPATCH,
+                    expired_plan_digests=expired,
+                    last_committed_digests=committed,
+                    expired_dispatch_consumed=consumed,
+                ),
+            }
+        )
+    wrong = _reconcile_details(["app"], [("app", _D_OLD)])
+    out.append(
+        {
+            "name": "details that name another dispatch",
+            "details": wrong,
+            "expired_dispatch_id": "another-dispatch",
+            "expired_plan_digests": expired,
+            "last_committed_digests": committed,
+            "expired_dispatch_consumed": False,
+            "decision": decide_reconcile(
+                wrong,
+                expired_dispatch_id="another-dispatch",
+                expired_plan_digests=expired,
+                last_committed_digests=committed,
+                expired_dispatch_consumed=False,
+            ),
+        }
+    )
+    return {
+        "rule": (
+            "The agent reports facts: outcome `reconciled` (the host was observed "
+            "completely) or `failed` (it could not be); it never sends `not_needed`. "
+            "Control DECIDES from `details` ({expired_dispatch_id, configured[], "
+            "containers[{name, image_ref, image_id, repo_digests}]}): every configured "
+            "container on a digest of the expired plan -> marker `reconciled`; all on "
+            "the last committed digest and the expired dispatch never consumed -> "
+            "marker `not_needed`; anything else -> no marker (attended "
+            "restore-and-fix-forward). A marker is asked for only when the host's "
+            "latest lease row is expired_unreleased."
+        ),
+        "cases": out,
+    }
+
+
 def _agent_observation_vectors() -> dict[str, Any]:
     ok_cases = [
         {},
-        {"kind": "reconcile", "outcome": "reconciled", "reason": "lease expired"},
+        {
+            "kind": "reconcile",
+            "outcome": "reconciled",
+            "reason": "observed",
+            "details": _reconcile_details(["app"], [("app", _D_OLD)]),
+        },
+        {"kind": "reconcile", "outcome": "failed", "reason": "docker unreachable"},
         {
             "kind": "job",
             "outcome": "failed",
@@ -789,6 +954,7 @@ def _agent_observation_vectors() -> dict[str, Any]:
             "algorithm": "ed25519",
             "purpose": EXECUTION_OBSERVATION_PURPOSE,
         },
+        "reconcile_decisions": _decision_vectors(),
         "ok": ok,
         "refused_parse": refused_parse,
         "refused_verify": refused_verify,
