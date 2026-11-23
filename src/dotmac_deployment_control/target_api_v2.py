@@ -101,6 +101,9 @@ LEASE_ERRORS: Final = {
     "reconcile_marker_required": 409,
     # A run_job lease is granted ONCE (ttl = max = timeout + 120) and never renewed.
     "lease_not_renewable": 409,
+    # The lease id is a real, earlier lease but the host pointer has moved to a newer
+    # one (covers, renew and release alike).
+    "lease_superseded": 409,
 }
 
 _TYPES: Final[dict[str, type | tuple[type, ...]]] = {
@@ -238,28 +241,47 @@ class LeaseLedger:
         self.rows.append(row)
         return {"lease_id": row.lease_id, "ttl_seconds": grant}
 
-    def _live(self, lease_id: str, dispatch_run: str | None) -> LeaseRow | None:
-        latest = self._latest()
-        if (
-            latest is None
-            or latest.event == "released"
-            or latest.lease_id != lease_id
-            or (dispatch_run is not None and latest.dispatch_run != dispatch_run)
-        ):
+    def _last_row(self, lease_id: str) -> LeaseRow | None:
+        for row in reversed(self.rows):
+            if row.lease_id == lease_id:
+                return row
+        return None
+
+    def _current(self, lease_id: str) -> LeaseRow | None:
+        """The current lease row when `lease_id` is the host's; None when the id is
+        unknown; `lease_superseded` when it is a real lease the host moved on from."""
+        last = self._last_row(lease_id)
+        if last is None:
             return None
-        return latest
+        if self.rows[-1].lease_id != lease_id:
+            raise TargetApiError(
+                "the host's lease pointer has moved to a newer lease",
+                "lease_superseded",
+            )
+        return last
 
     def covers(
         self, *, now: datetime, lease_id: str, dispatch_run: str
     ) -> dict[str, object]:
-        held = self._live(lease_id, dispatch_run)
-        return {"covers": bool(held is not None and now < held.expires_at)}
+        held = self._current(lease_id)
+        return {
+            "covers": bool(
+                held is not None
+                and held.event != "released"
+                and held.dispatch_run == dispatch_run
+                and now < held.expires_at
+            )
+        }
 
     def renew(
         self, *, now: datetime, lease_id: str, dispatch_run: str
     ) -> dict[str, object]:
-        held = self._live(lease_id, dispatch_run)
-        if held is None:
+        held = self._current(lease_id)
+        if (
+            held is None
+            or held.event == "released"
+            or held.dispatch_run != dispatch_run
+        ):
             raise TargetApiError("no such lease is held by this run", "lease_not_held")
         if now >= held.expires_at:
             raise TargetApiError("the lease expired", "lease_expired")
@@ -288,21 +310,32 @@ class LeaseLedger:
     def release(
         self, *, lease_id: str, host_mutated: bool, now: datetime
     ) -> dict[str, object]:
-        latest = self._latest()
-        if latest is None or latest.lease_id != lease_id:
+        """A release of a lease already released is a signed 200 replay (even long
+        after, even once superseded). Releasing an EXPIRED lease is refused with a
+        signed 409 `lease_expired` and the host stays expired_unreleased: only a
+        reconcile marker and a new acquire move it on."""
+        last = self._last_row(lease_id)
+        if last is None:
             raise TargetApiError("no such lease", "lease_not_held")
-        if latest.event == "released":
+        if last.event == "released":
             return {"released": True, "replay": True}
+        if self.rows[-1].lease_id != lease_id:
+            raise TargetApiError(
+                "the host's lease pointer has moved to a newer lease",
+                "lease_superseded",
+            )
+        if now >= last.expires_at:
+            raise TargetApiError("the lease expired", "lease_expired")
         self.rows.append(
             LeaseRow(
-                lease_id=latest.lease_id,
-                dispatch_run=latest.dispatch_run,
+                lease_id=last.lease_id,
+                dispatch_run=last.dispatch_run,
                 event="released",
                 at=now,
-                expires_at=latest.expires_at,
-                ttl_seconds=latest.ttl_seconds,
-                max_seconds=latest.max_seconds,
-                acquired_at=latest.acquired_at,
+                expires_at=last.expires_at,
+                ttl_seconds=last.ttl_seconds,
+                max_seconds=last.max_seconds,
+                acquired_at=last.acquired_at,
                 host_mutated=host_mutated,
             )
         )

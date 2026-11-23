@@ -598,3 +598,49 @@ def test_job_inputs_carry_a_signed_digest_and_outputs_none() -> None:
         "a duplicate input flag",
         "a non-canonical input digest",
     } <= names
+
+
+def test_releasing_an_expired_lease_is_refused_and_the_host_stays_expired() -> None:
+    ledger = v2.LeaseLedger()
+    kw = {"ttl_seconds": 600, "lease_max_seconds": 3120}
+    ledger.acquire(now=_t(), dispatch_run="r1", marker_present=False, **kw)
+    with pytest.raises(api.TargetApiError) as refused:
+        ledger.release(lease_id="lease-0001", host_mutated=False, now=_t(700))
+    assert refused.value.code == "lease_expired"
+    assert v2.LEASE_ERRORS["lease_expired"] == 409
+    assert ledger.standing(now=_t(710))["standing"] == "expired_unreleased"
+    assert [r.event for r in ledger.rows] == ["acquired"]  # nothing was appended
+
+
+def test_a_release_replayed_from_before_the_expiry_still_returns_200() -> None:
+    ledger = v2.LeaseLedger()
+    kw = {"ttl_seconds": 600, "lease_max_seconds": 3120}
+    ledger.acquire(now=_t(), dispatch_run="r1", marker_present=False, **kw)
+    first = ledger.release(lease_id="lease-0001", host_mutated=True, now=_t(50))
+    again = ledger.release(lease_id="lease-0001", host_mutated=True, now=_t(700))
+    assert (first["replay"], again) == (False, {"released": True, "replay": True})
+
+
+def test_covers_renew_and_release_of_a_superseded_lease_are_refused() -> None:
+    ledger = v2.LeaseLedger()
+    kw = {"ttl_seconds": 600, "lease_max_seconds": 3120}
+    ledger.acquire(now=_t(), dispatch_run="r1", marker_present=False, **kw)
+    ledger.acquire(now=_t(700), dispatch_run="r2", marker_present=True, **kw)
+    calls = (
+        lambda: ledger.covers(now=_t(710), lease_id="lease-0001", dispatch_run="r1"),
+        lambda: ledger.renew(now=_t(710), lease_id="lease-0001", dispatch_run="r1"),
+        lambda: ledger.release(lease_id="lease-0001", host_mutated=False, now=_t(710)),
+    )
+    for call in calls:
+        with pytest.raises(api.TargetApiError) as refused:
+            call()
+        assert refused.value.code == "lease_superseded"
+    assert v2.LEASE_ERRORS["lease_superseded"] == 409
+    # An id the host never issued is still `lease_not_held`, not superseded.
+    with pytest.raises(api.TargetApiError) as unknown:
+        ledger.renew(now=_t(710), lease_id="lease-9999", dispatch_run="r1")
+    assert unknown.value.code == "lease_not_held"
+    # The current lease is unaffected.
+    assert ledger.covers(now=_t(710), lease_id="lease-0002", dispatch_run="r2")[
+        "covers"
+    ]

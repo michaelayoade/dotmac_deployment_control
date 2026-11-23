@@ -644,6 +644,34 @@ def _scenarios() -> list[dict[str, Any]]:
             ],
         ),
         (
+            "releasing an EXPIRED lease is a signed 409 and the host stays "
+            "expired_unreleased",
+            [
+                (0, "acquire", acquire),
+                (700, "release", {"lease_id": "lease-0001", "host_mutated": False}),
+                (710, "standing", {}),
+            ],
+        ),
+        (
+            "a release replayed from before the expiry still returns 200",
+            [
+                (0, "acquire", acquire),
+                (50, "release", {"lease_id": "lease-0001", "host_mutated": True}),
+                (700, "release", {"lease_id": "lease-0001", "host_mutated": True}),
+            ],
+        ),
+        (
+            "covers, renew and release of a superseded lease are refused",
+            [
+                (0, "acquire", acquire),
+                (700, "acquire", {**acquire, "dispatch_run": "run-2"}),
+                (710, "covers", held),
+                (720, "renew", held),
+                (730, "release", {"lease_id": "lease-0001", "host_mutated": False}),
+                (740, "covers", {"lease_id": "lease-0002", "dispatch_run": "run-2"}),
+            ],
+        ),
+        (
             "a run_job lease is granted once and never renewed",
             [
                 (

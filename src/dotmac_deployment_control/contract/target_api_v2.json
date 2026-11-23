@@ -6250,6 +6250,7 @@
       "lease_max_reached": 409,
       "lease_not_held": 409,
       "lease_not_renewable": 409,
+      "lease_superseded": 409,
       "reconcile_marker_required": 409
     },
     "lease_margin_seconds": 120,
@@ -6651,6 +6652,169 @@
             "standing": "expired_unreleased"
           },
           "call": "standing",
+          "status": 200
+        }
+      ]
+    },
+    {
+      "name": "releasing an EXPIRED lease is a signed 409 and the host stays expired_unreleased",
+      "steps": [
+        {
+          "args": {
+            "dispatch_run": "run-1",
+            "lease_max_seconds": 1500,
+            "marker_present": true,
+            "ttl_seconds": 600
+          },
+          "at": 0,
+          "body": {
+            "lease_id": "lease-0001",
+            "ttl_seconds": 600
+          },
+          "call": "acquire",
+          "status": 200
+        },
+        {
+          "args": {
+            "host_mutated": false,
+            "lease_id": "lease-0001"
+          },
+          "at": 700,
+          "call": "release",
+          "error": "lease_expired",
+          "status": 409
+        },
+        {
+          "args": {},
+          "at": 710,
+          "body": {
+            "dispatch_run": "run-1",
+            "standing": "expired_unreleased"
+          },
+          "call": "standing",
+          "status": 200
+        }
+      ]
+    },
+    {
+      "name": "a release replayed from before the expiry still returns 200",
+      "steps": [
+        {
+          "args": {
+            "dispatch_run": "run-1",
+            "lease_max_seconds": 1500,
+            "marker_present": true,
+            "ttl_seconds": 600
+          },
+          "at": 0,
+          "body": {
+            "lease_id": "lease-0001",
+            "ttl_seconds": 600
+          },
+          "call": "acquire",
+          "status": 200
+        },
+        {
+          "args": {
+            "host_mutated": true,
+            "lease_id": "lease-0001"
+          },
+          "at": 50,
+          "body": {
+            "released": true,
+            "replay": false
+          },
+          "call": "release",
+          "status": 200
+        },
+        {
+          "args": {
+            "host_mutated": true,
+            "lease_id": "lease-0001"
+          },
+          "at": 700,
+          "body": {
+            "released": true,
+            "replay": true
+          },
+          "call": "release",
+          "status": 200
+        }
+      ]
+    },
+    {
+      "name": "covers, renew and release of a superseded lease are refused",
+      "steps": [
+        {
+          "args": {
+            "dispatch_run": "run-1",
+            "lease_max_seconds": 1500,
+            "marker_present": true,
+            "ttl_seconds": 600
+          },
+          "at": 0,
+          "body": {
+            "lease_id": "lease-0001",
+            "ttl_seconds": 600
+          },
+          "call": "acquire",
+          "status": 200
+        },
+        {
+          "args": {
+            "dispatch_run": "run-2",
+            "lease_max_seconds": 1500,
+            "marker_present": true,
+            "ttl_seconds": 600
+          },
+          "at": 700,
+          "body": {
+            "lease_id": "lease-0002",
+            "ttl_seconds": 600
+          },
+          "call": "acquire",
+          "status": 200
+        },
+        {
+          "args": {
+            "dispatch_run": "run-1",
+            "lease_id": "lease-0001"
+          },
+          "at": 710,
+          "call": "covers",
+          "error": "lease_superseded",
+          "status": 409
+        },
+        {
+          "args": {
+            "dispatch_run": "run-1",
+            "lease_id": "lease-0001"
+          },
+          "at": 720,
+          "call": "renew",
+          "error": "lease_superseded",
+          "status": 409
+        },
+        {
+          "args": {
+            "host_mutated": false,
+            "lease_id": "lease-0001"
+          },
+          "at": 730,
+          "call": "release",
+          "error": "lease_superseded",
+          "status": 409
+        },
+        {
+          "args": {
+            "dispatch_run": "run-2",
+            "lease_id": "lease-0002"
+          },
+          "at": 740,
+          "body": {
+            "covers": true
+          },
+          "call": "covers",
           "status": 200
         }
       ]
