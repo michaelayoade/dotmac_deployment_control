@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
+from dotmac_kernel.idempotency import IdempotencyConflict
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
@@ -34,6 +35,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from dotmac_deployment_control import (
     ApprovalEvidence,
+    ApprovalRefusedError,
     ApprovePlanCommand,
     AuthorizationEnvelopeV2,
     DesiredDeployment,
@@ -377,8 +379,82 @@ def test_native_pg_concurrent_dispatch_only_recovery_has_exactly_one_winner(
     losers = [o[1] for o in outcomes if o[0] == "refused"]
     assert len(outcomes) == workers
     assert len(winners) == 1, outcomes
-    # Every loser is REFUSED (a typed refusal or the kernel's duplicate-command
-    # refusal), never a second success and never silently nothing.
-    assert all(isinstance(exc, Exception) for exc in losers), losers
+    # Every loser is REFUSED with a pinned type: Control's typed refusal or the
+    # kernel's duplicate-command refusal (unwrapped if it arrives wrapped).
+    allowed = (TransitionRefusedError, IdempotencyConflict)
     assert len(losers) == workers - 1, [type(exc).__name__ for exc in losers]
+    for exc in losers:
+        root = exc
+        while not isinstance(root, allowed) and (
+            root.__cause__ is not None or root.__context__ is not None
+        ):
+            root = root.__cause__ or root.__context__
+        assert isinstance(root, allowed), [type(e).__name__ for e in losers]
+        # Never a database deadlock or serialization failure: the locks must order
+        # the contenders, not abort them.
+        for candidate in (exc, root):
+            if isinstance(candidate, DBAPIError):
+                state = getattr(candidate.orig, "sqlstate", None) or getattr(
+                    candidate.orig, "pgcode", None
+                )
+                assert state not in {"40P01", "40001"}, (state, type(exc).__name__)
     assert _attempts(engine, exp.rollout_id) == 1
+
+
+def test_native_pg_recovery_racing_a_withdrawal_committed_first_is_refused(
+    approved_rollout: _Approved,
+) -> None:
+    """A withdrawal holds the target and plan locks (uncommitted); recovery waits behind
+    it as a real lock wait; once the withdrawal commits, recovery sees the revoked
+    approval and is refused with ApprovalRefusedError. No attempt is created."""
+    engine, exp = approved_rollout.engine, approved_rollout.expectation
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    revoker = sessions()
+    try:
+        revoke_plan_approval(
+            revoker,
+            RevokePlanApprovalCommand(
+                command_id=f"withdraw-{uuid.uuid4()}",
+                plan_id=approved_rollout.plan_id,
+                revocation_ref=f"decision-{uuid.uuid4()}",
+            ),
+        )  # locks held, NOT committed
+        backend: dict[str, int] = {}
+        outcome: dict[str, BaseException] = {}
+
+        def recover() -> None:
+            db = sessions()
+            try:
+                backend["pid"] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                dispatch_attempt(
+                    db,
+                    command_id=exp.dispatch_command_id,
+                    rollout_id=exp.rollout_id,
+                    verifier=VERIFIER,
+                    dispatch_signer=DISPATCH_SIGNER,
+                    resume_expectation=exp,
+                )
+                db.commit()
+            except BaseException as caught:
+                outcome["exc"] = caught
+                db.rollback()
+            finally:
+                db.close()
+
+        worker = threading.Thread(target=recover)
+        worker.start()
+        deadline = time.monotonic() + 10
+        while "pid" not in backend and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "pid" in backend, "recovery never opened a backend"
+        iso._wait_until_postgres_reports_lock(engine, backend["pid"])
+        assert worker.is_alive(), "recovery got past the withdrawal's locks"
+        revoker.commit()
+    finally:
+        revoker.close()
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "recovery never completed after the commit"
+    assert isinstance(outcome.get("exc"), ApprovalRefusedError), outcome
+    assert _attempts(engine, exp.rollout_id) == 0
