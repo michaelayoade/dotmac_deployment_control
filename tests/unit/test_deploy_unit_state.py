@@ -2061,3 +2061,19 @@ def test_dispatch_re_checks_the_window(db: Session) -> None:
     # A deploy plan has no window to check.
     serving = db.get(svc.DeploymentPlan, _propose(db, erp.id, source).id)
     svc._require_window_for_plan(db, target, serving)
+
+
+def test_real_plan_bindings_satisfy_the_v2_contract_rules(db: Session) -> None:
+    """What Control derives is what `target_api_v2` (and so CP and the agent)
+    accepts: serving and run_job bindings, with their lease split and naming."""
+    from dotmac_deployment_control import target_api_v2 as v2
+
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    serving = _binding_of(_propose(db, erp.id, source, DeployPlanInputs(600, 5000)))
+    v2.check_deploy_binding(serving, operation="deploy")
+    job = _binding_of(_propose(db, erp.id, source, _JOB))
+    v2.check_deploy_binding(job, operation="run_job")
+    # The refusals the contract pins hold for the real thing too.
+    with pytest.raises(Exception, match="dispatched_job"):
+        v2.check_deploy_binding(job, operation="deploy")

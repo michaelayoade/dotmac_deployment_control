@@ -68,6 +68,15 @@ and a plan proposed without a deploy binding keeps its exact snapshot and digest
   reproduce every one. The agent vendors the file byte-for-byte and pins its
   digest: target_api_v1.json sha256 2e02f2ca295ee531d819d8c09aa7887ed4801c6272e60dd8b2c151d21929a907. A change is a `_v2` file and a new
   release.
+- `target_api` v2 (additive, v1 untouched): `contract/target_api_v2.json` pins the
+  job-plan and lease additions on top of the unchanged v1 wire: the plan binding
+  keys `jobs`, `dispatched_job` (params keyed by MATERIAL), `job_binding_names`,
+  `secrets_namespace`/`secrets_environment`, the split lease (`lease_ttl_seconds`
+  per grant 120..900, `lease_max_seconds` total to 10800), the `run_job` operation
+  and image source `present`, the observation kind `job` with its kind/operation
+  refusals, and the lease routes (`acquire`, `covers`, new `renew`, `release`,
+  `standing`) with a reference ledger. CP and the agent vendor it next to v1 and pin
+  its digest: target_api_v2.json sha256 5b62553f2c9ee3151d189b5616d315cc6b31fe56c7a2db683a90e7da30b16c67.
 - Contract hardening (architect r4): `request_credential_id` is the one way to
   look the credential up (an absent or repeated header is refused) and
   `check_request` requires the id it finds to equal the looked-up one;
