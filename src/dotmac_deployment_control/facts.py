@@ -749,6 +749,23 @@ class ObservationVerdict:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconcileMarkerView:
+    """The marker an ACCEPTED agent `reconcile` observation leaves behind.
+
+    CP 5c asks for it (by target and the EXPIRED dispatch) before an `acquire` that
+    would otherwise be refused `reconcile_marker_required`. It is evidence, not a
+    capability: it names the expired dispatch it settles, so it can clear only the
+    acquire that follows that expiry.
+    """
+
+    target_ref: str
+    dispatch_id: str
+    outcome: str
+    attempt_id: UUID
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DriftReport:
     """The computed difference between rolled-out and observed state.
 
@@ -866,6 +883,7 @@ __all__ = [
     "DeploySettingsView",
     "DeploymentSetView",
     "DriftReport",
+    "ReconcileMarkerView",
     "LegacyPolicyView",
     "ObservationAttemptView",
     "ObservationReceiptView",

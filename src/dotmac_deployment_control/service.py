@@ -5507,6 +5507,47 @@ def observation_attempts(
     return tuple(db.execute(statement).scalars().all())
 
 
+def reconcile_marker(
+    db: Session, *, target_ref: str, dispatch_id: str
+) -> facts.ReconcileMarkerView | None:
+    """The reconcile marker for the EXPIRED dispatch `dispatch_id` of a target.
+
+    The port CP 5c reads when a lease is EXPIRED_UNRELEASED: it exists iff Control
+    ACCEPTED a v2 `reconcile` observation (verified signature, eligible credential,
+    statement target equal to the credential's, dispatch bound to this target)
+    naming that dispatch with outcome `reconciled` or `not_needed`. A `failed`
+    reconcile, any other kind, another target's observation and an arrival that was
+    refused (bad signature, mismatch, unbound) leave no marker. The dispatch id is
+    part of the key, so a marker clears only the acquire that follows its expiry.
+    """
+    attempts = db.execute(
+        select(ObservationAttempt)
+        .where(
+            ObservationAttempt.authenticated_target_ref == target_ref,
+            ObservationAttempt.report_id.like(f"agent:reconcile:{dispatch_id}:%"),
+            ObservationAttempt.signature_status == SignatureStatus.VALID.value,
+            ObservationAttempt.disposition == ObservationDisposition.ACCEPTED.value,
+        )
+        .order_by(ObservationAttempt.received_at)
+    ).scalars()
+    for attempt in attempts:
+        try:
+            statement = AgentObservationEnvelopeV2.parse_bytes(
+                attempt.raw_body or b""
+            ).statement
+        except ExecutionObservationRefusedError:  # pragma: no cover - stored valid
+            continue
+        if statement.outcome in {"reconciled", "not_needed"}:
+            return facts.ReconcileMarkerView(
+                target_ref=target_ref,
+                dispatch_id=dispatch_id,
+                outcome=statement.outcome,
+                attempt_id=attempt.id,
+                recorded_at=_as_utc(attempt.received_at),
+            )
+    return None
+
+
 # ── Deploy-unit state: settings, legacy env-file policy, deployment sets ─────
 #
 # The value layer (`deploy_settings`, `legacy_policy`, `deploy_binding`) is pure.
@@ -6968,6 +7009,7 @@ __all__ = [
     "revoke_plan_approval",
     "rollouts_for_target",
     "cancel_run_job_plans_before_executor_support",
+    "reconcile_marker",
     "close_role_job_window",
     "open_role_job_window",
     "set_bao_environment",

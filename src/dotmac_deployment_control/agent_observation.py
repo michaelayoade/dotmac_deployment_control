@@ -157,7 +157,11 @@ class AgentObservationStatementV2:
 
     @property
     def report_id(self) -> str:
-        """The ledger business key: one report per dispatch and kind."""
+        """The ledger business key: one report per dispatch and kind. A RECONCILE
+        is retryable (a failed one is followed by another), so its key also carries
+        `observed_at`; the same bytes are still the same key, hence a replay."""
+        if self.kind == "reconcile":
+            return f"agent:reconcile:{self.dispatch_id}:{self.observed_at}"
         return f"agent:{self.kind}:{self.dispatch_id}"
 
     def as_mapping(self) -> dict[str, Any]:

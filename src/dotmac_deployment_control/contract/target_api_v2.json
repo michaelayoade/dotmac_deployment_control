@@ -126,7 +126,7 @@
         "wire_utf8": "{\"signature\":\"bAEuHTh5zyBLScMfoqGK2pjxtQXZllgTviir9NSp_W8VwZPIQCO7dGz5CZl1Q-FUjPukaNVObMbYKQS9vgvgBQ\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-0001\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"succeeded\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
       },
       {
-        "report_id": "agent:reconcile:00000000-0000-4000-8000-000000000001",
+        "report_id": "agent:reconcile:00000000-0000-4000-8000-000000000001:2026-12-01T10:05:00Z",
         "signature_b64u": "-nTOsopB8MxuKMr22yC_bnKbPi30QbWqq_RWtHyDTPCHZtvfF3iFQIh9njWiLdZYrDPNghiLA1f8VYV_zPrwDA",
         "signed_bytes_hex": "7b2264657461696c73223a7b7d2c2264697370617463685f6964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226b65795f6964223a22637265642d30303031222c226b696e64223a227265636f6e63696c65222c226f627365727665645f6174223a22323032362d31322d30315431303a30353a30305a222c226f7574636f6d65223a227265636f6e63696c6564222c22726561736f6e223a226c656173652065787069726564222c22736368656d61223a22646f746d61632e6167656e742d6f62736572766174696f6e2f32222c227461726765745f726566223a22646f746d61632d6572702d76322f70726f64756374696f6e2f686f73742d61227d",
         "statement": {
@@ -237,7 +237,7 @@
         "wire_utf8": "{\"signature\":\"X3HIPq39X-ATbESadYdPg7XqWtWdomCJIzZ7uqTAQeDFyRe7P8avPmQQnan2hhwjDGr95Z0w7LMdzuXOr0jcBw\",\"statement\":{\"details\":{},\"dispatch_id\":\"00000000-0000-4000-8000-000000000001\",\"key_id\":\"cred-9999\",\"kind\":\"deploy\",\"observed_at\":\"2026-12-01T10:05:00Z\",\"outcome\":\"succeeded\",\"reason\":\"\",\"schema\":\"dotmac.agent-observation/2\",\"target_ref\":\"dotmac-erp-v2/production/host-a\"}}"
       }
     ],
-    "rule": "One ingestion path, owned by Control: `record_observation` parses the envelope, selects the ENROLLED credential by statement.key_id, verifies the Ed25519 signature over the statement's canonical JSON bytes under that credential's key, and requires statement.target_ref to equal the credential's target. The statement is {schema, kind, dispatch_id, target_ref, key_id, outcome, reason, details, observed_at}; the report id is `agent:<kind>:<dispatch_id>`. Kind deploy|reconcile|job must agree with the dispatch's plan operation (job <=> run_job; deploy <=> deploy/rollback; reconcile settles an expired lease of any). An accepted observation changes no desired or observed state: it is attributable evidence.",
+    "rule": "One ingestion path, owned by Control: `record_observation` parses the envelope, selects the ENROLLED credential by statement.key_id, verifies the Ed25519 signature over the statement's canonical JSON bytes under that credential's key, and requires statement.target_ref to equal the credential's target. The statement is {schema, kind, dispatch_id, target_ref, key_id, outcome, reason, details, observed_at}; the report id is `agent:<kind>:<dispatch_id>` (a reconcile appends `:<observed_at>` so a failed one can be retried). Kind deploy|reconcile|job must agree with the dispatch's plan operation (job <=> run_job; deploy <=> deploy/rollback; reconcile settles an expired lease of any). An accepted observation changes no desired or observed state: it is attributable evidence.",
     "schema": "dotmac.agent-observation/2"
   },
   "attestation_pair": {

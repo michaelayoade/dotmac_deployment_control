@@ -166,3 +166,56 @@ def test_garbage_is_still_recorded_as_malformed(db, enrolled) -> None:  # type: 
     verdict = _send(db, b'{"statement":{"schema":"dotmac.agent-observation/2"}}')
     assert verdict.disposition == ObservationDisposition.MALFORMED.value
     assert len(observation_attempts(db)) == before + 1
+
+
+# ── The reconcile marker (the port CP 5c reads) ─────────────────────────────
+
+
+def test_an_accepted_reconcile_observation_leaves_the_marker_for_that_dispatch(
+    db, enrolled
+) -> None:  # type: ignore[no-untyped-def]
+    from dotmac_deployment_control import reconcile_marker
+
+    dispatch = _dispatch_id(db)
+    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch) is None
+    verdict = _send(db, _wire(dispatch, kind="reconcile", outcome="reconciled"))
+    assert verdict.disposition == ObservationDisposition.ACCEPTED.value
+    marker = reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch)
+    assert marker is not None
+    assert (marker.dispatch_id, marker.outcome) == (dispatch, "reconciled")
+    assert marker.attempt_id == observation_attempts(db)[-1].id
+    # A replay does not make a second marker; the first stands.
+    _send(db, _wire(dispatch, kind="reconcile", outcome="reconciled"))
+    again = reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch)
+    assert again is not None and again.attempt_id == marker.attempt_id
+
+
+def test_only_a_settled_reconcile_of_the_named_dispatch_and_target_is_a_marker(
+    db, enrolled
+) -> None:  # type: ignore[no-untyped-def]
+    from dotmac_deployment_control import reconcile_marker
+
+    dispatch = _dispatch_id(db)
+    # A failed reconcile settles nothing; a deploy report is not a reconcile.
+    _send(db, _wire(dispatch, kind="reconcile", outcome="failed", reason="busy"))
+    _send(db, _wire(dispatch, kind="deploy", outcome="succeeded"))
+    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch) is None
+    # Refused arrivals leave nothing: a mismatched target, an unbound dispatch.
+    _send(
+        db, _wire(dispatch, kind="reconcile", outcome="reconciled", target_ref="tgt-x")
+    )
+    other = str(uuid.uuid4())
+    _send(db, _wire(other, kind="reconcile", outcome="reconciled"))
+    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch) is None
+    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=other) is None
+    # `not_needed` settles it, and the marker is per target and per dispatch.
+    # A retry carries its own observed_at, so the failed one does not block it.
+    retry = _wire(
+        dispatch,
+        kind="reconcile",
+        outcome="not_needed",
+        observed_at="2026-09-01T12:05:00Z",
+    )
+    assert _send(db, retry).disposition == ObservationDisposition.ACCEPTED.value
+    assert reconcile_marker(db, target_ref="tgt-acme-1", dispatch_id=dispatch)
+    assert reconcile_marker(db, target_ref="tgt-other", dispatch_id=dispatch) is None
