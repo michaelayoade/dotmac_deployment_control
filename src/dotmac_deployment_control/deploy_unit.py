@@ -139,7 +139,6 @@ JOB_ARG_TYPES: Final = frozenset({"string", "path", "enum", "bool", "int", "sha2
 MAX_JOB_TIMEOUT_SECONDS: Final = 3600 - 120
 JOB_LEASE_MARGIN: Final = 120
 _FLAG: Final = re.compile(r"--[a-z][a-z0-9-]{0,62}")
-_SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
 
 #: A material whose NAME says it is a secret may only point at a FILE (a `path`
 #: param), never carry a value. Enforced here, at descriptor parse (so product
@@ -244,7 +243,7 @@ class JobSpec:
     #: is not declared here is refused at propose, so there is no free-form argv.
     args: tuple[JobArgSpec, ...] = ()
     #: Upper bound on the run, signed into a dispatch plan (declared, no default).
-    timeout_seconds: int = 1
+    run_limit_seconds: int = 1
 
     def argv(self, values: Mapping[str, object] | None = None) -> tuple[str, ...]:
         """`command` followed by `[flag, value]` per supplied declared arg.
@@ -313,7 +312,7 @@ class JobArgSpec:
             )
         if self.type == "enum" and value not in self.choices:
             raise DeployUnitError(f"{self.flag} is one of {list(self.choices)}")
-        if self.type == "sha256" and not _SHA256_HEX.fullmatch(value):
+        if self.type == "sha256" and not is_canonical_digest(f"sha256:{value}"):
             raise DeployUnitError(f"{self.flag} is a sha256 in hex")
         if self.type == "path" and (
             not value.startswith("/") or ".." in value.split("/")
@@ -1069,7 +1068,7 @@ def _parse_job(index: int, table: object) -> JobSpec:
         runbook=runbook,
         role=role,
         args=args,
-        timeout_seconds=timeout,
+        run_limit_seconds=timeout,
     )
 
 

@@ -197,9 +197,12 @@ def _descriptor_text(
             if name in omit_bindings:
                 continue
             state = "" if name in active else 'state = "pre_staged"\n'
+            # Distinct roles: a role is all-or-nothing active (F3), so a test can
+            # activate one binding without tripping the other's role.
+            role = "app" if name == "API_SECRET" else "db"
             out += (
                 f'[[bindings]]\nname = "{name}"\n{state}kind = "key"\n'
-                'roles = ["app"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
+                f'roles = ["{role}"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
                 "single_use = false\n"
             )
     if job_materials:
@@ -395,7 +398,7 @@ def _propose(db, target_id, source, inputs=_INPUTS):  # type: ignore[no-untyped-
         ProposePlanCommand(
             command_id=_cmd(),
             target_id=target_id,
-            operation="run_job" if inputs.job else "deploy",
+            operation="run_job" if inputs and inputs.job else "deploy",
             descriptor_digest=_DESC,
             execution_plan_digest=_EXEC,
             purpose="foundation_execution",
@@ -1239,7 +1242,10 @@ def test_active_binding_roles_are_derived_and_bound_into_the_plan(db: Session) -
     source = FakeSource(text=text)
     erp = _bound_target(db, source)
     binding = _binding_of(_propose(db, erp.id, source))
-    assert binding["roles"] == [{"role": "app", "single_use": False}]
+    assert binding["roles"] == [
+        {"role": "app", "single_use": False},
+        {"role": "db", "single_use": False},
+    ]
     assert binding["primary_service"] == "dotmac-erp-v2"
     # The OpenBao naming comes from the descriptor and the target, in the plan.
     assert binding["secrets_namespace"] == "erp"
@@ -1753,7 +1759,7 @@ def test_a_dispatch_plan_names_one_existing_job(db: Session) -> None:
     # The plan digest covers the job: a serving plan is a different plan.
     assert one.plan_digest != _propose(db, erp.id, source).plan_digest
     # The operation and the job agree: run_job names a job, nothing else does.
-    with pytest.raises(PlanRefusedError, match="names its job"):
+    with pytest.raises(PlanRefusedError, match="belong to a run_job"):
         _propose(db, erp.id, source, DeployPlanInputs(900, 5000, None, _ARGS))
     with pytest.raises(PlanRefusedError):
         svc.propose_plan(
@@ -1784,7 +1790,9 @@ def test_a_changed_closed_argv_moves_the_plan_digest(db: Session) -> None:
     one = FakeSource(import_job=True)
     erp = _import_target(db, one)
     first = _propose(db, erp.id, one, _JOB)
-    other = DeployPlanInputs(900, 5000, job="import", job_args={"--mode": "plan"})
+    other = DeployPlanInputs(
+        900, 5000, job="import", job_args={"--mode": "plan"}, job_params=_JP
+    )
     second = _propose(db, erp.id, one, other)
     assert _binding_of(second)["dispatched_job"]["argv"] == [
         "run",
@@ -1796,7 +1804,7 @@ def test_a_changed_closed_argv_moves_the_plan_digest(db: Session) -> None:
     # An undeclared flag, a bad value or a missing required one is refused.
     for args in ({"--mode": "plan", "--source-url-env": "X"}, {"--mode": "x"}, {}):
         with pytest.raises(PlanRefusedError):
-            _propose(db, erp.id, one, DeployPlanInputs(900, 5000, "import", args))
+            _propose(db, erp.id, one, DeployPlanInputs(900, 5000, "import", args, _JP))
 
 
 def test_a_role_is_all_or_nothing_active_when_minted(db: Session) -> None:

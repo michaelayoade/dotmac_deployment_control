@@ -131,7 +131,7 @@ class PlanJobDefinition:
     materials: tuple[str, ...]
     params: tuple[str, ...]
     args: tuple[dict[str, object], ...]
-    timeout_seconds: int
+    run_limit_seconds: int
 
     def payload(self) -> dict[str, object]:
         return {
@@ -141,7 +141,7 @@ class PlanJobDefinition:
             "materials": list(self.materials),
             "params": list(self.params),
             "args": [dict(a) for a in self.args],
-            "timeout_seconds": self.timeout_seconds,
+            "timeout_seconds": self.run_limit_seconds,
         }
 
 
@@ -166,7 +166,7 @@ class PlanJob:
     #: `(param name, per-dispatch value)`: entered at propose, never stored.
     params: tuple[tuple[str, str], ...]
     params_env_digest: str
-    timeout_seconds: int
+    run_limit_seconds: int
     window: PlanJobWindow | None = None
 
     def payload(self) -> dict[str, object]:
@@ -178,7 +178,7 @@ class PlanJob:
             "params": dict(sorted(self.params)),
             "params_env_digest": self.params_env_digest,
             "argv": list(self.argv),
-            "timeout_seconds": self.timeout_seconds,
+            "timeout_seconds": self.run_limit_seconds,
             "window": None if self.window is None else self.window.payload(),
         }
 
@@ -287,7 +287,7 @@ def build_deploy_binding(
                 f"the role-job lease ceiling is at most {MAX_JOB_LEASE_CEILING_SECONDS}"
                 " seconds"
             )
-        timeout = dispatched_job.timeout_seconds
+        timeout = dispatched_job.run_limit_seconds
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, int)

@@ -6172,14 +6172,14 @@ def _derive_deploy_binding(
         legacy = bind_to_plan(fleet, target_ref=target.target_ref, now=_control_now())
     dispatched: PlanJob | None = None
     if inputs.job is not None:
-        spec = next((j for j in unit.jobs if j.name == inputs.job), None)
-        if spec is None:
+        job_spec = next((j for j in unit.jobs if j.name == inputs.job), None)
+        if job_spec is None:
             raise PlanRefusedError(f"the descriptor has no job {inputs.job!r}")
         try:
             job_values = validate_job_params(
                 unit,
                 inputs.job_params,
-                job_name=spec.name,
+                job_name=job_spec.name,
                 environment=target.environment,
             )
         except DeployUnitError as exc:
@@ -6187,26 +6187,27 @@ def _derive_deploy_binding(
         scoped = {str(unit.params[n].material) for n in job_values}
         window: PlanJobWindow | None = None
         try:
-            argv = spec.argv(inputs.job_args)
+            argv = job_spec.argv(inputs.job_args)
         except DeployUnitError as exc:
             raise PlanRefusedError(str(exc)) from None
-        if spec.role is not None:
+        if job_spec.role is not None:
             # A dispatched job with a role gets its secrets ONLY from that
             # role's mint (and its own scoped params): never from the serving
             # app's params, never from a legacy file or any boot fallback.
-            carriers = [b for b in unit.bindings if spec.role in b.roles]
+            carriers = [b for b in unit.bindings if job_spec.role in b.roles]
             active_carriers = [b for b in carriers if b.state == "active"]
             if not active_carriers:
                 raise PlanMaterialUnsuppliedError(
-                    f"job {spec.name!r} logs in as role {spec.role!r} but no ACTIVE "
-                    "binding has that role, so no secret_id would carry anything"
+                    f"job {job_spec.name!r} logs in as role {job_spec.role!r} but no "
+                    "ACTIVE binding has that role, so no secret_id would carry "
+                    "anything"
                 )
-            _require_whole_role_active(unit, spec.role)
+            _require_whole_role_active(unit, job_spec.role)
             supplied = scoped | {b.name for b in active_carriers}
             try:
                 open_win = require_open(
                     _target_windows(session, target.target_ref),
-                    role=spec.role,
+                    role=job_spec.role,
                     now=_control_now(),
                 )
             except RoleJobWindowRefusedError as exc:
@@ -6223,28 +6224,28 @@ def _derive_deploy_binding(
                 | (set(active) - unit.job_credential_names())
                 | (set(legacy.names) if legacy is not None else set())
             )
-        missing = sorted(set(spec.materials) - supplied)
+        missing = sorted(set(job_spec.materials) - supplied)
         if missing:
             raise PlanMaterialUnsuppliedError(
-                f"job {spec.name!r} needs {', '.join(missing)}, which no scoped "
+                f"job {job_spec.name!r} needs {', '.join(missing)}, which no scoped "
                 "param, role binding, param or active binding in this plan supplies"
             )
         dispatched = PlanJob(
-            name=spec.name,
+            name=job_spec.name,
             argv=argv,
-            role=spec.role,
-            single_use=unit.job_role_single_use(spec),
-            materials=tuple(sorted(spec.materials)),
+            role=job_spec.role,
+            single_use=unit.job_role_single_use(job_spec),
+            materials=tuple(sorted(job_spec.materials)),
             params=tuple(sorted(job_values.items())),
             params_env_digest=params_env_digest(
                 canonical_job_render(
                     unit,
                     job_values,
-                    job_name=spec.name,
+                    job_name=job_spec.name,
                     environment=target.environment,
                 )
             ),
-            timeout_seconds=spec.timeout_seconds,
+            run_limit_seconds=job_spec.run_limit_seconds,
             window=window,
         )
     deploy_roles = unit.deploy_role_bindings() if dispatched is None else ()
@@ -6257,18 +6258,17 @@ def _derive_deploy_binding(
             "OpenBao namespace-env; set it once (set_bao_environment) before planning"
         )
     holds = [
-        values[h.timeout_param]
+        int(values.get(h.timeout_param) or unit.params[h.timeout_param].default or 0)
         for h in unit.hold_points
-        if isinstance(values.get(h.timeout_param), int)
     ]
     lease = inputs.lease_ttl_seconds
     ceiling = settings.role_job_lease_ceiling(target.target_ref)
     if dispatched is not None:
-        lease = dispatched.timeout_seconds + JOB_LEASE_MARGIN_SECONDS
+        lease = dispatched.run_limit_seconds + JOB_LEASE_MARGIN_SECONDS
         if lease > ceiling:
             raise PlanRefusedError(
                 f"job {dispatched.name!r} needs a {lease}s lease (timeout "
-                f"{dispatched.timeout_seconds}s + {JOB_LEASE_MARGIN_SECONDS}s), over "
+                f"{dispatched.run_limit_seconds}s + {JOB_LEASE_MARGIN_SECONDS}s), over "
                 f"this target's role-job lease ceiling of {ceiling}s"
             )
     return build_deploy_binding(
@@ -6305,7 +6305,7 @@ def _derive_deploy_binding(
                 materials=tuple(sorted(j.materials)),
                 params=scoped_param_names(unit, j.name),
                 args=tuple(a.payload() for a in j.args),
-                timeout_seconds=j.timeout_seconds,
+                run_limit_seconds=j.run_limit_seconds,
             )
             for j in unit.jobs
         ],
