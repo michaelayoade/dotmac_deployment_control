@@ -120,7 +120,8 @@ FOR EACH ROW EXECUTE FUNCTION {_SCHEMA}.refuse_bao_environment_change()
         ),
         sa.CheckConstraint(
             "setting_name IN ('public_pull_repositories', "
-            "'legacy_env_file_allowed_targets', 'legacy_env_file_ceiling')",
+            "'legacy_env_file_allowed_targets', 'legacy_env_file_ceiling', "
+            "'role_job_windows', 'role_job_lease_ceiling_seconds')",
             name="ck_deploy_settings_name",
         ),
         schema=_SCHEMA,

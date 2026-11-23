@@ -355,6 +355,20 @@ def test_activating_a_binding_still_in_the_legacy_names_is_refused() -> None:
 
 
 def test_a_dispatched_jobs_credentials_are_never_legacy_names() -> None:
-    for name in ("MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL"):
+    """The names are DERIVED from the verified descriptor (F6): none is baked in."""
+    for name in ("ANY_JOB_DSN", "OTHER_JOB_DSN"):
         with pytest.raises(LegacyPolicyRefusedError, match="never legacy names"):
-            _enable(_fleet(), names=(name,), secret_names={name})
+            check_policy_against_descriptor(
+                (name,),
+                descriptor_legacy_names=(name,),
+                param_materials=[],
+                active_binding_names=[],
+                job_credential_names={name},
+            )
+    check_policy_against_descriptor(
+        ("A",),
+        descriptor_legacy_names=("A",),
+        param_materials=[],
+        active_binding_names=[],
+        job_credential_names={"ANY_JOB_DSN"},
+    )

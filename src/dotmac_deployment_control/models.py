@@ -1419,7 +1419,8 @@ class DeploySetting(Base, TimestampMixin):
         ),
         CheckConstraint(
             "setting_name IN ('public_pull_repositories', "
-            "'legacy_env_file_allowed_targets', 'legacy_env_file_ceiling')",
+            "'legacy_env_file_allowed_targets', 'legacy_env_file_ceiling', "
+            "'role_job_windows', 'role_job_lease_ceiling_seconds')",
             name="ck_deploy_settings_name",
         ),
         schema_table_args(SCHEMA),

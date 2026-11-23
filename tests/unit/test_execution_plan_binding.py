@@ -453,7 +453,7 @@ class TestTheOperationVocabularyIsClosed:
         passing test is not read.
         """
         assert OPERATIONS == {member.value for member in DeploymentOperation}
-        assert OPERATIONS == {"deploy", "rollback", "recover"}
+        assert OPERATIONS == {"deploy", "rollback", "recover", "run_job"}
         assert {member.value for member in DeploymentOperation} == OPERATIONS
 
     @pytest.mark.parametrize("word", ["deploy", "rollback", "recover"])

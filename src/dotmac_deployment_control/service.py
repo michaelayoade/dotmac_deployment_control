@@ -52,7 +52,7 @@ never constructs a session.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -92,10 +92,13 @@ from dotmac_deployment_control.counterparty import (
     require_executable_operation,
 )
 from dotmac_deployment_control.deploy_binding import (
+    JOB_LEASE_MARGIN_SECONDS,
     DeploymentSet,
     DeployPlanBinding,
     DeployPlanInputs,
     PlanJob,
+    PlanJobDefinition,
+    PlanJobWindow,
     PlannedImage,
     PlanRole,
     build_deploy_binding,
@@ -107,11 +110,14 @@ from dotmac_deployment_control.deploy_settings import (
     settings_from_rows,
 )
 from dotmac_deployment_control.deploy_unit import (
+    DeployUnit,
+    DeployUnitError,
     canonical_job_render,
     canonical_render,
     is_companion_descriptor_path,
     params_env_digest,
     scoped_param_names,
+    validate_job_params,
 )
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
@@ -193,6 +199,7 @@ from dotmac_deployment_control.models import (
 )
 from dotmac_deployment_control.models import DeploymentSet as DeploymentSetRow
 from dotmac_deployment_control.operations import (
+    DeploymentOperation,
     require_operation,
 )
 from dotmac_deployment_control.ports import (
@@ -228,6 +235,15 @@ from dotmac_deployment_control.release_descriptor import (
     image_pin,
     pin_params,
     verify_release_descriptor,
+)
+from dotmac_deployment_control.role_job_window import (
+    SETTING_ROLE_JOB_WINDOWS,
+    RoleJobWindow,
+    RoleJobWindowRefusedError,
+    close_window,
+    open_window,
+    require_open,
+    windows_of,
 )
 from dotmac_deployment_control.target_api import (
     TargetApiError,
@@ -716,6 +732,33 @@ class RegisterTargetCommand:
     #: `staging` -> `staging`); any other environment must state it. A target
     #: with none cannot be descriptor-backed.
     secrets_environment: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OpenRoleJobWindowCommand:
+    """Open a role-job window (I-P): attended, with `closes_at` bounded by the
+    hard stop (C-14) recorded with it. One open window per role per target."""
+
+    command_id: str
+    target_id: UUID
+    role: str
+    window_id: str
+    closes_at: datetime
+    hard_stop_at: datetime
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CloseRoleJobWindowCommand:
+    """Close a window for good (I-C1): attended. Cancels every outstanding
+    `run_job` plan and rollout of that window."""
+
+    command_id: str
+    target_id: UUID
+    window_id: str
+    approval: AttendedApproval
+    actor_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2680,8 +2723,14 @@ def propose_plan(
         sequence = int(highest or 0) + 1
 
         derived = _derive_deploy_binding(
-            session, target, command.deploy_inputs, release_source
+            session,
+            target,
+            command.deploy_inputs,
+            release_source,
+            operation=command.operation,
         )
+        if command.operation == DeploymentOperation.RUN_JOB.value and derived is None:
+            raise PlanRefusedError("a run_job plan needs a descriptor-backed target")
         snapshot = plan_snapshot(
             target,
             descriptor_digest=command.descriptor_digest,
@@ -2726,6 +2775,10 @@ def propose_plan(
                     DeploymentPlan.status.in_(
                         (PlanStatus.DRAFT.value, PlanStatus.PROPOSED.value)
                     ),
+                    # A job run and a deploy are different consents: neither
+                    # replaces the other.
+                    (DeploymentPlan.operation == DeploymentOperation.RUN_JOB.value)
+                    == (command.operation == DeploymentOperation.RUN_JOB.value),
                 )
             )
             .scalars()
@@ -3411,6 +3464,7 @@ def dispatch_attempt(
             authorization.statement.operation,
             where=f"dispatch of rollout {rollout.id}",
         )
+        _require_window_for_plan(session, target, plan)
         dispatch_envelope = issue_dispatch_envelope(
             authorization_envelope=authorization,
             dispatch_id=str(attempt_id),
@@ -5296,6 +5350,8 @@ def observation_attempts(
 SCOPE_SET_DEPLOY_SETTING = "deployment.set_deploy_setting"
 SCOPE_SET_BAO_ENVIRONMENT = "deployment.set_bao_environment"
 SCOPE_LEGACY_POLICY = "deployment.legacy_policy"
+SCOPE_ROLE_JOB_WINDOW = "deployment.role_job_window"
+_ENTITY_ROLE_JOB_WINDOW = "role_job_window"
 SCOPE_CREATE_DEPLOYMENT_SET = "deployment.create_deployment_set"
 SCOPE_APPROVE_DEPLOYMENT_SET = "deployment.approve_deployment_set"
 SCOPE_APPROVE_DEPLOYMENT_SET_ONCE = "deployment.approve_deployment_set_once"
@@ -5413,6 +5469,9 @@ def get_deploy_settings(db: Session) -> facts.DeploySettingsView:
         public_pull_repositories=tuple(sorted(effective.pull_allowlist.repositories)),
         legacy_env_file_allowed_targets=tuple(sorted(effective.legacy_allowed_targets)),
         legacy_env_file_ceiling=effective.legacy_ceiling,
+        role_job_lease_ceilings=tuple(
+            sorted(effective.role_job_lease_ceilings.items())
+        ),
     )
 
 
@@ -5482,6 +5541,211 @@ def set_deploy_setting(
         handler=handler,
     )
     return get_deploy_settings(db)
+
+
+def _stored_windows(session: Session) -> dict[str, tuple[RoleJobWindow, ...]]:
+    row = session.get(DeploySetting, SETTING_ROLE_JOB_WINDOWS)
+    if row is None:
+        return {}
+    return {ref: windows_of(items) for ref, items in dict(row.value).items()}
+
+
+def _write_windows(
+    session: Session,
+    windows: Mapping[str, Sequence[RoleJobWindow]],
+    approval: AttendedApproval,
+) -> int:
+    value = {ref: [w.payload() for w in rows] for ref, rows in sorted(windows.items())}
+    return _write_setting(session, SETTING_ROLE_JOB_WINDOWS, value, approval)
+
+
+def _target_windows(session: Session, target_ref: str) -> tuple[RoleJobWindow, ...]:
+    return _stored_windows(session).get(target_ref, ())
+
+
+def _cancel_window_work(
+    session: Session, target: DeploymentTarget, window_id: str
+) -> list[str]:
+    """Cancel every outstanding `run_job` plan (and rollout) of a closed window."""
+    cancelled: list[str] = []
+    plans = (
+        session.execute(
+            select(DeploymentPlan).where(
+                DeploymentPlan.target_id == target.id,
+                DeploymentPlan.operation == DeploymentOperation.RUN_JOB.value,
+                DeploymentPlan.status.in_(
+                    (
+                        PlanStatus.DRAFT.value,
+                        PlanStatus.PROPOSED.value,
+                        PlanStatus.APPROVED.value,
+                    )
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for plan in plans:
+        job = ((plan.snapshot or {}).get("deploy_binding") or {}).get(
+            "dispatched_job"
+        ) or {}
+        if (job.get("window") or {}).get("window_id") != window_id:
+            continue
+        completed = datetime.now(UTC)
+        for rollout in (
+            session.execute(select(Rollout).where(Rollout.plan_id == plan.id))
+            .scalars()
+            .all()
+        ):
+            if rollout.status in TERMINAL_ROLLOUT_STATUSES:
+                continue
+            rollout.status = RolloutStatus.CANCELLED.value
+            rollout.reason = f"role-job window {window_id} closed"
+            rollout.completed_at = completed
+            rollout.record_version += 1
+            for attempt in _load_pending_attempts(session, rollout.id):
+                settlement = RolloutAttemptSettlement(
+                    id=uuid4(),
+                    attempt_id=attempt.id,
+                    outcome=AttemptOutcome.CANCELLED.value,
+                    settled_at=completed,
+                )
+                try:
+                    with conflict_savepoint(session):
+                        session.add(settlement)
+                        session.flush()
+                except IntegrityError:
+                    continue
+                attempt.settlement = settlement
+        plan.status = PlanStatus.CANCELLED.value
+        plan.record_version += 1
+        cancelled.append(str(plan.id))
+    session.flush()
+    return cancelled
+
+
+def open_role_job_window(
+    db: Session, command: OpenRoleJobWindowCommand
+) -> tuple[RoleJobWindow, ...]:
+    """Open a window under an attended approval, once per command id."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
+        command.approval.require("opening a role-job window")
+        target = _load_target_for_update(session, command.target_id)
+        every = _stored_windows(session)
+        try:
+            rows = open_window(
+                every.get(target.target_ref, ()),
+                role=command.role,
+                window_id=command.window_id,
+                now=_control_now(),
+                closes_at=command.closes_at,
+                hard_stop_at=command.hard_stop_at,
+            )
+        except RoleJobWindowRefusedError as exc:
+            raise TransitionRefusedError(str(exc)) from None
+        every[target.target_ref] = rows
+        version = _write_windows(session, every, command.approval)
+        opened = rows[-1]
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.ROLE_JOB_WINDOW_OPENED_V1,
+            entity_type=_ENTITY_ROLE_JOB_WINDOW,
+            entity_id=opened.window_id,
+            actor_ref=command.actor_ref,
+            details={
+                "target_ref": target.target_ref,
+                "setting_version": version,
+                "role": opened.role,
+                "window_id": opened.window_id,
+                "closes_at": opened.closes_at,
+                "hard_stop_at": opened.hard_stop_at,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": opened.window_id}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_ROLE_JOB_WINDOW,
+        handler=handler,
+    )
+    return _target_windows(db, _load_target(db, command.target_id).target_ref)
+
+
+def close_role_job_window(
+    db: Session, command: CloseRoleJobWindowCommand
+) -> tuple[RoleJobWindow, ...]:
+    """Close a window permanently and cancel its outstanding `run_job` work."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
+        command.approval.require("closing a role-job window")
+        target = _load_target_for_update(session, command.target_id)
+        every = _stored_windows(session)
+        try:
+            rows, closed = close_window(
+                every.get(target.target_ref, ()),
+                window_id=command.window_id,
+                now=_control_now(),
+            )
+        except RoleJobWindowRefusedError as exc:
+            raise TransitionRefusedError(str(exc)) from None
+        every[target.target_ref] = rows
+        version = _write_windows(session, every, command.approval)
+        cancelled = _cancel_window_work(session, target, closed.window_id)
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.ROLE_JOB_WINDOW_CLOSED_V1,
+            entity_type=_ENTITY_ROLE_JOB_WINDOW,
+            entity_id=closed.window_id,
+            actor_ref=command.actor_ref,
+            details={
+                "target_ref": target.target_ref,
+                "setting_version": version,
+                "role": closed.role,
+                "window_id": closed.window_id,
+                "closed_at": closed.closed_at,
+                "cancelled_plans": cancelled,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": closed.window_id}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_ROLE_JOB_WINDOW,
+        handler=handler,
+    )
+    return _target_windows(db, _load_target(db, command.target_id).target_ref)
+
+
+def _require_window_for_plan(
+    session: Session, target: DeploymentTarget, plan: DeploymentPlan
+) -> None:
+    """At DISPATCH of a `run_job` plan: its window is still open and unexpired."""
+    if plan.operation != DeploymentOperation.RUN_JOB.value:
+        return
+    job = ((plan.snapshot or {}).get("deploy_binding") or {}).get("dispatched_job")
+    window = (job or {}).get("window")
+    if not job or not window:
+        raise PlanRefusedError("a run_job plan binds a dispatched job with a window")
+    try:
+        require_open(
+            _target_windows(session, target.target_ref),
+            role=str(job["role"]),
+            now=_control_now(),
+            window_id=str(window["window_id"]),
+        )
+    except RoleJobWindowRefusedError as exc:
+        raise TransitionRefusedError(str(exc)) from None
 
 
 def _latest_policy_rows(session: Session) -> dict[UUID, LegacyEnvPolicyVersion]:
@@ -5618,6 +5882,7 @@ def _legacy_transition(
                     p.material for p in verified.unit.params.values() if p.material
                 ],
                 active_binding_names=verified.unit.active_binding_names(),
+                job_credential_names=verified.unit.job_credential_names(),
             )
             after = enable_policy(
                 fleet,
@@ -5653,6 +5918,7 @@ def _legacy_transition(
                     p.material for p in verified.unit.params.values() if p.material
                 ],
                 active_binding_names=verified.unit.active_binding_names(),
+                job_credential_names=verified.unit.job_credential_names(),
             )
         elif isinstance(command, ReviseLegacyPolicyCommand):
             after = revise_policy(
@@ -5786,6 +6052,8 @@ def _derive_deploy_binding(
     target: DeploymentTarget,
     inputs: DeployPlanInputs | None,
     source: ReleaseDescriptorSource | None,
+    *,
+    operation: str = DeploymentOperation.DEPLOY.value,
 ) -> DeployPlanBinding | None:
     """Re-verify the descriptor and DERIVE the whole plan binding from it.
 
@@ -5812,6 +6080,14 @@ def _derive_deploy_binding(
             "and loopback port); a plan without a binding would freeze no params "
             "digest, TTL, image source or legacy part"
         )
+    runs_job = operation == DeploymentOperation.RUN_JOB.value
+    if runs_job != (inputs.job is not None):
+        raise PlanRefusedError(
+            "a run_job plan names its job, and no other plan does: operation "
+            f"{operation!r} with job {inputs.job!r}"
+        )
+    if inputs.job_args and not runs_job:
+        raise PlanRefusedError("job arguments belong to a run_job plan")
     settings = _effective_settings(session)
     verified = _verified_stored_descriptor(session, target, settings, source)
     if verified.product_toml_sha256 is None:
@@ -5890,60 +6166,111 @@ def _derive_deploy_binding(
             ),
             param_materials=materials,
             active_binding_names=active,
+            job_credential_names=unit.job_credential_names(),
         )
         refuse_activation_of_legacy_names(active, policy.names)
         legacy = bind_to_plan(fleet, target_ref=target.target_ref, now=_control_now())
-    jobs: list[PlanJob] = []
-    for job in unit.jobs:
-        scoped_names = scoped_param_names(unit, job.name)
-        scoped = {str(unit.params[n].material) for n in scoped_names}
-        if job.role is not None:
+    dispatched: PlanJob | None = None
+    if inputs.job is not None:
+        spec = next((j for j in unit.jobs if j.name == inputs.job), None)
+        if spec is None:
+            raise PlanRefusedError(f"the descriptor has no job {inputs.job!r}")
+        try:
+            job_values = validate_job_params(
+                unit,
+                inputs.job_params,
+                job_name=spec.name,
+                environment=target.environment,
+            )
+        except DeployUnitError as exc:
+            raise PlanRefusedError(str(exc)) from None
+        scoped = {str(unit.params[n].material) for n in job_values}
+        window: PlanJobWindow | None = None
+        try:
+            argv = spec.argv(inputs.job_args)
+        except DeployUnitError as exc:
+            raise PlanRefusedError(str(exc)) from None
+        if spec.role is not None:
             # A dispatched job with a role gets its secrets ONLY from that
             # role's mint (and its own scoped params): never from the serving
             # app's params, never from a legacy file or any boot fallback.
-            role_names = {
-                b.name
-                for b in unit.bindings
-                if b.state == "active" and job.role in b.roles
-            }
-            if not role_names:
+            carriers = [b for b in unit.bindings if spec.role in b.roles]
+            active_carriers = [b for b in carriers if b.state == "active"]
+            if not active_carriers:
                 raise PlanMaterialUnsuppliedError(
-                    f"job {job.name!r} logs in as role {job.role!r} but no ACTIVE "
+                    f"job {spec.name!r} logs in as role {spec.role!r} but no ACTIVE "
                     "binding has that role, so no secret_id would carry anything"
                 )
-            supplied = scoped | role_names
+            _require_whole_role_active(unit, spec.role)
+            supplied = scoped | {b.name for b in active_carriers}
+            try:
+                open_win = require_open(
+                    _target_windows(session, target.target_ref),
+                    role=spec.role,
+                    now=_control_now(),
+                )
+            except RoleJobWindowRefusedError as exc:
+                raise PlanRefusedError(str(exc)) from None
+            window = PlanJobWindow(open_win.window_id, open_win.closes_at)
         else:
+            # A role-less job never takes a dispatched job's credentials.
+            unscoped = {
+                p.material for p in unit.params.values() if p.material and not p.jobs
+            }
             supplied = (
-                set(materials)
-                | set(active)
+                scoped
+                | unscoped
+                | (set(active) - unit.job_credential_names())
                 | (set(legacy.names) if legacy is not None else set())
             )
-        missing = sorted(set(job.materials) - supplied)
+        missing = sorted(set(spec.materials) - supplied)
         if missing:
             raise PlanMaterialUnsuppliedError(
-                f"job {job.name!r} needs {', '.join(missing)}, which no scoped "
+                f"job {spec.name!r} needs {', '.join(missing)}, which no scoped "
                 "param, role binding, param or active binding in this plan supplies"
             )
-        jobs.append(
-            PlanJob(
-                name=job.name,
-                role=job.role,
-                single_use=unit.job_role_single_use(job),
-                materials=tuple(sorted(job.materials)),
-                params=scoped_names,
-                params_env_digest=params_env_digest(
-                    canonical_job_render(
-                        unit, values, job_name=job.name, environment=target.environment
-                    )
-                ),
-            )
+        dispatched = PlanJob(
+            name=spec.name,
+            argv=argv,
+            role=spec.role,
+            single_use=unit.job_role_single_use(spec),
+            materials=tuple(sorted(spec.materials)),
+            params=tuple(sorted(job_values.items())),
+            params_env_digest=params_env_digest(
+                canonical_job_render(
+                    unit,
+                    job_values,
+                    job_name=spec.name,
+                    environment=target.environment,
+                )
+            ),
+            timeout_seconds=spec.timeout_seconds,
+            window=window,
         )
-    deploy_roles = unit.deploy_role_bindings()
-    if (deploy_roles or unit.job_roles()) and target.bao_environment is None:
+    deploy_roles = unit.deploy_role_bindings() if dispatched is None else ()
+    for role, _single in deploy_roles:
+        _require_whole_role_active(unit, role)
+    mints_roles = bool(deploy_roles) or bool(dispatched and dispatched.role)
+    if mints_roles and target.bao_environment is None:
         raise PlanRefusedError(
             f"target {target.target_ref} has roles to mint secret_ids for but no "
             "OpenBao namespace-env; set it once (set_bao_environment) before planning"
         )
+    holds = [
+        values[h.timeout_param]
+        for h in unit.hold_points
+        if isinstance(values.get(h.timeout_param), int)
+    ]
+    lease = inputs.lease_ttl_seconds
+    ceiling = settings.role_job_lease_ceiling(target.target_ref)
+    if dispatched is not None:
+        lease = dispatched.timeout_seconds + JOB_LEASE_MARGIN_SECONDS
+        if lease > ceiling:
+            raise PlanRefusedError(
+                f"job {dispatched.name!r} needs a {lease}s lease (timeout "
+                f"{dispatched.timeout_seconds}s + {JOB_LEASE_MARGIN_SECONDS}s), over "
+                f"this target's role-job lease ceiling of {ceiling}s"
+            )
     return build_deploy_binding(
         deploy_unit_digest=verified.digest,
         product_toml_sha256=verified.product_toml_sha256,
@@ -5958,17 +6285,47 @@ def _derive_deploy_binding(
                 planned_digest=evidence.image_digest,
             )
         ],
-        lease_ttl_seconds=inputs.lease_ttl_seconds,
+        lease_ttl_seconds=lease,
         allowlist=settings.pull_allowlist,
         legacy=legacy,
-        companion_order="after_primary_ready" if unit.companions else None,
-        active_binding_names=active,
+        companion_order=(
+            "after_primary_ready" if unit.companions and dispatched is None else None
+        ),
+        active_binding_names=unit.serving_binding_names(),
+        job_binding_names=unit.job_binding_names(),
         roles=[PlanRole(role, single) for role, single in deploy_roles],
         primary_service=unit.product,
         secrets_namespace=unit.secrets_namespace,
         secrets_environment=target.bao_environment,
-        jobs=jobs,
+        jobs=[
+            PlanJobDefinition(
+                name=j.name,
+                role=j.role,
+                command=j.command,
+                materials=tuple(sorted(j.materials)),
+                params=scoped_param_names(unit, j.name),
+                args=tuple(a.payload() for a in j.args),
+                timeout_seconds=j.timeout_seconds,
+            )
+            for j in unit.jobs
+        ],
+        dispatched_job=dispatched,
+        min_lease_seconds=max(holds, default=0),
+        job_lease_ceiling_seconds=ceiling,
     )
+
+
+def _require_whole_role_active(unit: DeployUnit, role: str) -> None:
+    """A secret_id is per ROLE and renders every path the role's policy reads, so
+    a role is all-or-nothing: no pre-staged binding may ride along with it."""
+    inactive = sorted(
+        b.name for b in unit.bindings if role in b.roles and b.state != "active"
+    )
+    if inactive:
+        raise PlanRefusedError(
+            f"role {role!r} would be minted while {', '.join(inactive)} "
+            "is not active; a role's bindings are all active or none"
+        )
 
 
 def _require_frozen_descriptor(plan: DeploymentPlan, digest: str, role: str) -> None:
@@ -6273,6 +6630,7 @@ __all__ = [
     "SCOPE_REVOKE_CREDENTIAL",
     "SCOPE_REVOKE_PLAN_APPROVAL",
     "SCOPE_SETTLE",
+    "SCOPE_ROLE_JOB_WINDOW",
     "SCOPE_SET_BAO_ENVIRONMENT",
     "SCOPE_SET_DEPLOY_SETTING",
     "SCOPE_SET_DESIRED",
@@ -6293,6 +6651,8 @@ __all__ = [
     "ReviseLegacyPolicyCommand",
     "RevokePlanApprovalCommand",
     "RolloutTransitionCommand",
+    "CloseRoleJobWindowCommand",
+    "OpenRoleJobWindowCommand",
     "SetBaoEnvironmentCommand",
     "SetDeploySettingCommand",
     "SetDesiredStateCommand",
@@ -6341,6 +6701,8 @@ __all__ = [
     "revoke_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
+    "close_role_job_window",
+    "open_role_job_window",
     "set_bao_environment",
     "set_deploy_setting",
     "set_desired_state",

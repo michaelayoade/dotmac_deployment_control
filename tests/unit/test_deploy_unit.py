@@ -18,6 +18,7 @@ from dotmac_deployment_control.deploy_unit import (
     parse_deploy_unit,
     parse_secret_ref,
     scoped_param_names,
+    validate_job_params,
     validate_param_value,
     validate_params,
 )
@@ -344,6 +345,7 @@ single_use = true
 [[jobs]]
 name = "import"
 command = ["python", "-m", "erp_v2.importer", "execute"]
+timeout_seconds = 600
 trigger = "operator"
 materials = ["MIGRATION_DATABASE_URL"]
 runbook = "docs/rehearsal.md"
@@ -573,6 +575,7 @@ single_use = true
 name = "import"
 role = "import"
 command = ["python", "-m", "erp_v2.importer", "execute"]
+timeout_seconds = 600
 trigger = "operator"
 materials = [
   "MIGRATION_DATABASE_URL",
@@ -616,7 +619,10 @@ def test_scoped_params_reach_only_their_job_never_the_app_render() -> None:
     unit = parse_deploy_unit(_IMPORT)
     values = {"import_approved": "true", "import_payable": "acct.net-payable"}
     image = "127.0.0.1:5000/team/app@sha256:" + "1" * 64
-    app = canonical_render(unit, values, app_image=image, environment="production")
+    # Per-dispatch values are not desired state: the app render takes none.
+    with pytest.raises(ParamRefusedError, match="per-dispatch"):
+        canonical_render(unit, values, app_image=image, environment="production")
+    app = canonical_render(unit, {}, app_image=image, environment="production")
     assert app == f"APP_IMAGE={image}\nWORKERS=2\n".encode()
     assert b"ERP_IMPORT" not in app
     assert b"PAYABLE" not in app
@@ -634,6 +640,14 @@ def test_scoped_params_reach_only_their_job_never_the_app_render() -> None:
     assert params_env_digest(
         canonical_render(flat, values, app_image=image, environment="production")
     ) != params_env_digest(app)
+    # A job-scoped value is validated, defaulted ("0"/false) and refused if stray.
+    assert validate_job_params(
+        unit, {}, job_name="import", environment="production"
+    ) == {"import_approved": "false"}
+    with pytest.raises(ParamRefusedError, match="no scoped param"):
+        validate_job_params(
+            unit, {"workers": 3}, job_name="import", environment="production"
+        )
 
 
 def test_job_credentials_are_never_legacy_names_or_app_materials() -> None:
@@ -690,3 +704,202 @@ def test_the_import_role_refuses_a_mixed_secret_id_mode() -> None:
         parse_deploy_unit(mixed)
     unit = parse_deploy_unit(_IMPORT)
     assert dict(unit.role_bindings())["import"] is True
+
+
+_ARG_TABLES = """
+[[jobs.args]]
+flag = "--mode"
+type = "enum"
+choices = ["plan", "execute"]
+required = true
+
+[[jobs.args]]
+flag = "--apply"
+type = "bool"
+
+[[jobs.args]]
+flag = "--plan-sha"
+type = "sha256"
+
+[[jobs.args]]
+flag = "--receipt"
+type = "path"
+pattern = "^/work/[a-z0-9._-]+$"
+required = true
+
+[[jobs.args]]
+flag = "--limit"
+type = "int"
+"""
+
+
+def _with_args(extra: str = _ARG_TABLES) -> str:
+    return _IMPORT.rstrip("\n") + "\n" + extra
+
+
+def test_a_job_carries_a_closed_argv_of_declared_flags() -> None:
+    unit = parse_deploy_unit(_with_args())
+    job = unit.jobs[0]
+    sha = "ab" * 32
+    argv = job.argv(
+        {
+            "--receipt": "/work/r.json",
+            "--mode": "execute",
+            "--plan-sha": sha,
+            "--apply": True,
+            "--limit": 5,
+        }
+    )
+    # Descriptor order, not caller order; a true bool is the bare flag.
+    assert argv == (
+        "python",
+        "-m",
+        "erp_v2.importer",
+        "execute",
+        "--mode",
+        "execute",
+        "--apply",
+        "--plan-sha",
+        sha,
+        "--receipt",
+        "/work/r.json",
+        "--limit",
+        "5",
+    )
+    # A false bool and an unset optional are simply absent.
+    assert job.argv({"--mode": "plan", "--receipt": "/work/a", "--apply": False}) == (
+        "python",
+        "-m",
+        "erp_v2.importer",
+        "execute",
+        "--mode",
+        "plan",
+        "--receipt",
+        "/work/a",
+    )
+
+
+def test_an_undeclared_missing_or_bad_argument_is_refused() -> None:
+    job = parse_deploy_unit(_with_args()).jobs[0]
+    good = {"--mode": "plan", "--receipt": "/work/a"}
+    assert job.argv(good)
+    for bad in (
+        {**good, "--source-url-env": "X"},  # undeclared: never passable
+        {"--receipt": "/work/a"},  # required missing
+        {**good, "--mode": "other"},  # not a choice
+        {**good, "--receipt": "/etc/passwd"},  # outside the work dir pattern
+        {**good, "--receipt": "/work/../etc"},  # traversal
+        {**good, "--receipt": "relative"},
+        {**good, "--plan-sha": "xyz"},
+        {**good, "--limit": "5; rm"},
+        {**good, "--apply": "yes"},
+        {**good, "--mode": "plan\x00"},
+    ):
+        with pytest.raises(DeployUnitError):
+            job.argv(bad)
+
+
+def test_a_secret_shaped_argument_value_is_refused() -> None:
+    text = _with_args(
+        '[[jobs.args]]\nflag = "--label"\ntype = "string"\nmax_length = 200\n'
+    )
+    job = parse_deploy_unit(text).jobs[0]
+    assert job.argv({"--label": "cutover"})
+    for secret in ("postgresql://u:pw@h/db", "ghp_" + "a" * 36, "-----BEGIN KEY-----"):
+        with pytest.raises(DeployUnitError, match="secret"):
+            job.argv({"--label": secret})
+
+
+def test_job_arg_tables_are_validated_at_parse() -> None:
+    def table(body: str) -> str:
+        return _with_args("[[jobs.args]]\n" + body)
+
+    for bad in (
+        'flag = "mode"\ntype = "string"',  # not --flag
+        'flag = "--Mode"\ntype = "string"',
+        'flag = "--x"\ntype = "blob"',
+        'flag = "--x"\ntype = "enum"',  # enum needs choices
+        'flag = "--x"\ntype = "string"\nchoices = ["a"]',
+        'flag = "--x"\ntype = "path"',  # a path needs a work-dir pattern
+        'flag = "--x"\ntype = "path"\npattern = "work/.*"',  # not anchored at /
+        'flag = "--x"\ntype = "string"\npattern = "("',
+        'flag = "--x"\ntype = "string"\nmax_length = 999',
+        'flag = "--x"\ntype = "string"\nextra = 1',
+    ):
+        with pytest.raises(DeployUnitError):
+            parse_deploy_unit(table(bad))
+    twice = _with_args(
+        '[[jobs.args]]\nflag = "--x"\ntype = "bool"\n'
+        '[[jobs.args]]\nflag = "--x"\ntype = "bool"\n'
+    )
+    with pytest.raises(DeployUnitError, match="twice"):
+        parse_deploy_unit(twice)
+
+
+def test_every_job_declares_its_timeout() -> None:
+    assert parse_deploy_unit(_IMPORT).jobs[0].timeout_seconds == 600
+    missing = _IMPORT.replace("timeout_seconds = 600\n", "", 1)
+    with pytest.raises(DeployUnitError, match="timeout_seconds"):
+        parse_deploy_unit(missing)
+    for bad in ("0", "3481", '"60"', "true"):
+        with pytest.raises(DeployUnitError, match="timeout_seconds"):
+            parse_deploy_unit(
+                _IMPORT.replace("timeout_seconds = 600", f"timeout_seconds = {bad}", 1)
+            )
+    assert (
+        parse_deploy_unit(
+            _IMPORT.replace("timeout_seconds = 600", "timeout_seconds = 3480", 1)
+        )
+        .jobs[0]
+        .timeout_seconds
+        == 3480
+    )
+
+
+def test_a_role_less_job_can_never_name_a_job_credential() -> None:
+    """F4: no role, no import-only credentials, even if they are active."""
+    text = _IMPORT.replace(
+        '[[jobs]]\nname = "import"',
+        '[[jobs]]\nname = "plain"\ncommand = ["x"]\ntimeout_seconds = 5\n'
+        'trigger = "operator"\n'
+        'materials = ["LEGACY_DATABASE_URL"]\nrunbook = "docs/rehearsal.md"\n\n'
+        '[[jobs]]\nname = "import"',
+    )
+    with pytest.raises(DeployUnitError, match="has no role"):
+        parse_deploy_unit(text)
+
+
+def test_a_job_cannot_claim_a_serving_role() -> None:
+    """F5: `app` is carried by a serving binding no job consumes; a job logging
+    in as `app` would silently take the app's credentials from the mint."""
+    serving = _IMPORT.replace(
+        "[[jobs]]",
+        '[[bindings]]\nname = "APP_DB"\nkind = "pg_login_dsn"\nroles = ["app"]\n'
+        'writer = "ceremony"\nrotation = "copy_only"\nsingle_use = false\n\n'
+        "[[jobs]]",
+        1,
+    )
+    assert parse_deploy_unit(serving).deploy_role_bindings() == (
+        ("app", False),
+        ("migrate", True),
+    )
+    with pytest.raises(DeployUnitError, match="also a serving role"):
+        parse_deploy_unit(serving.replace('role = "import"', 'role = "app"', 1))
+
+
+def test_job_credentials_are_derived_from_the_descriptor_not_named_in_control() -> None:
+    """F6/F7: other product names behave the same; nothing is hard-coded."""
+    text = _IMPORT.replace("MIGRATION_DATABASE_URL", "ALPHA_DSN").replace(
+        "LEGACY_DATABASE_URL", "BETA_DSN"
+    )
+    unit = parse_deploy_unit(text)
+    assert unit.job_credential_names() == frozenset({"ALPHA_DSN", "BETA_DSN"})
+    assert unit.serving_binding_names() == ("ALPHA_DSN",)
+    assert unit.job_binding_names() == ("ALPHA_DSN", "BETA_DSN")
+    assert unit.active_binding_names() == ("ALPHA_DSN", "BETA_DSN")
+    legacy = text + (
+        '\n[legacy_env_file]\nnames = ["BETA_DSN"]\npath_param = "legacy_path"\n'
+        '[params.legacy_path]\ntype = "path"\n'
+    )
+    with pytest.raises(DeployUnitError, match="never include a dispatched job"):
+        parse_deploy_unit(legacy, legacy_allowed=True)

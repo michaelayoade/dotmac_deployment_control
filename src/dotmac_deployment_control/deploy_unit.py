@@ -128,11 +128,18 @@ _SECRET_SHAPES: Final = (
     re.compile(r"\bsk-[A-Za-z0-9]{20,}"),
     re.compile(r"://[^/\s:@]*:[^/\s@]+@"),
 )
-#: Credentials that belong to a DISPATCHED job and to nothing else: never a
-#: `[legacy_env_file]` name, never a material of the serving app (an unscoped
-#: param). They reach a job only through its role's OpenBao mint, never through
-#: a boot, sealed or legacy fallback.
-JOB_ONLY_MATERIALS: Final = frozenset({"MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL"})
+#: The closed argv of a job: only DECLARED flags, each typed, bounded and
+#: secret-checked. A run's values are entered at propose, never free-form.
+MAX_JOB_ARG_VALUE: Final = 240
+MAX_JOB_ARGS: Final = 32
+JOB_ARG_TYPES: Final = frozenset({"string", "path", "enum", "bool", "int", "sha256"})
+#: A job's own run-time bound, declared by EVERY job. The dispatch plan's lease is
+#: this plus a margin and must fit the target's `role_job_lease_ceiling_seconds`
+#: (default 900, hard maximum 3600); the lease margin is 120 s.
+MAX_JOB_TIMEOUT_SECONDS: Final = 3600 - 120
+JOB_LEASE_MARGIN: Final = 120
+_FLAG: Final = re.compile(r"--[a-z][a-z0-9-]{0,62}")
+_SHA256_HEX: Final = re.compile(r"[0-9a-f]{64}")
 
 #: A material whose NAME says it is a secret may only point at a FILE (a `path`
 #: param), never carry a value. Enforced here, at descriptor parse (so product
@@ -223,7 +230,7 @@ class BindingSpec:
 
 @dataclass(frozen=True, slots=True)
 class JobSpec:
-    """An operator-triggered one-shot. Its arguments come from the runbook."""
+    """An operator-triggered one-shot with a CLOSED argv (`[[jobs.args]]`)."""
 
     name: str
     command: tuple[str, ...]
@@ -233,6 +240,96 @@ class JobSpec:
     #: The OpenBao role a DISPATCHED job logs in as (e.g. `import`). Its secret_id
     #: is minted only when the job is dispatched, never for the serving app.
     role: str | None = None
+    #: The DECLARED per-run arguments. Nothing else may be appended: a flag that
+    #: is not declared here is refused at propose, so there is no free-form argv.
+    args: tuple[JobArgSpec, ...] = ()
+    #: Upper bound on the run, signed into a dispatch plan (declared, no default).
+    timeout_seconds: int = 1
+
+    def argv(self, values: Mapping[str, object] | None = None) -> tuple[str, ...]:
+        """`command` followed by `[flag, value]` per supplied declared arg.
+
+        Descriptor order, not caller order. A bool is the bare flag when true and
+        absent when false. Every value is checked against its declaration and
+        against the secret shapes; an undeclared flag or a missing required one
+        is a refusal.
+        """
+        supplied = dict(values or {})
+        declared = {arg.flag for arg in self.args}
+        stray = sorted(set(supplied) - declared)
+        if stray:
+            raise DeployUnitError(
+                f"job {self.name!r} declares no argument {', '.join(stray)}"
+            )
+        out = list(self.command)
+        for arg in self.args:
+            if arg.flag not in supplied:
+                if arg.required:
+                    raise DeployUnitError(
+                        f"job {self.name!r} requires argument {arg.flag}"
+                    )
+                continue
+            out.extend(arg.render(supplied[arg.flag]))
+        return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
+class JobArgSpec:
+    """One declared per-run argument of a job (`[[jobs.args]]`)."""
+
+    flag: str
+    type: str
+    required: bool = False
+    pattern: str | None = None
+    choices: tuple[str, ...] = ()
+    max_length: int = MAX_JOB_ARG_VALUE
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "flag": self.flag,
+            "type": self.type,
+            "required": self.required,
+            "pattern": self.pattern,
+            "choices": list(self.choices),
+            "max_length": self.max_length,
+        }
+
+    def render(self, value: object) -> tuple[str, ...]:
+        """The `[flag, value]` (or bare flag) for a checked value."""
+        if self.type == "bool":
+            if not isinstance(value, bool):
+                raise DeployUnitError(f"{self.flag} is a bool")
+            return (self.flag,) if value else ()
+        if self.type == "int":
+            text = value if isinstance(value, str) else str(value)
+            if isinstance(value, bool) or not _INT.fullmatch(text):
+                raise DeployUnitError(f"{self.flag} is an integer")
+            return (self.flag, text)
+        if not isinstance(value, str):
+            raise DeployUnitError(f"{self.flag} is a string")
+        if not value or "\x00" in value or len(value) > self.max_length:
+            raise DeployUnitError(
+                f"{self.flag} is 1..{self.max_length} characters, no NUL"
+            )
+        if self.type == "enum" and value not in self.choices:
+            raise DeployUnitError(f"{self.flag} is one of {list(self.choices)}")
+        if self.type == "sha256" and not _SHA256_HEX.fullmatch(value):
+            raise DeployUnitError(f"{self.flag} is a sha256 in hex")
+        if self.type == "path" and (
+            not value.startswith("/") or ".." in value.split("/")
+        ):
+            raise DeployUnitError(f"{self.flag} is an absolute path without '..'")
+        if self.pattern is not None and not re.fullmatch(self.pattern, value):
+            raise DeployUnitError(f"{self.flag} does not match its declared pattern")
+        # A sha256 is high-entropy by nature; it is checked for secret SHAPES only.
+        secretish = (
+            _looks_secret(value)
+            if self.type == "sha256"
+            else looks_secret_shaped(value)
+        )
+        if secretish:
+            raise DeployUnitError(f"{self.flag} looks like a secret value")
+        return (self.flag, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +384,38 @@ class DeployUnit:
         """Roles claimed by a dispatched job: minted for that job only."""
         return frozenset(job.role for job in self.jobs if job.role)
 
+    def job_credential_names(self) -> frozenset[str]:
+        """Names of bindings carrying a job role: a dispatched job's credentials.
+
+        DERIVED from the descriptor (no product names live in Control). They are
+        never a `[legacy_env_file]` name, never an unscoped (app) param material
+        and never supplied to a role-less job; they reach a job only through its
+        role's OpenBao mint, never through a boot, sealed or legacy fallback.
+        """
+        return _job_credential_names(self.bindings, self.jobs)
+
+    def serving_binding_names(self) -> tuple[str, ...]:
+        """ACTIVE bindings with at least one SERVING (non-job) role."""
+        job_roles = self.job_roles()
+        return tuple(
+            sorted(
+                b.name
+                for b in self.bindings
+                if b.state == BINDING_ACTIVE and set(b.roles) - job_roles
+            )
+        )
+
+    def job_binding_names(self) -> tuple[str, ...]:
+        """ACTIVE bindings carrying a job role (see `job_credential_names`)."""
+        job_roles = self.job_roles()
+        return tuple(
+            sorted(
+                b.name
+                for b in self.bindings
+                if b.state == BINDING_ACTIVE and set(b.roles) & job_roles
+            )
+        )
+
     def role_bindings(self) -> tuple[tuple[str, bool], ...]:
         """`(role, single_use)` for every role of an ACTIVE binding, sorted.
 
@@ -331,7 +460,11 @@ class DeployUnit:
         }
 
     def active_binding_names(self) -> tuple[str, ...]:
-        """Names of bindings that are real delivery sources (not pre-staged)."""
+        """Names of ALL bindings that are real delivery sources (not pre-staged).
+
+        Serving AND job credentials: use `serving_binding_names` for what the
+        serving deploy can be handed and `job_binding_names` for a job's.
+        """
         return tuple(sorted(b.name for b in self.bindings if b.state == BINDING_ACTIVE))
 
 
@@ -565,8 +698,16 @@ def validate_params(
     unknown = sorted(set(values) - set(unit.params))
     if unknown:
         raise ParamRefusedError(f"unknown param(s): {', '.join(unknown)}")
+    stored = sorted(name for name in values if unit.params[name].jobs)
+    if stored:
+        raise ParamRefusedError(
+            f"job-scoped param(s) {', '.join(stored)} are per-dispatch values "
+            "entered at propose, never stored desired state"
+        )
     rendered: dict[str, str] = {}
     for name, spec in unit.params.items():
+        if spec.jobs:
+            continue  # per dispatch: see `validate_job_params`
         if name not in values:
             if spec.default is not None:
                 rendered[name] = spec.default
@@ -618,15 +759,49 @@ def scoped_param_names(unit: DeployUnit, job_name: str) -> tuple[str, ...]:
     )
 
 
+def validate_job_params(
+    unit: DeployUnit,
+    supplied: Mapping[str, object],
+    *,
+    job_name: str,
+    environment: str,
+) -> dict[str, str]:
+    """The per-DISPATCH values of one job's scoped params, by param name.
+
+    Entered at propose, never stored: an unsupplied param takes its descriptor
+    default (a gate defaults to "0"), a name that is not scoped to this job is
+    refused, and one with no default that is required here must be supplied.
+    """
+    scoped = scoped_param_names(unit, job_name)
+    stray = sorted(set(supplied) - set(scoped))
+    if stray:
+        raise ParamRefusedError(
+            f"job {job_name!r} has no scoped param(s): {', '.join(stray)}"
+        )
+    out: dict[str, str] = {}
+    for name in scoped:
+        spec = unit.params[name]
+        if name in supplied:
+            out[name] = validate_param_value(spec, supplied[name])
+        elif spec.default is not None:
+            out[name] = spec.default
+        elif environment in spec.required_in:
+            raise ParamRefusedError(
+                f"param {name!r} is required in {environment!r} for job {job_name!r}"
+            )
+    return out
+
+
 def canonical_job_render(
     unit: DeployUnit, values: Mapping[str, object], *, job_name: str, environment: str
 ) -> bytes:
-    """`MATERIAL=value` lines for ONE job's scoped params, sorted (no APP_IMAGE)."""
-    rendered = validate_params(unit, values, environment=environment)
+    """`MATERIAL=value` lines for ONE job's per-dispatch params, sorted."""
+    rendered = validate_job_params(
+        unit, values, job_name=job_name, environment=environment
+    )
     lines: dict[str, str] = {}
-    for name in scoped_param_names(unit, job_name):
-        if name in rendered:
-            lines[str(unit.params[name].material)] = rendered[name]
+    for name, text in rendered.items():
+        lines[str(unit.params[name].material)] = text
     return "".join(f"{key}={lines[key]}\n" for key in sorted(lines)).encode()
 
 
@@ -671,7 +846,21 @@ _PARAM_KEYS = frozenset(
 _BINDING_KEYS = frozenset(
     {"name", "kind", "roles", "writer", "rotation", "single_use", "state"}
 )
-_JOB_KEYS = frozenset({"name", "command", "trigger", "materials", "runbook", "role"})
+_JOB_KEYS = frozenset(
+    {
+        "name",
+        "command",
+        "trigger",
+        "materials",
+        "runbook",
+        "role",
+        "args",
+        "timeout_seconds",
+    }
+)
+_JOB_ARG_KEYS = frozenset(
+    {"flag", "type", "pattern", "choices", "max_length", "required"}
+)
 _HOLD_KEYS = frozenset(
     {"name", "member", "before", "timeout_param", "on_timeout", "released_by"}
 )
@@ -694,6 +883,18 @@ def _opt_int(where: str, table: Mapping[str, Any], key: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise DeployUnitError(f"{where}.{key} must be an integer")
     return value
+
+
+def _job_credential_names(
+    bindings: Sequence[BindingSpec], jobs: Sequence[JobSpec]
+) -> frozenset[str]:
+    """Bindings carrying a role that some job logs in as (a job's credentials)."""
+    job_roles = {job.role for job in jobs if job.role}
+    return frozenset(b.name for b in bindings if set(b.roles) & job_roles)
+
+
+def _looks_secret(value: str) -> bool:
+    return any(shape.search(value) for shape in _SECRET_SHAPES)
 
 
 def _string_list(where: str, value: object) -> tuple[str, ...]:
@@ -850,6 +1051,16 @@ def _parse_job(index: int, table: object) -> JobSpec:
     role = table.get("role")
     if role is not None and (not isinstance(role, str) or not _SEGMENT.fullmatch(role)):
         raise DeployUnitError(f"{where}.role is a lowercase segment")
+    args = _parse_job_args(where, table.get("args", []))
+    timeout = table.get("timeout_seconds")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, int)
+        or not 1 <= timeout <= MAX_JOB_TIMEOUT_SECONDS
+    ):
+        raise DeployUnitError(
+            f"{where}.timeout_seconds is 1..{MAX_JOB_TIMEOUT_SECONDS}"
+        )
     return JobSpec(
         name=name,
         command=command,
@@ -857,7 +1068,67 @@ def _parse_job(index: int, table: object) -> JobSpec:
         materials=materials,
         runbook=runbook,
         role=role,
+        args=args,
+        timeout_seconds=timeout,
     )
+
+
+def _parse_job_args(where: str, raw: object) -> tuple[JobArgSpec, ...]:
+    if not isinstance(raw, list) or len(raw) > MAX_JOB_ARGS:
+        raise DeployUnitError(
+            f"{where}.args is an array of at most {MAX_JOB_ARGS} [[jobs.args]] tables"
+        )
+    out: list[JobArgSpec] = []
+    for index, table in enumerate(raw):
+        here = f"{where}.args[{index}]"
+        if not isinstance(table, dict):
+            raise DeployUnitError(f"{here} must be a table")
+        _only_keys(here, table, _JOB_ARG_KEYS)
+        flag = table.get("flag")
+        if not isinstance(flag, str) or not _FLAG.fullmatch(flag):
+            raise DeployUnitError(f"{here}.flag is a literal like --name")
+        kind = table.get("type")
+        if kind not in JOB_ARG_TYPES:
+            raise DeployUnitError(f"{here}.type is one of {sorted(JOB_ARG_TYPES)}")
+        required = table.get("required", False)
+        if not isinstance(required, bool):
+            raise DeployUnitError(f"{here}.required is a bool")
+        pattern = table.get("pattern")
+        if pattern is not None:
+            if not isinstance(pattern, str) or not pattern:
+                raise DeployUnitError(f"{here}.pattern is a regular expression")
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise DeployUnitError(f"{here}.pattern does not compile") from exc
+        choices = _string_list(f"{here}.choices", table.get("choices", []))
+        if kind == "path" and (pattern is None or not pattern.startswith("^/")):
+            raise DeployUnitError(
+                f"{here}: a path argument carries a pattern anchored at the job's "
+                "work dir (^/...)"
+            )
+        if (kind == "enum") != bool(choices):
+            raise DeployUnitError(f"{here}.choices belongs to (and needs) an enum")
+        length = table.get("max_length", MAX_JOB_ARG_VALUE)
+        if (
+            isinstance(length, bool)
+            or not isinstance(length, int)
+            or not 1 <= length <= MAX_JOB_ARG_VALUE
+        ):
+            raise DeployUnitError(f"{here}.max_length is 1..{MAX_JOB_ARG_VALUE}")
+        out.append(
+            JobArgSpec(
+                flag=flag,
+                type=str(kind),
+                required=required,
+                pattern=pattern,
+                choices=choices,
+                max_length=length,
+            )
+        )
+    if len({a.flag for a in out}) != len(out):
+        raise DeployUnitError(f"{where}.args declares a flag twice")
+    return tuple(out)
 
 
 def _parse_hold_point(index: int, table: object) -> HoldPointSpec:
@@ -1005,6 +1276,7 @@ def parse_deploy_unit(
     if len({j.name for j in jobs}) != len(jobs):
         raise DeployUnitError("two jobs share a name")
     job_names = {j.name for j in jobs}
+    job_credentials = _job_credential_names(bindings, jobs)
     for pname, pspec in params.items():
         unknown_jobs = sorted(set(pspec.jobs) - job_names)
         if unknown_jobs:
@@ -1015,7 +1287,7 @@ def parse_deploy_unit(
             raise DeployUnitError(
                 f"params.{pname} is job-scoped and needs a material to render"
             )
-        if pspec.material in JOB_ONLY_MATERIALS and not pspec.jobs:
+        if pspec.material in job_credentials and not pspec.jobs:
             raise DeployUnitError(
                 f"params.{pname}: {pspec.material} belongs to a dispatched job "
                 "and may not be an app material; scope the param to its job"
@@ -1025,6 +1297,25 @@ def parse_deploy_unit(
         if job.role is not None and job.role not in binding_roles:
             raise DeployUnitError(
                 f"job {job.name!r} logs in as role {job.role!r}, which no binding has"
+            )
+        stolen = sorted(set(job.materials) & job_credentials)
+        if job.role is None and stolen:
+            raise DeployUnitError(
+                f"job {job.name!r} has no role but names a dispatched job's "
+                f"credentials: {', '.join(stolen)}"
+            )
+    # A job role is the job's own: every binding that carries it must be consumed
+    # by a job with that role. Otherwise a job could claim a SERVING role (for
+    # example the app's) and silently take the serving credentials from the mint.
+    for role in sorted({j.role for j in jobs if j.role}):
+        consumed = {m for j in jobs if j.role == role for m in j.materials}
+        foreign = sorted(
+            b.name for b in bindings if role in b.roles and b.name not in consumed
+        )
+        if foreign:
+            raise DeployUnitError(
+                f"job role {role!r} is also a serving role: no job with that role "
+                f"consumes {', '.join(foreign)}"
             )
     known = {p.material for p in params.values() if p.material} | {
         b.name for b in bindings
@@ -1063,6 +1354,7 @@ def parse_deploy_unit(
         legacy_allowed=legacy_allowed,
         params=params,
         bindings=bindings,
+        jobs=jobs,
     )
     return DeployUnit(
         product=product,
@@ -1088,6 +1380,7 @@ def _parse_legacy(
     legacy_allowed: bool,
     params: Mapping[str, ParamSpec],
     bindings: Sequence[BindingSpec],
+    jobs: Sequence[JobSpec] = (),
 ) -> LegacyEnvFileSpec | None:
     if table is None:
         return None
@@ -1121,7 +1414,7 @@ def _parse_legacy(
         b.name for b in bindings if b.state == BINDING_ACTIVE
     }
     taken.add(APP_IMAGE_MATERIAL)
-    job_only = sorted(set(names) & JOB_ONLY_MATERIALS)
+    job_only = sorted(set(names) & _job_credential_names(bindings, jobs))
     if job_only:
         raise DeployUnitError(
             "legacy_env_file names may never include a dispatched job's "

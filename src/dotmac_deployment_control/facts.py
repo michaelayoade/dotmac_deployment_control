@@ -83,6 +83,10 @@ TARGET_BAO_ENVIRONMENT_SET_V1: Final[str] = "deployment.target.bao_environment_s
 #: A deploy-unit setting (pull allowlist, legacy product allowlist, ceiling)
 #: changed under an attended approval.
 DEPLOY_SETTING_CHANGED_V1: Final[str] = "deployment.deploy_setting.changed.v1"
+#: A role-job window (import-only OpenBao) was opened or closed on a target,
+#: under an attended approval.
+ROLE_JOB_WINDOW_OPENED_V1: Final[str] = "deployment.role_job_window.opened.v1"
+ROLE_JOB_WINDOW_CLOSED_V1: Final[str] = "deployment.role_job_window.closed.v1"
 #: A target's legacy env-file policy gained a new version (enabled, revised,
 #: extended or retired).
 LEGACY_POLICY_CHANGED_V1: Final[str] = "deployment.legacy_policy.changed.v1"
@@ -120,6 +124,8 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1,
         DEPLOY_SETTING_CHANGED_V1,
         TARGET_BAO_ENVIRONMENT_SET_V1,
+        ROLE_JOB_WINDOW_OPENED_V1,
+        ROLE_JOB_WINDOW_CLOSED_V1,
         LEGACY_POLICY_CHANGED_V1,
         DEPLOYMENT_SET_CREATED_V1,
         DEPLOYMENT_SET_APPROVED_V1,
@@ -782,6 +788,8 @@ class DeploySettingsView:
     public_pull_repositories: tuple[str, ...]
     legacy_env_file_allowed_targets: tuple[str, ...]
     legacy_env_file_ceiling: int
+    #: Per-target `run_job` lease ceilings, `(target_ref, seconds)`; absent = 900.
+    role_job_lease_ceilings: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -837,6 +845,8 @@ __all__ = [
     "ROLLOUT_REQUESTED_V1",
     "ROLLOUT_SUCCEEDED_V1",
     "ROLLOUT_TIMED_OUT_V1",
+    "ROLE_JOB_WINDOW_CLOSED_V1",
+    "ROLE_JOB_WINDOW_OPENED_V1",
     "TARGET_BAO_ENVIRONMENT_SET_V1",
     "TARGET_DECOMMISSIONED_V1",
     "TARGET_DESIRED_STATE_SET_V1",

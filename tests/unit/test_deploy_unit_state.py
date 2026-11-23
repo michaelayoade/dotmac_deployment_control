@@ -56,6 +56,7 @@ from dotmac_deployment_control.ports import (
     ReleaseDescriptorEvidence,
     ReleaseDescriptorRefusedError,
     ReleaseDescriptorUnavailableError,
+    TransitionRefusedError,
 )
 from dotmac_deployment_control.service import (
     ApproveDeploymentSetCommand,
@@ -163,6 +164,8 @@ def _descriptor_text(
     import_active: bool = True,
     import_scoped: bool = True,
     import_extra_material: str | None = None,
+    import_legacy_pre_staged: bool = False,
+    hold: bool = False,
 ) -> str:
     spec = (
         "deploy/companion/product.toml"
@@ -203,8 +206,17 @@ def _descriptor_text(
         names = ", ".join(f'"{m}"' for m in job_materials)
         out += (
             '[[jobs]]\nname = "import"\ncommand = ["run", "import"]\n'
-            f'trigger = "operator"\nmaterials = [{names}]\n'
+            f'timeout_seconds = 600\ntrigger = "operator"\nmaterials = [{names}]\n'
             'runbook = "docs/rehearsal.md"\n'
+        )
+    if hold:
+        out += (
+            '[params.hold_seconds]\ntype = "duration_seconds"\ndefault = 1800\n'
+            "min = 60\nmax = 3600\n"
+            '[[hold_points]]\nname = "g"\nmember = "companion"\nbefore = "migrate"\n'
+            'timeout_param = "hold_seconds"\n'
+            'on_timeout = "abandon_member_record_deviation"\n'
+            'released_by = "operator"\n'
         )
     if companion:
         out += (
@@ -215,6 +227,7 @@ def _descriptor_text(
         )
     if import_job:
         state = "" if import_active else 'state = "pre_staged"\n'
+        legacy_state = 'state = "pre_staged"\n' if import_legacy_pre_staged else state
         scope = 'jobs = ["import"]\n' if import_scoped else ""
         extra = f', "{import_extra_material}"' if import_extra_material else ""
         out += (
@@ -228,14 +241,17 @@ def _descriptor_text(
             'roles = ["migrate", "import"]\nwriter = "ceremony"\n'
             'rotation = "copy_only"\nsingle_use = true\n'
             '[[bindings]]\nname = "LEGACY_DATABASE_URL"\n'
-            f'{state}kind = "pg_login_dsn"\n'
+            f'{legacy_state}kind = "pg_login_dsn"\n'
             'roles = ["import"]\nwriter = "ceremony"\nrotation = "copy_only"\n'
             "single_use = true\n"
             '[[jobs]]\nname = "import"\nrole = "import"\n'
-            'command = ["run", "import"]\ntrigger = "operator"\n'
+            'command = ["run", "import"]\ntimeout_seconds = 600\n'
+            'trigger = "operator"\n'
             'materials = ["MIGRATION_DATABASE_URL", "LEGACY_DATABASE_URL", '
             f'"ERP_IMPORT_APPROVED", "ERP_PAYROLL_NET_PAYABLE_ACCOUNT_REF"{extra}]\n'
             'runbook = "docs/rehearsal.md"\n'
+            '[[jobs.args]]\nflag = "--mode"\ntype = "enum"\n'
+            'choices = ["plan", "execute"]\nrequired = true\n'
         )
     return out
 
@@ -379,7 +395,7 @@ def _propose(db, target_id, source, inputs=_INPUTS):  # type: ignore[no-untyped-
         ProposePlanCommand(
             command_id=_cmd(),
             target_id=target_id,
-            operation="deploy",
+            operation="run_job" if inputs.job else "deploy",
             descriptor_digest=_DESC,
             execution_plan_digest=_EXEC,
             purpose="foundation_execution",
@@ -1276,22 +1292,22 @@ def test_a_job_material_nothing_supplies_is_refused_at_propose(db: Session) -> N
     erp = _bound_target(db, source)
     # DB_PASSWORD is only a PRE-STAGED binding: it delivers nothing yet.
     with pytest.raises(PlanMaterialUnsuppliedError, match="DB_PASSWORD"):
-        _propose(db, erp.id, source)
+        _propose(db, erp.id, source, _PLAIN)
     # A param material supplies it.
     by_param = FakeSource(job_materials=("WORKERS",))
     ok = _bound_target(db, by_param, ref=_E + "host-p")
-    assert _propose(db, ok.id, by_param)
+    assert _propose(db, ok.id, by_param, _PLAIN)
     # An ACTIVE binding supplies it.
     active = FakeSource(job_materials=("DB_PASSWORD",), active=("DB_PASSWORD",))
     got = _bound_target(db, active, ref=_E + "host-b")
-    assert _propose(db, got.id, active)
+    assert _propose(db, got.id, active, _PLAIN)
 
 
 def test_a_legacy_name_supplies_a_job_material(db: Session) -> None:
     source = FakeSource(legacy=True, job_materials=("DB_PASSWORD",))
     erp = _legacy_target(db, source)
     _enable(db, erp.id, source)
-    assert _propose(db, erp.id, source)
+    assert _propose(db, erp.id, source, _PLAIN)
 
 
 def test_the_legacy_exit_must_be_pre_staged_in_the_descriptor(db: Session) -> None:
@@ -1488,18 +1504,44 @@ def test_a_plan_with_roles_needs_the_targets_namespace_env(db: Session) -> None:
 # ── Import-only OpenBao ─────────────────────────────────────────────────────
 
 
+_ARGS = {"--mode": "execute"}
+_JP = {"import_approved": "true", "import_payable": "acct.net-payable"}
+_JOB = DeployPlanInputs(
+    lease_ttl_seconds=900,
+    loopback_port=5000,
+    job="import",
+    job_args=_ARGS,
+    job_params=_JP,
+)
+#: A job plan for a role-less descriptor job (no declared args or params).
+_PLAIN = DeployPlanInputs(lease_ttl_seconds=900, loopback_port=5000, job="import")
+
+
+def _open_window(db: Session, target_id, window_id: str = "w1"):  # type: ignore[no-untyped-def]
+    now = datetime.now(UTC)
+    return svc.open_role_job_window(
+        db,
+        svc.OpenRoleJobWindowCommand(
+            command_id=_cmd(),
+            target_id=target_id,
+            role="import",
+            window_id=window_id,
+            closes_at=now + timedelta(hours=1),
+            hard_stop_at=now + timedelta(hours=2),
+            approval=_ATTENDED,
+        ),
+    )
+
+
 def _import_params(**extra: str) -> dict[str, str]:
-    return {
-        "image_repository": _LOOP,
-        "import_approved": "true",
-        "import_payable": "acct.net-payable",
-        **extra,
-    }
+    # Job-scoped values are per-dispatch (`_JP`), never stored desired state.
+    return {"image_repository": _LOOP, **extra}
 
 
 def _import_target(db: Session, source: FakeSource, ref: str = _E + "host-i"):  # type: ignore[no-untyped-def]
     target = _register(db, ref)
     _desired(db, target.id, source, params=_import_params())
+    _open_window(db, target.id)
     return target
 
 
@@ -1515,11 +1557,27 @@ def test_a_job_role_is_derived_for_the_job_only_and_its_params_are_scoped(
 
     source = FakeSource(import_job=True)
     erp = _import_target(db, source)
-    binding = _binding_of(_propose(db, erp.id, source))
-    # The serving deploy mints `migrate` only; `import` belongs to the job.
-    assert binding["roles"] == [{"role": "migrate", "single_use": True}]
-    (job,) = binding["jobs"]
+    serving = _binding_of(_propose(db, erp.id, source))
+    # F1: a serving plan binds no job. It mints `migrate` only; `import` belongs
+    # to the job. F7: the serving names exclude the import-only credential.
+    assert serving["roles"] == [{"role": "migrate", "single_use": True}]
+    assert serving["dispatched_job"] is None
+    assert serving["active_binding_names"] == ["MIGRATION_DATABASE_URL"]
+    assert serving["job_binding_names"] == [
+        "LEGACY_DATABASE_URL",
+        "MIGRATION_DATABASE_URL",
+    ]
+    binding = _binding_of(_propose(db, erp.id, source, _JOB))
+    # A dispatch plan binds exactly ONE job and mints no serving role (F1).
+    assert binding["roles"] == []
+    assert binding["companion_order"] is None
+    job = binding["dispatched_job"]
     assert job["name"] == "import"
+    # E2: the closed argv (command + declared args) is in the signed binding.
+    assert job["argv"] == ["run", "import", "--mode", "execute"]
+    assert job["timeout_seconds"] == 600
+    assert job["window"]["window_id"] == "w1"
+    assert job["window"]["closes_at"].endswith("Z")
     assert job["role"] == "import"
     assert job["single_use"] is True  # P-SEC rev4: one secret_id per dispatched run
     assert job["materials"] == [
@@ -1528,15 +1586,16 @@ def test_a_job_role_is_derived_for_the_job_only_and_its_params_are_scoped(
         "LEGACY_DATABASE_URL",
         "MIGRATION_DATABASE_URL",
     ]
-    assert job["params"] == ["import_approved", "import_payable"]
+    assert job["params"] == _JP
     unit = parse_deploy_unit(source.text)
     params = get_target(db, erp.id).desired_spec["deploy_unit"]["params"]
+    assert "import_approved" not in params  # per dispatch, never stored
     image = f"{_LOOP}@{_D1}"
     app = canonical_render(unit, params, app_image=image, environment="production")
     assert app == f"APP_IMAGE={image}\nWORKERS=2\n".encode()
     assert binding["params_env_digest"] == params_env_digest(app)
     job_render = canonical_job_render(
-        unit, params, job_name="import", environment="production"
+        unit, _JP, job_name="import", environment="production"
     )
     assert job_render == (
         b"ERP_IMPORT_APPROVED=true\n"
@@ -1551,27 +1610,51 @@ def test_job_scoped_values_move_the_job_digest_and_the_plan_not_the_app_digest(
 ) -> None:
     source = FakeSource(import_job=True)
     erp = _import_target(db, source)
-    first = _propose(db, erp.id, source)
-    _desired(db, erp.id, source, params=_import_params(import_payable="other-acct"))
-    second = _propose(db, erp.id, source)
+    first = _propose(db, erp.id, source, _JOB)
+    # M1: the value is a per-dispatch input, never desired state.
+    other = DeployPlanInputs(
+        900,
+        5000,
+        "import",
+        _ARGS,
+        {**_JP, "import_payable": "other-acct"},
+    )
+    second = _propose(db, erp.id, source, other)
+    assert _binding_of(second)["dispatched_job"]["params"]["import_payable"] == (
+        "other-acct"
+    )
+    # A gate defaults to "0" when it is not entered.
+    bare = DeployPlanInputs(900, 5000, "import", _ARGS, {"import_payable": "x"})
+    assert (
+        _binding_of(_propose(db, erp.id, source, bare))["dispatched_job"]["params"][
+            "import_approved"
+        ]
+        == "false"
+    )
+    # Stored as desired state, a job-scoped param is refused outright.
+    with pytest.raises(Exception, match="per-dispatch"):
+        _desired(db, erp.id, source, params=_import_params(import_approved="true"))
     a, b = _binding_of(first), _binding_of(second)
     assert a["params_env_digest"] == b["params_env_digest"]
-    assert a["jobs"][0]["params_env_digest"] != b["jobs"][0]["params_env_digest"]
+    assert (
+        a["dispatched_job"]["params_env_digest"]
+        != b["dispatched_job"]["params_env_digest"]
+    )
     assert first.plan_digest != second.plan_digest
 
 
 def test_the_job_scope_is_covered_by_the_plan_digest(db: Session) -> None:
     scoped = FakeSource(import_job=True, import_scoped=True)
     one = _import_target(db, scoped, _E + "host-s1")
-    binding = _binding_of(_propose(db, one.id, scoped))
-    assert binding["jobs"][0]["params"] == ["import_approved", "import_payable"]
-    assert binding["jobs"][0]["materials"]
+    binding = _binding_of(_propose(db, one.id, scoped, _JOB))
+    assert binding["dispatched_job"]["params"] == _JP
+    assert binding["dispatched_job"]["materials"]
     # Unscoped, the same params would be APP materials and so could not supply
     # the role job: the plan is refused rather than leaking them into the app.
     unscoped = FakeSource(import_job=True, import_scoped=False)
     two = _import_target(db, unscoped, _E + "host-s2")
     with pytest.raises(PlanMaterialUnsuppliedError, match="ERP_IMPORT_APPROVED"):
-        _propose(db, two.id, unscoped)
+        _propose(db, two.id, unscoped, DeployPlanInputs(900, 5000, "import", _ARGS))
 
 
 def test_a_role_job_needs_an_active_role_binding_and_scoped_params(
@@ -1580,12 +1663,14 @@ def test_a_role_job_needs_an_active_role_binding_and_scoped_params(
     pre = FakeSource(import_job=True, import_active=False)
     erp = _import_target(db, pre)
     with pytest.raises(PlanMaterialUnsuppliedError, match="no ACTIVE binding"):
-        _propose(db, erp.id, pre)
+        _propose(db, erp.id, pre, _JOB)
+    # A serving plan binds no job, so it is not held up by the pre-staged import.
+    assert _binding_of(_propose(db, erp.id, pre))["dispatched_job"] is None
     # A material of the role job that nothing supplies is still refused (C-3).
     loose = FakeSource(import_job=True, import_extra_material="WORKERS")
     other = _import_target(db, loose, _E + "host-l")
     with pytest.raises(PlanMaterialUnsuppliedError, match="WORKERS"):
-        _propose(db, other.id, loose)
+        _propose(db, other.id, loose, _JOB)
 
 
 def test_no_boot_or_legacy_fallback_supplies_a_job_credential(db: Session) -> None:
@@ -1618,10 +1703,235 @@ def test_a_job_role_needs_the_targets_namespace_env(db: Session) -> None:
         _propose(db, erp.id, source)
 
 
-def test_a_plan_with_a_role_job_bounds_the_lease_at_900_seconds(db: Session) -> None:
+def test_a_job_lease_is_its_timeout_plus_120_under_the_target_ceiling(
+    db: Session,
+) -> None:
+    """H1: lease = timeout + 120, refused over the per-target ceiling (default
+    900, hard maximum 3600, attended). A caller's TTL does not set it."""
     source = FakeSource(import_job=True)
     erp = _import_target(db, source)
-    with pytest.raises(DeployBindingRefusedError, match="900"):
-        _propose(db, erp.id, source, DeployPlanInputs(901, 5000))
-    plan = _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
-    assert _binding_of(plan)["lease_ttl_seconds"] == 900
+    plan = _propose(db, erp.id, source, _JOB)
+    assert _binding_of(plan)["lease_ttl_seconds"] == 720
+    assert _binding_of(plan)["dispatched_job"]["timeout_seconds"] == 600
+    # A serving plan is not capped by the job ceiling.
+    serving = _propose(db, erp.id, source, DeployPlanInputs(3600, 5000))
+    assert _binding_of(serving)["lease_ttl_seconds"] == 3600
+    # A 23-minute job does not fit the default ceiling...
+    long_text = _descriptor_text(import_job=True).replace(
+        "timeout_seconds = 600\n", "timeout_seconds = 1800\n"
+    )
+    slow = FakeSource(long_text)
+    other = _import_target(db, slow, _E + "host-long")
+    with pytest.raises(PlanRefusedError, match="ceiling of 900s"):
+        _propose(db, other.id, slow, _JOB)
+    # ...until an attended setting raises THIS target's ceiling.
+    with pytest.raises(Exception, match="seconds"):
+        _set(db, "role_job_lease_ceiling_seconds", {other.target_ref: 3601})
+    _set(db, "role_job_lease_ceiling_seconds", {other.target_ref: 2000})
+    long_plan = _propose(db, other.id, slow, _JOB)
+    assert _binding_of(long_plan)["lease_ttl_seconds"] == 1920
+    # Another target keeps the default.
+    with pytest.raises(PlanRefusedError, match="ceiling of 900s"):
+        third = _import_target(db, FakeSource(long_text), _E + "host-long2")
+        _propose(db, third.id, FakeSource(long_text), _JOB)
+    with pytest.raises(LegacyPolicyRefusedError, match="attended"):
+        _set(
+            db,
+            "role_job_lease_ceiling_seconds",
+            {other.target_ref: 2000},
+            approval=_UNATTENDED,
+        )
+
+
+def test_a_dispatch_plan_names_one_existing_job(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    with pytest.raises(PlanRefusedError, match="no job"):
+        _propose(db, erp.id, source, DeployPlanInputs(900, 5000, job="ghost"))
+    one = _propose(db, erp.id, source, _JOB)
+    assert _binding_of(one)["dispatched_job"]["name"] == "import"
+    # The plan digest covers the job: a serving plan is a different plan.
+    assert one.plan_digest != _propose(db, erp.id, source).plan_digest
+    # The operation and the job agree: run_job names a job, nothing else does.
+    with pytest.raises(PlanRefusedError, match="names its job"):
+        _propose(db, erp.id, source, DeployPlanInputs(900, 5000, None, _ARGS))
+    with pytest.raises(PlanRefusedError):
+        svc.propose_plan(
+            db,
+            ProposePlanCommand(
+                command_id=_cmd(),
+                target_id=erp.id,
+                operation="deploy",
+                descriptor_digest=_DESC,
+                execution_plan_digest=_EXEC,
+                purpose="foundation_execution",
+                requires_approval=True,
+                approval_policy_code="deployment.production",
+                approval_policy_version=4,
+                deploy_inputs=_JOB,
+            ),
+            release_source=source,
+        )
+    # A job plan and a deploy plan do not supersede each other.
+    serving = _propose(db, erp.id, source)
+    again = _propose(db, erp.id, source, _JOB)
+    assert db.get(svc.DeploymentPlan, serving.id).status == "proposed"
+    assert db.get(svc.DeploymentPlan, one.id).status == "superseded"
+    assert again.id != one.id
+
+
+def test_a_changed_closed_argv_moves_the_plan_digest(db: Session) -> None:
+    one = FakeSource(import_job=True)
+    erp = _import_target(db, one)
+    first = _propose(db, erp.id, one, _JOB)
+    other = DeployPlanInputs(900, 5000, job="import", job_args={"--mode": "plan"})
+    second = _propose(db, erp.id, one, other)
+    assert _binding_of(second)["dispatched_job"]["argv"] == [
+        "run",
+        "import",
+        "--mode",
+        "plan",
+    ]
+    assert first.plan_digest != second.plan_digest
+    # An undeclared flag, a bad value or a missing required one is refused.
+    for args in ({"--mode": "plan", "--source-url-env": "X"}, {"--mode": "x"}, {}):
+        with pytest.raises(PlanRefusedError):
+            _propose(db, erp.id, one, DeployPlanInputs(900, 5000, "import", args))
+
+
+def test_a_role_is_all_or_nothing_active_when_minted(db: Session) -> None:
+    """F3: MIGRATION active, LEGACY pre-staged: the import role is refused (its
+    secret_id would render the pre-staged path too)."""
+    source = FakeSource(import_job=True, import_legacy_pre_staged=True)
+    erp = _import_target(db, source)
+    with pytest.raises(PlanRefusedError, match="LEGACY_DATABASE_URL"):
+        _propose(db, erp.id, source, _JOB)
+    # The same rule guards a serving role: `migrate` is whole, so it mints.
+    assert _binding_of(_propose(db, erp.id, source))["roles"] == [
+        {"role": "migrate", "single_use": True}
+    ]
+
+
+def test_a_serving_lease_must_cover_the_hold_points(db: Session) -> None:
+    source = FakeSource(import_job=True, hold=True)
+    erp = _import_target(db, source)
+    with pytest.raises(DeployBindingRefusedError, match="hold"):
+        _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
+    plan = _propose(db, erp.id, source, DeployPlanInputs(1800, 5000))
+    assert _binding_of(plan)["lease_ttl_seconds"] == 1800
+    # A dispatch plan is not held to the serving deploy's hold points.
+    assert _binding_of(_propose(db, erp.id, source, _JOB))["dispatched_job"]
+
+
+# ── The role-job window ─────────────────────────────────────────────────────
+
+
+def _window_cmd(target_id, **kw):  # type: ignore[no-untyped-def]
+    now = datetime.now(UTC)
+    base = {
+        "command_id": _cmd(),
+        "target_id": target_id,
+        "role": "import",
+        "window_id": "w9",
+        "closes_at": now + timedelta(hours=1),
+        "hard_stop_at": now + timedelta(hours=2),
+        "approval": _ATTENDED,
+    }
+    base.update(kw)
+    return svc.OpenRoleJobWindowCommand(**base)
+
+
+def test_a_window_is_opened_attended_and_bounded_by_the_hard_stop(
+    db: Session,
+) -> None:
+    target = _register(db, _E + "host-w1")
+    with pytest.raises(LegacyPolicyRefusedError, match="attended"):
+        svc.open_role_job_window(db, _window_cmd(target.id, approval=_UNATTENDED))
+    now = datetime.now(UTC)
+    for bad in (
+        {"closes_at": now - timedelta(minutes=1)},
+        {"closes_at": now + timedelta(hours=3)},  # later than the hard stop
+    ):
+        with pytest.raises(TransitionRefusedError):
+            svc.open_role_job_window(db, _window_cmd(target.id, **bad))
+    rows = svc.open_role_job_window(db, _window_cmd(target.id))
+    assert [(w.role, w.window_id, w.state) for w in rows] == [("import", "w9", "open")]
+    # One open window per role; an id is never reused.
+    with pytest.raises(TransitionRefusedError, match="already"):
+        svc.open_role_job_window(db, _window_cmd(target.id, window_id="w10"))
+    # The generic deploy setting can never write the windows.
+    with pytest.raises(Exception, match="not a deploy setting"):
+        _set(db, "role_job_windows", {})
+
+
+def test_a_job_plan_is_refused_outside_an_open_window(db: Session) -> None:
+    source = FakeSource(import_job=True)
+    erp = _register(db, _E + "host-w2")
+    _desired(db, erp.id, source, params=_import_params())
+    with pytest.raises(PlanRefusedError, match="no open window"):
+        _propose(db, erp.id, source, _JOB)
+    _open_window(db, erp.id)
+    assert _propose(db, erp.id, source, _JOB)
+    # An expired window refuses too.
+    original = svc._control_now
+    svc._control_now = lambda: datetime.now(UTC) + timedelta(hours=5)
+    try:
+        with pytest.raises(PlanRefusedError, match="no open window"):
+            _propose(db, erp.id, source, _JOB)
+    finally:
+        svc._control_now = original
+
+
+def test_closing_a_window_is_permanent_and_cancels_outstanding_job_plans(
+    db: Session,
+) -> None:
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    job_plan = _propose(db, erp.id, source, _JOB)
+    serving = _propose(db, erp.id, source)
+    with pytest.raises(LegacyPolicyRefusedError, match="attended"):
+        svc.close_role_job_window(
+            db,
+            svc.CloseRoleJobWindowCommand(_cmd(), erp.id, "w1", _UNATTENDED),
+        )
+    rows = svc.close_role_job_window(
+        db, svc.CloseRoleJobWindowCommand(_cmd(), erp.id, "w1", _ATTENDED)
+    )
+    assert rows[0].state == "closed"
+    assert db.get(svc.DeploymentPlan, job_plan.id).status == "cancelled"
+    # A serving plan is not a job: closing the window leaves it alone.
+    assert db.get(svc.DeploymentPlan, serving.id).status == "proposed"
+    with pytest.raises(PlanRefusedError, match="no open window"):
+        _propose(db, erp.id, source, _JOB)
+    with pytest.raises(TransitionRefusedError, match="already closed"):
+        svc.close_role_job_window(
+            db, svc.CloseRoleJobWindowCommand(_cmd(), erp.id, "w1", _ATTENDED)
+        )
+    # Re-opening needs a NEW id; the closed one is never reused.
+    with pytest.raises(TransitionRefusedError, match="already exists"):
+        _open_window(db, erp.id, "w1")
+    _open_window(db, erp.id, "w2")
+    assert (
+        _binding_of(_propose(db, erp.id, source, _JOB))["dispatched_job"]["window"][
+            "window_id"
+        ]
+        == "w2"
+    )
+
+
+def test_dispatch_re_checks_the_window(db: Session) -> None:
+    """The window is checked at propose AND at dispatch."""
+    source = FakeSource(import_job=True)
+    erp = _import_target(db, source)
+    plan = db.get(svc.DeploymentPlan, _propose(db, erp.id, source, _JOB).id)
+    target = db.get(DeploymentTarget, erp.id)
+    svc._require_window_for_plan(db, target, plan)  # open: passes
+    svc.close_role_job_window(
+        db, svc.CloseRoleJobWindowCommand(_cmd(), erp.id, "w1", _ATTENDED)
+    )
+    # (the close cancelled the plan; dispatch of a stale approval still refuses)
+    with pytest.raises(TransitionRefusedError, match="no open window"):
+        svc._require_window_for_plan(db, target, plan)
+    # A deploy plan has no window to check.
+    serving = db.get(svc.DeploymentPlan, _propose(db, erp.id, source).id)
+    svc._require_window_for_plan(db, target, serving)

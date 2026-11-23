@@ -22,8 +22,8 @@ only after the primary's signed observation is `healthy`.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Final
 
 from dotmac_deployment_control.deploy_unit import DeployUnitError
@@ -38,8 +38,12 @@ from dotmac_deployment_control.image_policy import (
 from dotmac_deployment_control.legacy_policy import LegacyPlanBinding
 
 MAX_LEASE_TTL_SECONDS: Final = 3600
-#: A plan that dispatches a role job (import-only OpenBao) bounds its lease at 15 min.
-MAX_JOB_ROLE_LEASE_TTL_SECONDS: Final = 900
+#: A `run_job` plan's lease is the job's own timeout plus this margin, and must
+#: fit the target's `role_job_lease_ceiling_seconds` (default 900, hard maximum
+#: 3600). Serving plans keep MAX_LEASE_TTL_SECONDS (they must cover their holds).
+JOB_LEASE_MARGIN_SECONDS: Final = 120
+DEFAULT_JOB_LEASE_CEILING_SECONDS: Final = 900
+MAX_JOB_LEASE_CEILING_SECONDS: Final = 3600
 COMPANION_ORDER: Final = "after_primary_ready"
 _SEGMENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _SERVICE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
@@ -61,6 +65,17 @@ class DeployPlanInputs:
 
     lease_ttl_seconds: int
     loopback_port: int | None = None
+    #: A job-dispatch plan names exactly one descriptor job; a serving plan
+    #: leaves this None and binds no job at all.
+    job: str | None = None
+    #: The per-run values of that job's DECLARED `[[jobs.args]]` flags, entered at
+    #: propose (flag -> value; a bool true is the bare flag).
+    job_args: Mapping[str, object] = field(default_factory=dict)
+    #: The per-DISPATCH values of that job's scoped params (gates, inputs): entered
+    #: here, carried only in this plan's `dispatched_job.params`, never stored as
+    #: desired state. An unsupplied param takes its descriptor default ("0" for a
+    #: gate). For a job plan the lease is derived (timeout + 120), not supplied.
+    job_params: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,31 +110,76 @@ class PlanRole:
 
 
 @dataclass(frozen=True, slots=True)
-class PlanJob:
-    """One dispatchable job, as the plan binds it.
+class PlanJobWindow:
+    """The role-job window a dispatch plan was proposed inside (signed copy)."""
 
-    `role` (if any) is the OpenBao role whose secret_id is minted ONLY when this
-    job is dispatched; `single_use` is that role's mode (provisional, from the
-    descriptor's bindings). `params` are the param names scoped to this job and
-    `params_env_digest` the digest of their canonical render: they reach this
-    job's env and never the serving app's params.env.
-    """
+    window_id: str
+    closes_at: str
+
+    def payload(self) -> dict[str, str]:
+        return {"window_id": self.window_id, "closes_at": self.closes_at}
+
+
+@dataclass(frozen=True, slots=True)
+class PlanJobDefinition:
+    """A job DEFINITION carried by every plan. Nothing runs from it: only a
+    `run_job` plan's `dispatched_job` runs."""
 
     name: str
     role: str | None
-    single_use: bool | None
+    command: tuple[str, ...]
     materials: tuple[str, ...]
     params: tuple[str, ...]
+    args: tuple[dict[str, object], ...]
+    timeout_seconds: int
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "role": self.role,
+            "command": list(self.command),
+            "materials": list(self.materials),
+            "params": list(self.params),
+            "args": [dict(a) for a in self.args],
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PlanJob:
+    """The ONE job a `run_job` plan runs, as the plan binds it.
+
+    `role` (if any) is the OpenBao role whose secret_id is minted ONLY for this
+    dispatch; `single_use` is that role's mode. `params` are the param names
+    scoped to this job and `params_env_digest` the digest of their canonical
+    render: they reach this job's env and never the serving app's params.env.
+    `argv` is the CLOSED command line (descriptor `command` plus the declared
+    per-run arguments, in descriptor order): nothing may be appended at
+    dispatch. `role`, `single_use` and `window` are all null or all present.
+    """
+
+    name: str
+    argv: tuple[str, ...]
+    role: str | None
+    single_use: bool | None
+    materials: tuple[str, ...]
+    #: `(param name, per-dispatch value)`: entered at propose, never stored.
+    params: tuple[tuple[str, str], ...]
     params_env_digest: str
+    timeout_seconds: int
+    window: PlanJobWindow | None = None
 
     def payload(self) -> dict[str, object]:
         return {
             "name": self.name,
             "role": self.role,
             "single_use": self.single_use,
-            "materials": list(self.materials),
-            "params": list(self.params),
+            "materials": sorted(self.materials),
+            "params": dict(sorted(self.params)),
             "params_env_digest": self.params_env_digest,
+            "argv": list(self.argv),
+            "timeout_seconds": self.timeout_seconds,
+            "window": None if self.window is None else self.window.payload(),
         }
 
 
@@ -132,7 +192,7 @@ class DeployPlanBinding:
     params_env_digest: str
     images: tuple[PlannedImage, ...]
     lease_ttl_seconds: int
-    #: Names of the descriptor's ACTIVE bindings (pre-staged ones deliver nothing).
+    #: Names of the ACTIVE bindings with a SERVING role (pre-staged deliver nothing).
     active_binding_names: tuple[str, ...] = ()
     #: Roles derived from the verified descriptor, sorted. The agent mints
     #: secret_ids from THIS, so the list is covered by the plan digest.
@@ -147,7 +207,13 @@ class DeployPlanBinding:
     secrets_namespace: str = ""
     secrets_environment: str | None = None
     #: Every job of the descriptor with its role, materials and scoped params.
-    jobs: tuple[PlanJob, ...] = ()
+    #: ACTIVE bindings that carry a job role: a dispatched job's credentials.
+    job_binding_names: tuple[str, ...] = ()
+    #: Every descriptor job as a DEFINITION; nothing runs from this list.
+    jobs: tuple[PlanJobDefinition, ...] = ()
+    #: The ONE job a `run_job` plan runs; None for every other operation. The agent
+    #: runs only this job, with this role, argv and params.
+    dispatched_job: PlanJob | None = None
     legacy: LegacyPlanBinding | None = None
     companion_order: str | None = None
 
@@ -164,7 +230,11 @@ class DeployPlanBinding:
             "primary_service": self.primary_service,
             "secrets_namespace": self.secrets_namespace,
             "secrets_environment": self.secrets_environment,
+            "job_binding_names": list(self.job_binding_names),
             "jobs": [job.payload() for job in self.jobs],
+            "dispatched_job": (
+                None if self.dispatched_job is None else self.dispatched_job.payload()
+            ),
             "legacy": None if self.legacy is None else self.legacy.payload(),
             "companion_order": self.companion_order,
         }
@@ -185,7 +255,11 @@ def build_deploy_binding(
     primary_service: str = "",
     secrets_namespace: str = "",
     secrets_environment: str | None = None,
-    jobs: Sequence[PlanJob] = (),
+    job_binding_names: Sequence[str] = (),
+    jobs: Sequence[PlanJobDefinition] = (),
+    dispatched_job: PlanJob | None = None,
+    min_lease_seconds: int = 0,
+    job_lease_ceiling_seconds: int = DEFAULT_JOB_LEASE_CEILING_SECONDS,
 ) -> DeployPlanBinding:
     """Validate and freeze a binding. Every refusal is a typed error."""
     if not is_canonical_digest(deploy_unit_digest):
@@ -202,13 +276,50 @@ def build_deploy_binding(
         raise DeployBindingRefusedError(
             f"the lease TTL must be 1..{MAX_LEASE_TTL_SECONDS} seconds"
         )
-    if (
-        any(job.role for job in jobs)
-        and lease_ttl_seconds > MAX_JOB_ROLE_LEASE_TTL_SECONDS
-    ):
+    if dispatched_job is not None:
+        ceiling = job_lease_ceiling_seconds
+        if (
+            isinstance(ceiling, bool)
+            or not isinstance(ceiling, int)
+            or not JOB_LEASE_MARGIN_SECONDS < ceiling <= MAX_JOB_LEASE_CEILING_SECONDS
+        ):
+            raise DeployBindingRefusedError(
+                f"the role-job lease ceiling is at most {MAX_JOB_LEASE_CEILING_SECONDS}"
+                " seconds"
+            )
+        timeout = dispatched_job.timeout_seconds
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or not 1 <= timeout <= ceiling - JOB_LEASE_MARGIN_SECONDS
+        ):
+            raise DeployBindingRefusedError(
+                f"a job timeout is 1..{ceiling - JOB_LEASE_MARGIN_SECONDS} seconds "
+                f"(the ceiling {ceiling}s less {JOB_LEASE_MARGIN_SECONDS}s)"
+            )
+        if lease_ttl_seconds != timeout + JOB_LEASE_MARGIN_SECONDS:
+            raise DeployBindingRefusedError(
+                "a run_job lease is the job timeout "
+                f"({timeout}s) plus {JOB_LEASE_MARGIN_SECONDS}s"
+            )
+        present = (
+            dispatched_job.role is not None,
+            dispatched_job.single_use is not None,
+            dispatched_job.window is not None,
+        )
+        if len(set(present)) != 1:
+            raise DeployBindingRefusedError(
+                "a dispatched job's role, single_use and window are all present "
+                "or all null"
+            )
+    if dispatched_job is None and lease_ttl_seconds < min_lease_seconds:
         raise DeployBindingRefusedError(
-            "a plan with a role job bounds the lease at "
-            f"{MAX_JOB_ROLE_LEASE_TTL_SECONDS} seconds"
+            f"the lease ({lease_ttl_seconds}s) is shorter than the longest hold "
+            f"point ({min_lease_seconds}s)"
+        )
+    if dispatched_job is not None and (roles or companion_order is not None):
+        raise DeployBindingRefusedError(
+            "a job-dispatch plan mints only its job's role and has no companion"
         )
     if not images:
         raise DeployBindingRefusedError("a deploy plan binds at least one image")
@@ -228,12 +339,12 @@ def build_deploy_binding(
         )
     if primary_service not in services:
         raise DeployBindingRefusedError("the primary service is one of the images")
-    for job in jobs:
-        if not is_canonical_digest(job.params_env_digest):
+    if dispatched_job is not None:
+        if not is_canonical_digest(dispatched_job.params_env_digest):
             raise DeployBindingRefusedError("a job params digest is sha256:<64 hex>")
-    if len({job.name for job in jobs}) != len(jobs):
-        raise DeployBindingRefusedError("a job appears once")
-    needs_naming = bool(roles) or any(job.role for job in jobs)
+        if not dispatched_job.argv:
+            raise DeployBindingRefusedError("a dispatched job binds its closed argv")
+    needs_naming = bool(roles) or bool(dispatched_job and dispatched_job.role)
     if needs_naming:
         if not secrets_namespace or not secrets_environment:
             raise DeployBindingRefusedError(
@@ -261,7 +372,9 @@ def build_deploy_binding(
         primary_service=primary_service,
         secrets_namespace=secrets_namespace,
         secrets_environment=secrets_environment,
+        job_binding_names=tuple(sorted(set(job_binding_names))),
         jobs=tuple(sorted(jobs, key=lambda job: job.name)),
+        dispatched_job=dispatched_job,
         legacy=legacy,
         companion_order=companion_order,
     )

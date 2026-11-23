@@ -54,7 +54,8 @@ def test_the_divergence_is_real_and_this_suite_is_not_vacuous() -> None:
         "no member is unexecutable, so the fence refuses nothing and every "
         "test below passes without exercising it"
     )
-    assert unexecutable_operations() == {"recover"}
+    # `run_job` is named but not executable until Foundation publishes it.
+    assert unexecutable_operations() == {"recover", "run_job"}
     assert EXECUTOR_OPERATIONS < set(OPERATIONS)
 
 
