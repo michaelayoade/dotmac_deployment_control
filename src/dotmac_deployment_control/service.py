@@ -3954,7 +3954,6 @@ def record_observation(
                 parsed_agent,
                 observation_verifier=observation_verifier,
                 received_at=received_at,
-                raw_digest=raw_body_digest,
             )
         if parsed_observation is None:
             attempt.disposition = ObservationDisposition.MALFORMED.value
@@ -4510,7 +4509,6 @@ def _record_agent_observation(
     *,
     observation_verifier: ExecutionObservationVerifier | None,
     received_at: datetime,
-    raw_digest: str,
 ) -> Mapping[str, object]:
     """Ingest the agent's PoP-signed observation (target_api v2).
 
@@ -4600,8 +4598,7 @@ def _record_agent_observation(
     if prior is not None:
         return finish(
             ObservationDisposition.IDEMPOTENT_REPLAY.value
-            if ObservationEnvelopeDigestV1.parse(prior.raw_body_digest)
-            == ObservationEnvelopeDigestV1.parse(raw_digest)
+            if prior.raw_body == attempt.raw_body
             else ObservationDisposition.CONFLICT.value
         )
     if not eligible:

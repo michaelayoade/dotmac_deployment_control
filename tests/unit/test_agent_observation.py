@@ -128,7 +128,13 @@ def test_every_kind_the_plan_allows_is_accepted(db, enrolled) -> None:  # type: 
     dispatch = _dispatch_id(db)
     for fields in (
         {"kind": "reconcile", "outcome": "reconciled", "details": _details(dispatch)},
-        {"kind": "reconcile", "outcome": "failed", "reason": "docker down"},
+        # A reconcile is retryable: it carries its own observed_at.
+        {
+            "kind": "reconcile",
+            "outcome": "failed",
+            "reason": "docker down",
+            "observed_at": "2026-09-01T12:30:00Z",
+        },
         {"kind": "deploy", "outcome": "failed"},
     ):
         verdict = _send(db, _wire(dispatch, **fields))

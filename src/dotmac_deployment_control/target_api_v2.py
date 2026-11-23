@@ -103,7 +103,12 @@ LEASE_ERRORS: Final = {
     "lease_not_renewable": 409,
 }
 
-_TYPES: Final = {"str": str, "int": int, "bool": bool, "optstr": (str, type(None))}
+_TYPES: Final[dict[str, type | tuple[type, ...]]] = {
+    "str": str,
+    "int": int,
+    "bool": bool,
+    "optstr": (str, type(None)),
+}
 
 
 def check_lease_body(route: str, direction: str, body: object) -> None:
