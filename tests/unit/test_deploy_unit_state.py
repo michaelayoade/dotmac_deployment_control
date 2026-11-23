@@ -1825,13 +1825,30 @@ def test_a_role_is_all_or_nothing_active_when_minted(db: Session) -> None:
     ]
 
 
-def test_a_serving_lease_must_cover_the_hold_points(db: Session) -> None:
+def test_a_serving_lease_is_sized_to_transfer_run_holds_and_margin(
+    db: Session,
+) -> None:
+    """The agent clips Foundation's run to the remaining lease less 120 s and
+    cannot renew, so Control sizes the lease: transfer (300 s, transfer source)
+    + run (2700 s) + hold timeouts + 120 s, refused when over the 3600 s maximum."""
+    plain = FakeSource()
+    quiet = _bound_target(db, plain)
+    # No hold: 300 + 2700 + 120, whatever small TTL the caller sent.
+    sized = _propose(db, quiet.id, plain, DeployPlanInputs(900, 5000))
+    assert _binding_of(sized)["lease_ttl_seconds"] == 3120
+    # A larger caller TTL is kept (up to the maximum).
+    other = _bound_target(db, plain, ref=_E + "host-big")
+    big = _propose(db, other.id, plain, DeployPlanInputs(3600, 5000))
+    assert _binding_of(big)["lease_ttl_seconds"] == 3600
+    # The default 1800 s hold does not fit: 300 + 2700 + 1800 + 120 > 3600.
     source = FakeSource(import_job=True, hold=True)
     erp = _import_target(db, source)
-    with pytest.raises(DeployBindingRefusedError, match="hold"):
+    with pytest.raises(PlanRefusedError, match="4920s lease"):
         _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
-    plan = _propose(db, erp.id, source, DeployPlanInputs(1800, 5000))
-    assert _binding_of(plan)["lease_ttl_seconds"] == 1800
+    # A 300 s hold fits: 300 + 2700 + 300 + 120.
+    _desired(db, erp.id, source, params=_import_params(hold_seconds="300"))
+    plan = _propose(db, erp.id, source, DeployPlanInputs(900, 5000))
+    assert _binding_of(plan)["lease_ttl_seconds"] == 3420
     # A dispatch plan is not held to the serving deploy's hold points.
     assert _binding_of(_propose(db, erp.id, source, _JOB))["dispatched_job"]
 

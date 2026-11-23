@@ -93,6 +93,9 @@ from dotmac_deployment_control.counterparty import (
 )
 from dotmac_deployment_control.deploy_binding import (
     JOB_LEASE_MARGIN_SECONDS,
+    MAX_LEASE_TTL_SECONDS,
+    SERVING_RUN_SECONDS,
+    SERVING_TRANSFER_SECONDS,
     DeploymentSet,
     DeployPlanBinding,
     DeployPlanInputs,
@@ -6262,6 +6265,21 @@ def _derive_deploy_binding(
         for h in unit.hold_points
     ]
     lease = inputs.lease_ttl_seconds
+    if dispatched is None:
+        needed = (
+            (SERVING_TRANSFER_SECONDS if unit.image_source == "transfer" else 0)
+            + SERVING_RUN_SECONDS
+            + sum(holds)
+            + JOB_LEASE_MARGIN_SECONDS
+        )
+        if needed > MAX_LEASE_TTL_SECONDS:
+            raise PlanRefusedError(
+                f"a serving plan needs a {needed}s lease (transfer + run "
+                f"{SERVING_RUN_SECONDS}s + hold timeouts {sum(holds)}s + "
+                f"{JOB_LEASE_MARGIN_SECONDS}s), over the {MAX_LEASE_TTL_SECONDS}s "
+                "maximum; shorten the hold timeouts"
+            )
+        lease = max(lease, needed)
     ceiling = settings.role_job_lease_ceiling(target.target_ref)
     if dispatched is not None:
         lease = dispatched.run_limit_seconds + JOB_LEASE_MARGIN_SECONDS

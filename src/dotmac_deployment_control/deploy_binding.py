@@ -42,6 +42,13 @@ MAX_LEASE_TTL_SECONDS: Final = 3600
 #: fit the target's `role_job_lease_ceiling_seconds` (default 900, hard maximum
 #: 3600). Serving plans keep MAX_LEASE_TTL_SECONDS (they must cover their holds).
 JOB_LEASE_MARGIN_SECONDS: Final = 120
+#: A SERVING plan's lease must cover what the agent does inside it: the image
+#: transfer (transfer source only), Foundation's own run (its 2700 s timeout; the
+#: agent clips the run to the remaining lease less 120 s and cannot renew), and
+#: every hold-point timeout. Control sizes the lease to the sum plus the margin and
+#: refuses at propose when it cannot fit under MAX_LEASE_TTL_SECONDS.
+SERVING_TRANSFER_SECONDS: Final = 300
+SERVING_RUN_SECONDS: Final = 2700
 DEFAULT_JOB_LEASE_CEILING_SECONDS: Final = 900
 MAX_JOB_LEASE_CEILING_SECONDS: Final = 3600
 COMPANION_ORDER: Final = "after_primary_ready"
