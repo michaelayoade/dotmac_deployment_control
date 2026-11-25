@@ -1,0 +1,79 @@
+{#
+  The typed params form, rendered from the VERIFIED descriptor's ParamSpecs.
+
+  Context: `target`, `release_ref`, `descriptor_path`, `fields` (plain dicts
+  built from ParamSpec), `refusal`. The form carries no descriptor text and no
+  digest: the descriptor is resolved by the assembly's source and its digest is
+  recomputed by Control. The image digest is pinned from the release evidence,
+  so it is not a field here.
+#}
+{% extends "layouts/platform.html" %}
+{% import "deployment_control/_macros.html" as ui %}
+
+{% block platform_content %}
+
+{% if refusal %}
+<div role="alert"
+     style="border:1px solid var(--dmui-status-negative-border);
+            background:var(--dmui-status-negative-surface);
+            color:var(--dmui-status-negative-foreground);
+            border-radius:var(--dmui-radius-md);
+            padding:var(--dmui-space-md);
+            margin-bottom:var(--dmui-space-lg);">{{ refusal }}</div>
+{% endif %}
+
+{% call ui.panel("Release") %}
+<form method="get" action="{{ surface_url('deploy_params', target_id=target.id) }}"
+      style="display:flex; flex-wrap:wrap; gap:var(--dmui-space-sm); align-items:flex-end;">
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Release
+    <input type="text" name="release_ref" value="{{ release_ref }}"
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Descriptor path
+    <input type="text" name="descriptor_path" value="{{ descriptor_path }}"
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+  </label>
+  <button type="submit"
+          style="padding:var(--dmui-space-2xs) var(--dmui-space-sm); border:1px solid var(--dmui-action-primary-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-action-primary-default); color:var(--dmui-action-primary-on); cursor:pointer;">Load descriptor</button>
+</form>
+{% endcall %}
+
+{% if fields %}
+{% call ui.panel("Typed parameters") %}
+<form method="post" action="{{ surface_url('set_deploy_params', target_id=target.id) }}"
+      style="display:flex; flex-direction:column; gap:var(--dmui-space-sm);">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="release_ref" value="{{ release_ref }}">
+  <input type="hidden" name="descriptor_path" value="{{ descriptor_path }}">
+  <input type="hidden" name="expected_desired_revision" value="{{ target.desired_revision }}">
+  {% for field in fields %}
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    {{ field.name }} ({{ field.type }}){% if field.required %} - required{% endif %}
+    {% if field.choices %}
+    <select name="{{ field.input }}"
+            style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+      {% for choice in field.choices %}
+      <option value="{{ choice }}" {% if choice == field.value %}selected{% endif %}>{{ choice }}</option>
+      {% endfor %}
+    </select>
+    {% elif field.type in ("int", "duration_seconds") %}
+    <input type="number" name="{{ field.input }}" value="{{ field.value }}"
+           {% if field.min is not none %}min="{{ field.min }}"{% endif %}
+           {% if field.max is not none %}max="{{ field.max }}"{% endif %}
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+    {% else %}
+    <input type="text" name="{{ field.input }}" value="{{ field.value }}"
+           {% if field.max_length %}maxlength="{{ field.max_length }}"{% endif %}
+           style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+    {% endif %}
+  </label>
+  {% endfor %}
+  <button type="submit"
+          style="align-self:flex-start; padding:var(--dmui-space-2xs) var(--dmui-space-sm); border:1px solid var(--dmui-action-primary-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-action-primary-default); color:var(--dmui-action-primary-on); cursor:pointer;">Set desired state</button>
+</form>
+{% endcall %}
+{% endif %}
+
+{% endblock %}

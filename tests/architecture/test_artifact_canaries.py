@@ -96,6 +96,10 @@ EXPECTED_CANARIES = (
     # checkout -- the production case -- and requires each state to render
     # distinctly.
     "web_surface_templates_render_their_states",
+    # The target-API contract vectors are package data too: the deploy agent
+    # vendors the file and Platform CP replays it, so a wheel without it ships
+    # a contract nobody can check against.
+    "target_api_vectors_ship",
 )
 
 #: Every virtualenv `ci.yml` may run the canaries with, and what each proves.
@@ -556,7 +560,7 @@ def test_the_real_lineage_has_exactly_one_derivable_head() -> None:
     from dotmac_deployment_control.migrations import versions_dir
 
     head = canaries.derive_composed_lineage_head_from_versions_dir(versions_dir())
-    assert head == "dc_0016_controller_key_nonreuse"
+    assert head == "dc_0017_deploy_unit_state"
 
 
 def test_the_derived_head_moves_when_a_child_revision_is_planted(
@@ -688,11 +692,11 @@ def test_the_canary_literal_and_the_declaration_do_not_drift() -> None:
 
 
 def test_the_canary_literal_carries_the_whole_extent_and_not_a_summary() -> None:
-    """Twenty-two tables and 246 columns, held as the LITERAL's own shape. A future
+    """Twenty-five tables and 274 columns, held as the LITERAL's own shape. A future
     edit that trimmed the table to its table names — the `len() == 7` check
     this canary exists to replace — would fail here rather than in a release."""
-    assert canaries.CATALOGUE_TABLE_COUNT == 22
-    assert canaries.CATALOGUE_COLUMN_COUNT == 246
+    assert canaries.CATALOGUE_TABLE_COUNT == 25
+    assert canaries.CATALOGUE_COLUMN_COUNT == 274
     for name, columns in canaries.CATALOGUE_TABLES:
         assert columns, name
         for column, ordinal in zip(columns, range(1, len(columns) + 1), strict=True):

@@ -77,6 +77,26 @@ REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1: Final[str] = (
     "deployment.rehearsal_issuer_authorization.changed.v1"
 )
 
+#: A target's OpenBao namespace-env was set, once, from NULL (a target
+#: registered before it existed).
+TARGET_BAO_ENVIRONMENT_SET_V1: Final[str] = "deployment.target.bao_environment_set.v1"
+#: A deploy-unit setting (pull allowlist, legacy product allowlist, ceiling)
+#: changed under an attended approval.
+DEPLOY_SETTING_CHANGED_V1: Final[str] = "deployment.deploy_setting.changed.v1"
+#: A role-job window (import-only OpenBao) was opened or closed on a target,
+#: under an attended approval.
+ROLE_JOB_WINDOW_OPENED_V1: Final[str] = "deployment.role_job_window.opened.v1"
+ROLE_JOB_WINDOW_CLOSED_V1: Final[str] = "deployment.role_job_window.closed.v1"
+#: Every run_job plan was cancelled because run_job became executable.
+RUN_JOB_PLANS_CANCELLED_V1: Final[str] = "deployment.run_job_plans.cancelled.v1"
+#: A target's legacy env-file policy gained a new version (enabled, revised,
+#: extended or retired).
+LEGACY_POLICY_CHANGED_V1: Final[str] = "deployment.legacy_policy.changed.v1"
+#: A deployment set (primary plan plus optional companion) was recorded.
+DEPLOYMENT_SET_CREATED_V1: Final[str] = "deployment.set.created.v1"
+#: One approval decision was bound to a deployment set's digest.
+DEPLOYMENT_SET_APPROVED_V1: Final[str] = "deployment.set.approved.v1"
+
 #: Every type this module can emit. A consumer building a subscription set reads
 #: this rather than a hand-kept list that drifts, and the module's own test
 #: asserts the set matches what the service actually emits.
@@ -104,6 +124,14 @@ PUBLISHED_EVENT_TYPES: Final[frozenset[str]] = frozenset(
         OBSERVATION_RECORDED_V1,
         DRIFT_DETECTED_V1,
         REHEARSAL_ISSUER_AUTHORIZATION_CHANGED_V1,
+        DEPLOY_SETTING_CHANGED_V1,
+        TARGET_BAO_ENVIRONMENT_SET_V1,
+        ROLE_JOB_WINDOW_OPENED_V1,
+        ROLE_JOB_WINDOW_CLOSED_V1,
+        RUN_JOB_PLANS_CANCELLED_V1,
+        LEGACY_POLICY_CHANGED_V1,
+        DEPLOYMENT_SET_CREATED_V1,
+        DEPLOYMENT_SET_APPROVED_V1,
     }
 )
 
@@ -602,6 +630,9 @@ class PlanProposalPreview:
     #: this is the serialization the digest is computed from, so what they read
     #: and what was hashed are one artefact.
     canonical_plan_json: str = ""
+    #: True for a descriptor-backed target: the plan binding is derived at
+    #: propose, so no plan digest is shown here (`plan_digest` is empty).
+    binding_derived_at_propose: bool = False
     would_supersede_plan_id: UUID | None = None
     digest_matches_current: bool = True
     #: Why proposing would be refused RIGHT NOW, computed from the same
@@ -718,6 +749,23 @@ class ObservationVerdict:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconcileMarkerView:
+    """The marker an ACCEPTED agent `reconcile` observation leaves behind.
+
+    CP 5c asks for it (by target and the EXPIRED dispatch) before an `acquire` that
+    would otherwise be refused `reconcile_marker_required`. It is evidence, not a
+    capability: it names the expired dispatch it settles, so it can clear only the
+    acquire that follows that expiry.
+    """
+
+    target_ref: str
+    dispatch_id: str
+    outcome: str
+    attempt_id: UUID
+    recorded_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DriftReport:
     """The computed difference between rolled-out and observed state.
 
@@ -753,13 +801,58 @@ class DriftReport:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class DeploySettingsView:
+    """The effective deploy-unit settings (stored value, or the default)."""
+
+    public_pull_repositories: tuple[str, ...]
+    legacy_env_file_allowed_targets: tuple[str, ...]
+    legacy_env_file_ceiling: int
+    #: Per-target `run_job` lease ceilings, `(target_ref, seconds)`; absent = 900.
+    role_job_lease_ceilings: tuple[tuple[str, int], ...] = ()
+    role_job_window_max_days: int = 30
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyPolicyView:
+    """The CURRENT (highest) legacy env-file policy version of one target."""
+
+    target_id: UUID
+    target_ref: str
+    product_code: str
+    policy_version: int
+    state: str
+    names: tuple[str, ...]
+    file_sha256: str
+    expires_at: datetime
+    enabled_by_ref: str
+    register_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentSetView:
+    """A recorded deployment set: one digest, one approval, two plans at most."""
+
+    id: UUID
+    primary_plan_id: UUID
+    companion_plan_id: UUID | None
+    order_policy: str
+    required_at_switch: bool
+    set_digest: str
+    created_at: datetime
+
+
 __all__ = [
     "CREDENTIAL_ACTIVATED_V1",
     "CREDENTIAL_ENROLLED_V1",
     "CREDENTIAL_RETIRED_V1",
     "CREDENTIAL_REVOKED_V1",
+    "DEPLOYMENT_SET_APPROVED_V1",
+    "DEPLOYMENT_SET_CREATED_V1",
+    "DEPLOY_SETTING_CHANGED_V1",
     "DRIFT_DETECTED_V1",
     "INTENT_DISPATCHED_V1",
+    "LEGACY_POLICY_CHANGED_V1",
     "OBSERVATION_RECORDED_V1",
     "PLAN_APPROVAL_REVOKED_V1",
     "PLAN_APPROVED_V1",
@@ -773,6 +866,10 @@ __all__ = [
     "ROLLOUT_REQUESTED_V1",
     "ROLLOUT_SUCCEEDED_V1",
     "ROLLOUT_TIMED_OUT_V1",
+    "ROLE_JOB_WINDOW_CLOSED_V1",
+    "RUN_JOB_PLANS_CANCELLED_V1",
+    "ROLE_JOB_WINDOW_OPENED_V1",
+    "TARGET_BAO_ENVIRONMENT_SET_V1",
     "TARGET_DECOMMISSIONED_V1",
     "TARGET_DESIRED_STATE_SET_V1",
     "TARGET_REGISTERED_V1",
@@ -783,7 +880,11 @@ __all__ = [
     "ApprovedPlanRefusalCode",
     "AttemptView",
     "AuthorizedImage",
+    "DeploySettingsView",
+    "DeploymentSetView",
     "DriftReport",
+    "ReconcileMarkerView",
+    "LegacyPolicyView",
     "ObservationAttemptView",
     "ObservationReceiptView",
     "ObservationVerdict",

@@ -1,0 +1,52 @@
+{#
+  Deployment sets: a primary plan and its optional companion, under one digest.
+
+  Context: `sets` (DeploymentSetView...), `refusal`. Frozen views. The form sends
+  plan ids and a checkbox only; the set digest is derived by Control, and the
+  surface refuses a request that carries a digest under any name.
+#}
+{% extends "layouts/platform.html" %}
+{% import "deployment_control/_macros.html" as ui %}
+
+{% block platform_content %}
+
+{% if refusal %}
+<div role="alert" style="border:1px solid var(--dmui-status-negative-border); background:var(--dmui-status-negative-surface); color:var(--dmui-status-negative-foreground); border-radius:var(--dmui-radius-md); padding:var(--dmui-space-md); margin-bottom:var(--dmui-space-lg);">{{ refusal }}</div>
+{% endif %}
+
+{% call ui.panel("Record a deployment set") %}
+<form method="post" action="{{ surface_url('create_deployment_set') }}"
+      style="display:flex; flex-wrap:wrap; gap:var(--dmui-space-sm); align-items:flex-end;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Primary plan id
+    <input type="text" name="primary_plan_id" required style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+  </label>
+  <label style="display:flex; flex-direction:column; gap:var(--dmui-space-3xs); color:var(--dmui-text-secondary); font-size:var(--dmui-font-size-sm);">
+    Companion plan id (optional)
+    <input type="text" name="companion_plan_id" style="padding:var(--dmui-space-2xs); border:1px solid var(--dmui-border-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-surface-primary); color:var(--dmui-text-primary);">
+  </label>
+  <button type="submit" style="padding:var(--dmui-space-2xs) var(--dmui-space-sm); border:1px solid var(--dmui-action-primary-default); border-radius:var(--dmui-radius-sm); background:var(--dmui-action-primary-default); color:var(--dmui-action-primary-on); cursor:pointer;">Record set</button>
+</form>
+{% endcall %}
+
+{% call ui.panel("Sets - newest first") %}
+{% if sets %}
+  {{ ui.table_open(["Recorded", "Primary plan", "Companion plan", "Order", "Required at switch", "Set digest"]) }}
+  {% for item in sets %}
+  <tr>
+    {{ ui.cell(moment(item.created_at)) }}
+    {{ ui.cell(item.primary_plan_id) }}
+    {{ ui.cell(item.companion_plan_id) }}
+    {{ ui.cell(item.order_policy) }}
+    {{ ui.cell("yes" if item.required_at_switch else "no") }}
+    <td style="padding:var(--dmui-space-2xs); border-bottom:1px solid var(--dmui-border-subtle);">{{ ui.digest(item.set_digest) }}</td>
+  </tr>
+  {% endfor %}
+  {{ ui.table_close() }}
+{% else %}
+  {{ ui.nothing_here("No deployment set has been recorded.") }}
+{% endif %}
+{% endcall %}
+
+{% endblock %}

@@ -1,0 +1,3828 @@
+{
+  "constants": {
+    "base_path": "/platform/deploy/target/v1",
+    "bindings_env_names": [
+      "HOST_ADMISSION_MATERIALS",
+      "EXECUTION_CONTEXT_MATERIALS",
+      "AUTHORIZATION_VERIFICATION_IDENTITY",
+      "DISPATCH_VERIFICATION_IDENTITY",
+      "RELEASE_EVIDENCE_VERIFICATION_IDENTITY",
+      "RELEASE_EVIDENCE_REPOSITORY",
+      "DISPATCH_CLOCK_SKEW_LIMIT_SECONDS"
+    ],
+    "deploy_env_names": [
+      "DOTMAC_DEPLOY_DISPATCH_ID",
+      "DOTMAC_DEPLOY_TARGET_REF",
+      "DOTMAC_DEPLOY_PRODUCT",
+      "DOTMAC_DEPLOY_PARAMS_ENV",
+      "DOTMAC_DEPLOY_LEGACY_ENV",
+      "DOTMAC_DEPLOY_LEASE_ID",
+      "DOTMAC_DEPLOY_PLAN_DIGEST",
+      "DOTMAC_DEPLOY_AGENT_CONFIG",
+      "CREDENTIALS_DIRECTORY"
+    ],
+    "headers": {
+      "credential_id": "X-Dotmac-Credential-Id",
+      "issued_at": "X-Dotmac-Issued-At",
+      "nonce": "X-Dotmac-Nonce",
+      "response_signature": "X-Dotmac-Response-Signature",
+      "signature": "X-Dotmac-Signature",
+      "target_ref": "X-Dotmac-Target-Ref"
+    },
+    "key_encoding": "base64url-unpadded",
+    "max_skew_seconds": 60,
+    "request_purpose": "dotmac.target_request.v1",
+    "response_purpose": "cp-target-response.v1"
+  },
+  "contract": "dotmac.target_api/1",
+  "denied_public_keys": {
+    "accepted_example": "JUO5L_EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0",
+    "keys": [
+      {
+        "public_b64u": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+        "seed_of": "request"
+      },
+      {
+        "public_b64u": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+        "seed_of": "response"
+      }
+    ],
+    "reason": "this file publishes the matching private seeds; these public keys authenticate nobody",
+    "refused_at": [
+      "enrolment",
+      "response-key pinning"
+    ]
+  },
+  "encoding": {
+    "base64url": {
+      "ok": [
+        {
+          "hex": "",
+          "text": ""
+        },
+        {
+          "hex": "00",
+          "text": "AA"
+        },
+        {
+          "hex": "fbff",
+          "text": "-_8"
+        },
+        {
+          "hex": "68656c6c6f20776f726c64",
+          "text": "aGVsbG8gd29ybGQ"
+        },
+        {
+          "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "text": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        }
+      ],
+      "refused": [
+        "AA==",
+        "ab+/",
+        "A",
+        "ab cd",
+        "ab\n",
+        "\u00e9\u00e9",
+        "AB"
+      ]
+    },
+    "nonces": {
+      "ok": [
+        "00112233445566778899aabbccddeeff",
+        "ffeeddccbbaa99887766554433221100"
+      ],
+      "refused": [
+        "",
+        "ABCDEF",
+        "00112233445566778899AABBCCDDEEFF",
+        "00112233445566778899aabbccddeef",
+        "00112233445566778899aabbccddeeff0"
+      ]
+    },
+    "skew": [
+      {
+        "issued_at": "2026-11-22T10:00:00Z",
+        "ok": true,
+        "store_now": "2026-11-22T10:01:00Z"
+      },
+      {
+        "issued_at": "2026-11-22T10:01:00Z",
+        "ok": true,
+        "store_now": "2026-11-22T10:00:00Z"
+      },
+      {
+        "issued_at": "2026-11-22T10:00:00Z",
+        "ok": false,
+        "store_now": "2026-11-22T10:01:01Z"
+      },
+      {
+        "issued_at": "2026-11-22T10:01:01Z",
+        "ok": false,
+        "store_now": "2026-11-22T10:00:00Z"
+      }
+    ],
+    "stamps": {
+      "ok": [
+        "2026-11-22T10:00:00Z",
+        "2026-12-31T23:59:59Z"
+      ],
+      "refused": [
+        "2026-11-22 10:00:00Z",
+        "2026-11-22T10:00:00",
+        "2026-11-22T10:00:00+00:00",
+        "2026-13-22T10:00:00Z"
+      ]
+    },
+    "unsigned_status": {
+      "401": "response_signature_invalid",
+      "403": "response_signature_invalid",
+      "404": "response_signature_invalid",
+      "413": "cp_unreachable",
+      "429": "cp_unreachable",
+      "500": "cp_unreachable",
+      "502": "cp_unreachable",
+      "503": "cp_unreachable"
+    }
+  },
+  "file": "target_api_v1.json",
+  "json_bodies": {
+    "ok": [
+      {
+        "body_utf8": "{}",
+        "parsed": {}
+      },
+      {
+        "body_utf8": "{\"a\":1,\"b\":[1,2,{\"c\":null}]}",
+        "parsed": {
+          "a": 1,
+          "b": [
+            1,
+            2,
+            {
+              "c": null
+            }
+          ]
+        }
+      },
+      {
+        "body_utf8": "[]",
+        "parsed": []
+      },
+      {
+        "body_utf8": "\"text\"",
+        "parsed": "text"
+      }
+    ],
+    "refused": [
+      {
+        "body_hex": "7b2261223a312c2261223a327d",
+        "code": "duplicate_key"
+      },
+      {
+        "body_hex": "7b2261223a7b2262223a312c2262223a327d7d",
+        "code": "duplicate_key"
+      },
+      {
+        "body_hex": "5b7b2278223a312c2278223a317d5d",
+        "code": "duplicate_key"
+      },
+      {
+        "body_hex": "7b2261223a4e614e7d",
+        "code": "bad_json"
+      },
+      {
+        "body_hex": "7b2261223a496e66696e6974797d",
+        "code": "bad_json"
+      },
+      {
+        "body_hex": "fffe",
+        "code": "bad_json"
+      },
+      {
+        "body_hex": "6e6f74206a736f6e",
+        "code": "bad_json"
+      }
+    ]
+  },
+  "keys": {
+    "request": {
+      "public_b64u": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "seed_b64u": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    },
+    "response": {
+      "public_b64u": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+      "seed_b64u": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8"
+    }
+  },
+  "materials": {
+    "always_keys": [
+      "pending",
+      "schema",
+      "store_now",
+      "target_ref"
+    ],
+    "archive_names": [
+      {
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "name": "dotmac-erp-v2-1111111111111111111111111111111111111111111111111111111111111111.oci.tar",
+        "service": "dotmac-erp-v2"
+      }
+    ],
+    "expected_app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "idle": {
+      "pending": false,
+      "schema": "dotmac.deploy_target_materials/1",
+      "store_now": "2026-11-22T10:00:00Z",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    },
+    "ok": {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "dispatch_envelope": {
+        "signature": "signed-by-control-and-verified-by-the-agent",
+        "statement": {
+          "dispatch_id": "dispatch-0001",
+          "environment": "production",
+          "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+          "product_code": "dotmac-erp-v2",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        }
+      },
+      "dispatch_id": "dispatch-0001",
+      "params": [
+        {
+          "material": "WORKERS",
+          "name": "workers",
+          "type": "int",
+          "value": "2"
+        }
+      ],
+      "pending": true,
+      "plan_snapshot": {
+        "deploy_binding": {
+          "active_binding_names": [],
+          "companion_order": null,
+          "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "images": [
+            {
+              "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "planned_repository": "127.0.0.1:5000/team/app",
+              "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "release_repository": "registry.example.test/team/app",
+              "service": "dotmac-erp-v2",
+              "source": "transfer"
+            }
+          ],
+          "lease_ttl_seconds": 900,
+          "legacy": {
+            "expires_at": "2026-12-31T23:59:59Z",
+            "names": [
+              "API_SECRET",
+              "DB_PASSWORD"
+            ],
+            "policy_version": 1,
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "primary_service": "dotmac-erp-v2",
+          "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "roles": [
+            {
+              "role": "app",
+              "single_use": false
+            },
+            {
+              "role": "backup",
+              "single_use": false
+            },
+            {
+              "role": "migrate",
+              "single_use": true
+            }
+          ]
+        },
+        "environment": "production",
+        "plan_purpose": "foundation_execution",
+        "product_code": "dotmac-erp-v2",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      "schema": "dotmac.deploy_target_materials/1",
+      "store_now": "2026-11-22T10:00:00Z",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    },
+    "pending_keys": [
+      "app_image",
+      "dispatch_envelope",
+      "dispatch_id",
+      "params",
+      "plan_snapshot"
+    ],
+    "pending_meaning": "true: a dispatch is pending and the document carries it; false: nothing is pending, the document is exactly the always keys",
+    "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+    "plan_roles": [
+      [
+        "app",
+        false
+      ],
+      [
+        "backup",
+        false
+      ],
+      [
+        "migrate",
+        true
+      ]
+    ],
+    "refused": [
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "params_env_digest": "x",
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "removed key params_env_digest"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "images": [],
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "removed key images"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "bindings": [],
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "removed key bindings"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "roles": [],
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "removed key roles (they come from the signed plan)"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "previous_app_image": null,
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "removed key previous_app_image"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "surprise": 1,
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "unknown key"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/2",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "wrong schema"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/other@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "app_image is not the planned image"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": "yes",
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "pending is not a bool"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-9",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "dispatch_id differs from the signed statement"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-b"
+        },
+        "reason": "target_ref differs from the signed statement"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "yesterday",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "a malformed store_now"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "missing dispatch_envelope"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "missing plan_snapshot"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "missing params"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "missing dispatch_id"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "missing store_now"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "the signed plan digest is not the snapshot's"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:1a8fb69436c69a80d61d7ce00c23660f444e2d2abb38a3de95b0a5beb406821b",
+              "product_code": "dotmac-sub",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "the signed product differs from the target"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent"
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "the envelope carries no statement"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:4d2ade8dcae405c9c5a9ba8d7bebc052b33c2c586d5aa7f95e988a1f3c75ec5b",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "unknown",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "the binding names a primary service that is not an image"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:684337b3ba1f924ee76e202af5a805a36e955488d41b05f41090d88b76f31072",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "app",
+                  "single_use": false
+                },
+                {
+                  "role": "backup",
+                  "single_use": false
+                },
+                {
+                  "role": "migrate",
+                  "single_use": true
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "the binding names no primary service (no single-image fallback)"
+      },
+      {
+        "document": {
+          "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "dispatch_envelope": {
+            "signature": "signed-by-control-and-verified-by-the-agent",
+            "statement": {
+              "dispatch_id": "dispatch-0001",
+              "environment": "production",
+              "plan_digest": "sha256:fd86566b40cad72f7b1f1a26cdaf21d26eef670269b2b460371f8bfef7d49bcf",
+              "product_code": "dotmac-erp-v2",
+              "target_ref": "dotmac-erp-v2/production/host-a"
+            }
+          },
+          "dispatch_id": "dispatch-0001",
+          "params": [
+            {
+              "material": "WORKERS",
+              "name": "workers",
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          "pending": true,
+          "plan_snapshot": {
+            "deploy_binding": {
+              "active_binding_names": [],
+              "companion_order": null,
+              "deploy_unit_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "images": [
+                {
+                  "planned_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "planned_repository": "127.0.0.1:5000/team/app",
+                  "release_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                  "release_repository": "registry.example.test/team/app",
+                  "service": "dotmac-erp-v2",
+                  "source": "transfer"
+                }
+              ],
+              "lease_ttl_seconds": 900,
+              "legacy": {
+                "expires_at": "2026-12-31T23:59:59Z",
+                "names": [
+                  "API_SECRET",
+                  "DB_PASSWORD"
+                ],
+                "policy_version": 1,
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "params_env_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+              "primary_service": "dotmac-erp-v2",
+              "product_toml_sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+              "roles": [
+                {
+                  "role": "migrate",
+                  "single_use": true
+                },
+                {
+                  "role": "app",
+                  "single_use": false
+                }
+              ]
+            },
+            "environment": "production",
+            "plan_purpose": "foundation_execution",
+            "product_code": "dotmac-erp-v2",
+            "target_ref": "dotmac-erp-v2/production/host-a"
+          },
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "plan roles are not sorted"
+      },
+      {
+        "document": {
+          "dispatch_id": "dispatch-0001",
+          "pending": false,
+          "schema": "dotmac.deploy_target_materials/1",
+          "store_now": "2026-11-22T10:00:00Z",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "nothing pending but dispatch fields present"
+      },
+      {
+        "document": {
+          "pending": false,
+          "schema": "dotmac.deploy_target_materials/1",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "reason": "an idle document without store_now"
+      }
+    ],
+    "removed_keys": [
+      "bindings",
+      "images",
+      "lease_ttl_seconds",
+      "legacy",
+      "params_env_digest",
+      "previous_app_image",
+      "roles"
+    ],
+    "schema": "dotmac.deploy_target_materials/1",
+    "statement_keys": [
+      "dispatch_id",
+      "environment",
+      "plan_digest",
+      "product_code",
+      "target_ref"
+    ]
+  },
+  "nonce_ledger": {
+    "duplicate": "refused; a retried POST carries a NEW nonce",
+    "example_key": "cred-0001/000000000000000000000000a5a5a5a6",
+    "key_fields": [
+      "credential_id",
+      "nonce"
+    ],
+    "retention": "permanent",
+    "scope": "deployment.target_request_nonce.v1"
+  },
+  "note": "Test keys come from fixed public seeds and carry no authority. `value_parts` are joined by the consumer so no secret-shaped literal sits in this file.",
+  "paths": {
+    "base": "/platform/deploy/target/v1",
+    "ok": [
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+        "route": "materials",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/lease/standing",
+        "route": "lease/standing",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "dispatch_id": "dispatch-0001",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001",
+        "route": "committed",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/a/b/c/consume",
+        "route": "consume",
+        "target_ref": "a/b/c"
+      }
+    ],
+    "refused": [
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2%2Fproduction%2Fhost-a/materials",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials?x=1",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials/",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/materials",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/Dotmac/production/host-a/materials",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/unknown",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets//production/host-a/materials",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed",
+        "refused": true
+      },
+      {
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/a/b",
+        "refused": true
+      }
+    ],
+    "routes": [
+      {
+        "caller": "agent",
+        "method": "GET",
+        "route": "materials"
+      },
+      {
+        "caller": "agent",
+        "method": "POST",
+        "route": "observations"
+      },
+      {
+        "caller": "agent",
+        "method": "POST",
+        "route": "lease/acquire"
+      },
+      {
+        "caller": "agent",
+        "method": "POST",
+        "route": "lease/covers"
+      },
+      {
+        "caller": "agent",
+        "method": "POST",
+        "route": "lease/release"
+      },
+      {
+        "caller": "agent",
+        "method": "GET",
+        "route": "lease/standing"
+      },
+      {
+        "caller": "bindings",
+        "method": "POST",
+        "route": "resolve"
+      },
+      {
+        "caller": "bindings",
+        "method": "POST",
+        "route": "consume"
+      },
+      {
+        "caller": "bindings",
+        "method": "GET",
+        "route": "committed/<dispatch_id>"
+      }
+    ],
+    "wrong_verbs": [
+      {
+        "method": "POST",
+        "route": "materials"
+      },
+      {
+        "method": "GET",
+        "route": "consume"
+      }
+    ]
+  },
+  "render_vectors": [
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "digest": "sha256:6deb479b927ce1ac4db421665dcb9d561f2314749151ca0f78ca43146ea3526a",
+      "name": "workers",
+      "params": [
+        {
+          "material": "WORKERS",
+          "name": "workers",
+          "type": "int",
+          "value_parts": [
+            "2"
+          ]
+        }
+      ],
+      "render_utf8": "APP_IMAGE=127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\nWORKERS=2\n"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "digest": "sha256:85be108fe6cc6102e04823027138ba688affd4cb9a7e79487fdd4f6c510ed036",
+      "name": "no params",
+      "params": [],
+      "render_utf8": "APP_IMAGE=127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\n"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "digest": "sha256:630242e63616dfa103fac999c7aa61c2c29ccbe1bdb45f2d8c49f1b4cc4d6119",
+      "name": "app_image sorts with the other lines (bytewise)",
+      "params": [
+        {
+          "material": "ZED",
+          "name": "zed",
+          "type": "string",
+          "value_parts": [
+            "z"
+          ]
+        },
+        {
+          "material": "ALPHA",
+          "name": "alpha",
+          "type": "string",
+          "value_parts": [
+            "a"
+          ]
+        },
+        {
+          "material": "APP",
+          "name": "app",
+          "type": "string",
+          "value_parts": [
+            "p"
+          ]
+        },
+        {
+          "material": "A_B",
+          "name": "a_b",
+          "type": "string",
+          "value_parts": [
+            "u"
+          ]
+        },
+        {
+          "material": "APP_IMAGE_X",
+          "name": "app_image_x",
+          "type": "string",
+          "value_parts": [
+            "x"
+          ]
+        },
+        {
+          "material": null,
+          "name": "no_material",
+          "type": "string",
+          "value_parts": [
+            "ignored"
+          ]
+        }
+      ],
+      "render_utf8": "ALPHA=a\nAPP=p\nAPP_IMAGE=127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\nAPP_IMAGE_X=x\nA_B=u\nZED=z\n"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "digest": "sha256:77a8f3c2a838ba5f93614c04033d8956b4b8109c87ef80c4e31bdc6c21321d05",
+      "name": "a secret-named material may point at a path",
+      "params": [
+        {
+          "material": "SECRETS_DIR_APP",
+          "name": "secrets_dir",
+          "type": "path",
+          "value_parts": [
+            "/run/dotmac/x/secrets/app"
+          ]
+        }
+      ],
+      "render_utf8": "APP_IMAGE=127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111\nSECRETS_DIR_APP=/run/dotmac/x/secrets/app\n"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "a secret-named material may not carry a value",
+      "params": [
+        {
+          "material": "DB_PASSWORD",
+          "name": "db_password",
+          "type": "string",
+          "value_parts": [
+            "plain"
+          ]
+        }
+      ],
+      "refused": "secret_named_material"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "token-named string refused",
+      "params": [
+        {
+          "material": "API_TOKEN",
+          "name": "api_token",
+          "type": "string",
+          "value_parts": [
+            "plain"
+          ]
+        }
+      ],
+      "refused": "secret_named_material"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "APP_IMAGE is reserved",
+      "params": [
+        {
+          "material": "APP_IMAGE",
+          "name": "img",
+          "type": "string",
+          "value_parts": [
+            "x"
+          ]
+        }
+      ],
+      "refused": "claimed_twice"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "one material twice",
+      "params": [
+        {
+          "material": "SAME",
+          "name": "a",
+          "type": "string",
+          "value_parts": [
+            "1"
+          ]
+        },
+        {
+          "material": "SAME",
+          "name": "b",
+          "type": "string",
+          "value_parts": [
+            "2"
+          ]
+        }
+      ],
+      "refused": "claimed_twice"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "a secret-shaped value is refused",
+      "params": [
+        {
+          "material": "NOTE",
+          "name": "note",
+          "type": "string",
+          "value_parts": [
+            "ghp_",
+            "Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1"
+          ]
+        }
+      ],
+      "refused": "secret_shaped"
+    },
+    {
+      "app_image": "127.0.0.1:5000/team/app@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "name": "a quoted value is refused",
+      "params": [
+        {
+          "material": "NOTE",
+          "name": "note",
+          "type": "string",
+          "value_parts": [
+            "\"x\""
+          ]
+        }
+      ],
+      "refused": "value_invalid"
+    }
+  ],
+  "request_check": {
+    "credential_id": {
+      "ok": [
+        {
+          "credential_id": "cred-0001",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          }
+        },
+        {
+          "credential_id": "cred-0001",
+          "headers": {
+            "x-dotmac-credential-id": "cred-0001",
+            "x-dotmac-issued-at": "2026-11-22T10:00:00Z",
+            "x-dotmac-nonce": "000000000000000000000000a5a5a5a6",
+            "x-dotmac-signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "x-dotmac-target-ref": "dotmac-erp-v2/production/host-a"
+          }
+        }
+      ],
+      "refused": [
+        {
+          "code": "missing_header",
+          "headers": {
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "name": "absent"
+        },
+        {
+          "code": "duplicate_header",
+          "headers_pairs": [
+            [
+              "X-Dotmac-Credential-Id",
+              "cred-0001"
+            ],
+            [
+              "X-Dotmac-Target-Ref",
+              "dotmac-erp-v2/production/host-a"
+            ],
+            [
+              "X-Dotmac-Issued-At",
+              "2026-11-22T10:00:00Z"
+            ],
+            [
+              "X-Dotmac-Nonce",
+              "000000000000000000000000a5a5a5a6"
+            ],
+            [
+              "X-Dotmac-Signature",
+              "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg"
+            ],
+            [
+              "x-dotmac-credential-id",
+              "cred-9999"
+            ]
+          ],
+          "name": "repeated (any case)"
+        },
+        {
+          "code": "missing_header",
+          "headers": {
+            "X-Dotmac-Credential-Id": "",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "name": "empty"
+        }
+      ]
+    },
+    "ok": [
+      {
+        "coordinates": {
+          "credential_id": "cred-0001",
+          "dispatch_id": null,
+          "nonce_ledger_key": "cred-0001/000000000000000000000000a5a5a5a6",
+          "route": "materials",
+          "signed_message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a6",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      },
+      {
+        "coordinates": {
+          "credential_id": "cred-0001",
+          "dispatch_id": null,
+          "nonce_ledger_key": "cred-0001/000000000000000000000000a5a5a5a7",
+          "route": "observations",
+          "signed_message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations\n8336413defb254fb7a2da1e37bcdc172cac5e787c43f9be42d85402c14ff9424\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a7",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "{\"report\":1}",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a7",
+            "X-Dotmac-Signature": "fsWgnqHVh1duvqI03xcavSFCF1p1DCsT_KNa2mqADPj-gojoBZg0lCFRD_EN85anbWLWh4kaVX4HMEYH_MYzBg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "POST",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      },
+      {
+        "coordinates": {
+          "credential_id": "cred-0001",
+          "dispatch_id": "dispatch-0001",
+          "nonce_ledger_key": "cred-0001/000000000000000000000000a5a5a5a9",
+          "route": "committed/<dispatch_id>",
+          "signed_message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a9",
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a9",
+            "X-Dotmac-Signature": "pCJMszn6TFk7G0Jlw6Yartd7LamoDYx7kkfie7S1JywZ65gnlB6rn4a_lRKMNSIttUvoIp_Mk1kY1eUjaYvPDw",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      },
+      {
+        "coordinates": {
+          "target_ref": "dotmac-erp-v2/production/host-a"
+        },
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "x-dotmac-credential-id": "cred-0001",
+            "x-dotmac-issued-at": "2026-11-22T10:00:00Z",
+            "x-dotmac-nonce": "000000000000000000000000a5a5a5a6",
+            "x-dotmac-signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "x-dotmac-target-ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        }
+      }
+    ],
+    "refused": [
+      {
+        "code": "target_mismatch_header_path",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-b"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "header target differs from the path"
+      },
+      {
+        "code": "target_mismatch_credential",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-b",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "the credential is bound to another target"
+      },
+      {
+        "code": "wrong_verb",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "POST",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "wrong verb for the route"
+      },
+      {
+        "code": "query_string",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "x=1",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a query string"
+      },
+      {
+        "code": "bad_path",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/nonsense",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "an unknown route"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Credential-Id"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Target-Ref"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Issued-At"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Nonce"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "missing header X-Dotmac-Signature"
+      },
+      {
+        "code": "missing_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "an empty header"
+      },
+      {
+        "code": "bad_nonce",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "NOT-HEX",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a malformed nonce"
+      },
+      {
+        "code": "bad_timestamp",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22 10:00:00",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a malformed timestamp"
+      },
+      {
+        "code": "skew",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:05:00Z"
+        },
+        "name": "outside the skew"
+      },
+      {
+        "code": "bad_signature_encoding",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a 63-byte signature"
+      },
+      {
+        "code": "bad_signature_encoding",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bh",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a non-canonical signature spelling"
+      },
+      {
+        "code": "credential_lookup_mismatch",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-9999",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "the credential looked up is not the one the request names"
+      },
+      {
+        "code": "duplicate_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "headers_pairs": [
+            [
+              "X-Dotmac-Credential-Id",
+              "cred-0001"
+            ],
+            [
+              "X-Dotmac-Target-Ref",
+              "dotmac-erp-v2/production/host-a"
+            ],
+            [
+              "X-Dotmac-Issued-At",
+              "2026-11-22T10:00:00Z"
+            ],
+            [
+              "X-Dotmac-Nonce",
+              "000000000000000000000000a5a5a5a6"
+            ],
+            [
+              "X-Dotmac-Signature",
+              "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg"
+            ],
+            [
+              "x-dotmac-credential-id",
+              "cred-9999"
+            ]
+          ],
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a repeated X-Dotmac-Credential-Id header"
+      },
+      {
+        "code": "duplicate_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "headers_pairs": [
+            [
+              "X-Dotmac-Credential-Id",
+              "cred-0001"
+            ],
+            [
+              "X-Dotmac-Target-Ref",
+              "dotmac-erp-v2/production/host-a"
+            ],
+            [
+              "X-Dotmac-Issued-At",
+              "2026-11-22T10:00:00Z"
+            ],
+            [
+              "X-Dotmac-Nonce",
+              "000000000000000000000000a5a5a5a6"
+            ],
+            [
+              "X-Dotmac-Signature",
+              "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg"
+            ],
+            [
+              "x-dotmac-target-ref",
+              "dotmac-erp-v2/production/host-b"
+            ]
+          ],
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a repeated X-Dotmac-Target-Ref header"
+      },
+      {
+        "code": "duplicate_header",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "headers_pairs": [
+            [
+              "X-Dotmac-Credential-Id",
+              "cred-0001"
+            ],
+            [
+              "X-Dotmac-Target-Ref",
+              "dotmac-erp-v2/production/host-a"
+            ],
+            [
+              "X-Dotmac-Issued-At",
+              "2026-11-22T10:00:00Z"
+            ],
+            [
+              "X-Dotmac-Nonce",
+              "000000000000000000000000a5a5a5a6"
+            ],
+            [
+              "X-Dotmac-Signature",
+              "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg"
+            ],
+            [
+              "x-dotmac-nonce",
+              "000000000000000000000000a5a5a608"
+            ]
+          ],
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a repeated X-Dotmac-Nonce header"
+      },
+      {
+        "code": "bad_path",
+        "inputs": {
+          "body_utf8": "",
+          "credential_target_ref": "dotmac-erp-v2/production/host-a",
+          "headers": {
+            "X-Dotmac-Credential-Id": "cred-0001",
+            "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+            "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+            "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+            "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+          },
+          "looked_up_credential_id": "cred-0001",
+          "method": "GET",
+          "query_string": "",
+          "raw_path": "/platform/deploy/target/v1/targets/dotmac-erp-v2%2Fproduction%2Fhost-a/materials",
+          "store_now": "2026-11-22T10:00:00Z"
+        },
+        "name": "a percent-encoded path"
+      }
+    ]
+  },
+  "request_vectors": [
+    {
+      "body_utf8": "",
+      "credential_id": "cred-0001",
+      "headers": {
+        "X-Dotmac-Credential-Id": "cred-0001",
+        "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a6",
+        "X-Dotmac-Signature": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+        "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+      },
+      "issued_at": "2026-11-22T10:00:00Z",
+      "message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a6",
+      "method": "GET",
+      "nonce": "000000000000000000000000a5a5a5a6",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+      "signature_b64u": "-tOXfmngYl7Oi2OGP9kPrEL9kji0FqVSw4hU_IRZhezhjrc5NVw6u-oUb09qji_EAUdKOaMOCqGukUafsQJ3Bg",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    },
+    {
+      "body_utf8": "{\"report\":1}",
+      "credential_id": "cred-0001",
+      "headers": {
+        "X-Dotmac-Credential-Id": "cred-0001",
+        "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a7",
+        "X-Dotmac-Signature": "fsWgnqHVh1duvqI03xcavSFCF1p1DCsT_KNa2mqADPj-gojoBZg0lCFRD_EN85anbWLWh4kaVX4HMEYH_MYzBg",
+        "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+      },
+      "issued_at": "2026-11-22T10:00:00Z",
+      "message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations\n8336413defb254fb7a2da1e37bcdc172cac5e787c43f9be42d85402c14ff9424\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a7",
+      "method": "POST",
+      "nonce": "000000000000000000000000a5a5a5a7",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/observations",
+      "signature_b64u": "fsWgnqHVh1duvqI03xcavSFCF1p1DCsT_KNa2mqADPj-gojoBZg0lCFRD_EN85anbWLWh4kaVX4HMEYH_MYzBg",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    },
+    {
+      "body_utf8": "{\"ttl\":900}",
+      "credential_id": "cred-0001",
+      "headers": {
+        "X-Dotmac-Credential-Id": "cred-0001",
+        "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a8",
+        "X-Dotmac-Signature": "1wKgCvTU7iXDm3QdqrnBz_kkpbUpECljqogZQe5ImrgJ5fDUUgp2jhpJ7ljXSYPEI-y8-8zoYgkeXOWSftZAAA",
+        "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+      },
+      "issued_at": "2026-11-22T10:00:00Z",
+      "message_utf8": "dotmac.target_request.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/lease/acquire\n47252010543d84d62184e8d987d7ecc80327e3b13f33beff354f1671e52a6a35\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a8",
+      "method": "POST",
+      "nonce": "000000000000000000000000a5a5a5a8",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/lease/acquire",
+      "signature_b64u": "1wKgCvTU7iXDm3QdqrnBz_kkpbUpECljqogZQe5ImrgJ5fDUUgp2jhpJ7ljXSYPEI-y8-8zoYgkeXOWSftZAAA",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    },
+    {
+      "body_utf8": "",
+      "credential_id": "cred-0001",
+      "headers": {
+        "X-Dotmac-Credential-Id": "cred-0001",
+        "X-Dotmac-Issued-At": "2026-11-22T10:00:00Z",
+        "X-Dotmac-Nonce": "000000000000000000000000a5a5a5a9",
+        "X-Dotmac-Signature": "pCJMszn6TFk7G0Jlw6Yartd7LamoDYx7kkfie7S1JywZ65gnlB6rn4a_lRKMNSIttUvoIp_Mk1kY1eUjaYvPDw",
+        "X-Dotmac-Target-Ref": "dotmac-erp-v2/production/host-a"
+      },
+      "issued_at": "2026-11-22T10:00:00Z",
+      "message_utf8": "dotmac.target_request.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\ncred-0001\ndotmac-erp-v2/production/host-a\n2026-11-22T10:00:00Z\n000000000000000000000000a5a5a5a9",
+      "method": "GET",
+      "nonce": "000000000000000000000000a5a5a5a9",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/committed/dispatch-0001",
+      "signature_b64u": "pCJMszn6TFk7G0Jlw6Yartd7LamoDYx7kkfie7S1JywZ65gnlB6rn4a_lRKMNSIttUvoIp_Mk1kY1eUjaYvPDw",
+      "target_ref": "dotmac-erp-v2/production/host-a"
+    }
+  ],
+  "response_check": {
+    "ok": [
+      {
+        "body_utf8": "{\"ok\":true}",
+        "headers": {
+          "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+        },
+        "message_utf8": "cp-target-response.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\n000000000000000000000000a5a5a5b0\n200\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+        "method": "GET",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+        "request_nonce": "000000000000000000000000a5a5a5b0",
+        "signature_b64u": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ",
+        "status": 200
+      },
+      {
+        "body_utf8": "{\"error\":\"x\"}",
+        "headers": {
+          "X-Dotmac-Response-Signature": "WSstURzIoIO-FMwatVBU1IBszbgCPpGnv7NMpmzlkrApdas9MDVrgr5Z_HKPJAda0qgjQhMddN31yzV_CaqBBg"
+        },
+        "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume\n000000000000000000000000a5a5a5b1\n409\n469535a7a760aaa23c38f15a48eea08848693bd2fcda382aba664e319f672300",
+        "method": "POST",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume",
+        "request_nonce": "000000000000000000000000a5a5a5b1",
+        "signature_b64u": "WSstURzIoIO-FMwatVBU1IBszbgCPpGnv7NMpmzlkrApdas9MDVrgr5Z_HKPJAda0qgjQhMddN31yzV_CaqBBg",
+        "status": 409
+      },
+      {
+        "body_utf8": "",
+        "headers": {
+          "X-Dotmac-Response-Signature": "EV-AGVZDl_Is6CrgRSX7KJEncCeQ1V8yOTTs44T3C_cH-U1dA9BSCzPvhPBisnBtjNrfIam6FXgVdrdsNe6pBg"
+        },
+        "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve\n000000000000000000000000a5a5a5b2\n200\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "method": "POST",
+        "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve",
+        "request_nonce": "000000000000000000000000a5a5a5b2",
+        "signature_b64u": "EV-AGVZDl_Is6CrgRSX7KJEncCeQ1V8yOTTs44T3C_cH-U1dA9BSCzPvhPBisnBtjNrfIam6FXgVdrdsNe6pBg",
+        "status": 200
+      }
+    ],
+    "refused": [
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "unsigned 200"
+      },
+      {
+        "code": "cp_unreachable",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 413
+        },
+        "name": "unsigned 413 is a transport fault"
+      },
+      {
+        "code": "cp_unreachable",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 429
+        },
+        "name": "unsigned 429 is a transport fault"
+      },
+      {
+        "code": "cp_unreachable",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 502
+        },
+        "name": "unsigned 502 is a transport fault"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {},
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 403
+        },
+        "name": "unsigned 403 is not a transport fault"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+          },
+          "headers_pairs": [
+            [
+              "X-Dotmac-Response-Signature",
+              "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+            ],
+            [
+              "x-dotmac-response-signature",
+              "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+            ]
+          ],
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a repeated response signature"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "not base64!"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a malformed signature"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a 63-byte signature"
+      },
+      {
+        "code": "response_signature_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BR"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a non-canonical signature spelling"
+      },
+      {
+        "code": "response_binding_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+          },
+          "method": "GET",
+          "path": "/elsewhere",
+          "request_nonce": "000000000000000000000000a5a5a5b0",
+          "status": 200
+        },
+        "name": "a path that is not a target path"
+      },
+      {
+        "code": "response_binding_invalid",
+        "inputs": {
+          "body_utf8": "{\"ok\":true}",
+          "headers": {
+            "X-Dotmac-Response-Signature": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ"
+          },
+          "method": "GET",
+          "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+          "request_nonce": "short",
+          "status": 200
+        },
+        "name": "a malformed request nonce"
+      }
+    ]
+  },
+  "response_vectors": [
+    {
+      "body_utf8": "{\"ok\":true}",
+      "message_utf8": "cp-target-response.v1\nGET\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials\n000000000000000000000000a5a5a5b0\n200\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+      "method": "GET",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/materials",
+      "request_nonce": "000000000000000000000000a5a5a5b0",
+      "signature_b64u": "gT-PXrpe5HhhUF9YxAbICNJhoJBsAhfzu_Hl1li78uUBa7TtnJWtnMZI0hGnKznH6aafdWkGTs6cjf8G3vL4BQ",
+      "status": 200
+    },
+    {
+      "body_utf8": "{\"error\":\"x\"}",
+      "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume\n000000000000000000000000a5a5a5b1\n409\n469535a7a760aaa23c38f15a48eea08848693bd2fcda382aba664e319f672300",
+      "method": "POST",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/consume",
+      "request_nonce": "000000000000000000000000a5a5a5b1",
+      "signature_b64u": "WSstURzIoIO-FMwatVBU1IBszbgCPpGnv7NMpmzlkrApdas9MDVrgr5Z_HKPJAda0qgjQhMddN31yzV_CaqBBg",
+      "status": 409
+    },
+    {
+      "body_utf8": "",
+      "message_utf8": "cp-target-response.v1\nPOST\n/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve\n000000000000000000000000a5a5a5b2\n200\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "method": "POST",
+      "path": "/platform/deploy/target/v1/targets/dotmac-erp-v2/production/host-a/resolve",
+      "request_nonce": "000000000000000000000000a5a5a5b2",
+      "signature_b64u": "EV-AGVZDl_Is6CrgRSX7KJEncCeQ1V8yOTTs44T3C_cH-U1dA9BSCzPvhPBisnBtjNrfIam6FXgVdrdsNe6pBg",
+      "status": 200
+    }
+  ],
+  "retry_idempotency": {
+    "committed/<dispatch_id>": "read: repeatable",
+    "consume": "dispatch id: a replay is 409 with the existing signed committed marker",
+    "lease/acquire": "dispatch run: re-acquiring by the same run returns its lease",
+    "lease/covers": "read: repeatable",
+    "lease/release": "dispatch run: a second release is a replay, not an error",
+    "lease/standing": "read: repeatable",
+    "materials": "read: repeatable",
+    "observations": "dispatch id plus kind: a repeat returns the stored receipt",
+    "resolve": "read: repeatable"
+  },
+  "secret_name_vectors": [
+    {
+      "accept": false,
+      "material": "DB_PASSWORD",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "DB_PASSWORD",
+      "type": "path"
+    },
+    {
+      "accept": false,
+      "material": "JWT_SECRET",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "SECRETS_DIR_APP",
+      "type": "path"
+    },
+    {
+      "accept": false,
+      "material": "SECRETS_DIR_APP",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "API_TOKEN",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "API_KEY",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "TLS_PRIVATE_KEY",
+      "type": "path"
+    },
+    {
+      "accept": false,
+      "material": "DB_PASS",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "DB_PWD",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "SIGNING_KEY",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "JWT_KEY",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "KEY",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "KEY_ID",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "DATABASE_DSN",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "DATABASE_DSN",
+      "type": "path"
+    },
+    {
+      "accept": false,
+      "material": "PASSWORD_SALT",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "SESSION_COOKIE",
+      "type": "string"
+    },
+    {
+      "accept": false,
+      "material": "BYPASS_CACHE",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "MONKEY_X",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "KEYBOARD_LAYOUT",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "PUBLIC_HOST",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "PLATFORM_ROOT_DOMAIN",
+      "type": "hostname"
+    },
+    {
+      "accept": true,
+      "material": "TRUSTED_HOSTS",
+      "type": "string"
+    },
+    {
+      "accept": true,
+      "material": "SEED_ON_STARTUP",
+      "type": "bool"
+    },
+    {
+      "accept": true,
+      "material": "WORKERS",
+      "type": "int"
+    }
+  ],
+  "secret_ref_vectors": {
+    "ok": [
+      {
+        "approle": "erp-prod-app",
+        "name": "DB_PASSWORD",
+        "role": "app",
+        "secret_ref": "bao://prod/erp/kv/app/db_password",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
+      },
+      {
+        "approle": "erp-integrator-staging-migrate",
+        "name": "MIGRATION_DATABASE_URL",
+        "role": "migrate",
+        "secret_ref": "bao://staging/erp-integrator/kv/migrate/migration_database_url",
+        "secrets_environment": "staging",
+        "secrets_namespace": "erp-integrator"
+      }
+    ],
+    "refused": [
+      {
+        "name": "DB_PASSWORD",
+        "refused": true,
+        "role": "app",
+        "secrets_environment": "Prod",
+        "secrets_namespace": "erp"
+      },
+      {
+        "name": "DB_PASSWORD",
+        "refused": true,
+        "role": "app",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp app"
+      },
+      {
+        "name": "DB_PASSWORD",
+        "refused": true,
+        "role": "App",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
+      },
+      {
+        "name": "db_password",
+        "refused": true,
+        "role": "app",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
+      },
+      {
+        "name": "DB_PASSWORD",
+        "refused": true,
+        "role": "app/x",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp"
+      }
+    ]
+  },
+  "stamp_vectors": [
+    {
+      "expected": "2026-12-31T23:59:59Z",
+      "input": "2026-12-31T23:59:59+00:00"
+    },
+    {
+      "expected": "2026-12-31T22:59:59Z",
+      "input": "2026-12-31T23:59:59+01:00"
+    }
+  ],
+  "target_binding": {
+    "environment_defaults": {
+      "pilot": null,
+      "prod": "prod",
+      "production": "prod",
+      "staging": "staging"
+    },
+    "ok": [
+      {
+        "approle_app": "erp-prod-app",
+        "environment": "production",
+        "host": "host-a",
+        "openbao_namespace": "prod/erp",
+        "product_code": "dotmac-erp-v2",
+        "secret_ref_prefix": "bao://prod/erp/kv/",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "approle_app": "erp-integrator-staging-app",
+        "environment": "staging",
+        "host": "host-1",
+        "openbao_namespace": "staging/erp-integrator",
+        "product_code": "dotmac-integrator-companion",
+        "secret_ref_prefix": "bao://staging/erp-integrator/kv/",
+        "secrets_environment": "staging",
+        "secrets_namespace": "erp-integrator",
+        "target_ref": "dotmac-integrator-companion/staging/host-1"
+      }
+    ],
+    "refused": [
+      {
+        "code": "target_ref_mismatch",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
+        "target_ref": "erp/prod/host-a"
+      },
+      {
+        "code": "target_ref_mismatch",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/staging/host-a"
+      },
+      {
+        "code": "target_ref_mismatch",
+        "environment": "production",
+        "product_code": "dotmac-sub",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "contract_violation",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production"
+      },
+      {
+        "code": "contract_violation",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/Host-A"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "Erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "prod",
+        "secrets_namespace": "erp/x",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "Prod",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      },
+      {
+        "code": "bad_secrets_name",
+        "environment": "production",
+        "product_code": "dotmac-erp-v2",
+        "secrets_environment": "",
+        "secrets_namespace": "erp",
+        "target_ref": "dotmac-erp-v2/production/host-a"
+      }
+    ],
+    "rule": "the target ref is <product_code>/<environment>/<host> (Control's identities, signed and routed on). OpenBao names follow the approved <env>/<product> layout: the namespace is <secrets_environment>/<secrets_namespace> (prod/erp), the AppRole is <secrets_namespace>-<secrets_environment>-<role> (erp-prod-app), and the secret_ref is bao://<secrets_environment>/<secrets_namespace>/kv/<role>/<lower(name)>. secrets_namespace is a descriptor field; secrets_environment is fixed on the target at registration and never sent in a dispatch."
+  },
+  "value_vectors": [
+    {
+      "accept": true,
+      "reason": "ok",
+      "value_parts": [
+        "release-2026.11"
+      ]
+    },
+    {
+      "accept": true,
+      "reason": "ok",
+      "value_parts": [
+        "erp.example.test"
+      ]
+    },
+    {
+      "accept": true,
+      "reason": "ok",
+      "value_parts": [
+        "a b c"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "empty",
+      "value_parts": [
+        ""
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        "line",
+        "\n",
+        "break"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        "carriage",
+        "\r",
+        "return"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        "nul",
+        "\u0000",
+        "byte"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        " leading"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        "trailing "
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        "\"quoted\""
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "alterable",
+      "value_parts": [
+        "'quoted'"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "secret_shaped",
+      "value_parts": [
+        "ghp_",
+        "Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1Ab1"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "secret_shaped",
+      "value_parts": [
+        "-----BEGIN ",
+        "PRIVATE KEY-----"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "secret_shaped",
+      "value_parts": [
+        "hvs.",
+        "Zz9Zz9Zz9Zz9Zz9Zz9Zz9Zz9"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "secret_shaped",
+      "value_parts": [
+        "eyJ",
+        "aaaaaaaaaaaa",
+        ".",
+        "bbbbbbbbbbbb",
+        ".",
+        "cccccccccccc"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "secret_shaped",
+      "value_parts": [
+        "AKIA",
+        "ABCDEFGHIJKLMNOP"
+      ]
+    },
+    {
+      "accept": false,
+      "reason": "secret_shaped",
+      "value_parts": [
+        "postgres://user:",
+        "hunter2",
+        "@db.example.test/app"
+      ]
+    }
+  ]
+}

@@ -52,7 +52,7 @@ __all__ = [
 
 
 class DeploymentOperation(StrEnum):
-    """What an authorization authorizes. Three members, and the set is closed.
+    """What an authorization authorizes. Four members, and the set is closed.
 
     `DEPLOY` — converge a target on the plan's artifact. `ROLLBACK` — return it
     to a previously deployed one. `RECOVER` — re-establish the authorized state
@@ -73,6 +73,13 @@ class DeploymentOperation(StrEnum):
     #: an authorization trail needs those to be three different words, because
     #: they are three different consent conversations.
     RECOVER = "recover"
+    #: Run ONE descriptor job (import-only OpenBao): a signed one-shot whose plan
+    #: binds `dispatched_job`. It is a separate consent from a deploy: approving
+    #: a deploy never approves a job and the reverse. Foundation has not yet
+    #: published support, so it is NAMED here but not in `EXECUTOR_OPERATIONS`:
+    #: it can be proposed and approved but not frozen, signed or dispatched until
+    #: the executor gains it (fail-closed).
+    RUN_JOB = "run_job"
 
 
 #: The closed set, as text. Written from the enum rather than beside it, so a

@@ -65,6 +65,9 @@ EVIDENCE_TABLES = (
     "target_host_association_closures",
     "target_admission_policies",
     "target_admission_policy_closures",
+    # dc_0017: append-only policy versions and deployment sets.
+    "legacy_env_policy_versions",
+    "deployment_sets",
 )
 #: The tables the lifecycle legitimately mutates.
 MUTABLE_TABLES = (
@@ -86,6 +89,8 @@ MUTABLE_TABLES = (
     "attestation_current_roots",
     "target_current_hosts",
     "target_current_admission_policies",
+    # dc_0017: named settings, each change recorded with its approver.
+    "deploy_settings",
 )
 
 SIBLING_ROOTS = frozenset(
@@ -277,7 +282,10 @@ class TestThePlaneIsDeclaredNotDiscovered:
             AttestationRootDescriptor,
             AttestationSubjectLock,
             DeploymentPlan,
+            DeploymentSet,
             DeploymentTarget,
+            DeploySetting,
+            LegacyEnvPolicyVersion,
             ObservationAttempt,
             ObservationReceipt,
             RecoveryGrant,
@@ -318,6 +326,9 @@ class TestThePlaneIsDeclaredNotDiscovered:
             TargetAdmissionPolicy,
             TargetAdmissionPolicyClosure,
             TargetCurrentAdmissionPolicy,
+            DeploySetting,
+            LegacyEnvPolicyVersion,
+            DeploymentSet,
         )
         assert {m.__tablename__ for m in models} == set(module.platform_tables)
         assert all(m.__table__.schema == SCHEMA for m in models)

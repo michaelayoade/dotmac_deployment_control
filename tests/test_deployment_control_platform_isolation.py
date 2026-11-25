@@ -290,6 +290,8 @@ TABLES = (
     "target_current_admission_policies",
 )
 EVIDENCE_TABLES = (
+    "legacy_env_policy_versions",
+    "deployment_sets",
     "rollout_attempts",
     "rollout_attempt_settlements",
     "observation_attempts",
@@ -303,6 +305,7 @@ EVIDENCE_TABLES = (
     "target_admission_policy_closures",
 )
 MUTABLE_TABLES = (
+    "deploy_settings",
     "deployment_targets",
     "target_credentials",
     "deployment_plans",
@@ -704,7 +707,7 @@ class TestTheLineageBuildsFromAnEmptyDatabase:
                     kind=DatabaseCatalogOwnerKind.MODULE,
                     code=module.code,
                 ),
-                revision="dc_0016_controller_key_nonreuse",
+                revision="dc_0017_deploy_unit_state",
             ),
         )
         comparison = verify_module_database_catalog(
@@ -818,7 +821,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
     fix: a name that states the relationship survives the next revision, a
     name that states a number is wrong silently.
 
-    The head extent is 246 columns across twenty-two tables; `dc_0005` is 105.
+    The head extent is 274 columns across twenty-five tables; `dc_0005` is 105.
     `dc_0008` drops `recovery_grants` entirely on the way down, and
     `dc_0011` adds the three attestation-trust-registry tables on the way
     up, so the difference is whole tables rather than a column count
@@ -854,7 +857,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 246
+                    == 274
                 )
             command.downgrade(cfg, "dc_0005_portable_authorization")
             with admin.connect() as conn:
@@ -932,7 +935,7 @@ def test_the_head_downgrades_to_the_exact_dc_0005_extent() -> None:
                             "WHERE table_schema = 'mod_deploy'"
                         )
                     ).scalar_one()
-                    == 246
+                    == 274
                 )
                 purpose, snapshot = conn.execute(
                     text(
@@ -1036,7 +1039,7 @@ def test_dc_0015_refuses_downgrade_with_a_purpose_marked_foundation_plan(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deploy_unit_state"
             )
     finally:
         engine.dispose()
@@ -1160,7 +1163,7 @@ def test_dc_0016_refuses_downgrade_with_controller_key_history(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deploy_unit_state"
             )
     finally:
         engine.dispose()
@@ -1228,7 +1231,7 @@ def test_dc_0012_refuses_to_downgrade_away_a_spent_grant(
                         "WHERE version_num LIKE 'dc_%'"
                     )
                 ).scalar_one()
-                == "dc_0016_controller_key_nonreuse"
+                == "dc_0017_deploy_unit_state"
             )
     finally:
         engine.dispose()
@@ -6611,5 +6614,407 @@ def test_rehearsal_issuer_ledger_constraints_and_privileges(
                     )
         finally:
             app_user_engine.dispose()
+    finally:
+        engine.dispose()
+
+
+def _insert_policy_version(conn, target_id: uuid.UUID) -> None:  # type: ignore[no-untyped-def]
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.legacy_env_policy_versions "
+            "(id, target_id, policy_version, state, product_code, names, "
+            "file_sha256, expires_at, enabled_by_ref, register_ref) VALUES "
+            "(:id, :target, 1, 'enabled', 'dotmac-erp-v2', '[\"A_SECRET\"]'::jsonb, "
+            ":sha, now() + interval '30 days', 'operator', 'register-1')"
+        ),
+        {"id": uuid.uuid4(), "target": target_id, "sha": "sha256:" + "a" * 64},
+    )
+
+
+def _insert_set(conn, primary: uuid.UUID, companion: uuid.UUID | None) -> None:  # type: ignore[no-untyped-def]
+    conn.execute(
+        text(
+            "INSERT INTO mod_deploy.deployment_sets "
+            "(id, primary_plan_id, companion_plan_id, order_policy, "
+            "required_at_switch, set_digest) VALUES "
+            "(:id, :primary, :companion, 'after_primary_ready', false, :digest)"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "primary": primary,
+            "companion": companion,
+            "digest": "sha256:" + uuid.uuid4().hex * 2,
+        },
+    )
+
+
+def test_dc_0017_evidence_tables_refuse_update_delete_and_truncate(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    """Real-PG proof that the two new evidence tables are append-only."""
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_a = _insert_plan(conn, target_id, sequence=1)
+            plan_b = _insert_plan(conn, target_id, sequence=2)
+            _insert_policy_version(conn, target_id)
+            _insert_set(conn, plan_a, plan_b)
+        for statement in (
+            "UPDATE mod_deploy.legacy_env_policy_versions SET state = 'retired'",
+            "DELETE FROM mod_deploy.legacy_env_policy_versions",
+            "TRUNCATE mod_deploy.legacy_env_policy_versions",
+            "UPDATE mod_deploy.deployment_sets SET required_at_switch = true",
+            "DELETE FROM mod_deploy.deployment_sets",
+            "TRUNCATE mod_deploy.deployment_sets",
+        ):
+            with pytest.raises(DBAPIError), engine.begin() as conn:
+                conn.execute(text(statement))
+        with engine.connect() as conn:
+            for table in ("legacy_env_policy_versions", "deployment_sets"):
+                assert (
+                    conn.execute(
+                        text(f"SELECT count(*) FROM mod_deploy.{table}")
+                    ).scalar_one()
+                    == 1
+                )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0017_restricts_setting_names_and_set_shape(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with pytest.raises(IntegrityError, match="ck_deploy_settings_name"):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO mod_deploy.deploy_settings (setting_name, "
+                        "value, setting_version, approver_ref, register_ref) "
+                        "VALUES ('anything_else', '[]'::jsonb, 1, 'a', 'r')"
+                    )
+                )
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_id = _insert_plan(conn, target_id)
+        with pytest.raises(IntegrityError, match="ck_deployment_sets_distinct_plans"):
+            with engine.begin() as conn:
+                _insert_set(conn, plan_id, plan_id)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("table", ["legacy_env_policy_versions", "deployment_sets"])
+def test_dc_0017_refuses_downgrade_with_evidence_rows(
+    isolated_migrated_scratch: tuple[str, str, str], table: str
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            plan_a = _insert_plan(conn, target_id, sequence=1)
+            plan_b = _insert_plan(conn, target_id, sequence=2)
+            if table == "deployment_sets":
+                _insert_set(conn, plan_a, plan_b)
+            else:
+                _insert_policy_version(conn, target_id)
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="refuses to discard"):
+            command.downgrade(cfg, "dc_0016_controller_key_nonreuse")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
+                == "dc_0017_deploy_unit_state"
+            )
+    finally:
+        engine.dispose()
+
+
+# ── The ceiling lock (M2): real-PG races on the legacy settings ─────────────
+
+
+def _race_under_the_settings_lock(  # type: ignore[no-untyped-def]
+    engine: Engine, monkeypatch, first, second
+) -> dict[str, str]:
+    """Run `first` and `second` in two real sessions, `second` provably BLOCKED.
+
+    `first` is gated INSIDE its transaction, after `_lock_deploy_settings` and
+    after it has read the fleet state, and holds the advisory lock there. The
+    test then starts `second` and waits until PostgreSQL reports its backend
+    waiting on a lock (condition-based, no sleep as synchronisation) before
+    releasing `first`. If the lock were missing, `second` would not block and
+    the wait below would fail rather than pass by luck.
+    """
+    from dotmac_deployment_control.legacy_policy import LegacyPolicyRefusedError
+
+    inside = threading.Event()
+    release = threading.Event()
+    original = control_service._fleet_state
+
+    def gated(session, settings):  # type: ignore[no-untyped-def]
+        fleet = original(session, settings)
+        if threading.current_thread().name == "race-first":
+            inside.set()
+            if not release.wait(timeout=30):
+                raise AssertionError("the first session was never released")
+        return fleet
+
+    monkeypatch.setattr(control_service, "_fleet_state", gated)
+    sessions = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    outcomes: dict[str, str] = {}
+    pids: dict[str, int] = {}
+    errors: list[BaseException] = []
+
+    def run(name: str, work) -> None:  # type: ignore[no-untyped-def]
+        try:
+            with sessions() as db:
+                pids[name] = int(
+                    db.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                )
+                try:
+                    work(db)
+                    db.commit()
+                    outcomes[name] = "ok"
+                except LegacyPolicyRefusedError as exc:
+                    db.rollback()
+                    outcomes[name] = f"refused: {exc}"
+        except BaseException as exc:
+            errors.append(exc)
+
+    one = threading.Thread(target=run, args=("first", first), name="race-first")
+    two = threading.Thread(target=run, args=("second", second), name="race-second")
+    try:
+        one.start()
+        assert inside.wait(timeout=20), "the first session never took the lock"
+        two.start()
+        deadline = time.monotonic() + 10
+        while "second" not in pids and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "second" in pids, "the second session never opened a backend"
+        _wait_until_postgres_reports_lock(engine, pids["second"])
+        release.set()
+        for worker in (one, two):
+            worker.join(timeout=30)
+            assert not worker.is_alive(), "the settings-lock race deadlocked"
+    finally:
+        release.set()
+    assert not errors, errors
+    return outcomes
+
+
+def _seed_two_legacy_targets(engine: Engine, ceiling: int):  # type: ignore[no-untyped-def]
+    from tests.unit.test_deploy_unit_state import FakeSource, _bound_target, _set
+
+    source = FakeSource(legacy=True)
+    refs = [f"dotmac-erp-v2/production/race-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+    with Session(engine) as db:
+        _set(db, "legacy_env_file_allowed_targets", refs)
+        _set(db, "legacy_env_file_ceiling", ceiling)
+        targets = [_bound_target(db, source, ref=ref) for ref in refs]
+        db.commit()
+    return source, [target.id for target in targets]
+
+
+def test_concurrent_legacy_enables_at_the_ceiling_admit_exactly_one(
+    isolated_migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two enables race for ONE ceiling slot: exactly one wins, the other gets the
+    typed refusal, and the enabled count never exceeds the ceiling."""
+    from tests.unit.test_deploy_unit_state import _enable
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url, future=True)
+    try:
+        source, (first_id, second_id) = _seed_two_legacy_targets(engine, ceiling=1)
+        outcomes = _race_under_the_settings_lock(
+            engine,
+            monkeypatch,
+            lambda db: _enable(db, first_id, source),
+            lambda db: _enable(db, second_id, source),
+        )
+        assert outcomes["first"] == "ok"
+        assert outcomes["second"].startswith("refused:")
+        assert "ceiling" in outcomes["second"]
+        with Session(engine) as db:
+            rows = db.execute(
+                text(
+                    "SELECT target_id, state FROM mod_deploy.legacy_env_policy_versions"
+                )
+            ).all()
+            ceiling = db.execute(
+                text(
+                    "SELECT value FROM mod_deploy.deploy_settings "
+                    "WHERE setting_name = 'legacy_env_file_ceiling'"
+                )
+            ).scalar_one()
+        assert [(str(t), s) for t, s in rows] == [(str(first_id), "enabled")]
+        assert ceiling == 1
+        assert sum(1 for _, s in rows if s == "enabled") <= ceiling
+    finally:
+        engine.dispose()
+
+
+def test_a_concurrent_retirement_and_ceiling_raise_do_not_lose_an_update(
+    isolated_migrated_scratch: tuple[str, str, str],
+    _module_audit_actions: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retirement (ceiling - 1) races an attended raise (ceiling + 1 step).
+
+    Serialised, the retirement takes 1 to 0 and the raise then goes 0 to 2. A
+    lost update would leave the retirement's stale write, or the raise's, as the
+    final value; both orders of that bug end somewhere other than 2.
+    """
+    from dotmac_deployment_control.legacy_policy import LegacyRetirementEvidence
+    from tests.unit.test_deploy_unit_state import _ATTENDED, _cmd, _enable
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url, future=True)
+    try:
+        source, (first_id, _second_id) = _seed_two_legacy_targets(engine, ceiling=1)
+        with Session(engine) as db:
+            _enable(db, first_id, source)
+            db.commit()
+
+        def retire(db: Session) -> None:
+            control_service.retire_legacy_policy(
+                db,
+                control_service.RetireLegacyPolicyCommand(
+                    command_id=_cmd(),
+                    target_id=first_id,
+                    evidence=LegacyRetirementEvidence(True, True, True),
+                    approval=_ATTENDED,
+                ),
+            )
+
+        def raise_to_two(db: Session) -> None:
+            control_service.set_deploy_setting(
+                db,
+                control_service.SetDeploySettingCommand(
+                    command_id=_cmd(),
+                    name="legacy_env_file_ceiling",
+                    value=2,
+                    approval=_ATTENDED,
+                ),
+            )
+
+        outcomes = _race_under_the_settings_lock(
+            engine, monkeypatch, retire, raise_to_two
+        )
+        assert outcomes == {"first": "ok", "second": "ok"}
+        with Session(engine) as db:
+            final = db.execute(
+                text(
+                    "SELECT value FROM mod_deploy.deploy_settings "
+                    "WHERE setting_name = 'legacy_env_file_ceiling'"
+                )
+            ).scalar_one()
+        assert final == 2
+    finally:
+        engine.dispose()
+
+
+def test_dc_0017_fixes_the_namespace_env_once_set(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    """R5-2: a trigger, not just Python: NULL -> value once, then fixed."""
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.deployment_targets "
+                    "SET bao_environment = 'prod' WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
+        for value in ("'staging'", "NULL"):
+            with pytest.raises(DBAPIError, match="fixed once set"):
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE mod_deploy.deployment_targets "
+                            f"SET bao_environment = {value} WHERE id = :id"
+                        ),
+                        {"id": target_id},
+                    )
+        # Unrelated updates, and re-writing the same value, are untouched.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.deployment_targets "
+                    "SET bao_environment = 'prod', record_version = record_version + 1 "
+                    "WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT bao_environment FROM mod_deploy.deployment_targets "
+                        "WHERE id = :id"
+                    ),
+                    {"id": target_id},
+                ).scalar_one()
+                == "prod"
+            )
+    finally:
+        engine.dispose()
+
+
+def test_dc_0017_refuses_downgrade_while_a_namespace_env_is_set(
+    isolated_migrated_scratch: tuple[str, str, str],
+) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    admin_url, _, _ = isolated_migrated_scratch
+    engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            target_id = _insert_target(conn)
+            conn.execute(
+                text(
+                    "UPDATE mod_deploy.deployment_targets "
+                    "SET bao_environment = 'prod' WHERE id = :id"
+                ),
+                {"id": target_id},
+            )
+        cfg = Config(str(REPO_ROOT / "alembic.ini"))
+        cfg.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+        cfg.set_main_option("version_locations", f"{KERNEL_VERSIONS} {DEPLOY_VERSIONS}")
+        with pytest.raises(RuntimeError, match="OpenBao namespace-env"):
+            command.downgrade(cfg, "dc_0016_controller_key_nonreuse")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT version_num FROM public.alembic_version "
+                        "WHERE version_num LIKE 'dc_%'"
+                    )
+                ).scalar_one()
+                == "dc_0017_deploy_unit_state"
+            )
     finally:
         engine.dispose()

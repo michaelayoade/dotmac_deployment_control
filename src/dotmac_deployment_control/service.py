@@ -52,7 +52,7 @@ never constructs a session.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -68,11 +68,15 @@ from dotmac_kernel.transactions import conflict_savepoint
 # This module never imports `dotmac_kernel.db` or constructs an engine. Every
 # operation receives a caller-owned Session; target-row serialization now owns
 # the observation race, so no kernel transaction helper is needed here either.
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, func, literal, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dotmac_deployment_control import facts
+from dotmac_deployment_control.agent_observation import (
+    AgentObservationEnvelopeV2,
+    verify_agent_observation_envelope,
+)
 from dotmac_deployment_control.approvals import (
     ApprovalDecisionStatus,
     require_decision_status,
@@ -91,8 +95,41 @@ from dotmac_deployment_control.counterparty import (
     EXECUTOR_OPERATIONS,
     require_executable_operation,
 )
+from dotmac_deployment_control.deploy_binding import (
+    JOB_LEASE_MARGIN_SECONDS,
+    MAX_LEASE_MAX_SECONDS,
+    SERVING_RUN_SECONDS,
+    SERVING_TRANSFER_SECONDS,
+    DeploymentSet,
+    DeployPlanBinding,
+    DeployPlanInputs,
+    PlanJob,
+    PlanJobDefinition,
+    PlanJobWindow,
+    PlannedImage,
+    PlanRole,
+    build_deploy_binding,
+)
+from dotmac_deployment_control.deploy_settings import (
+    SETTING_LEGACY_CEILING,
+    DeploySettings,
+    normalise_setting_value,
+    settings_from_rows,
+)
+from dotmac_deployment_control.deploy_unit import (
+    JOB_OUT_DIR,
+    DeployUnit,
+    DeployUnitError,
+    canonical_job_render,
+    canonical_render,
+    is_companion_descriptor_path,
+    params_env_digest,
+    scoped_param_names,
+    validate_job_params,
+)
 from dotmac_deployment_control.digests import (
     AuthorizationEnvelopeDigestV1,
+    DeploymentSetDigestV1,
     DescriptorDigestV1,
     DispatchEnvelopeDigestV1,
     ExecutionPlanDigestV1,
@@ -101,9 +138,11 @@ from dotmac_deployment_control.digests import (
     PublicKeyFingerprintV1,
     SpecDigestV1,
     canonical_json,
+    is_canonical_digest,
 )
 from dotmac_deployment_control.dispatch_envelope import (
     DispatchEnvelopeV1,
+    DispatchResumeExpectation,
     DispatchSigner,
     issue_dispatch_envelope,
 )
@@ -122,11 +161,31 @@ from dotmac_deployment_control.host_admission import (
     HOST_ADMISSION_PRESENTATION_PURPOSE,
     admission_consumption_fingerprint,
 )
+from dotmac_deployment_control.image_policy import (
+    PRESENT_IMAGE_SOURCE,
+    loopback_repository,
+)
 from dotmac_deployment_control.images import (
     AuthorizedImage,
     authorized_image_set,
     image_set_from_payload,
     image_set_payload,
+)
+from dotmac_deployment_control.legacy_policy import (
+    AttendedApproval,
+    LegacyEnvPolicy,
+    LegacyFleetState,
+    LegacyPlanBinding,
+    LegacyPolicyRefusedError,
+    LegacyRetirementEvidence,
+    bind_to_plan,
+    check_policy_against_descriptor,
+    enable_policy,
+    extend_expiry,
+    raise_ceiling,
+    refuse_activation_of_legacy_names,
+    retire_policy,
+    revise_policy,
 )
 from dotmac_deployment_control.models import (
     TERMINAL_ROLLOUT_STATUSES,
@@ -134,7 +193,9 @@ from dotmac_deployment_control.models import (
     CredentialStatus,
     DeploymentPlan,
     DeploymentTarget,
+    DeploySetting,
     EligibilityAtReceipt,
+    LegacyEnvPolicyVersion,
     ObservationAttempt,
     ObservationDisposition,
     ObservationReceipt,
@@ -149,7 +210,9 @@ from dotmac_deployment_control.models import (
     TargetCredential,
     TargetStatus,
 )
+from dotmac_deployment_control.models import DeploymentSet as DeploymentSetRow
 from dotmac_deployment_control.operations import (
+    DeploymentOperation,
     require_operation,
 )
 from dotmac_deployment_control.ports import (
@@ -166,9 +229,14 @@ from dotmac_deployment_control.ports import (
     ImageSetRefusedError,
     ObservationRefusedError,
     OperationRefusedError,
+    PlanMaterialUnsuppliedError,
     PlanRefusedError,
+    ReleaseDescriptorRefusedError,
+    ReleaseDescriptorSource,
+    ReleaseDescriptorUnavailableError,
     TransitionRefusedError,
 )
+from dotmac_deployment_control.reconcile_decision import decide_reconcile
 from dotmac_deployment_control.recovery_grant import (
     RecoveryGrantV1,
     RecoveryGrantVerifier,
@@ -176,6 +244,29 @@ from dotmac_deployment_control.recovery_grant import (
     RecoverySubject,
     recovery_standing,
 )
+from dotmac_deployment_control.release_descriptor import (
+    VerifiedDescriptor,
+    image_pin,
+    pin_params,
+    verify_release_descriptor,
+)
+from dotmac_deployment_control.role_job_window import (
+    SETTING_ROLE_JOB_WINDOWS,
+    RoleJobWindow,
+    RoleJobWindowRefusedError,
+    close_window,
+    open_window,
+    require_open,
+    windows_of,
+)
+from dotmac_deployment_control.target_api import (
+    TargetApiError,
+    check_explicit_secrets_environment,
+    check_target_binding,
+    default_secrets_environment,
+    is_denied_public_key,
+)
+from dotmac_deployment_control.target_api_v2 import check_observation_kind
 
 #: The audit actions this module declares and writes. Four, split by SUBJECT
 #: rather than by verb: a target's own standing, a credential's standing, a plan
@@ -651,6 +742,54 @@ class RegisterTargetCommand:
     product_code: str
     environment: str
     actor_ref: str | None = None
+    #: The OpenBao namespace-env (`prod`, `staging`), FIXED at registration. When
+    #: omitted it defaults from `environment` (`production` or `prod` -> `prod`,
+    #: `staging` -> `staging`); any other environment must state it. A target
+    #: with none cannot be descriptor-backed.
+    secrets_environment: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OpenRoleJobWindowCommand:
+    """Open a role-job window (I-P): attended, with `closes_at` bounded by the
+    hard stop (C-14) recorded with it. One open window per role per target."""
+
+    command_id: str
+    target_id: UUID
+    role: str
+    window_id: str
+    closes_at: datetime
+    hard_stop_at: datetime
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CloseRoleJobWindowCommand:
+    """Close a window for good (I-C1): attended. Cancels every outstanding
+    `run_job` plan and rollout of that window."""
+
+    command_id: str
+    target_id: UUID
+    window_id: str
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SetBaoEnvironmentCommand:
+    """Set a target's OpenBao namespace-env ONCE, only while it is still NULL.
+
+    For targets registered before the column existed. It is fixed afterwards (a
+    database trigger refuses any later change), so this is attended: a flag plus
+    a register reference, like the other deploy settings.
+    """
+
+    command_id: str
+    target_id: UUID
+    bao_environment: str
+    approval: AttendedApproval
+    actor_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,6 +801,13 @@ class SetDesiredStateCommand:
     desired: DesiredDeployment
     expected_version: int | None = None
     actor_ref: str | None = None
+    #: Opt-in descriptor-backed desired state. The descriptor is NEVER supplied
+    #: here: only its repository path, which the injected
+    #: `ReleaseDescriptorSource` resolves. `params` are the typed values.
+    descriptor_path: str | None = None
+    params: Mapping[str, Any] | None = None
+    #: Checked UNDER the target lock, so a stale form cannot silently overwrite.
+    expected_desired_revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -783,6 +929,12 @@ class ProposePlanCommand:
     approval_policy_version: int | None = None
     expected_desired_revision: int | None = None
     actor_ref: str | None = None
+    #: The only caller inputs for a descriptor-backed plan (lease TTL, loopback
+    #: port). Control DERIVES the whole `DeployPlanBinding` from the re-verified
+    #: descriptor and its own stored state and freezes it INSIDE the plan
+    #: snapshot, so the approval covers it. Mandatory for a descriptor-backed
+    #: target; refused for any other.
+    deploy_inputs: DeployPlanInputs | None = None
 
     def __post_init__(self) -> None:
         """Refuse an unusable OPERATION at construction.
@@ -944,6 +1096,7 @@ def plan_snapshot(
     *,
     descriptor_digest: str | None = None,
     purpose: str,
+    deploy_binding: DeployPlanBinding | None = None,
 ) -> dict[str, Any]:
     """The canonical frozen snapshot of a target's desired state.
 
@@ -982,7 +1135,7 @@ def plan_snapshot(
     "this plan declared nothing" are one state rather than two. Two encodings
     of one absence would be two digests for one plan.
     """
-    return {
+    snapshot: dict[str, Any] = {
         "plan_purpose": _require_plan_purpose(purpose).value,
         "target_ref": target.target_ref,
         "product_code": target.product_code,
@@ -1003,6 +1156,11 @@ def plan_snapshot(
         # None because they have not received Foundation's descriptor yet.
         "descriptor_digest": descriptor_digest,
     }
+    # ABSENT, not null, when no binding is supplied: a plan that never used the
+    # deploy-unit contract keeps the exact snapshot (and digest) it always had.
+    if deploy_binding is not None:
+        snapshot["deploy_binding"] = deploy_binding.payload()
+    return snapshot
 
 
 def plan_digest_of(snapshot: Mapping[str, Any]) -> PlanDigestV1:
@@ -1900,11 +2058,22 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
         ).scalar_one_or_none()
         if existing is not None:
             return {"id": str(existing.id)}
+        if command.secrets_environment is not None:
+            try:
+                check_explicit_secrets_environment(
+                    command.environment, command.secrets_environment
+                )
+            except TargetApiError as exc:
+                raise TransitionRefusedError(str(exc)) from None
+        chosen = command.secrets_environment or default_secrets_environment(
+            command.environment
+        )
         row = DeploymentTarget(
             target_ref=command.target_ref,
             subject_ref=command.subject_ref,
             product_code=command.product_code,
             environment=command.environment,
+            bao_environment=chosen,
             status=TargetStatus.REGISTERED.value,
             desired_revision=0,
             record_version=1,
@@ -1937,7 +2106,60 @@ def register_target(db: Session, command: RegisterTargetCommand) -> facts.Target
     return _target_view(target, approval_standing=_approval_standing_for(db, target.id))
 
 
-def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.TargetView:
+def set_bao_environment(
+    db: Session, command: SetBaoEnvironmentCommand
+) -> facts.TargetView:
+    """The one-time attended writer of `bao_environment` (only while NULL)."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        command.approval.require("setting a target's OpenBao namespace-env")
+        row = _load_target_for_update(session, command.target_id)
+        if row.bao_environment is not None:
+            raise TransitionRefusedError(
+                f"target {row.target_ref} already has namespace-env "
+                f"{row.bao_environment!r}; it is fixed once set"
+            )
+        try:
+            check_explicit_secrets_environment(row.environment, command.bao_environment)
+        except TargetApiError as exc:
+            raise TransitionRefusedError(str(exc)) from None
+        row.bao_environment = command.bao_environment
+        row.record_version += 1
+        session.flush()
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.TARGET_BAO_ENVIRONMENT_SET_V1,
+            entity_type=_ENTITY_TARGET,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "target_ref": row.target_ref,
+                "bao_environment": row.bao_environment,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": str(row.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_SET_BAO_ENVIRONMENT,
+        handler=handler,
+    )
+    return _target_view(
+        _load_target(db, command.target_id),
+        approval_standing=_approval_standing_for(db, command.target_id),
+    )
+
+
+def set_desired_state(
+    db: Session,
+    command: SetDesiredStateCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.TargetView:
     """Declare what a target should converge on, bumping `desired_revision`.
 
     Bumping unconditionally — even when the values happen to match — is
@@ -1960,8 +2182,79 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
                 f"target {row.target_ref} is decommissioned; a desired state for "
                 "a retired deployment would be an intent nothing can converge on"
             )
+        if (
+            command.expected_desired_revision is not None
+            and command.expected_desired_revision != row.desired_revision
+        ):
+            raise TransitionRefusedError(
+                f"target {row.target_ref} is at desired revision "
+                f"{row.desired_revision}, not the {command.expected_desired_revision} "
+                "this request was made from"
+            )
+        spec = dict(command.desired.spec)
+        images_in = command.desired.images
+        if (row.desired_spec or {}).get("deploy_unit") is not None and (
+            command.descriptor_path is None
+        ):
+            raise PlanRefusedError(
+                f"target {row.target_ref} is descriptor-backed; a desired state "
+                "without a descriptor would bypass its params, image and legacy "
+                "controls"
+            )
+        if "deploy_unit" in spec:
+            raise PlanRefusedError(
+                "`deploy_unit` in the spec is reserved: Control derives it from "
+                "the verified release descriptor and never takes it from a caller"
+            )
+        if command.descriptor_path is not None:
+            settings = _effective_settings(session)
+            verified = verify_release_descriptor(
+                release_source,
+                release_ref=command.desired.release_ref,
+                product_code=row.product_code,
+                descriptor_path=command.descriptor_path,
+                legacy_allowed=row.target_ref in settings.legacy_allowed_targets,
+            )
+            try:
+                if row.bao_environment is None:
+                    raise TargetApiError(
+                        "the target has no OpenBao namespace-env; state it at "
+                        "registration (secrets_environment)",
+                        "bad_secrets_name",
+                    )
+                check_target_binding(
+                    row.target_ref,
+                    row.product_code,
+                    row.environment,
+                    secrets_namespace=verified.unit.secrets_namespace,
+                    secrets_environment=row.bao_environment,
+                )
+            except TargetApiError as exc:
+                raise PlanRefusedError(
+                    "a descriptor-backed target's ref must be "
+                    "<product_code>/<environment>/<host>, with its OpenBao "
+                    f"names valid: {exc}"
+                ) from None
+            rendered = pin_params(
+                verified,
+                command.params or {},
+                environment=row.environment,
+                allowlist=settings.pull_allowlist,
+            )
+            images_in = _pin_release_images(
+                images_in, image_pin(verified), where=row.target_ref
+            )
+            spec["deploy_unit"] = {
+                "descriptor_path": command.descriptor_path,
+                "descriptor_digest": verified.digest,
+                "source_revision": verified.evidence.source_revision,
+                "product_toml_sha256": verified.product_toml_sha256,
+                "params": rendered,
+            }
+        elif command.params is not None:
+            raise PlanRefusedError("params need a descriptor_path to be validated")
         row.desired_release_ref = command.desired.release_ref
-        row.desired_spec = dict(command.desired.spec)
+        row.desired_spec = spec
         row.licence_ref = command.desired.licence_ref
         row.brand_profile_ref = command.desired.brand_profile_ref
         # CANONICALIZED ON THE WAY IN, refused if it is not a set. Ordering and
@@ -1973,7 +2266,7 @@ def set_desired_state(db: Session, command: SetDesiredStateCommand) -> facts.Tar
         # state and is not an empty set (see `DesiredDeployment.images`).
         row.desired_images = image_set_payload(
             authorized_image_set(
-                command.desired.images,
+                images_in,
                 where=f"desired state for target {row.target_ref}",
             )
         )
@@ -2123,6 +2416,12 @@ def _enrol_purpose_bound_credential(
     would let anyone who can call the enrollment endpoint impersonate a
     deployment.
     """
+
+    if is_denied_public_key(command.public_key_b64):
+        raise TransitionRefusedError(
+            "this public key belongs to a published test seed (the target-API "
+            "vector file); it authenticates nobody and cannot be enrolled"
+        )
 
     def handler(session: Session) -> Mapping[str, object]:
         target = _load_target_for_update(session, command.target_id)
@@ -2371,7 +2670,12 @@ def _as_utc(value: datetime) -> datetime:
 # ── Plans ───────────────────────────────────────────────────────────────────
 
 
-def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
+def propose_plan(
+    db: Session,
+    command: ProposePlanCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.PlanView:
     """Freeze the target's CURRENT desired state into an immutable plan.
 
     Freezing at proposal — rather than reading the desired state at dispatch —
@@ -2433,10 +2737,30 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
         ).scalar()
         sequence = int(highest or 0) + 1
 
+        derived = _derive_deploy_binding(
+            session,
+            target,
+            command.deploy_inputs,
+            release_source,
+            operation=command.operation,
+        )
+        if command.operation == DeploymentOperation.RUN_JOB.value and derived is None:
+            raise PlanRefusedError("a run_job plan needs a descriptor-backed target")
+        if (
+            derived is not None
+            and derived.dispatched_job is not None
+            and derived.dispatched_job.apply_class
+            and not command.requires_approval
+        ):
+            raise PlanRefusedError(
+                "an apply-class run_job plan (a gate is 1 or an apply argument is "
+                "set) needs its own per-dispatch approval"
+            )
         snapshot = plan_snapshot(
             target,
             descriptor_digest=command.descriptor_digest,
             purpose=command.purpose,
+            deploy_binding=derived,
         )
         row = DeploymentPlan(
             target_id=target.id,
@@ -2476,6 +2800,10 @@ def propose_plan(db: Session, command: ProposePlanCommand) -> facts.PlanView:
                     DeploymentPlan.status.in_(
                         (PlanStatus.DRAFT.value, PlanStatus.PROPOSED.value)
                     ),
+                    # A job run and a deploy are different consents: neither
+                    # replaces the other.
+                    (DeploymentPlan.operation == DeploymentOperation.RUN_JOB.value)
+                    == (command.operation == DeploymentOperation.RUN_JOB.value),
                 )
             )
             .scalars()
@@ -2892,12 +3220,33 @@ def request_rollout(
     command: RequestRolloutCommand,
     *,
     signer: AuthorizationSigner | None = None,
+    resume_expectation: DispatchResumeExpectation | None = None,
 ) -> facts.RolloutView:
     """Decide to converge a target on a plan. No transport happens here."""
 
     issued_at = _control_now()
+    if resume_expectation is not None:
+        if not isinstance(resume_expectation, DispatchResumeExpectation):
+            raise TransitionRefusedError("a typed recovery expectation is required")
+        original = resume_expectation.original_authorization.statement
+        if (
+            command.command_id != resume_expectation.rollout_command_id
+            or command.plan_id != resume_expectation.plan_id
+            or command.rollout_ref != resume_expectation.rollout_ref
+            or command.authorization_expires_at != original.expires_at
+            or command.actor_ref is not None
+            or command.reason is not None
+        ):
+            raise TransitionRefusedError(
+                "recovery request differs from the original command"
+            )
 
     def handler(session: Session) -> Mapping[str, object]:
+        if resume_expectation is not None:
+            raise TransitionRefusedError(
+                "recovery requires the original executed request; "
+                "new issuance is refused"
+            )
         existing = session.execute(
             select(Rollout).where(Rollout.rollout_ref == command.rollout_ref)
         ).scalar_one_or_none()
@@ -3071,6 +3420,13 @@ def request_rollout(
         command_type=SCOPE_REQUEST_ROLLOUT,
         handler=handler,
     )
+    if resume_expectation is not None:
+        if outcome.was_duplicate is not True or outcome.result != {
+            "id": str(resume_expectation.rollout_id)
+        }:
+            raise TransitionRefusedError(
+                "recovery requires an exact duplicate of the original request result"
+            )
     rollout = _load_rollout(db, UUID(str(outcome.result["id"])))
     if rollout.plan_id != command.plan_id:
         raise TransitionRefusedError(
@@ -3088,12 +3444,16 @@ def dispatch_attempt(
     actor_ref: str | None = None,
     verifier: AuthorizationVerifier | None = None,
     dispatch_signer: DispatchSigner,
+    resume_expectation: DispatchResumeExpectation | None = None,
 ) -> DeliveryIntent:
     """Open the next attempt and return the provider-neutral delivery intent.
 
     Returns the intent rather than sending it. Sending is the Integrator's, and a
     module that both decided and delivered would be the second transport
     authority ADR-0024 exists to prevent.
+
+    Recovery is restricted to approval-required plans with a currently granted,
+    unrevoked approval. Ordinary approval-exempt plans remain outside this profile.
 
     Retry and redrive are the same operation: calling this again on an open
     rollout opens attempt N+1. There is no separate `retry()` with different
@@ -3102,8 +3462,20 @@ def dispatch_attempt(
     """
 
     dispatched_at = _control_now()
+    if resume_expectation is not None:
+        if not isinstance(resume_expectation, DispatchResumeExpectation):
+            raise TransitionRefusedError("a typed recovery expectation is required")
+        if (
+            command_id != resume_expectation.dispatch_command_id
+            or rollout_id != resume_expectation.rollout_id
+            or actor_ref is not None
+        ):
+            raise TransitionRefusedError(
+                "recovery dispatch differs from original coordinates"
+            )
 
     def handler(session: Session) -> Mapping[str, object]:
+        nonlocal dispatched_at
         locator = session.execute(
             select(Rollout.target_id, Rollout.plan_id).where(Rollout.id == rollout_id)
         ).one_or_none()
@@ -3118,6 +3490,51 @@ def dispatch_attempt(
             .with_for_update()
             .execution_options(populate_existing=True)
         ).scalar_one()
+        if resume_expectation is not None:
+            # Capture time only after the serialization locks, never before a wait.
+            dispatched_at = _control_now()
+            if (
+                rollout.id != resume_expectation.rollout_id
+                or rollout.plan_id != resume_expectation.plan_id
+                or plan.id != resume_expectation.plan_id
+                or rollout.target_id != target.id
+                or plan.target_id != target.id
+                or rollout.rollout_ref != resume_expectation.rollout_ref
+                or rollout.execution_sequence != resume_expectation.execution_sequence
+                or rollout.status != RolloutStatus.REQUESTED.value
+                or rollout.record_version != 1
+                or rollout.completed_at is not None
+                or target.status != TargetStatus.ACTIVE.value
+                or plan.status != PlanStatus.APPROVED.value
+                or plan.superseded_by_id is not None
+            ):
+                raise TransitionRefusedError(
+                    "recovery requires the exact untouched requested rollout"
+                )
+            if (
+                plan.requires_approval is not True
+                or plan.approval_decision_status != ApprovalDecisionStatus.GRANTED.value
+                or plan.approval_revoked_at is not None
+            ):
+                raise ApprovalRefusedError(
+                    "recovery requires a currently granted, unrevoked approval "
+                    "on an approval-required plan"
+                )
+            stored = AuthorizationEnvelopeV2.parse(rollout.authorization_envelope)
+            if (
+                stored.canonical_bytes
+                != resume_expectation.original_authorization.canonical_bytes
+            ):
+                raise TransitionRefusedError(
+                    "recovery requires the exact original authorization bytes"
+                )
+            any_attempt = session.execute(
+                select(RolloutAttempt.id).where(RolloutAttempt.rollout_id == rollout.id)
+            ).first()
+            if any_attempt is not None:
+                raise TransitionRefusedError(
+                    "recovery requires zero attempts, including settled attempts"
+                )
         if rollout.status in TERMINAL_ROLLOUT_STATUSES:
             raise TransitionRefusedError(
                 f"rollout {rollout.rollout_ref} is {rollout.status!r}; a settled "
@@ -3161,6 +3578,7 @@ def dispatch_attempt(
             authorization.statement.operation,
             where=f"dispatch of rollout {rollout.id}",
         )
+        _require_window_for_plan(session, target, plan)
         dispatch_envelope = issue_dispatch_envelope(
             authorization_envelope=authorization,
             dispatch_id=str(attempt_id),
@@ -3211,6 +3629,10 @@ def dispatch_attempt(
     outcome = process_once_platform(
         db, command_id=command_id, command_type=SCOPE_DISPATCH, handler=handler
     )
+    if resume_expectation is not None and outcome.was_duplicate is not False:
+        raise TransitionRefusedError(
+            "a duplicate dispatch command cannot recover executable intent"
+        )
     rollout = _load_rollout(db, rollout_id)
     result_keys = set(outcome.result)
     if result_keys == {"attempt_no"}:
@@ -3580,6 +4002,7 @@ def record_observation(
     )
 
     parsed_observation: ExecutionObservationEnvelopeV1 | None = None
+    parsed_agent: AgentObservationEnvelopeV2 | None = None
     try:
         # `parse_bytes`, never `parse`: the thing parsed is the thing stored,
         # byte for byte. An oversize body is refused here (and recorded as a
@@ -3592,7 +4015,13 @@ def record_observation(
         # The exact inbound bytes still become an attempt below. Parsing before
         # the handler is only a bounded syntax operation; trust begins after
         # Control selects the enrolled verification identity inside it.
-        pass
+        #
+        # Not a v1 execution observation: it may be the agent's own envelope
+        # (target_api v2), the SAME ingestion path with its own strict parser.
+        try:
+            parsed_agent = AgentObservationEnvelopeV2.parse_bytes(wire)
+        except ExecutionObservationRefusedError:
+            pass
 
     def handler(session: Session) -> Mapping[str, object]:
         attempt = ObservationAttempt(
@@ -3611,6 +4040,15 @@ def record_observation(
             disposition=ObservationDisposition.MALFORMED.value,
         )
 
+        if parsed_observation is None and parsed_agent is not None:
+            return _record_agent_observation(
+                session,
+                attempt,
+                command,
+                parsed_agent,
+                observation_verifier=observation_verifier,
+                received_at=received_at,
+            )
         if parsed_observation is None:
             attempt.disposition = ObservationDisposition.MALFORMED.value
             session.add(attempt)
@@ -4128,6 +4566,149 @@ def _replay_observation(
     )
 
 
+def _dispatch_plan(
+    session: Session, target: DeploymentTarget, dispatch_id: str
+) -> DeploymentPlan | None:
+    """The plan a dispatch id belongs to, on THIS target (else None)."""
+    try:
+        attempt_id = UUID(dispatch_id)
+    except ValueError:
+        return None
+    plan = session.execute(
+        select(DeploymentPlan)
+        .join(Rollout, Rollout.plan_id == DeploymentPlan.id)
+        .join(RolloutAttempt, RolloutAttempt.rollout_id == Rollout.id)
+        .where(RolloutAttempt.id == attempt_id)
+    ).scalar_one_or_none()
+    if plan is None or plan.target_id != target.id:
+        return None
+    return plan
+
+
+def _dispatch_operation(
+    session: Session, target: DeploymentTarget, dispatch_id: str
+) -> str | None:
+    """The operation of the plan a dispatch id belongs to, on THIS target."""
+    plan = _dispatch_plan(session, target, dispatch_id)
+    if plan is None:
+        return None
+    return str(plan.authorized_operation or plan.operation or "")
+
+
+def _record_agent_observation(
+    session: Session,
+    attempt: ObservationAttempt,
+    command: RecordObservationCommand,
+    envelope: AgentObservationEnvelopeV2,
+    *,
+    observation_verifier: ExecutionObservationVerifier | None,
+    received_at: datetime,
+) -> Mapping[str, object]:
+    """Ingest the agent's PoP-signed observation (target_api v2).
+
+    The same discipline as the v1 path: an attempt for every arrival, the
+    signature verified against the credential Control SELECTS by `key_id`, the
+    statement's `target_ref` compared with the credential's target. It changes no
+    desired or observed state: it is attributable evidence (a reconcile
+    observation is what a later reconcile marker is issued from). A kind that
+    does not agree with the plan's operation is `operation_mismatch`.
+    """
+    statement = envelope.statement
+    attempt.key_id = statement.key_id
+    attempt.claimed_target_ref = statement.target_ref
+    attempt.report_id = statement.report_id
+    extra = {"agent_kind": statement.kind, "agent_outcome": statement.outcome}
+
+    def finish(disposition: str) -> Mapping[str, object]:
+        attempt.disposition = disposition
+        session.add(attempt)
+        session.flush()
+        return _observation_result(
+            session, attempt, command, changed=False, extra_details=extra
+        )
+
+    credential_target_id = session.execute(
+        select(TargetCredential.target_id).where(
+            TargetCredential.key_id == statement.key_id
+        )
+    ).scalar_one_or_none()
+    if credential_target_id is None:
+        return finish(ObservationDisposition.UNKNOWN_KEY.value)
+    target = _load_target_for_update(session, credential_target_id)
+    credential = session.execute(
+        select(TargetCredential)
+        .where(TargetCredential.key_id == statement.key_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if credential is None:
+        return finish(ObservationDisposition.UNKNOWN_KEY.value)
+    if observation_verifier is None:
+        attempt.signature_status = SignatureStatus.INVALID.value
+        return finish(ObservationDisposition.BAD_SIGNATURE.value)
+    try:
+        verify_agent_observation_envelope(
+            envelope,
+            verifier=observation_verifier,
+            verification_key=ExecutionObservationVerificationKey(
+                key_id=credential.key_id,
+                algorithm=credential.algorithm or "",
+                purpose=credential.purpose or "",
+                public_key_b64=credential.public_key_b64,
+                public_key_fingerprint=credential.public_key_fingerprint,
+            ),
+        )
+    except ExecutionObservationRefusedError:
+        attempt.signature_status = SignatureStatus.INVALID.value
+        return finish(ObservationDisposition.BAD_SIGNATURE.value)
+    attempt.signature_status = SignatureStatus.VALID.value
+    attempt.authenticated_target_ref = target.target_ref
+    eligible = _credential_row_is_eligible(credential, at=received_at)
+    attempt.eligibility_at_receipt = (
+        EligibilityAtReceipt.ELIGIBLE.value
+        if eligible
+        else EligibilityAtReceipt.NOT_ELIGIBLE.value
+    )
+    # A repeat of an already-judged report is a replay (same bytes) or a conflict
+    # (different bytes); its first verdict stands.
+    prior = session.execute(
+        select(ObservationAttempt)
+        .where(
+            ObservationAttempt.authenticated_target_ref == target.target_ref,
+            ObservationAttempt.report_id == statement.report_id,
+            ObservationAttempt.signature_status == SignatureStatus.VALID.value,
+            ObservationAttempt.disposition.in_(
+                (
+                    ObservationDisposition.ACCEPTED.value,
+                    ObservationDisposition.OPERATION_MISMATCH.value,
+                    ObservationDisposition.UNBOUND_REPORT.value,
+                    ObservationDisposition.TARGET_MISMATCH.value,
+                )
+            ),
+        )
+        .order_by(ObservationAttempt.received_at)
+        .limit(1)
+    ).scalar_one_or_none()
+    if prior is not None:
+        return finish(
+            ObservationDisposition.IDEMPOTENT_REPLAY.value
+            if prior.raw_body == attempt.raw_body
+            else ObservationDisposition.CONFLICT.value
+        )
+    if not eligible:
+        return finish(ObservationDisposition.NOT_ELIGIBLE.value)
+    if statement.target_ref != target.target_ref:
+        return finish(ObservationDisposition.TARGET_MISMATCH.value)
+    operation = _dispatch_operation(session, target, statement.dispatch_id)
+    if operation is None:
+        return finish(ObservationDisposition.UNBOUND_REPORT.value)
+    try:
+        check_observation_kind(statement.kind, operation)
+    except TargetApiError:
+        return finish(ObservationDisposition.OPERATION_MISMATCH.value)
+    return finish(ObservationDisposition.ACCEPTED.value)
+
+
 def _observation_result(
     session: Session,
     attempt: ObservationAttempt,
@@ -4137,6 +4718,7 @@ def _observation_result(
     statement: ExecutionObservationStatementV1 | None = None,
     verdict: str | None = None,
     target: DeploymentTarget | None = None,
+    extra_details: Mapping[str, Any] | None = None,
 ) -> Mapping[str, object]:
     """Audit, emit, and shape the handler's return value.
 
@@ -4166,6 +4748,7 @@ def _observation_result(
         "reported_execution_plan_digest": (
             statement.execution_plan_digest if statement is not None else None
         ),
+        **(extra_details or {}),
     }
     _audit_and_emit(
         session,
@@ -4421,12 +5004,18 @@ def preview_plan_proposal(
     ).scalar_one_or_none()
 
     blockers = _plan_blockers(target)
+    # A descriptor-backed target's plan carries a binding Control DERIVES at
+    # propose (params digest, images, TTL, legacy part). The digest computed
+    # here has no binding in it, so it is a digest propose can never produce;
+    # showing it would be showing an operator something they cannot approve.
+    backed = (target.desired_spec or {}).get("deploy_unit") is not None
     return facts.PlanProposalPreview(
         target_id=target.id,
         target_ref=target.target_ref,
         desired_revision=target.desired_revision,
         canonical_plan=snapshot,
-        plan_digest=derived.canonical,
+        plan_digest="" if backed else derived.canonical,
+        binding_derived_at_propose=backed,
         # The bytes the digest is over, from the one function that produces
         # them, so the preview cannot describe a different serialization than
         # the one `PlanDigestV1.over_json` hashed a line earlier.
@@ -4438,7 +5027,7 @@ def preview_plan_proposal(
         # a4 defect exactly, and `_frozen_plan_digest` is the helper that reads
         # a stored digest — including a4's bare-hex form — as a value.
         digest_matches_current=(
-            current is None or _frozen_plan_digest(current) == derived
+            current is None or (not backed and _frozen_plan_digest(current) == derived)
         ),
     )
 
@@ -5028,56 +5617,1565 @@ def observation_attempts(
     return tuple(db.execute(statement).scalars().all())
 
 
+def _plan_image_digests(plan: DeploymentPlan | None) -> set[str]:
+    images = (
+        ((plan.snapshot if plan else None) or {}).get("deploy_binding") or {}
+    ).get("images") or []
+    return {
+        str(image[key])
+        for image in images
+        for key in ("planned_digest", "release_digest")
+        if image.get(key)
+    }
+
+
+def reconcile_marker(
+    db: Session,
+    *,
+    target_ref: str,
+    dispatch_id: str,
+    expired_dispatch_consumed: bool,
+) -> facts.ReconcileMarkerView | None:
+    """Control's DECISION on the reconcile of an EXPIRED dispatch: the marker, or None.
+
+    The port CP 5c reads when a target's latest lease row is EXPIRED_UNRELEASED (CP
+    owns the lease rows and whether the dispatch was consumed, so it passes
+    `expired_dispatch_consumed`). The agent reports facts only: a v2 `reconcile`
+    observation, ACCEPTED by Control, whose outcome is `reconciled` (it observed the
+    host completely) and whose `details` name this dispatch. `decide_reconcile` then
+    judges those facts against the expired plan's image digests and the last
+    committed release's: `reconciled` if every configured container runs the expired
+    plan's digest; `not_needed` if all run the last committed digest and the
+    dispatch was never consumed; otherwise None, and the target goes to attended
+    restore-and-fix-forward. A `failed` reconcile, another kind, a refused arrival or
+    another target's observation leave no marker. Derived on read from the stored
+    accepted observation and Control's plan records.
+    """
+    target = db.execute(
+        select(DeploymentTarget).where(DeploymentTarget.target_ref == target_ref)
+    ).scalar_one_or_none()
+    if target is None:
+        return None
+    attempts = db.execute(
+        select(ObservationAttempt)
+        .where(
+            ObservationAttempt.authenticated_target_ref == target_ref,
+            ObservationAttempt.report_id.like(f"agent:reconcile:{dispatch_id}:%"),
+            ObservationAttempt.signature_status == SignatureStatus.VALID.value,
+            ObservationAttempt.disposition == ObservationDisposition.ACCEPTED.value,
+        )
+        .order_by(ObservationAttempt.received_at)
+    ).scalars()
+    expired_plan = _dispatch_plan(db, target, dispatch_id)
+    last_committed = db.execute(
+        select(DeploymentPlan)
+        .join(Rollout, Rollout.plan_id == DeploymentPlan.id)
+        .where(
+            DeploymentPlan.target_id == target.id,
+            DeploymentPlan.operation != DeploymentOperation.RUN_JOB.value,
+            Rollout.status == RolloutStatus.SUCCEEDED.value,
+            *([DeploymentPlan.id != expired_plan.id] if expired_plan else []),
+        )
+        .order_by(DeploymentPlan.sequence.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    for attempt in attempts:
+        try:
+            statement = AgentObservationEnvelopeV2.parse_bytes(
+                attempt.raw_body or b""
+            ).statement
+        except ExecutionObservationRefusedError:  # pragma: no cover - stored valid
+            continue
+        if statement.outcome != "reconciled":
+            continue
+        decision = decide_reconcile(
+            statement.details,
+            expired_dispatch_id=dispatch_id,
+            expired_plan_digests=_plan_image_digests(expired_plan),
+            last_committed_digests=_plan_image_digests(last_committed),
+            expired_dispatch_consumed=expired_dispatch_consumed,
+        )
+        if decision is not None:
+            return facts.ReconcileMarkerView(
+                target_ref=target_ref,
+                dispatch_id=dispatch_id,
+                outcome=decision,
+                attempt_id=attempt.id,
+                recorded_at=_as_utc(attempt.received_at),
+            )
+    return None
+
+
+# ── Deploy-unit state: settings, legacy env-file policy, deployment sets ─────
+#
+# The value layer (`deploy_settings`, `legacy_policy`, `deploy_binding`) is pure.
+# These commands persist its decisions and re-run its rules inside the
+# transaction, so the database and the rules cannot disagree. Everything is
+# additive: with no stored row every setting has its default (empty pull
+# allowlist, ERP v2 only for the legacy bridge, ceiling 0), and a plan proposed
+# without a deploy binding is untouched.
+
+SCOPE_SET_DEPLOY_SETTING = "deployment.set_deploy_setting"
+SCOPE_SET_BAO_ENVIRONMENT = "deployment.set_bao_environment"
+SCOPE_LEGACY_POLICY = "deployment.legacy_policy"
+SCOPE_ROLE_JOB_WINDOW = "deployment.role_job_window"
+_ENTITY_ROLE_JOB_WINDOW = "role_job_window"
+SCOPE_CREATE_DEPLOYMENT_SET = "deployment.create_deployment_set"
+SCOPE_APPROVE_DEPLOYMENT_SET = "deployment.approve_deployment_set"
+SCOPE_APPROVE_DEPLOYMENT_SET_ONCE = "deployment.approve_deployment_set_once"
+_ENTITY_DEPLOY_SETTING = "deploy_setting"
+_ENTITY_LEGACY_POLICY = "legacy_env_policy"
+_ENTITY_DEPLOYMENT_SET = "deployment_set"
+
+
+@dataclass(frozen=True, slots=True)
+class SetDeploySettingCommand:
+    """Change one deploy setting. Always an ATTENDED approval with a register line.
+
+    The ceiling can only be RAISED here (L4); it falls only by a retirement.
+    """
+
+    command_id: str
+    name: str
+    value: Any
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EnableLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    names: tuple[str, ...]
+    sha256: str
+    #: Operator-declared secret-class names (the one list a caller supplies).
+    #: Param materials, active bindings and the companion rule are DERIVED from
+    #: the verified descriptor, never taken from the caller.
+    secret_names: tuple[str, ...]
+    cutover_at: datetime
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReviseLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    names: tuple[str, ...]
+    sha256: str
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtendLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    new_expires_at: datetime
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RetireLegacyPolicyCommand:
+    command_id: str
+    target_id: UUID
+    evidence: LegacyRetirementEvidence
+    approval: AttendedApproval
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CreateDeploymentSetCommand:
+    command_id: str
+    primary_plan_id: UUID
+    companion_plan_id: UUID | None = None
+    actor_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ApproveDeploymentSetCommand:
+    """Bind an approval decision to a set's digest (one approval over the set)."""
+
+    command_id: str
+    set_id: UUID
+    evidence: ApprovalEvidence
+    actor_ref: str | None = None
+
+
+def _lock_deploy_settings(session: Session) -> None:
+    """Serialise every setting change and legacy transition (L4 ceiling).
+
+    The ceiling lives in a row that may not exist yet, so a row lock cannot be
+    taken; a transaction-scoped advisory lock serialises the read-modify-write
+    of the ratchet across targets. SQLite (the logic suites) has one writer.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('mod_deploy.deploy_settings'))")
+        )
+
+
+def _stored_settings(session: Session) -> dict[str, DeploySetting]:
+    return {
+        row.setting_name: row
+        for row in session.execute(select(DeploySetting)).scalars().all()
+    }
+
+
+def _effective_settings(session: Session) -> DeploySettings:
+    return settings_from_rows(
+        {name: row.value for name, row in _stored_settings(session).items()}
+    )
+
+
+def get_deploy_settings(db: Session) -> facts.DeploySettingsView:
+    """The effective settings: a stored value, else the default."""
+    effective = _effective_settings(db)
+    return facts.DeploySettingsView(
+        public_pull_repositories=tuple(sorted(effective.pull_allowlist.repositories)),
+        legacy_env_file_allowed_targets=tuple(sorted(effective.legacy_allowed_targets)),
+        legacy_env_file_ceiling=effective.legacy_ceiling,
+        role_job_lease_ceilings=tuple(
+            sorted(effective.role_job_lease_ceilings.items())
+        ),
+        role_job_window_max_days=effective.role_job_window_max_days,
+    )
+
+
+def _write_setting(
+    session: Session, name: str, value: Any, approval: AttendedApproval
+) -> int:
+    row = session.get(DeploySetting, name)
+    if row is None:
+        session.add(
+            DeploySetting(
+                setting_name=name,
+                value=value,
+                setting_version=1,
+                approver_ref=approval.approver_ref,
+                register_ref=approval.register_ref,
+            )
+        )
+        session.flush()
+        return 1
+    row.value = value
+    row.setting_version += 1
+    row.approver_ref = approval.approver_ref
+    row.register_ref = approval.register_ref
+    session.flush()
+    return int(row.setting_version)
+
+
+def set_deploy_setting(
+    db: Session, command: SetDeploySettingCommand
+) -> facts.DeploySettingsView:
+    """Change a deploy setting under an attended approval, once per command id."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
+        command.approval.require(f"changing {command.name}")
+        value = normalise_setting_value(command.name, command.value)
+        current = _effective_settings(session)
+        if command.name == SETTING_LEGACY_CEILING:
+            # Only a raise; a fall is a retirement's consequence.
+            raise_ceiling(
+                LegacyFleetState(ceiling=current.legacy_ceiling),
+                value,
+                approval=command.approval,
+            )
+        version = _write_setting(session, command.name, value, command.approval)
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.DEPLOY_SETTING_CHANGED_V1,
+            entity_type=_ENTITY_DEPLOY_SETTING,
+            entity_id=command.name,
+            actor_ref=command.actor_ref,
+            details={
+                "setting": command.name,
+                "setting_version": version,
+                "value": value,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": command.name}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_SET_DEPLOY_SETTING,
+        handler=handler,
+    )
+    return get_deploy_settings(db)
+
+
+def _stored_windows(session: Session) -> dict[str, tuple[RoleJobWindow, ...]]:
+    row = session.get(DeploySetting, SETTING_ROLE_JOB_WINDOWS)
+    if row is None:
+        return {}
+    return {ref: windows_of(items) for ref, items in dict(row.value).items()}
+
+
+def _write_windows(
+    session: Session,
+    windows: Mapping[str, Sequence[RoleJobWindow]],
+    approval: AttendedApproval,
+) -> int:
+    value = {ref: [w.payload() for w in rows] for ref, rows in sorted(windows.items())}
+    return _write_setting(session, SETTING_ROLE_JOB_WINDOWS, value, approval)
+
+
+def _target_windows(session: Session, target_ref: str) -> tuple[RoleJobWindow, ...]:
+    return _stored_windows(session).get(target_ref, ())
+
+
+def _cancel_run_job_work(
+    session: Session,
+    *,
+    target_id: UUID | None,
+    window_id: str | None,
+    reason: str,
+) -> list[str]:
+    """Cancel outstanding `run_job` plans (and their rollouts and pending attempts).
+
+    `window_id` limits it to one window's plans; `target_id` to one target. Both
+    None cancels every run_job plan of every target (see
+    `cancel_run_job_plans_before_executor_support`).
+    """
+    cancelled: list[str] = []
+    plans = (
+        session.execute(
+            select(DeploymentPlan).where(
+                DeploymentPlan.operation == DeploymentOperation.RUN_JOB.value,
+                *([DeploymentPlan.target_id == target_id] if target_id else []),
+                DeploymentPlan.status.in_(
+                    (
+                        PlanStatus.DRAFT.value,
+                        PlanStatus.PROPOSED.value,
+                        PlanStatus.APPROVED.value,
+                    )
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for plan in plans:
+        job = ((plan.snapshot or {}).get("deploy_binding") or {}).get(
+            "dispatched_job"
+        ) or {}
+        if (
+            window_id is not None
+            and (job.get("window") or {}).get("window_id") != window_id
+        ):
+            continue
+        completed = datetime.now(UTC)
+        for rollout in (
+            session.execute(select(Rollout).where(Rollout.plan_id == plan.id))
+            .scalars()
+            .all()
+        ):
+            if rollout.status in TERMINAL_ROLLOUT_STATUSES:
+                continue
+            rollout.status = RolloutStatus.CANCELLED.value
+            rollout.reason = reason
+            rollout.completed_at = completed
+            rollout.record_version += 1
+            for attempt in _load_pending_attempts(session, rollout.id):
+                settlement = RolloutAttemptSettlement(
+                    id=uuid4(),
+                    attempt_id=attempt.id,
+                    outcome=AttemptOutcome.CANCELLED.value,
+                    settled_at=completed,
+                )
+                try:
+                    with conflict_savepoint(session):
+                        session.add(settlement)
+                        session.flush()
+                except IntegrityError:
+                    continue
+                attempt.settlement = settlement
+        plan.status = PlanStatus.CANCELLED.value
+        plan.record_version += 1
+        cancelled.append(str(plan.id))
+    session.flush()
+    return cancelled
+
+
+def cancel_run_job_plans_before_executor_support(
+    db: Session, *, command_id: str, actor_ref: str | None = None
+) -> list[str]:
+    """Cancel EVERY `run_job` plan (draft, proposed or approved) and its rollouts.
+
+    The Control release that adds `run_job` to `EXECUTOR_OPERATIONS` must run this
+    once, so no approval given while the executor could not honour the operation
+    can become dispatchable without notice. Refuses to run while the executor does
+    not support `run_job`, because then the plans are still correctly fail-closed
+    and cancelling them would only destroy approvals for nothing. Idempotent.
+    """
+    if DeploymentOperation.RUN_JOB.value not in EXECUTOR_OPERATIONS:
+        raise TransitionRefusedError(
+            "the executor does not support run_job yet; there is nothing to cancel"
+        )
+
+    done: list[str] = []
+
+    def handler(session: Session) -> Mapping[str, object]:
+        cancelled = _cancel_run_job_work(
+            session,
+            target_id=None,
+            window_id=None,
+            reason="run_job became executable; earlier approvals are void",
+        )
+        done.extend(cancelled)
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.RUN_JOB_PLANS_CANCELLED_V1,
+            entity_type=_ENTITY_ROLE_JOB_WINDOW,
+            entity_id="run_job",
+            actor_ref=actor_ref,
+            details={"cancelled_plans": cancelled},
+        )
+        return {"cancelled": len(cancelled)}
+
+    process_once_platform(
+        db,
+        command_id=command_id,
+        command_type=SCOPE_ROLE_JOB_WINDOW,
+        handler=handler,
+    )
+    return done
+
+
+def open_role_job_window(
+    db: Session, command: OpenRoleJobWindowCommand
+) -> tuple[RoleJobWindow, ...]:
+    """Open a window under an attended approval, once per command id."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
+        command.approval.require("opening a role-job window")
+        target = _load_target_for_update(session, command.target_id)
+        every = _stored_windows(session)
+        try:
+            rows = open_window(
+                every.get(target.target_ref, ()),
+                role=command.role,
+                window_id=command.window_id,
+                now=_control_now(),
+                closes_at=command.closes_at,
+                hard_stop_at=command.hard_stop_at,
+                max_days=_effective_settings(session).role_job_window_max_days,
+            )
+        except RoleJobWindowRefusedError as exc:
+            raise TransitionRefusedError(str(exc)) from None
+        every[target.target_ref] = rows
+        version = _write_windows(session, every, command.approval)
+        opened = rows[-1]
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.ROLE_JOB_WINDOW_OPENED_V1,
+            entity_type=_ENTITY_ROLE_JOB_WINDOW,
+            entity_id=opened.window_id,
+            actor_ref=command.actor_ref,
+            details={
+                "target_ref": target.target_ref,
+                "setting_version": version,
+                "role": opened.role,
+                "window_id": opened.window_id,
+                "closes_at": opened.closes_at,
+                "hard_stop_at": opened.hard_stop_at,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": opened.window_id}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_ROLE_JOB_WINDOW,
+        handler=handler,
+    )
+    return _target_windows(db, _load_target(db, command.target_id).target_ref)
+
+
+def close_role_job_window(
+    db: Session, command: CloseRoleJobWindowCommand
+) -> tuple[RoleJobWindow, ...]:
+    """Close a window permanently and cancel its outstanding `run_job` work."""
+
+    def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
+        command.approval.require("closing a role-job window")
+        target = _load_target_for_update(session, command.target_id)
+        every = _stored_windows(session)
+        try:
+            rows, closed = close_window(
+                every.get(target.target_ref, ()),
+                window_id=command.window_id,
+                now=_control_now(),
+            )
+        except RoleJobWindowRefusedError as exc:
+            raise TransitionRefusedError(str(exc)) from None
+        every[target.target_ref] = rows
+        version = _write_windows(session, every, command.approval)
+        cancelled = _cancel_run_job_work(
+            session,
+            target_id=target.id,
+            window_id=closed.window_id,
+            reason=f"role-job window {closed.window_id} closed",
+        )
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_TARGET,
+            event_type=facts.ROLE_JOB_WINDOW_CLOSED_V1,
+            entity_type=_ENTITY_ROLE_JOB_WINDOW,
+            entity_id=closed.window_id,
+            actor_ref=command.actor_ref,
+            details={
+                "target_ref": target.target_ref,
+                "setting_version": version,
+                "role": closed.role,
+                "window_id": closed.window_id,
+                "closed_at": closed.closed_at,
+                "cancelled_plans": cancelled,
+                "approver_ref": command.approval.approver_ref,
+                "register_ref": command.approval.register_ref,
+            },
+        )
+        return {"id": closed.window_id}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_ROLE_JOB_WINDOW,
+        handler=handler,
+    )
+    return _target_windows(db, _load_target(db, command.target_id).target_ref)
+
+
+def _require_window_for_plan(
+    session: Session, target: DeploymentTarget, plan: DeploymentPlan
+) -> None:
+    """At DISPATCH of a `run_job` plan: its window is still open and unexpired."""
+    if plan.operation != DeploymentOperation.RUN_JOB.value:
+        return
+    job = ((plan.snapshot or {}).get("deploy_binding") or {}).get("dispatched_job")
+    window = (job or {}).get("window")
+    if not job or not window:
+        raise PlanRefusedError("a run_job plan binds a dispatched job with a window")
+    try:
+        require_open(
+            _target_windows(session, target.target_ref),
+            role=str(job["role"]),
+            now=_control_now(),
+            window_id=str(window["window_id"]),
+        )
+    except RoleJobWindowRefusedError as exc:
+        raise TransitionRefusedError(str(exc)) from None
+
+
+def _latest_policy_rows(session: Session) -> dict[UUID, LegacyEnvPolicyVersion]:
+    latest: dict[UUID, LegacyEnvPolicyVersion] = {}
+    rows = session.execute(
+        select(LegacyEnvPolicyVersion).order_by(LegacyEnvPolicyVersion.policy_version)
+    ).scalars()
+    for row in rows:
+        latest[row.target_id] = row
+    return latest
+
+
+def _fleet_state(session: Session, settings: DeploySettings) -> LegacyFleetState:
+    policies: dict[str, LegacyEnvPolicy] = {}
+    for target_id, row in _latest_policy_rows(session).items():
+        target = session.get(DeploymentTarget, target_id)
+        if target is None:  # pragma: no cover - the FK forbids it
+            continue
+        policies[target.target_ref] = LegacyEnvPolicy(
+            target_ref=target.target_ref,
+            product=row.product_code,
+            version=row.policy_version,
+            names=tuple(row.names),
+            sha256=row.file_sha256,
+            expires_at=_as_utc(row.expires_at),
+            enabled_by_ref=row.enabled_by_ref,
+            state=row.state,
+        )
+    return LegacyFleetState(ceiling=settings.legacy_ceiling, policies=policies)
+
+
+def _record_policy(
+    session: Session,
+    target: DeploymentTarget,
+    policy: LegacyEnvPolicy,
+    approval: AttendedApproval,
+    *,
+    actor_ref: str | None,
+    change: str,
+) -> None:
+    session.add(
+        LegacyEnvPolicyVersion(
+            target_id=target.id,
+            policy_version=policy.version,
+            state=policy.state,
+            product_code=policy.product,
+            names=list(policy.names),
+            file_sha256=policy.sha256,
+            expires_at=policy.expires_at,
+            enabled_by_ref=policy.enabled_by_ref,
+            register_ref=approval.register_ref,
+        )
+    )
+    session.flush()
+    _audit_and_emit(
+        session,
+        action=AUDIT_ACTION_TARGET,
+        event_type=facts.LEGACY_POLICY_CHANGED_V1,
+        entity_type=_ENTITY_LEGACY_POLICY,
+        entity_id=str(target.id),
+        actor_ref=actor_ref,
+        details={
+            "target_ref": target.target_ref,
+            "change": change,
+            "policy_version": policy.version,
+            "state": policy.state,
+            "names": list(policy.names),
+            "file_sha256": policy.sha256,
+            "expires_at": policy.expires_at.isoformat(),
+            "approver_ref": approval.approver_ref,
+            "register_ref": approval.register_ref,
+        },
+    )
+
+
+def _legacy_view(
+    session: Session, target: DeploymentTarget
+) -> facts.LegacyPolicyView | None:
+    row = _latest_policy_rows(session).get(target.id)
+    if row is None:
+        return None
+    return facts.LegacyPolicyView(
+        target_id=target.id,
+        target_ref=target.target_ref,
+        product_code=row.product_code,
+        policy_version=row.policy_version,
+        state=row.state,
+        names=tuple(row.names),
+        file_sha256=row.file_sha256,
+        expires_at=_as_utc(row.expires_at),
+        enabled_by_ref=row.enabled_by_ref,
+        register_ref=row.register_ref,
+    )
+
+
+def get_legacy_policy(db: Session, target_id: UUID) -> facts.LegacyPolicyView | None:
+    """The target's current legacy env-file policy, or None if it never had one."""
+    return _legacy_view(db, _load_target(db, target_id))
+
+
+def _legacy_transition(
+    db: Session,
+    command: (
+        EnableLegacyPolicyCommand
+        | ReviseLegacyPolicyCommand
+        | ExtendLegacyPolicyCommand
+        | RetireLegacyPolicyCommand
+    ),
+    *,
+    change: str,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.LegacyPolicyView:
+    def handler(session: Session) -> Mapping[str, object]:
+        _lock_deploy_settings(session)
+        target = _load_target_for_update(session, command.target_id)
+        settings = _effective_settings(session)
+        fleet = _fleet_state(session, settings)
+        now = _control_now()
+        if isinstance(command, EnableLegacyPolicyCommand):
+            command.approval.require("enabling a legacy env-file policy")
+            verified = _verified_stored_descriptor(
+                session, target, settings, release_source
+            )
+            legacy = verified.unit.legacy_env_file
+            if legacy is None:
+                raise LegacyPolicyRefusedError(
+                    "the descriptor declares no [legacy_env_file] for this target"
+                )
+            # Declared by the descriptor first, then the exit, then the rest.
+            check_policy_against_descriptor(
+                command.names,
+                descriptor_legacy_names=legacy.names,
+                param_materials=[
+                    p.material for p in verified.unit.params.values() if p.material
+                ],
+                active_binding_names=verified.unit.active_binding_names(),
+                job_credential_names=verified.unit.job_credential_names(),
+            )
+            after = enable_policy(
+                fleet,
+                target_ref=target.target_ref,
+                product=target.product_code,
+                names=command.names,
+                sha256=command.sha256,
+                secret_names=command.secret_names,
+                param_materials=[
+                    p.material for p in verified.unit.params.values() if p.material
+                ],
+                binding_names=verified.unit.active_binding_names(),
+                cutover_at=command.cutover_at,
+                now=now,
+                enabled_by_ref=command.approval.approver_ref,
+                # DERIVED, not asserted: every legacy name needs a pre-staged
+                # binding in the verified descriptor (the exit is declared).
+                exit_prestaged=set(command.names)
+                <= {b.name for b in verified.unit.bindings if b.state == "pre_staged"},
+                companion=is_companion_descriptor_path(
+                    str(
+                        ((target.desired_spec or {}).get("deploy_unit") or {}).get(
+                            "descriptor_path", ""
+                        )
+                    )
+                ),
+                allowed_targets=settings.legacy_allowed_targets,
+            )
+            check_policy_against_descriptor(
+                after.policies[target.target_ref].names,
+                descriptor_legacy_names=legacy.names,
+                param_materials=[
+                    p.material for p in verified.unit.params.values() if p.material
+                ],
+                active_binding_names=verified.unit.active_binding_names(),
+                job_credential_names=verified.unit.job_credential_names(),
+            )
+        elif isinstance(command, ReviseLegacyPolicyCommand):
+            after = revise_policy(
+                fleet,
+                target_ref=target.target_ref,
+                names=command.names,
+                sha256=command.sha256,
+                approval=command.approval,
+            )
+        elif isinstance(command, ExtendLegacyPolicyCommand):
+            after = extend_expiry(
+                fleet,
+                target_ref=target.target_ref,
+                new_expires_at=command.new_expires_at,
+                approval=command.approval,
+            )
+        else:
+            command.approval.require("retiring a legacy env-file policy")
+            after = retire_policy(
+                fleet, target_ref=target.target_ref, evidence=command.evidence
+            )
+            # The ratchet falls with the retirement, in the same transaction.
+            _write_setting(
+                session, SETTING_LEGACY_CEILING, after.ceiling, command.approval
+            )
+        _record_policy(
+            session,
+            target,
+            after.policies[target.target_ref],
+            command.approval,
+            actor_ref=command.actor_ref,
+            change=change,
+        )
+        return {"id": str(target.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_LEGACY_POLICY,
+        handler=handler,
+    )
+    view = _legacy_view(db, _load_target(db, command.target_id))
+    assert view is not None
+    return view
+
+
+def _verified_stored_descriptor(
+    session: Session,
+    target: DeploymentTarget,
+    settings: DeploySettings,
+    source: ReleaseDescriptorSource | None,
+) -> VerifiedDescriptor:
+    """Re-resolve the descriptor a descriptor-backed target was set from."""
+    stored = (target.desired_spec or {}).get("deploy_unit")
+    if stored is None:
+        raise ReleaseDescriptorUnavailableError(
+            "the target has no descriptor-backed desired state"
+        )
+    return verify_release_descriptor(
+        source,
+        release_ref=str(target.desired_release_ref or ""),
+        product_code=target.product_code,
+        descriptor_path=str(stored["descriptor_path"]),
+        legacy_allowed=target.target_ref in settings.legacy_allowed_targets,
+    )
+
+
+def enable_legacy_policy(
+    db: Session,
+    command: EnableLegacyPolicyCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(
+        db, command, change="enabled", release_source=release_source
+    )
+
+
+def revise_legacy_policy(
+    db: Session, command: ReviseLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="revised")
+
+
+def extend_legacy_policy(
+    db: Session, command: ExtendLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="extended")
+
+
+def retire_legacy_policy(
+    db: Session, command: RetireLegacyPolicyCommand
+) -> facts.LegacyPolicyView:
+    return _legacy_transition(db, command, change="retired")
+
+
+def legacy_plan_binding(
+    db: Session, target_id: UUID, *, observed_sha256: str | None = None
+) -> LegacyPlanBinding:
+    """What a plan binds for this target's legacy file (L1, L4, L5 re-checked)."""
+    target = _load_target(db, target_id)
+    fleet = _fleet_state(db, _effective_settings(db))
+    return bind_to_plan(
+        fleet,
+        target_ref=target.target_ref,
+        now=_control_now(),
+        observed_sha256=observed_sha256,
+    )
+
+
+def _pin_release_images(supplied: Any, pin: Mapping[str, str], *, where: str) -> Any:
+    """Pin the release image. A caller-supplied set must be exactly that image."""
+    if supplied is None:
+        return [dict(pin)]
+    images = authorized_image_set(supplied, where=f"desired state for {where}")
+    only = images[0] if images is not None and len(images) == 1 else None
+    if (
+        only is None
+        or only.repository != pin["repository"]
+        or only.digest.canonical != pin["digest"]
+    ):
+        raise ReleaseDescriptorRefusedError(
+            ReleaseDescriptorRefusedError.IMAGE_MISMATCH,
+            "the declared images are not exactly the release's image",
+        )
+    return supplied
+
+
+def _derive_deploy_binding(
+    session: Session,
+    target: DeploymentTarget,
+    inputs: DeployPlanInputs | None,
+    source: ReleaseDescriptorSource | None,
+    *,
+    operation: str = DeploymentOperation.DEPLOY.value,
+) -> DeployPlanBinding | None:
+    """Re-verify the descriptor and DERIVE the whole plan binding from it.
+
+    Desired state is set at one time and proposed at another, so the evidence is
+    resolved AGAIN here and everything frozen into the plan comes from Control's
+    own recomputation, never from a caller-built object: the params digest is
+    the digest of the canonical render of the stored, validated params plus the
+    planned image; images, active bindings and companion order come from the
+    descriptor; the legacy part comes from the stored policy with L1/L2/L5 and
+    the activation refusal always run. The caller supplies only the lease TTL
+    (bounded here) and the loopback port.
+    """
+    code = ReleaseDescriptorRefusedError
+    stored = (target.desired_spec or {}).get("deploy_unit")
+    if stored is None:
+        if inputs is not None:
+            raise ReleaseDescriptorUnavailableError(
+                "deploy inputs need a descriptor-backed desired state"
+            )
+        return None
+    if inputs is None:
+        raise PlanRefusedError(
+            "a descriptor-backed target is planned with deploy inputs (lease TTL "
+            "and loopback port); a plan without a binding would freeze no params "
+            "digest, TTL, image source or legacy part"
+        )
+    runs_job = operation == DeploymentOperation.RUN_JOB.value
+    if runs_job != (inputs.job is not None):
+        raise PlanRefusedError(
+            "a run_job plan names its job, and no other plan does: operation "
+            f"{operation!r} with job {inputs.job!r}"
+        )
+    if inputs.job_args and not runs_job:
+        raise PlanRefusedError("job arguments belong to a run_job plan")
+    settings = _effective_settings(session)
+    verified = _verified_stored_descriptor(session, target, settings, source)
+    if verified.product_toml_sha256 is None:
+        raise code(
+            code.PRODUCT_TOML_ABSENT,
+            "the released product.toml is not present; no plan until it is",
+        )
+    if verified.product_toml_sha256 != stored.get("product_toml_sha256"):
+        raise code(
+            code.DIGEST_MISMATCH,
+            "the released product.toml differs from the one desired state was set from",
+        )
+    if verified.digest != stored["descriptor_digest"]:
+        raise code(
+            code.DIGEST_MISMATCH,
+            "the release descriptor differs from the one desired state was set from",
+        )
+    if verified.evidence.source_revision != stored.get("source_revision"):
+        raise code(
+            code.EVIDENCE_MISMATCH,
+            "the release's source revision differs from the one desired state used",
+        )
+    pin = image_pin(verified)
+    if not any(
+        item.get("repository") == pin["repository"]
+        and item.get("digest") == pin["digest"]
+        for item in list(target.desired_images or [])
+    ):
+        raise code(code.IMAGE_MISMATCH, "the pinned image is not the release's image")
+    values = dict(stored["params"])
+    pin_params(
+        verified,
+        values,
+        environment=target.environment,
+        allowlist=settings.pull_allowlist,
+    )
+    unit, evidence = verified.unit, verified.evidence
+    if unit.image_source == "transfer":
+        if inputs.loopback_port is None:
+            raise PlanRefusedError("a transferred image needs the loopback port")
+        planned = loopback_repository(evidence.image_repository, inputs.loopback_port)
+    else:
+        if inputs.loopback_port is not None:
+            raise PlanRefusedError(
+                "a pulled image has no loopback registry; a port was supplied"
+            )
+        planned = evidence.image_repository
+    for name, spec in unit.params.items():
+        if spec.type == "image_repository" and values.get(name) != planned:
+            raise code(
+                code.IMAGE_MISMATCH,
+                f"{name} is not the planned image repository for this release",
+            )
+    render = canonical_render(
+        unit,
+        values,
+        app_image=f"{planned}@{evidence.image_digest}",
+        environment=target.environment,
+    )
+    active = unit.active_binding_names()
+    materials = [p.material for p in unit.params.values() if p.material]
+    fleet = _fleet_state(session, settings)
+    policy = fleet.policies.get(target.target_ref)
+    enabled = policy is not None and policy.state == "enabled"
+    legacy: LegacyPlanBinding | None = None
+    if enabled or unit.legacy_env_file is not None:
+        if policy is None or not enabled:
+            raise LegacyPolicyRefusedError(
+                "the descriptor declares [legacy_env_file] but the target has no "
+                "enabled legacy policy"
+            )
+        check_policy_against_descriptor(
+            policy.names,
+            descriptor_legacy_names=(
+                None if unit.legacy_env_file is None else unit.legacy_env_file.names
+            ),
+            param_materials=materials,
+            active_binding_names=active,
+            job_credential_names=unit.job_credential_names(),
+        )
+        refuse_activation_of_legacy_names(active, policy.names)
+        legacy = bind_to_plan(fleet, target_ref=target.target_ref, now=_control_now())
+    dispatched: PlanJob | None = None
+    if inputs.job is not None:
+        job_spec = next((j for j in unit.jobs if j.name == inputs.job), None)
+        if job_spec is None:
+            raise PlanRefusedError(f"the descriptor has no job {inputs.job!r}")
+        try:
+            job_values = validate_job_params(
+                unit,
+                inputs.job_params,
+                job_name=job_spec.name,
+                environment=target.environment,
+            )
+        except DeployUnitError as exc:
+            raise PlanRefusedError(str(exc)) from None
+        scoped = {str(unit.params[n].material) for n in job_values}
+        window: PlanJobWindow | None = None
+        try:
+            argv = job_spec.argv(inputs.job_args)
+        except DeployUnitError as exc:
+            raise PlanRefusedError(str(exc)) from None
+        # Every INPUT path the run reads carries the sha256 approved with the plan.
+        input_digests = dict(inputs.job_input_digests)
+        if set(input_digests) != set(job_spec.input_flags(inputs.job_args)):
+            raise PlanRefusedError(
+                "every input path argument carries its sha256 at propose, and no "
+                "other argument does"
+            )
+        if not all(is_canonical_digest(d) for d in input_digests.values()):
+            raise PlanRefusedError("an input digest is sha256:<64 hex>")
+        # Apply-class is DERIVED from the bound plan, never asserted by a caller.
+        gate_on = any(
+            unit.params[name].type == "enum"
+            and tuple(unit.params[name].choices) == ("0", "1")
+            and value == "1"
+            for name, value in job_values.items()
+        )
+        apply_class = gate_on or job_spec.is_apply(inputs.job_args)
+        if job_spec.role is not None:
+            # A dispatched job with a role gets its secrets ONLY from that
+            # role's mint (and its own scoped params): never from the serving
+            # app's params, never from a legacy file or any boot fallback.
+            carriers = [b for b in unit.bindings if job_spec.role in b.roles]
+            active_carriers = [b for b in carriers if b.state == "active"]
+            if not active_carriers:
+                raise PlanMaterialUnsuppliedError(
+                    f"job {job_spec.name!r} logs in as role {job_spec.role!r} but no "
+                    "ACTIVE binding has that role, so no secret_id would carry "
+                    "anything"
+                )
+            _require_whole_role_active(unit, job_spec.role)
+            supplied = scoped | {b.name for b in active_carriers}
+            try:
+                open_win = require_open(
+                    _target_windows(session, target.target_ref),
+                    role=job_spec.role,
+                    now=_control_now(),
+                )
+            except RoleJobWindowRefusedError as exc:
+                raise PlanRefusedError(str(exc)) from None
+            window = PlanJobWindow(open_win.window_id, open_win.closes_at)
+        else:
+            # A role-less job never takes a dispatched job's credentials.
+            unscoped = {
+                p.material for p in unit.params.values() if p.material and not p.jobs
+            }
+            supplied = (
+                scoped
+                | unscoped
+                | (set(active) - unit.job_credential_names())
+                | (set(legacy.names) if legacy is not None else set())
+            )
+        missing = sorted(set(job_spec.materials) - supplied)
+        if missing:
+            raise PlanMaterialUnsuppliedError(
+                f"job {job_spec.name!r} needs {', '.join(missing)}, which no scoped "
+                "param, role binding, param or active binding in this plan supplies"
+            )
+        dispatched = PlanJob(
+            name=job_spec.name,
+            argv=argv,
+            role=job_spec.role,
+            single_use=unit.job_role_single_use(job_spec),
+            materials=tuple(sorted(job_spec.materials)),
+            # Keyed by MATERIAL (the agent has no descriptor): every scoped material
+            # of the job, defaults filled. The digest covers exactly these lines.
+            params=tuple(
+                sorted(
+                    (str(unit.params[name].material), text)
+                    for name, text in job_values.items()
+                )
+            ),
+            params_env_digest=params_env_digest(
+                canonical_job_render(
+                    unit,
+                    job_values,
+                    job_name=job_spec.name,
+                    environment=target.environment,
+                )
+            ),
+            run_limit_seconds=job_spec.run_limit_seconds,
+            window=window,
+            inputs=tuple(
+                sorted(
+                    (flag, str(inputs.job_args[flag]), digest)
+                    for flag, digest in input_digests.items()
+                )
+            ),
+            output_dir=(
+                JOB_OUT_DIR
+                if any(a.type == "path" and a.io == "output" for a in job_spec.args)
+                else None
+            ),
+            apply_class=apply_class,
+        )
+    deploy_roles = unit.deploy_role_bindings() if dispatched is None else ()
+    for role, _single in deploy_roles:
+        _require_whole_role_active(unit, role)
+    mints_roles = bool(deploy_roles) or bool(dispatched and dispatched.role)
+    if mints_roles and target.bao_environment is None:
+        raise PlanRefusedError(
+            f"target {target.target_ref} has roles to mint secret_ids for but no "
+            "OpenBao namespace-env; set it once (set_bao_environment) before planning"
+        )
+    holds = [
+        int(values.get(h.timeout_param) or unit.params[h.timeout_param].default or 0)
+        for h in unit.hold_points
+    ]
+    # The lease is split: `ttl` is one grant, `lease_max` the total the plan may
+    # hold the host across renewals (CP 5c `lease/renew`).
+    ttl = inputs.lease_ttl_seconds
+    lease_max = ttl
+    ceiling = settings.role_job_lease_ceiling(target.target_ref)
+    if dispatched is None:
+        lease_max = (
+            (SERVING_TRANSFER_SECONDS if unit.image_source == "transfer" else 0)
+            + SERVING_RUN_SECONDS
+            + sum(holds)
+            + JOB_LEASE_MARGIN_SECONDS
+        )
+        if lease_max > MAX_LEASE_MAX_SECONDS:
+            raise PlanRefusedError(
+                f"a serving plan needs a {lease_max}s lease maximum (transfer + run "
+                f"{SERVING_RUN_SECONDS}s + hold timeouts {sum(holds)}s + "
+                f"{JOB_LEASE_MARGIN_SECONDS}s), over the {MAX_LEASE_MAX_SECONDS}s "
+                "limit; shorten the hold timeouts"
+            )
+    else:
+        # A job plan: ttl = max = timeout + 120, no transfer term (the image is
+        # already on the host), under the target's role-job lease ceiling.
+        ttl = lease_max = dispatched.run_limit_seconds + JOB_LEASE_MARGIN_SECONDS
+        if ttl > ceiling:
+            raise PlanRefusedError(
+                f"job {dispatched.name!r} needs a {ttl}s lease (timeout "
+                f"{dispatched.run_limit_seconds}s + {JOB_LEASE_MARGIN_SECONDS}s), over "
+                f"this target's role-job lease ceiling of {ceiling}s"
+            )
+    return build_deploy_binding(
+        deploy_unit_digest=verified.digest,
+        product_toml_sha256=verified.product_toml_sha256,
+        params_env_digest=params_env_digest(render),
+        images=[
+            PlannedImage(
+                service=unit.product,
+                # A run_job plan runs the image already on the host: no transfer.
+                source=(
+                    PRESENT_IMAGE_SOURCE
+                    if dispatched is not None
+                    else unit.image_source
+                ),
+                release_repository=evidence.image_repository,
+                release_digest=evidence.image_digest,
+                planned_repository=planned,
+                planned_digest=evidence.image_digest,
+            )
+        ],
+        lease_ttl_seconds=ttl,
+        lease_max_seconds=lease_max,
+        allowlist=settings.pull_allowlist,
+        legacy=legacy,
+        companion_order=(
+            "after_primary_ready" if unit.companions and dispatched is None else None
+        ),
+        active_binding_names=unit.serving_binding_names(),
+        job_binding_names=unit.job_binding_names(),
+        roles=[PlanRole(role, single) for role, single in deploy_roles],
+        primary_service=unit.product,
+        secrets_namespace=unit.secrets_namespace,
+        secrets_environment=target.bao_environment,
+        jobs=[
+            PlanJobDefinition(
+                name=j.name,
+                role=j.role,
+                command=j.command,
+                materials=tuple(sorted(j.materials)),
+                params=scoped_param_names(unit, j.name),
+                args=tuple(a.payload() for a in j.args),
+                run_limit_seconds=j.run_limit_seconds,
+                apply_command=j.apply_command,
+            )
+            for j in unit.jobs
+        ],
+        dispatched_job=dispatched,
+        min_lease_seconds=max(holds, default=0),
+        job_lease_ceiling_seconds=ceiling,
+    )
+
+
+def _require_whole_role_active(unit: DeployUnit, role: str) -> None:
+    """A secret_id is per ROLE and renders every path the role's policy reads, so
+    a role is all-or-nothing: no pre-staged binding may ride along with it."""
+    inactive = sorted(
+        b.name for b in unit.bindings if role in b.roles and b.state != "active"
+    )
+    if inactive:
+        raise PlanRefusedError(
+            f"role {role!r} would be minted while {', '.join(inactive)} "
+            "is not active; a role's bindings are all active or none"
+        )
+
+
+def _require_frozen_descriptor(plan: DeploymentPlan, digest: str, role: str) -> None:
+    """A set member must still be the plan its CURRENT descriptor would give."""
+    frozen = ((plan.snapshot or {}).get("deploy_binding") or {}).get(
+        "deploy_unit_digest"
+    )
+    if frozen != digest:
+        raise ReleaseDescriptorRefusedError(
+            ReleaseDescriptorRefusedError.DIGEST_MISMATCH,
+            f"the {role} plan was frozen from a different descriptor than the "
+            "one the release now attests",
+        )
+
+
+def create_deployment_set(
+    db: Session,
+    command: CreateDeploymentSetCommand,
+    *,
+    release_source: ReleaseDescriptorSource | None = None,
+) -> facts.DeploymentSetView:
+    """Record a primary plan and its companion under one `set_digest`.
+
+    Membership is validated against the PRIMARY's verified descriptor: the
+    companion plan's product must be one of its `[[companions]]`, in the same
+    environment, both plans bound and live, and `required_at_switch` is the
+    descriptor's, never the caller's. A set confers no approval by itself; see
+    `approve_deployment_set`.
+    """
+
+    def handler(session: Session) -> Mapping[str, object]:
+        primary = _load_plan(session, command.primary_plan_id)
+        companion = (
+            None
+            if command.companion_plan_id is None
+            else _load_plan(session, command.companion_plan_id)
+        )
+        live = {PlanStatus.PROPOSED.value, PlanStatus.APPROVED.value}
+        for plan in (primary, companion):
+            if plan is None:
+                continue
+            if plan.status not in live:
+                raise PlanRefusedError(f"plan {plan.id} is {plan.status!r}, not live")
+            if "deploy_binding" not in (plan.snapshot or {}):
+                raise PlanRefusedError(
+                    f"plan {plan.id} carries no deploy binding; only bound plans "
+                    "can be members of a set"
+                )
+        ptarget = _load_target(session, primary.target_id)
+        required = False
+        stored = (ptarget.desired_spec or {}).get("deploy_unit")
+        if stored is not None:
+            settings = _effective_settings(session)
+            verified = _verified_stored_descriptor(
+                session, ptarget, settings, release_source
+            )
+            _require_frozen_descriptor(primary, verified.digest, "primary")
+            declared = verified.unit.companions
+            if companion is None:
+                if any(c.required_at_switch for c in declared):
+                    raise PlanRefusedError(
+                        "the primary descriptor requires its companion at switch"
+                    )
+            else:
+                ctarget = _load_target(session, companion.target_id)
+                if ctarget.environment != ptarget.environment:
+                    raise PlanRefusedError("a set stays within one environment")
+                matches = [c for c in declared if c.product == ctarget.product_code]
+                if len(matches) != 1:
+                    raise PlanRefusedError(
+                        "the companion plan's product is not a companion the "
+                        "primary descriptor declares"
+                    )
+                required = matches[0].required_at_switch
+                cverified = _verified_stored_descriptor(
+                    session, ctarget, settings, release_source
+                )
+                _require_frozen_descriptor(companion, cverified.digest, "companion")
+                expected_host = (
+                    ptarget.target_ref.rsplit("/", 1)[-1]
+                    if matches[0].host == "same"
+                    else matches[0].host
+                )
+                if ctarget.target_ref.rsplit("/", 1)[-1] != expected_host:
+                    raise PlanRefusedError(
+                        f"the companion runs on host {matches[0].host!r} per the "
+                        f"primary descriptor; this target is not on {expected_host!r}"
+                    )
+        elif companion is not None:
+            raise PlanRefusedError(
+                "a companion is only valid for a descriptor-backed primary"
+            )
+        unit = DeploymentSet(
+            primary_plan_digest=str(primary.plan_digest),
+            companion_plan_digest=(
+                None if companion is None else str(companion.plan_digest)
+            ),
+            required_at_switch=required,
+        )
+        digest = unit.set_digest()
+        existing = session.execute(
+            select(DeploymentSetRow).where(DeploymentSetRow.set_digest == digest)
+        ).scalar_one_or_none()
+        if existing is not None:
+            return {"id": str(existing.id)}
+        row = DeploymentSetRow(
+            primary_plan_id=primary.id,
+            companion_plan_id=None if companion is None else companion.id,
+            order_policy=unit.order,
+            required_at_switch=unit.required_at_switch,
+            set_digest=digest,
+        )
+        session.add(row)
+        session.flush()
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.DEPLOYMENT_SET_CREATED_V1,
+            entity_type=_ENTITY_DEPLOYMENT_SET,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "set_digest": digest,
+                "primary_plan_id": str(primary.id),
+                "companion_plan_id": (None if companion is None else str(companion.id)),
+                "order": unit.order,
+                "required_at_switch": unit.required_at_switch,
+            },
+        )
+        return {"id": str(row.id)}
+
+    outcome = process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_CREATE_DEPLOYMENT_SET,
+        handler=handler,
+    )
+    return _deployment_set_view(
+        _load_deployment_set(db, UUID(str(outcome.result["id"])))
+    )
+
+
+def approve_deployment_set(
+    db: Session, command: ApproveDeploymentSetCommand
+) -> facts.DeploymentSetView:
+    """Accept ONE approval decision over a set, bound to its digest.
+
+    NON-AUTHORITATIVE until WP6: this records a fact (`deployment.set.approved.v1`)
+    and gates nothing. Per-plan approvals still gate every rollout, and nothing
+    may read the fact as an approval until WP6 decides whether it becomes a
+    gating, append-only record.
+
+    It accepts no less than `approve_plan` does: the decision must STATE that it
+    was granted (a revoked or unstated decision is refused), name the policy
+    both member plans were proposed under, and the member plans must still be
+    live. The digest is compared as typed values. A set is approved once; a
+    second decision over the same digest is refused.
+    """
+
+    def handler(session: Session) -> Mapping[str, object]:
+        row = _load_deployment_set(session, command.set_id)
+        evidence = command.evidence
+        try:
+            supplied = DeploymentSetDigestV1.parse(evidence.content_digest)
+        except DigestEncodingError as exc:
+            raise ApprovalRefusedError(
+                f"the approval digest is not a set digest: {exc}"
+            ) from None
+        if supplied != DeploymentSetDigestV1.parse(row.set_digest):
+            raise ApprovalRefusedError(
+                "the approval was decided over a different set digest"
+            )
+        where = f"approval evidence for deployment set {row.id}"
+        if evidence.decision_status is None:
+            raise ApprovalRefusedError(
+                f"{where} does not say what the decision was; reaching this "
+                "function is not evidence that it was granted"
+            )
+        standing = require_decision_status(evidence.decision_status, where=where)
+        if standing is not ApprovalDecisionStatus.GRANTED:
+            raise ApprovalRefusedError(
+                f"{where} carries decision {evidence.decision_ref!r} with standing "
+                f"{standing.value!r}; a decision that does not grant cannot "
+                "approve a set"
+            )
+        if not evidence.decision_ref.strip():
+            raise ApprovalRefusedError("the approval names no decision")
+        members = [_load_plan(session, row.primary_plan_id)]
+        if row.companion_plan_id is not None:
+            members.append(_load_plan(session, row.companion_plan_id))
+        live = {PlanStatus.PROPOSED.value, PlanStatus.APPROVED.value}
+        for plan in members:
+            if plan.status not in live:
+                raise ApprovalRefusedError(
+                    f"member plan {plan.id} is {plan.status!r}, not live"
+                )
+            if (
+                evidence.policy_code != (plan.approval_policy_code or "")
+                or evidence.policy_version != plan.approval_policy_version
+            ):
+                raise ApprovalRefusedError(
+                    f"the approval names a policy member plan {plan.id} was not "
+                    "proposed under"
+                )
+        once = process_once_platform(
+            session,
+            command_id=f"deployment-set-approval:{row.set_digest}",
+            command_type=SCOPE_APPROVE_DEPLOYMENT_SET_ONCE,
+            handler=lambda _s: {"decision_ref": evidence.decision_ref},
+        )
+        if once.status == "duplicate":
+            raise ApprovalRefusedError(
+                f"deployment set {row.id} already has an approval decision"
+            )
+        _audit_and_emit(
+            session,
+            action=AUDIT_ACTION_ROLLOUT,
+            event_type=facts.DEPLOYMENT_SET_APPROVED_V1,
+            entity_type=_ENTITY_DEPLOYMENT_SET,
+            entity_id=str(row.id),
+            actor_ref=command.actor_ref,
+            details={
+                "set_digest": row.set_digest,
+                "decision_ref": evidence.decision_ref,
+                "decision_status": standing.value,
+                "policy_code": evidence.policy_code,
+                "policy_version": evidence.policy_version,
+                "approver_refs": list(evidence.approver_refs),
+                "authoritative": False,
+            },
+        )
+        return {"id": str(row.id)}
+
+    process_once_platform(
+        db,
+        command_id=command.command_id,
+        command_type=SCOPE_APPROVE_DEPLOYMENT_SET,
+        handler=handler,
+    )
+    return _deployment_set_view(_load_deployment_set(db, command.set_id))
+
+
+def _load_deployment_set(session: Session, set_id: UUID) -> DeploymentSetRow:
+    row = session.get(DeploymentSetRow, set_id)
+    if row is None:
+        raise TransitionRefusedError(f"deployment set {set_id} not found")
+    return row
+
+
+def _deployment_set_view(row: DeploymentSetRow) -> facts.DeploymentSetView:
+    return facts.DeploymentSetView(
+        id=row.id,
+        primary_plan_id=row.primary_plan_id,
+        companion_plan_id=row.companion_plan_id,
+        order_policy=row.order_policy,
+        required_at_switch=row.required_at_switch,
+        set_digest=row.set_digest,
+        created_at=_as_utc(row.created_at),
+    )
+
+
+def get_deployment_set(db: Session, set_id: UUID) -> facts.DeploymentSetView:
+    return _deployment_set_view(_load_deployment_set(db, set_id))
+
+
+def list_deployment_sets(
+    db: Session, *, limit: int = 50
+) -> tuple[facts.DeploymentSetView, ...]:
+    rows = (
+        db.execute(
+            select(DeploymentSetRow)
+            .order_by(DeploymentSetRow.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+        )
+        .scalars()
+        .all()
+    )
+    return tuple(_deployment_set_view(row) for row in rows)
+
+
 __all__ = [
     "AUDIT_ACTION_CREDENTIAL",
     "AUDIT_ACTION_OBSERVATION",
     "AUDIT_ACTION_ROLLOUT",
     "AUDIT_ACTION_TARGET",
     "SCOPE_ACTIVATE_CREDENTIAL",
-    "SCOPE_RETIRE_CREDENTIAL",
+    "SCOPE_APPROVE_DEPLOYMENT_SET",
     "SCOPE_APPROVE_PLAN",
     "SCOPE_CANCEL_PLAN",
     "SCOPE_CANCEL_ROLLOUT",
+    "SCOPE_CREATE_DEPLOYMENT_SET",
     "SCOPE_DECOMMISSION_TARGET",
     "SCOPE_DISPATCH",
     "SCOPE_ENROL_CREDENTIAL",
     "SCOPE_ENROL_HOST_ADMISSION_CREDENTIAL",
+    "SCOPE_LEGACY_POLICY",
     "SCOPE_OBSERVE",
     "SCOPE_PROPOSE_PLAN",
     "SCOPE_REGISTER_TARGET",
     "SCOPE_REQUEST_ROLLOUT",
+    "SCOPE_RETIRE_CREDENTIAL",
     "SCOPE_REVOKE_CREDENTIAL",
     "SCOPE_REVOKE_PLAN_APPROVAL",
     "SCOPE_SETTLE",
+    "SCOPE_ROLE_JOB_WINDOW",
+    "SCOPE_SET_BAO_ENVIRONMENT",
+    "SCOPE_SET_DEPLOY_SETTING",
     "SCOPE_SET_DESIRED",
     "SCOPE_SUSPEND_TARGET",
+    "ApproveDeploymentSetCommand",
     "ApprovePlanCommand",
+    "CreateDeploymentSetCommand",
     "CredentialTransitionCommand",
+    "EnableLegacyPolicyCommand",
     "EnrolCredentialCommand",
     "EnrolHostAdmissionCredentialCommand",
+    "ExtendLegacyPolicyCommand",
     "ProposePlanCommand",
     "RecordObservationCommand",
     "RegisterTargetCommand",
     "RequestRolloutCommand",
+    "RetireLegacyPolicyCommand",
+    "ReviseLegacyPolicyCommand",
     "RevokePlanApprovalCommand",
     "RolloutTransitionCommand",
+    "CloseRoleJobWindowCommand",
+    "OpenRoleJobWindowCommand",
+    "SetBaoEnvironmentCommand",
+    "SetDeploySettingCommand",
     "SetDesiredStateCommand",
     "SettleAttemptCommand",
     "TargetTransitionCommand",
     "activate_credential",
+    "approve_deployment_set",
     "approve_plan",
     "cancel_plan",
     "cancel_rollout",
+    "create_deployment_set",
     "credential_is_eligible",
     "decommission_target",
     "dispatch_attempt",
     "drift",
+    "enable_legacy_policy",
     "enrol_credential",
     "enrol_host_admission_credential",
+    "extend_legacy_policy",
     "find_approved_plan",
+    "get_deploy_settings",
+    "get_deployment_set",
+    "get_legacy_policy",
     "get_plan",
     "get_rollout",
     "get_target",
+    "legacy_plan_binding",
+    "list_deployment_sets",
     "list_targets",
     "observation_attempts",
     "observation_log",
@@ -5092,10 +7190,18 @@ __all__ = [
     "request_rollout",
     "require_approved_plan",
     "require_manual_repair",
-    "revoke_credential",
     "retire_credential",
+    "retire_legacy_policy",
+    "revise_legacy_policy",
+    "revoke_credential",
     "revoke_plan_approval",
     "rollouts_for_target",
+    "cancel_run_job_plans_before_executor_support",
+    "reconcile_marker",
+    "close_role_job_window",
+    "open_role_job_window",
+    "set_bao_environment",
+    "set_deploy_setting",
     "set_desired_state",
     "settle_attempt",
     "snapshot_digest",

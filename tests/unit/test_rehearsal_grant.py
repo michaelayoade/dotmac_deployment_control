@@ -206,6 +206,7 @@ def test_no_rehearse_member_was_added_to_either_operations_vocabulary() -> None:
         "deploy",
         "rollback",
         "recover",
+        "run_job",
     }
 
 

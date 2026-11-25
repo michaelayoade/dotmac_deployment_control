@@ -5,6 +5,117 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
+## 0.1.0a18 (declared, unpublished) — build-once generic deploy contract
+
+Additive and off by default: nothing here is reached unless a caller opts in,
+and a plan proposed without a deploy binding keeps its exact snapshot and digest.
+
+- `deploy_unit`: parser and validator for `deploy/deploy-unit.toml`, schema
+  `dotmac.deploy_unit/1` (typed params with a value grammar that refuses what
+  Foundation's env-file parser would alter and anything secret-shaped,
+  `secret_ref` pointers, `[[bindings]]`, `[[companions]]`, `[image]`,
+  `[legacy_env_file]`) and the canonical `params.env` render and digest.
+- `image_policy`: `source = "transfer"` by default (an absent `[image]` means
+  transfer); `pull` only for a repository on the `public_pull_repositories`
+  allowlist, which is empty by default; a transferred image must be planned on
+  the `127.0.0.1` loopback repository with the same path and the same digest.
+- `legacy_policy`: the M11 `[legacy_env_file]` invariants L1-L5 and L8 as pure
+  transitions (sha fixed at enable, secret names only, names only shrink,
+  enabled-target ceiling starting at 0, one expiry, attended extension, full
+  retirement that decrements the ceiling).
+- `deploy_binding`: `ProposePlanCommand.deploy_binding` freezes
+  `params_env_digest`, the pinned image references and digests, `image.source`,
+  the loopback repository, the legacy policy version/sha/names, the companion
+  order and the lease TTL (1..3600 seconds) INSIDE the plan snapshot, so the
+  approval covers them. `DeploymentSet` carries one `set_digest` and releases the
+  companion only after the primary is healthy.
+- `reconcile`: the rule that issues a reconcile marker for a lease that expired
+  unreleased only on a verified read-only observation that matches the last
+  committed or the planned release.
+- `dc_0017_deploy_unit_state` (expand-only, three tables): `deploy_settings`
+  (mutable; each change records its approver and register line),
+  `legacy_env_policy_versions` and `deployment_sets` (append-only evidence).
+  Downgrade refuses while either evidence table has rows. The catalogue extent
+  is now 25 tables and 273 columns; `contract_version` is the kernel's manifest
+  contract and is unchanged.
+- Commands and reads that persist the value layer: `set_deploy_setting`,
+  `enable_legacy_policy`, `revise_legacy_policy`, `extend_legacy_policy`,
+  `retire_legacy_policy`, `legacy_plan_binding`, `create_deployment_set`,
+  `get_deploy_settings`, `get_legacy_policy`, `get_deployment_set`,
+  `list_deployment_sets`, `approve_deployment_set`. `propose_plan` DERIVES the
+  deploy binding from the re-verified descriptor and the STORED pull allowlist
+  and legacy policy; a caller supplies only the lease TTL and loopback port.
+- `[legacy_env_file]` is DEFAULT-DENY, keyed by TARGET: accepted only for a
+  target on the setting `legacy_env_file_allowed_targets` (empty by default) and
+  always refused for a descriptor under `deploy/companion/`.
+- Control DERIVES the whole plan binding at propose from the re-verified
+  descriptor and its stored state (params digest from the canonical render,
+  images, active bindings, companion order, legacy part). A caller supplies only
+  the lease TTL and loopback port. A descriptor-backed target cannot be planned
+  without them, and cannot drop its descriptor.
+- A deployment set is validated against the primary descriptor's companions,
+  and `approve_deployment_set` binds one approval decision to the set digest.
+  A set alone confers no approval.
+- The descriptor digest is computed by Control (`DeployUnitDigestV1`) and bound
+  into the plan; a descriptor-declared digest is refused.
+- Operator surface: `/deployment-sets` and `/deploy-settings` pages.
+- `target_api`: the target-API contract, owned by Control and shared by the deploy
+  agent and Platform CP (signed request and response messages, header names, the
+  closed route and verb table, unpadded base64url, the target ref as three path
+  segments, `issued_at` and nonce rules, the materials schema
+  `dotmac.deploy_target_materials/1` and the env names). Package data
+  `contract/target_api_v1.json` holds the shared vectors; Control's functions
+  reproduce every one. The agent vendors the file byte-for-byte and pins its
+  digest: target_api_v1.json sha256 2e02f2ca295ee531d819d8c09aa7887ed4801c6272e60dd8b2c151d21929a907. A change is a `_v2` file and a new
+  release.
+- `target_api` v2 (additive, v1 untouched): `contract/target_api_v2.json` pins the
+  job-plan and lease additions on top of the unchanged v1 wire: the plan binding
+  keys `jobs`, `dispatched_job` (params keyed by MATERIAL), `job_binding_names`,
+  `secrets_namespace`/`secrets_environment`, the split lease (`lease_ttl_seconds`
+  per grant 120..900, `lease_max_seconds` total to 10800), the `run_job` operation
+  and image source `present`, the observation kind `job` with its kind/operation
+  refusals, the lease routes (`acquire`, `covers`, new `renew`, `release`,
+  `standing`) with a reference ledger, the PoP-signed agent observation envelope
+  (kind deploy|reconcile|job, ingested by `record_observation`), the domain
+  separation of a request message from an observation envelope, and the
+  host-admission attestation-pair format with Control's own `verify_attestation_pair`. CP and the agent vendor it next to v1 and pin
+  its digest: target_api_v2.json sha256 4d847889d516d0613e0214c7b24c718ec9828c661be8bd0170b24a8e3da9be33.
+- Contract hardening (architect r4): `request_credential_id` is the one way to
+  look the credential up (an absent or repeated header is refused) and
+  `check_request` requires the id it finds to equal the looked-up one;
+  `check_response` is the client half (path and request nonce, exactly one
+  canonical response signature, unsigned 413/429/5xx as `cp_unreachable`);
+  `audit_router_source` also requires `request_credential_id`, `signed_message`
+  and `nonce_ledger_key` and refuses literal `X-Dotmac-` names. Vectors cover
+  repeated headers and the response check.
+- Contract hardening (architect r3): `check_request` is the one server-side
+  coordinate check (header target == path target == the credential's target, the
+  closed verb, empty query, all headers, nonce, skew, canonical signature) with a
+  negative vector for each; `audit_router_source` lets Platform CP assert it uses
+  it. The nonce ledger is specified (scope `deployment.target_request_nonce.v1`,
+  key `(credential_id, nonce)`, permanent). Base64url must round-trip; request
+  bodies refuse duplicate JSON keys. Materials define `pending`, drop `roles` and
+  `previous_app_image`, and cross-check `dispatch_id`, `target_ref`, product and
+  plan digest against the signed statement and the snapshot. The plan binding
+  carries the roles (derived from the verified descriptor, sorted) and names the
+  primary service, so there is no single-image fallback. A descriptor-backed
+  target's ref must be `<product_code>/<environment>/<host>`. The vector file's
+  published test keys are refused at enrolment.
+- A material whose name says it is a secret (`PASS`, `PWD`, `SECRET`,
+  `TOKEN`, `CREDENTIAL`, `DSN`, `SALT`, `COOKIE`, `PRIVATE_KEY`, `API_KEY`,
+  `*_KEY`) may only be a `path` param; refused at
+  descriptor parse. `secret_ref` is DERIVED (`bao://<ns_env>/<secrets_namespace>/kv/<role>/
+  <lower(name)>`, e.g. `bao://prod/erp/kv/app/db_password`), never stored. The
+  OpenBao names follow the approved `<env>/<product>` layout, not Control's raw
+  identities: `secrets_namespace` is a REQUIRED descriptor field (the `<product>`
+  segment), and the namespace-env (`prod`, `staging`) is fixed on the target at
+  registration (`deployment_targets.bao_environment`, accepting either CP
+  spelling of production) and never sent in a dispatch. The AppRole name is
+  `<secrets_namespace>-<ns_env>-<role>` (`erp-prod-app`). Propose refuses a job
+  material nothing in the plan supplies; the legacy exit-pre-staged claim is
+  derived from the descriptor, not an operator flag. The legacy part of the plan binding carries
+  `expires_at`.
+
 ## 0.1.0a17 (published 2026-10-01) — permanent controller-key nonreuse
 
 - Rehearsal-issuer issuance refuses a controller fingerprint already bound to

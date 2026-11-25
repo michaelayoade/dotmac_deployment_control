@@ -120,7 +120,11 @@
   </p>
   <dl style="margin:0 0 var(--dmui-space-sm) 0;">
     {{ ui.field("Desired revision", preview.desired_revision) }}
+    {% if preview.binding_derived_at_propose %}
+    {{ ui.field("Plan digest", "computed at propose: the deploy binding (params digest, images, lease TTL, legacy part) is derived then") }}
+    {% else %}
     {{ ui.field("Plan digest (server-derived)", ui.digest(preview.plan_digest)) }}
+    {% endif %}
     {{ ui.field("Would supersede", preview.would_supersede_plan_id) }}
     {{ ui.field("Matches the current approved plan", preview.digest_matches_current) }}
   </dl>
