@@ -5,7 +5,7 @@ follows [Semantic Versioning](https://semver.org). Pre-1.0 (`0.x`, incl. this
 alpha) the surface is still settling — a `0.MINOR` bump may carry breaking
 changes, each called out here.
 
-## 0.1.0a18 (declared, unpublished) — build-once generic deploy contract
+## 0.1.0a18 (published 2026-11-25) — build-once generic deploy contract
 
 Additive and off by default: nothing here is reached unless a caller opts in,
 and a plan proposed without a deploy binding keeps its exact snapshot and digest.
