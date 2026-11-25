@@ -429,7 +429,10 @@
         "dotmac_deployment_control-0.1.0a18.tar.gz": "681291a1951d6b3927b5235f53d1e0125f7f645549f541610be5b3a3a87ab590"
       },
       "supersedes": "0.1.0a17",
-      "declared_kernel_floor": ">=0.1.0a100"
+      "declared_kernel_floor": ">=0.1.0a100",
+      "pinnable": true,
+      "release_run_note": "Published once by build run 45582723136 from the exact tip of protected main (b48ebb9f824fa2a63adca33491308431bebd13ab). Build, publish and publisher read-back succeeded. INDEPENDENT verify run 45585825504 returned VERIFIED on all seven properties: both registry-served artifacts were fetched by exact filename and matched the release build by sha256, exactly one wheel and one sdist exist, a clean dependency-complete read-only consumer installed and imported the wheel, and all 16 installed-artifact behavioural canaries passed. Only after verification did tag_once.py write annotated tag object 8a9c712536f56cdb72f551b5e1f57de634d8c937; the recorder then opened PR #77. No rebuild or repeat upload was used for verification or recording.",
+      "adoption_note": "RELEASE ELIGIBILITY, NOT A RUNTIME ADOPTION CLAIM: a18 carries the build-once generic deploy contract (deploy-unit descriptor, deploy binding, image policy, legacy-env policy, reconcile rule) and migration dc_0017_deploy_unit_state, as declared in CHANGELOG.md. Consumers must adopt the exact verified wheel through their own protected lock, migration and conformance gates. a17 remains immutable release history. Publication does not activate an issuer, prove Lane 3, allocate a Foundation successor, or close Gate-0 custody/readiness or D16."
     }
   ],
   "tags_remain_in_source_for": [
